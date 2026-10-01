@@ -169,14 +169,21 @@ func (v *Validator) detectCycle(plan *Plan) []string {
 					return cycle
 				}
 			} else if recStack[dependent] {
-				// Cycle detected - reconstruct the cycle path
-				cycle := []string{dependent}
-				current := taskID
-				for current != dependent {
-					cycle = append([]string{current}, cycle...)
-					current = parent[current]
+				// Cycle detected - reconstruct the path starting at `dependent`,
+				// walking the parent chain from taskID back up to dependent, then
+				// closing the loop. For a two-task cycle this reads
+				// task-a → task-b → task-a (not task-b → task-a → task-a).
+				var path []string
+				for current := taskID; current != dependent; current = parent[current] {
+					path = append(path, current)
 				}
-				cycle = append(cycle, dependent) // Close the cycle
+				cycle := []string{dependent}
+				// path holds taskID..child-of-dependent; reverse it so the cycle
+				// reads forward from dependent through its successors.
+				for i := len(path) - 1; i >= 0; i-- {
+					cycle = append(cycle, path[i])
+				}
+				cycle = append(cycle, dependent) // close the cycle
 				return &cycle
 			}
 		}

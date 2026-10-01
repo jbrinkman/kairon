@@ -128,16 +128,20 @@ func TestValidatorDetectsSimpleCycle(t *testing.T) {
 		Version: "1.0",
 		Tasks: []Task{
 			{
-				ID:           "task-1",
-				Agent:        "builder",
-				Description:  "First task",
-				Dependencies: []string{"task-2"},
+				ID:                 "task-1",
+				Agent:              "builder",
+				Description:        "First task",
+				Dependencies:       []string{"task-2"},
+				AcceptanceCriteria: []string{"Done"},
+				ValidationCommands: []string{"go test"},
 			},
 			{
-				ID:           "task-2",
-				Agent:        "builder",
-				Description:  "Second task",
-				Dependencies: []string{"task-1"},
+				ID:                 "task-2",
+				Agent:              "builder",
+				Description:        "Second task",
+				Dependencies:       []string{"task-1"},
+				AcceptanceCriteria: []string{"Done"},
+				ValidationCommands: []string{"go test"},
 			},
 		},
 	}
@@ -149,6 +153,22 @@ func TestValidatorDetectsSimpleCycle(t *testing.T) {
 
 	if !strings.Contains(err.Error(), "circular dependency") {
 		t.Errorf("Expected error to mention circular dependency, got: %v", err)
+	}
+
+	// The reported path must start and end on the same node with no spurious
+	// self-repeat in the middle. Depending on DFS start order the cycle reads
+	// either "task-1 → task-2 → task-1" or "task-2 → task-1 → task-2"; both are
+	// valid rotations, but "task-x → task-y → task-y" (the old bug) is not.
+	msg := err.Error()
+	okPath := strings.Contains(msg, "task-1 → task-2 → task-1") ||
+		strings.Contains(msg, "task-2 → task-1 → task-2")
+	if !okPath {
+		t.Errorf("Expected a well-formed cycle path (a → b → a), got: %v", msg)
+	}
+	for _, bad := range []string{"task-1 → task-1 → task-1", "task-2 → task-1 → task-1", "task-1 → task-2 → task-2"} {
+		if strings.Contains(msg, bad) {
+			t.Errorf("Got malformed cycle path %q in: %v", bad, msg)
+		}
 	}
 }
 
