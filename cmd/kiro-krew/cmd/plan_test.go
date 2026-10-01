@@ -50,8 +50,8 @@ func writeSpec(t *testing.T, body string) string {
 // krew-lead consumes to trigger an architect retry) rather than a hard CLI error.
 func TestPlanParse_MalformedArtifactEmitsValidationFailed(t *testing.T) {
 	cases := map[string]string{
-		"malformed YAML": "# Spec\n```kiro-plan\nversion: \"1.0\"\ntasks:\n  - id: task-1\n    agent: builder\n    dependencies: [\n```",
-		"unclosed block": "# Spec\n```kiro-plan\nversion: \"1.0\"\ntasks: []\n",
+		"malformed YAML":  "# Spec\n```kiro-plan\nversion: \"1.0\"\ntasks:\n  - id: task-1\n    agent: builder\n    dependencies: [\n```",
+		"unclosed block":  "# Spec\n```kiro-plan\nversion: \"1.0\"\ntasks: []\n",
 		"multiple blocks": "# Spec\n```kiro-plan\nversion: \"1.0\"\ntasks: []\n```\n\n```kiro-plan\nversion: \"1.0\"\ntasks: []\n```",
 	}
 
