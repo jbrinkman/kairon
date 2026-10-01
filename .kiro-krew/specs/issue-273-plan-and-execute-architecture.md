@@ -89,7 +89,7 @@ Tasks 8-9 validate the complete implementation:
 The plan artifact is embedded within the markdown spec as a YAML code block with the language identifier `kiro-plan`:
 
 ````markdown
-```kiro-plan
+```yaml
 version: "1.0"
 tasks:
   - id: "task-1"
@@ -390,7 +390,7 @@ go test ./internal/plan -run TestKrewLeadIntegration
 
 **Plan Template Example**:
 ````markdown
-```kiro-plan
+```yaml
 version: "1.0"
 tasks:
   - id: "task-1"
