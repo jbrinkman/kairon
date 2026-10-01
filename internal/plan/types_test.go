@@ -83,14 +83,18 @@ func TestPlanValidate_DuplicateTaskID(t *testing.T) {
 		Version: "1.0",
 		Tasks: []Task{
 			{
-				ID:          "task-1",
-				Agent:       "builder",
-				Description: "First task",
+				ID:                 "task-1",
+				Agent:              "builder",
+				Description:        "First task",
+				AcceptanceCriteria: []string{"Done"},
+				ValidationCommands: []string{"go test"},
 			},
 			{
-				ID:          "task-1",
-				Agent:       "builder",
-				Description: "Duplicate ID",
+				ID:                 "task-1",
+				Agent:              "builder",
+				Description:        "Duplicate ID",
+				AcceptanceCriteria: []string{"Done"},
+				ValidationCommands: []string{"go test"},
 			},
 		},
 	}

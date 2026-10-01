@@ -239,16 +239,20 @@ func TestCompatibility_ValidationBackwardCompatibility(t *testing.T) {
 		Version: "1.0",
 		Tasks: []Task{
 			{
-				ID:           "task-1",
-				Agent:        "builder",
-				Description:  "Build something",
-				Dependencies: []string{},
+				ID:                 "task-1",
+				Agent:              "builder",
+				Description:        "Build something",
+				Dependencies:       []string{},
+				AcceptanceCriteria: []string{"Done"},
+				ValidationCommands: []string{"go test"},
 			},
 			{
-				ID:           "task-2",
-				Agent:        "validator",
-				Description:  "Validate something",
-				Dependencies: []string{"task-1"},
+				ID:                 "task-2",
+				Agent:              "validator",
+				Description:        "Validate something",
+				Dependencies:       []string{"task-1"},
+				AcceptanceCriteria: []string{"Done"},
+				ValidationCommands: []string{"go test"},
 			},
 		},
 	}
@@ -440,8 +444,8 @@ func TestCompatibility_SchemaValidationErrors(t *testing.T) {
 			plan: &Plan{
 				Version: "1.0",
 				Tasks: []Task{
-					{ID: "task-1", Agent: "builder", Description: "Test 1"},
-					{ID: "task-1", Agent: "builder", Description: "Test 2"},
+					{ID: "task-1", Agent: "builder", Description: "Test 1", AcceptanceCriteria: []string{"Done"}, ValidationCommands: []string{"go test"}},
+					{ID: "task-1", Agent: "builder", Description: "Test 2", AcceptanceCriteria: []string{"Done"}, ValidationCommands: []string{"go test"}},
 				},
 			},
 			expectedErrMsg: "duplicate task ID",

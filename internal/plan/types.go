@@ -69,6 +69,16 @@ func (p *Plan) Validate() error {
 		if task.Description == "" {
 			return fmt.Errorf("task '%s' has empty description", task.ID)
 		}
+
+		// Each task must define at least one acceptance criterion and one
+		// validation command so execution has an explicit success boundary and
+		// a task-level verification step (see spec issue-273).
+		if len(task.AcceptanceCriteria) == 0 {
+			return fmt.Errorf("task '%s' has no acceptance criteria", task.ID)
+		}
+		if len(task.ValidationCommands) == 0 {
+			return fmt.Errorf("task '%s' has no validation commands", task.ID)
+		}
 	}
 
 	return nil
