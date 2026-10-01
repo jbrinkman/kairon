@@ -21,61 +21,57 @@ func NewAgentRegistry() *AgentRegistry {
 	}
 }
 
-// DiscoverAgents reads all *.json files from the specified directory and builds
-// an agent registry by extracting agent names from their configurations
+// DiscoverAgents builds the agent registry from the orchestrator's trusted-agent
+// list in <agentDir>/krew-lead.json (toolsSettings.subagent.trustedAgents).
+//
+// The trusted list is the single source of truth for which agents may be
+// assigned workflow tasks: a user adds a new agent by creating its config and
+// adding its name to krew-lead's trustedAgents, with no recompile. We
+// deliberately do NOT glob and trust arbitrary *.json configs — trusting any
+// discovered config is an injection surface that needs a dedicated design first.
+//
+// krew-lead.json is required: without it the orchestrator cannot delegate at
+// all, so a missing/unreadable file or an empty trusted list is a hard error.
 func DiscoverAgents(agentDir string) (*AgentRegistry, error) {
 	registry := NewAgentRegistry()
 
-	// Find all .json files in the agent directory
-	pattern := filepath.Join(agentDir, "*.json")
-	files, err := filepath.Glob(pattern)
+	leadConfigPath := filepath.Join(agentDir, "krew-lead.json")
+	data, err := os.ReadFile(leadConfigPath)
 	if err != nil {
-		return nil, fmt.Errorf("failed to glob agent files: %w", err)
+		return nil, fmt.Errorf("failed to read orchestrator config %s: %w", leadConfigPath, err)
 	}
 
-	if len(files) == 0 {
-		return nil, fmt.Errorf("no agent configuration files found in %s", agentDir)
+	var leadConfig struct {
+		ToolsSettings struct {
+			Subagent struct {
+				TrustedAgents []string `json:"trustedAgents"`
+			} `json:"subagent"`
+		} `json:"toolsSettings"`
+	}
+	if err := json.Unmarshal(data, &leadConfig); err != nil {
+		return nil, fmt.Errorf("failed to parse orchestrator config %s: %w", leadConfigPath, err)
 	}
 
-	// Parse each agent configuration file
-	for _, filePath := range files {
-		name, err := extractAgentName(filePath)
-		if err != nil {
-			return nil, fmt.Errorf("failed to extract agent name from %s: %w", filePath, err)
-		}
+	trusted := leadConfig.ToolsSettings.Subagent.TrustedAgents
+	if len(trusted) == 0 {
+		return nil, fmt.Errorf("orchestrator config %s has no toolsSettings.subagent.trustedAgents; the workflow cannot delegate without a trusted-agent list", leadConfigPath)
+	}
 
-		// Check for duplicate agent names
-		if _, exists := registry.agents[name]; exists {
-			return nil, fmt.Errorf("duplicate agent name '%s' found in %s (already registered from %s)",
-				name, filePath, registry.agents[name])
+	// Register each trusted agent by name, mapping to its expected config path
+	// in the same directory (the file need not exist here — a trusted agent
+	// that cannot actually be spawned will fail at delegation time).
+	for _, name := range trusted {
+		if name == "" {
+			continue
 		}
+		registry.agents[name] = filepath.Join(agentDir, name+".json")
+	}
 
-		registry.agents[name] = filePath
+	if len(registry.agents) == 0 {
+		return nil, fmt.Errorf("orchestrator config %s trustedAgents contained no usable agent names", leadConfigPath)
 	}
 
 	return registry, nil
-}
-
-// extractAgentName reads a JSON file and extracts the "name" field
-func extractAgentName(filePath string) (string, error) {
-	data, err := os.ReadFile(filePath)
-	if err != nil {
-		return "", fmt.Errorf("failed to read file: %w", err)
-	}
-
-	var config struct {
-		Name string `json:"name"`
-	}
-
-	if err := json.Unmarshal(data, &config); err != nil {
-		return "", fmt.Errorf("failed to parse JSON: %w", err)
-	}
-
-	if config.Name == "" {
-		return "", fmt.Errorf("agent name field is empty")
-	}
-
-	return config.Name, nil
 }
 
 // Contains checks if an agent with the given name exists in the registry

@@ -279,8 +279,8 @@ func TestCompatibility_ValidationBackwardCompatibility(t *testing.T) {
 		t.Error("Expected validation error for unknown agent")
 	}
 
-	if !strings.Contains(err.Error(), "unknown agent") {
-		t.Errorf("Expected 'unknown agent' error, got: %v", err)
+	if !strings.Contains(err.Error(), "not a trusted delegatable agent") {
+		t.Errorf("Expected 'not a trusted delegatable agent' error, got: %v", err)
 	}
 }
 

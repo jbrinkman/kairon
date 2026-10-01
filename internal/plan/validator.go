@@ -60,16 +60,6 @@ type Validator struct {
 	registry *AgentRegistry
 }
 
-// nonDelegatableAgents are discovered agents that must never be assigned a
-// workflow task. The planner runs *before* a workflow (it creates the issue the
-// Go poller later picks up), and krew-lead is the orchestrator that delegates
-// tasks — it does not receive them. Both are auto-discovered from
-// .kiro/agents/*.json, so validation must exclude them explicitly.
-var nonDelegatableAgents = map[string]bool{
-	"planner":   true,
-	"krew-lead": true,
-}
-
 // NewValidator creates a new validator with the given agent registry
 func NewValidator(registry *AgentRegistry) *Validator {
 	return &Validator{
@@ -122,24 +112,15 @@ func (v *Validator) ValidatePlan(plan *Plan) error {
 			}
 		}
 
-		// Agent resolution: check that agent exists in registry
+		// Agent resolution: the registry is populated from krew-lead.json's
+		// trustedAgents list, so an agent not in the registry is one the
+		// orchestrator would refuse to delegate to. Reject it at validation
+		// time rather than letting it fail at dispatch.
 		if !v.registry.Contains(task.Agent) {
 			availableAgents := v.registry.GetAgentNames()
 			errors = append(errors, ValidationError{
 				Field:   fmt.Sprintf("task[%s].agent", task.ID),
-				Message: fmt.Sprintf("unknown agent '%s' (available: %s)", task.Agent, strings.Join(availableAgents, ", ")),
-			})
-		} else if nonDelegatableAgents[task.Agent] {
-			// The registry auto-discovers every .kiro/agents/*.json, which
-			// includes agents that are not valid workflow task delegates:
-			// the planner creates issues *before* a workflow starts, and
-			// krew-lead is the orchestrator itself. Assigning a task to either
-			// would pass a bare existence check but be rejected at execution by
-			// the orchestrator's trusted-agent set — reject it here so the
-			// failure is caught at validation with a clear message.
-			errors = append(errors, ValidationError{
-				Field:   fmt.Sprintf("task[%s].agent", task.ID),
-				Message: fmt.Sprintf("agent '%s' cannot be assigned tasks: it is not a delegatable workflow agent", task.Agent),
+				Message: fmt.Sprintf("agent '%s' is not a trusted delegatable agent (trusted: %s)", task.Agent, strings.Join(availableAgents, ", ")),
 			})
 		}
 	}

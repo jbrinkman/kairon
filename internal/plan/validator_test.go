@@ -71,8 +71,8 @@ func TestValidatorWithUnknownAgent(t *testing.T) {
 		t.Fatal("Expected validation to fail for unknown agent")
 	}
 
-	if !strings.Contains(err.Error(), "unknown agent") {
-		t.Errorf("Expected error to mention unknown agent, got: %v", err)
+	if !strings.Contains(err.Error(), "not a trusted delegatable agent") {
+		t.Errorf("Expected error to mention agent is not trusted, got: %v", err)
 	}
 
 	if !strings.Contains(err.Error(), "unknown-agent") {
@@ -516,20 +516,24 @@ func TestPlanValidate_AccumulatesErrors(t *testing.T) {
 	}
 }
 
-// TestValidatorRejectsNonDelegatableAgents verifies that assigning a workflow
-// task to a non-delegatable agent (planner creates issues pre-workflow;
-// krew-lead is the orchestrator) fails validation with a clear message, even
-// though both are present in the auto-discovered registry.
-func TestValidatorRejectsNonDelegatableAgents(t *testing.T) {
+// TestValidatorRejectsUntrustedAgents verifies that a task assigned to an agent
+// not in the trusted registry (which is populated from krew-lead.json's
+// trustedAgents) fails validation — including planner and krew-lead, which are
+// never in the trusted set — while a trusted agent passes. The registry is the
+// single source of truth; there is no separate denylist.
+func TestValidatorRejectsUntrustedAgents(t *testing.T) {
+	// Registry represents the orchestrator's trusted set (as DiscoverAgents
+	// would build it from krew-lead.json). Note planner/krew-lead are NOT here.
 	registry := NewAgentRegistry()
 	registry.agents = map[string]string{
-		"builder":   "builder.json",
-		"planner":   "planner.json",
-		"krew-lead": "krew-lead.json",
+		"architect":  "architect.json",
+		"builder":    "builder.json",
+		"validator":  "validator.json",
+		"documenter": "documenter.json",
 	}
 	validator := NewValidator(registry)
 
-	for _, agent := range []string{"planner", "krew-lead"} {
+	for _, agent := range []string{"planner", "krew-lead", "security-reviewer"} {
 		t.Run(agent, func(t *testing.T) {
 			plan := &Plan{
 				Version: "1.0",
@@ -547,15 +551,15 @@ func TestValidatorRejectsNonDelegatableAgents(t *testing.T) {
 
 			err := validator.ValidatePlan(plan)
 			if err == nil {
-				t.Fatalf("expected validation to reject non-delegatable agent %q", agent)
+				t.Fatalf("expected validation to reject untrusted agent %q", agent)
 			}
-			if !strings.Contains(err.Error(), "not a delegatable workflow agent") {
-				t.Errorf("expected non-delegatable message for %q, got: %v", agent, err)
+			if !strings.Contains(err.Error(), "not a trusted delegatable agent") {
+				t.Errorf("expected not-trusted message for %q, got: %v", agent, err)
 			}
 		})
 	}
 
-	// A normal delegatable agent must still pass.
+	// A trusted agent must still pass.
 	t.Run("builder passes", func(t *testing.T) {
 		plan := &Plan{
 			Version: "1.0",

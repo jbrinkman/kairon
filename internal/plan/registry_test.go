@@ -3,6 +3,7 @@ package plan
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -16,80 +17,63 @@ func TestNewAgentRegistry(t *testing.T) {
 	}
 }
 
-func TestDiscoverAgents_ValidDirectory(t *testing.T) {
-	// Create a temporary directory with test agent configs
+// writeLeadConfig writes a krew-lead.json with the given trustedAgents list
+// into agentDir and returns agentDir, for exercising DiscoverAgents.
+func writeLeadConfig(t *testing.T, agentDir string, trusted []string) {
+	t.Helper()
+	quoted := make([]string, len(trusted))
+	for i, a := range trusted {
+		quoted[i] = `"` + a + `"`
+	}
+	content := `{
+  "name": "krew-lead",
+  "toolsSettings": { "subagent": { "trustedAgents": [` + strings.Join(quoted, ", ") + `] } }
+}`
+	path := filepath.Join(agentDir, "krew-lead.json")
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("failed to write krew-lead.json: %v", err)
+	}
+}
+
+// TestDiscoverAgents_FromTrustedList verifies the registry is built from the
+// orchestrator's trustedAgents list, including an agent added purely by editing
+// that list (no recompile), and that non-trusted names are absent.
+func TestDiscoverAgents_FromTrustedList(t *testing.T) {
 	tmpDir := t.TempDir()
+	// Includes a newly-added specialized agent to prove the no-recompile goal.
+	writeLeadConfig(t, tmpDir, []string{"architect", "builder", "validator", "documenter", "security-reviewer"})
 
-	// Create test agent files
-	agents := []struct {
-		filename string
-		content  string
-	}{
-		{
-			filename: "builder.json",
-			content:  `{"name": "builder", "description": "Builder agent"}`,
-		},
-		{
-			filename: "validator.json",
-			content:  `{"name": "validator", "description": "Validator agent"}`,
-		},
-		{
-			filename: "architect.json",
-			content:  `{"name": "architect", "description": "Architect agent"}`,
-		},
-	}
-
-	for _, agent := range agents {
-		path := filepath.Join(tmpDir, agent.filename)
-		if err := os.WriteFile(path, []byte(agent.content), 0644); err != nil {
-			t.Fatalf("failed to write test file: %v", err)
-		}
-	}
-
-	// Discover agents
 	registry, err := DiscoverAgents(tmpDir)
 	if err != nil {
 		t.Fatalf("expected successful discovery, got error: %v", err)
 	}
 
-	// Verify count
-	if registry.Count() != 3 {
-		t.Errorf("expected 3 agents, got %d", registry.Count())
+	if registry.Count() != 5 {
+		t.Errorf("expected 5 trusted agents, got %d", registry.Count())
 	}
-
-	// Verify each agent is registered
-	for _, agent := range agents {
-		config := struct{ Name string }{}
-		// Extract expected name from content (simplified)
-		if agent.filename == "builder.json" {
-			config.Name = "builder"
-		} else if agent.filename == "validator.json" {
-			config.Name = "validator"
-		} else if agent.filename == "architect.json" {
-			config.Name = "architect"
+	for _, name := range []string{"architect", "builder", "validator", "documenter", "security-reviewer"} {
+		if !registry.Contains(name) {
+			t.Errorf("expected registry to contain trusted agent '%s'", name)
 		}
-
-		if !registry.Contains(config.Name) {
-			t.Errorf("expected registry to contain agent '%s'", config.Name)
+		path, ok := registry.GetConfigPath(name)
+		if !ok || path == "" {
+			t.Errorf("expected a config path for trusted agent '%s'", name)
 		}
-
-		path, exists := registry.GetConfigPath(config.Name)
-		if !exists {
-			t.Errorf("expected to find config path for agent '%s'", config.Name)
-		}
-		if path == "" {
-			t.Errorf("expected non-empty config path for agent '%s'", config.Name)
+	}
+	// A name not in the trusted list (even krew-lead/planner themselves) must
+	// not be in the registry.
+	for _, name := range []string{"planner", "krew-lead", "kiro_default"} {
+		if registry.Contains(name) {
+			t.Errorf("did not expect non-trusted agent '%s' in registry", name)
 		}
 	}
 }
 
-func TestDiscoverAgents_EmptyDirectory(t *testing.T) {
+func TestDiscoverAgents_MissingLeadConfig(t *testing.T) {
+	// Empty dir: no krew-lead.json -> hard error (orchestrator is broken).
 	tmpDir := t.TempDir()
-
-	// Attempt to discover agents from empty directory
-	_, err := DiscoverAgents(tmpDir)
-	if err == nil {
-		t.Error("expected error for empty directory")
+	if _, err := DiscoverAgents(tmpDir); err == nil {
+		t.Error("expected error when krew-lead.json is missing")
 	}
 }
 
@@ -100,65 +84,21 @@ func TestDiscoverAgents_NonexistentDirectory(t *testing.T) {
 	}
 }
 
-func TestDiscoverAgents_DuplicateAgentNames(t *testing.T) {
-	tmpDir := t.TempDir()
-
-	// Create two files with the same agent name
-	files := []struct {
-		filename string
-		content  string
-	}{
-		{
-			filename: "builder1.json",
-			content:  `{"name": "builder", "description": "First builder"}`,
-		},
-		{
-			filename: "builder2.json",
-			content:  `{"name": "builder", "description": "Second builder"}`,
-		},
-	}
-
-	for _, file := range files {
-		path := filepath.Join(tmpDir, file.filename)
-		if err := os.WriteFile(path, []byte(file.content), 0644); err != nil {
-			t.Fatalf("failed to write test file: %v", err)
-		}
-	}
-
-	// Attempt to discover agents - should fail due to duplicate
-	_, err := DiscoverAgents(tmpDir)
-	if err == nil {
-		t.Error("expected error for duplicate agent names")
-	}
-}
-
 func TestDiscoverAgents_InvalidJSON(t *testing.T) {
 	tmpDir := t.TempDir()
-
-	// Create a file with invalid JSON
-	path := filepath.Join(tmpDir, "invalid.json")
-	if err := os.WriteFile(path, []byte(`{invalid json`), 0644); err != nil {
+	if err := os.WriteFile(filepath.Join(tmpDir, "krew-lead.json"), []byte(`{invalid json`), 0o644); err != nil {
 		t.Fatalf("failed to write test file: %v", err)
 	}
-
-	_, err := DiscoverAgents(tmpDir)
-	if err == nil {
-		t.Error("expected error for invalid JSON")
+	if _, err := DiscoverAgents(tmpDir); err == nil {
+		t.Error("expected error for invalid krew-lead.json")
 	}
 }
 
-func TestDiscoverAgents_MissingNameField(t *testing.T) {
+func TestDiscoverAgents_EmptyTrustedList(t *testing.T) {
 	tmpDir := t.TempDir()
-
-	// Create a valid JSON file without a name field
-	path := filepath.Join(tmpDir, "noname.json")
-	if err := os.WriteFile(path, []byte(`{"description": "Agent without name"}`), 0644); err != nil {
-		t.Fatalf("failed to write test file: %v", err)
-	}
-
-	_, err := DiscoverAgents(tmpDir)
-	if err == nil {
-		t.Error("expected error for missing name field")
+	writeLeadConfig(t, tmpDir, []string{})
+	if _, err := DiscoverAgents(tmpDir); err == nil {
+		t.Error("expected error when trustedAgents is empty")
 	}
 }
 
