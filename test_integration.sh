@@ -20,6 +20,11 @@ TESTS_RUN=0
 TESTS_PASSED=0
 TESTS_FAILED=0
 
+# Private temp file for per-test output capture. Using mktemp (instead of a
+# fixed /tmp/test_output.log) avoids a predictable path that could be
+# pre-created as a symlink on a shared host and followed on redirect (CWE-377).
+TEST_OUTPUT="$(mktemp "${TMPDIR:-/tmp}/kiro-krew-itest.XXXXXX")"
+
 # Helper functions
 run_test() {
     local test_name="$1"
@@ -28,14 +33,14 @@ run_test() {
     TESTS_RUN=$((TESTS_RUN + 1))
     echo -e "${YELLOW}Running:${NC} $test_name"
     
-    if eval "$test_cmd" > /tmp/test_output.log 2>&1; then
+    if eval "$test_cmd" > "$TEST_OUTPUT" 2>&1; then
         echo -e "${GREEN}✓ PASS${NC}: $test_name"
         TESTS_PASSED=$((TESTS_PASSED + 1))
         return 0
     else
         echo -e "${RED}✗ FAIL${NC}: $test_name"
         echo "Output:"
-        cat /tmp/test_output.log
+        cat "$TEST_OUTPUT"
         TESTS_FAILED=$((TESTS_FAILED + 1))
         # Do not return non-zero here: under `set -e` a non-zero return from this
         # bare `run_test` call would abort the whole script on the first failing
@@ -60,8 +65,11 @@ print_summary() {
     fi
 }
 
-# Trap to ensure summary is printed
-trap print_summary EXIT
+# Clean up the temp output file on exit, then print the summary. print_summary
+# calls exit, so cleanup must run first; chain them in the trap rather than
+# complicating print_summary itself.
+cleanup() { rm -f "$TEST_OUTPUT"; }
+trap 'cleanup; print_summary' EXIT
 
 echo -e "${BLUE}Phase 1: Unit Tests${NC}\n"
 
