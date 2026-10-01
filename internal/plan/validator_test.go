@@ -1,6 +1,7 @@
 package plan
 
 import (
+	"errors"
 	"strings"
 	"testing"
 )
@@ -440,5 +441,57 @@ func TestValidationErrorsFormatting(t *testing.T) {
 	emptyErr := ValidationErrors{}
 	if !strings.Contains(emptyErr.Error(), "no validation errors") {
 		t.Errorf("Expected empty error message, got: %v", emptyErr.Error())
+	}
+}
+
+// TestPlanValidate_AccumulatesErrors verifies that Plan.Validate reports every
+// per-task schema failure in a single pass (not just the first), and that
+// errors.Is still matches sentinels carried inside the aggregated result.
+func TestPlanValidate_AccumulatesErrors(t *testing.T) {
+	// task-1 is missing its agent, its acceptance criteria, and its validation
+	// commands all at once. task-2 duplicates task-1's ID. A first-error-wins
+	// validator would report only one problem; the accumulate contract must
+	// surface all of them in one Validate call.
+	p := &Plan{
+		Version: "1.0",
+		Tasks: []Task{
+			{
+				ID:          "task-1",
+				Agent:       "",
+				Description: "Missing agent and lists",
+			},
+			{
+				ID:                 "task-1",
+				Agent:              "builder",
+				Description:        "Duplicate ID",
+				AcceptanceCriteria: []string{"Done"},
+				ValidationCommands: []string{"go test"},
+			},
+		},
+	}
+
+	err := p.Validate()
+	if err == nil {
+		t.Fatal("expected validation errors, got nil")
+	}
+
+	msg := err.Error()
+	for _, want := range []string{
+		"missing agent",
+		"no acceptance criteria",
+		"no validation commands",
+		"duplicate task ID",
+	} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("expected aggregated error to contain %q, got:\n%s", want, msg)
+		}
+	}
+
+	// Sentinels must remain matchable through the aggregated collection.
+	if !errors.Is(err, ErrMissingAgent) {
+		t.Errorf("expected errors.Is(err, ErrMissingAgent) to be true, got: %v", err)
+	}
+	if !errors.Is(err, ErrDuplicateTaskID) {
+		t.Errorf("expected errors.Is(err, ErrDuplicateTaskID) to be true, got: %v", err)
 	}
 }

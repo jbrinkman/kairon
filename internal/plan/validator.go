@@ -9,11 +9,19 @@ import (
 type ValidationError struct {
 	Field   string // Field or aspect that failed validation
 	Message string // Human-readable error message
+	Err     error  // Optional underlying sentinel error, for errors.Is traversal
 }
 
 // Error implements the error interface for ValidationError
 func (e ValidationError) Error() string {
 	return fmt.Sprintf("%s: %s", e.Field, e.Message)
+}
+
+// Unwrap exposes the underlying sentinel (if any) so errors.Is can match
+// against sentinels such as ErrMissingTaskID even when the failure is carried
+// inside an aggregated ValidationErrors collection.
+func (e ValidationError) Unwrap() error {
+	return e.Err
 }
 
 // ValidationErrors is a collection of validation failures
@@ -34,6 +42,17 @@ func (e ValidationErrors) Error() string {
 		sb.WriteString(fmt.Sprintf("  %d. %s\n", i+1, err.Error()))
 	}
 	return sb.String()
+}
+
+// Unwrap returns the contained errors so errors.Is / errors.As can traverse the
+// whole collection (Go 1.20+ multi-error unwrap). This lets callers match any
+// accumulated sentinel, e.g. errors.Is(err, ErrDuplicateTaskID).
+func (e ValidationErrors) Unwrap() []error {
+	errs := make([]error, len(e))
+	for i := range e {
+		errs[i] = e[i]
+	}
+	return errs
 }
 
 // Validator validates plans against schema rules, dependency resolution, and agent availability

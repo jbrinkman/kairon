@@ -29,7 +29,14 @@ var (
 	ErrEmptyPlan       = fmt.Errorf("plan has no tasks")
 )
 
-// Validate performs schema validation on the plan
+// Validate performs schema validation on the plan.
+//
+// Version and empty-plan problems are whole-plan errors and fail fast (there is
+// nothing meaningful to check per task once they trip). All per-task schema
+// failures are accumulated and returned together as ValidationErrors, so a
+// single call reports every problem rather than stopping at the first — this
+// gives the architect complete, actionable feedback in one pass. Each entry
+// wraps its sentinel (ErrMissingTaskID, etc.) so errors.Is still matches.
 func (p *Plan) Validate() error {
 	if p == nil {
 		return fmt.Errorf("plan is nil")
@@ -45,40 +52,70 @@ func (p *Plan) Validate() error {
 		return ErrEmptyPlan
 	}
 
+	var errs ValidationErrors
+
 	// Track task IDs for uniqueness check
 	taskIDs := make(map[string]bool)
 
 	for i, task := range p.Tasks {
 		// Check for missing task ID
 		if task.ID == "" {
-			return fmt.Errorf("%w: task at index %d", ErrMissingTaskID, i)
+			errs = append(errs, ValidationError{
+				Field:   fmt.Sprintf("task[%d].id", i),
+				Message: fmt.Sprintf("%v: task at index %d", ErrMissingTaskID, i),
+				Err:     ErrMissingTaskID,
+			})
+			// Without an ID the remaining per-task checks can't reference the
+			// task meaningfully; skip to the next task.
+			continue
 		}
 
 		// Check for duplicate task IDs
 		if taskIDs[task.ID] {
-			return fmt.Errorf("%w: '%s'", ErrDuplicateTaskID, task.ID)
+			errs = append(errs, ValidationError{
+				Field:   fmt.Sprintf("task[%s].id", task.ID),
+				Message: fmt.Sprintf("%v: '%s'", ErrDuplicateTaskID, task.ID),
+				Err:     ErrDuplicateTaskID,
+			})
 		}
 		taskIDs[task.ID] = true
 
 		// Check for missing agent
 		if task.Agent == "" {
-			return fmt.Errorf("%w: task '%s'", ErrMissingAgent, task.ID)
+			errs = append(errs, ValidationError{
+				Field:   fmt.Sprintf("task[%s].agent", task.ID),
+				Message: fmt.Sprintf("%v: task '%s'", ErrMissingAgent, task.ID),
+				Err:     ErrMissingAgent,
+			})
 		}
 
 		// Check for empty description
 		if task.Description == "" {
-			return fmt.Errorf("task '%s' has empty description", task.ID)
+			errs = append(errs, ValidationError{
+				Field:   fmt.Sprintf("task[%s].description", task.ID),
+				Message: fmt.Sprintf("task '%s' has empty description", task.ID),
+			})
 		}
 
 		// Each task must define at least one acceptance criterion and one
 		// validation command so execution has an explicit success boundary and
 		// a task-level verification step (see spec issue-273).
 		if len(task.AcceptanceCriteria) == 0 {
-			return fmt.Errorf("task '%s' has no acceptance criteria", task.ID)
+			errs = append(errs, ValidationError{
+				Field:   fmt.Sprintf("task[%s].acceptance_criteria", task.ID),
+				Message: fmt.Sprintf("task '%s' has no acceptance criteria", task.ID),
+			})
 		}
 		if len(task.ValidationCommands) == 0 {
-			return fmt.Errorf("task '%s' has no validation commands", task.ID)
+			errs = append(errs, ValidationError{
+				Field:   fmt.Sprintf("task[%s].validation_commands", task.ID),
+				Message: fmt.Sprintf("task '%s' has no validation commands", task.ID),
+			})
 		}
+	}
+
+	if len(errs) > 0 {
+		return errs
 	}
 
 	return nil
