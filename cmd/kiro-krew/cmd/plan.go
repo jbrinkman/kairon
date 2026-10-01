@@ -3,6 +3,7 @@ package cmd
 import (
 	"encoding/json"
 	"fmt"
+	"os"
 
 	"github.com/jbrinkman/kiro-krew/internal/plan"
 	"github.com/spf13/cobra"
@@ -22,10 +23,28 @@ var planParseCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		specFile := args[0]
 
-		// Parse the plan from the spec file
-		parsedPlan, err := plan.ParsePlanFromFile(specFile)
+		// Read the spec file. A genuine file/IO error (missing or unreadable
+		// file) is an environmental failure the architect cannot fix by
+		// regenerating the plan, so it stays a hard error.
+		content, err := os.ReadFile(specFile)
 		if err != nil {
-			return fmt.Errorf("failed to parse plan: %w", err)
+			return fmt.Errorf("failed to read spec file: %w", err)
+		}
+
+		// Parse the plan artifact from the file content. A malformed artifact
+		// (bad YAML, unclosed block, multiple plan blocks) is a validation-class
+		// problem: emit the same machine-readable validation_failed result that
+		// the krew-lead prompt consumes so the architect-retry path is taken,
+		// rather than a Cobra error that would bypass it.
+		parsedPlan, err := plan.ParsePlanFromMarkdown(content)
+		if err != nil {
+			output := map[string]interface{}{
+				"status": "validation_failed",
+				"error":  err.Error(),
+			}
+			jsonBytes, _ := json.MarshalIndent(output, "", "  ")
+			fmt.Println(string(jsonBytes))
+			return nil // Don't return error - we want to output JSON
 		}
 
 		if parsedPlan == nil {
