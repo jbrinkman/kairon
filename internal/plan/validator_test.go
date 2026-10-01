@@ -515,3 +515,63 @@ func TestPlanValidate_AccumulatesErrors(t *testing.T) {
 		t.Errorf("expected errors.Is(err, ErrDuplicateTaskID) to be true, got: %v", err)
 	}
 }
+
+// TestValidatorRejectsNonDelegatableAgents verifies that assigning a workflow
+// task to a non-delegatable agent (planner creates issues pre-workflow;
+// krew-lead is the orchestrator) fails validation with a clear message, even
+// though both are present in the auto-discovered registry.
+func TestValidatorRejectsNonDelegatableAgents(t *testing.T) {
+	registry := NewAgentRegistry()
+	registry.agents = map[string]string{
+		"builder":   "builder.json",
+		"planner":   "planner.json",
+		"krew-lead": "krew-lead.json",
+	}
+	validator := NewValidator(registry)
+
+	for _, agent := range []string{"planner", "krew-lead"} {
+		t.Run(agent, func(t *testing.T) {
+			plan := &Plan{
+				Version: "1.0",
+				Tasks: []Task{
+					{
+						ID:                 "task-1",
+						Agent:              agent,
+						Description:        "Should be rejected",
+						Dependencies:       []string{},
+						AcceptanceCriteria: []string{"Done"},
+						ValidationCommands: []string{"go test"},
+					},
+				},
+			}
+
+			err := validator.ValidatePlan(plan)
+			if err == nil {
+				t.Fatalf("expected validation to reject non-delegatable agent %q", agent)
+			}
+			if !strings.Contains(err.Error(), "not a delegatable workflow agent") {
+				t.Errorf("expected non-delegatable message for %q, got: %v", agent, err)
+			}
+		})
+	}
+
+	// A normal delegatable agent must still pass.
+	t.Run("builder passes", func(t *testing.T) {
+		plan := &Plan{
+			Version: "1.0",
+			Tasks: []Task{
+				{
+					ID:                 "task-1",
+					Agent:              "builder",
+					Description:        "Normal task",
+					Dependencies:       []string{},
+					AcceptanceCriteria: []string{"Done"},
+					ValidationCommands: []string{"go test"},
+				},
+			},
+		}
+		if err := validator.ValidatePlan(plan); err != nil {
+			t.Errorf("expected builder task to pass, got: %v", err)
+		}
+	})
+}
