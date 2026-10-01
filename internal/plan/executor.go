@@ -39,14 +39,35 @@ type ExecutionSummary struct {
 type TaskSpawner func(task Task) (exitCode int, err error)
 
 // Executor executes validated plans with topological sorting and parallelization
+// DefaultMaxParallelTasks bounds how many tasks within a single layer may be
+// spawned concurrently when no explicit limit is given. Matches the
+// max_parallel_tasks default in the plan-and-execute spec (issue-273).
+const DefaultMaxParallelTasks = 4
+
 type Executor struct {
-	spawner TaskSpawner // Function to spawn agent processes
+	spawner     TaskSpawner // Function to spawn agent processes
+	maxParallel int         // Max concurrent task spawns per layer (semaphore size)
 }
 
-// NewExecutor creates a new plan executor with the given task spawner
+// NewExecutor creates a new plan executor with the given task spawner, using
+// the default per-layer concurrency limit (DefaultMaxParallelTasks).
 func NewExecutor(spawner TaskSpawner) *Executor {
 	return &Executor{
-		spawner: spawner,
+		spawner:     spawner,
+		maxParallel: DefaultMaxParallelTasks,
+	}
+}
+
+// NewExecutorWithLimit creates an executor with an explicit per-layer
+// concurrency limit. A non-positive limit falls back to DefaultMaxParallelTasks
+// so the executor never runs unbounded.
+func NewExecutorWithLimit(spawner TaskSpawner, maxParallel int) *Executor {
+	if maxParallel < 1 {
+		maxParallel = DefaultMaxParallelTasks
+	}
+	return &Executor{
+		spawner:     spawner,
+		maxParallel: maxParallel,
 	}
 }
 
@@ -151,15 +172,26 @@ func (e *Executor) shouldSkipTask(task Task, taskStatus map[string]TaskStatus) b
 	return false
 }
 
-// executeLayer executes all tasks in a layer concurrently using a WaitGroup
+// executeLayer executes the tasks in a layer concurrently using a WaitGroup,
+// bounded by a semaphore so no more than e.maxParallel task agents are spawned
+// at once. A layer may contain more tasks than the limit; the excess queue on
+// the semaphore rather than forking unbounded agent processes.
 func (e *Executor) executeLayer(layerNum int, tasks []Task, taskStatus map[string]TaskStatus, statusMu *sync.RWMutex) []TaskResult {
 	var wg sync.WaitGroup
 	results := make([]TaskResult, len(tasks))
+
+	// Semaphore limiting concurrent spawns. maxParallel is always >= 1 (set by
+	// the constructors), so this channel is never zero-capacity.
+	sem := make(chan struct{}, e.maxParallel)
 
 	for i, task := range tasks {
 		wg.Add(1)
 		go func(idx int, t Task) {
 			defer wg.Done()
+
+			// Acquire a semaphore slot before spawning; release on completion.
+			sem <- struct{}{}
+			defer func() { <-sem }()
 
 			// Mark task as running
 			statusMu.Lock()

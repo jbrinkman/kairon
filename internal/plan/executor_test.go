@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -573,5 +574,69 @@ func TestExecutorTaskResultMapping(t *testing.T) {
 	}
 	if failResult.Error == nil {
 		t.Error("Expected task-fail to have an error")
+	}
+}
+
+// TestExecutorRespectsConcurrencyLimit verifies that a layer wider than the
+// configured limit never spawns more than maxParallel task agents at once, and
+// that all tasks still run and succeed (the excess queue on the semaphore).
+func TestExecutorRespectsConcurrencyLimit(t *testing.T) {
+	const limit = 2
+	const taskCount = 6
+
+	var inFlight int64
+	var peak int64
+
+	spawner := func(task Task) (int, error) {
+		cur := atomic.AddInt64(&inFlight, 1)
+		// Record the high-water mark of concurrent spawns.
+		for {
+			old := atomic.LoadInt64(&peak)
+			if cur <= old || atomic.CompareAndSwapInt64(&peak, old, cur) {
+				break
+			}
+		}
+		// Hold the slot briefly so overlap is observable.
+		time.Sleep(20 * time.Millisecond)
+		atomic.AddInt64(&inFlight, -1)
+		return 0, nil
+	}
+
+	executor := NewExecutorWithLimit(spawner, limit)
+
+	// Single layer of independent tasks (no dependencies), wider than the limit.
+	tasks := make([]Task, taskCount)
+	for i := 0; i < taskCount; i++ {
+		tasks[i] = Task{
+			ID:           fmt.Sprintf("task-%d", i+1),
+			Agent:        "builder",
+			Description:  fmt.Sprintf("Task %d", i+1),
+			Dependencies: []string{},
+		}
+	}
+	plan := &Plan{Version: "1.0", Tasks: tasks}
+
+	summary, err := executor.ExecutePlan(plan)
+	if err != nil {
+		t.Fatalf("ExecutePlan failed: %v", err)
+	}
+
+	if summary.Successful != taskCount {
+		t.Errorf("Expected %d successful tasks, got %d", taskCount, summary.Successful)
+	}
+
+	if got := atomic.LoadInt64(&peak); got > limit {
+		t.Errorf("Concurrency limit exceeded: peak %d concurrent spawns, limit %d", got, limit)
+	}
+}
+
+// TestNewExecutorWithLimit_NonPositiveFallsBackToDefault verifies that a bad
+// limit does not disable bounding (which would reintroduce the unbounded fork).
+func TestNewExecutorWithLimit_NonPositiveFallsBackToDefault(t *testing.T) {
+	for _, bad := range []int{0, -1, -100} {
+		e := NewExecutorWithLimit(func(Task) (int, error) { return 0, nil }, bad)
+		if e.maxParallel != DefaultMaxParallelTasks {
+			t.Errorf("limit %d: expected fallback to %d, got %d", bad, DefaultMaxParallelTasks, e.maxParallel)
+		}
 	}
 }
