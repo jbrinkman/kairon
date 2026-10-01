@@ -62,9 +62,14 @@ func ParsePlanFromMarkdown(content []byte) (*Plan, error) {
 		return nil, fmt.Errorf("empty plan block")
 	}
 
-	// Parse YAML into Plan struct
+	// Parse YAML into Plan struct.
+	// Use a decoder with KnownFields(true) so unknown/misspelled keys (e.g. a
+	// mistyped "dependencies") are rejected rather than silently dropped, which
+	// would otherwise corrupt dependency ordering without the validator noticing.
 	var plan Plan
-	if err := yaml.Unmarshal([]byte(yamlStr), &plan); err != nil {
+	decoder := yaml.NewDecoder(strings.NewReader(yamlStr))
+	decoder.KnownFields(true)
+	if err := decoder.Decode(&plan); err != nil {
 		return nil, fmt.Errorf("failed to parse plan YAML: %w", err)
 	}
 
