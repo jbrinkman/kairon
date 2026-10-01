@@ -67,44 +67,44 @@ echo -e "${BLUE}Phase 1: Unit Tests${NC}\n"
 
 # Test 1: Plan types and schema validation
 run_test "Plan types and schema validation" \
-    "go test ./internal/plan -run TestPlanTypes -v"
+    "go test ./internal/plan -run TestPlanValidate -v"
 
 run_test "Plan schema validation" \
-    "go test ./internal/plan -run TestSchemaValidation -v"
+    "go test ./internal/plan -run TestCompatibility_SchemaValidationErrors -v"
 
 # Test 2: Agent registry
 run_test "Agent registry discovery" \
     "go test ./internal/plan -run TestAgentRegistry -v"
 
 run_test "Registry discovery from filesystem" \
-    "go test ./internal/plan -run TestRegistryDiscovery -v"
+    "go test ./internal/plan -run TestDiscoverAgents -v"
 
 # Test 3: Plan parser
 run_test "Plan parser functionality" \
-    "go test ./internal/plan -run TestPlanParser -v"
+    "go test ./internal/plan -run TestParsePlanFromMarkdown -v"
 
 run_test "Parser edge cases" \
-    "go test ./internal/plan -run TestParserEdgeCases -v"
+    "go test ./internal/plan -run TestParsePlanFromFile -v"
 
 # Test 4: Plan validator
 run_test "Plan validator" \
-    "go test ./internal/plan -run TestPlanValidator -v"
+    "go test ./internal/plan -run TestValidator -v"
 
 run_test "Cycle detection" \
-    "go test ./internal/plan -run TestCycleDetection -v"
+    "go test ./internal/plan -run TestValidatorDetects -v"
 
 run_test "Dependency resolution" \
-    "go test ./internal/plan -run TestDependencyResolution -v"
+    "go test ./internal/plan -run TestValidatorWithMissingDependency -v"
 
 # Test 5: Plan executor
 run_test "Plan executor" \
-    "go test ./internal/plan -run TestPlanExecutor -v"
+    "go test ./internal/plan -run TestExecutor -v"
 
 run_test "Topological sort" \
     "go test ./internal/plan -run TestTopologicalSort -v"
 
 run_test "Parallel execution" \
-    "go test ./internal/plan -run TestParallelExecution -v"
+    "go test ./internal/plan -run TestExecutorParallelExecution -v"
 
 echo -e "\n${BLUE}Phase 2: Integration Tests${NC}\n"
 
