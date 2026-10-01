@@ -37,7 +37,11 @@ run_test() {
         echo "Output:"
         cat /tmp/test_output.log
         TESTS_FAILED=$((TESTS_FAILED + 1))
-        return 1
+        # Do not return non-zero here: under `set -e` a non-zero return from this
+        # bare `run_test` call would abort the whole script on the first failing
+        # test and skip every later phase. Record the failure and let the
+        # print_summary EXIT trap produce the final nonzero status.
+        return 0
     fi
 }
 
