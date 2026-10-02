@@ -22,7 +22,7 @@ Extract the issue number, repo, and worktree name from this message and use them
    
    a. Parse and validate the plan:
       ```bash
-      kiro-krew plan parse .kiro-krew/specs/issue-<number>-*.md > /tmp/plan-result.json
+      kiro-krew plan parse .kiro-krew/specs/issue-<number>-*.md > .kiro-krew/artifacts/plan-result.json
       ```
    
    b. Check the result status:
