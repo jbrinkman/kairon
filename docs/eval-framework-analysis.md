@@ -1,8 +1,8 @@
-# Complete Analysis and Recommendations for Kiro-Krew Evaluation Framework
+# Complete Analysis and Recommendations for Kairon Evaluation Framework
 
 ## Current State Analysis
 
-### Kiro-Krew's Current Framework
+### Kairon's Current Framework
 Your existing evaluation system is impressively well-designed and practical for your specific use case:
 
 Strengths:
@@ -86,12 +86,12 @@ expected_tools:
   - name: "gh issue create"
     parameters: 
       title: "feat: add user endpoint"
-      label: "kiro-krew"
+      label: "kairon"
 actual_tools:  # Populated by test runner
   - name: "gh issue create"
     parameters:
       title: "feat: add user management endpoint"
-      label: "kiro-krew"
+      label: "kairon"
 
 
 4. Multi-Agent Workflow Testing (Your unique need)
@@ -104,7 +104,7 @@ checkpoints:
   - agent: "planner"
     expected_output_contains: "GitHub issue created"
   - agent: "architect"
-    expected_files: [".kiro-krew/specs/issue-*.md"]
+    expected_files: [".kairon/specs/issue-*.md"]
   - agent: "builder" 
     expected_files_modified: ["internal/tui/commands.go"]
 

@@ -8,7 +8,7 @@ import (
 	"os/exec"
 	"sync"
 
-	"github.com/jbrinkman/kiro-krew/internal/logging"
+	"github.com/jbrinkman/kairon/internal/logging"
 )
 
 // PlannerProcess manages a kiro-cli subprocess for planning sessions

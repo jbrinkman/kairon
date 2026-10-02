@@ -53,14 +53,14 @@ jobs:
         task build:release
         
         # Verify all expected binaries exist
-        ls dist/release/kiro-krew dist/release/kiro-krew-linux-amd64 dist/release/kiro-krew-linux-arm64
+        ls dist/release/kairon dist/release/kairon-linux-amd64 dist/release/kairon-linux-arm64
         
         gh release create v$VERSION \
           --title "Release v$VERSION" \
           --notes "Manual release v$VERSION" \
-          ./dist/release/kiro-krew#"kiro-krew macOS ARM64" \
-          ./dist/release/kiro-krew-linux-amd64#"kiro-krew Linux AMD64" \
-          ./dist/release/kiro-krew-linux-arm64#"kiro-krew Linux ARM64"
+          ./dist/release/kairon#"kairon macOS ARM64" \
+          ./dist/release/kairon-linux-amd64#"kairon Linux AMD64" \
+          ./dist/release/kairon-linux-arm64#"kairon Linux ARM64"
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         

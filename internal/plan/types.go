@@ -34,7 +34,7 @@ var (
 // taskIDPattern is the safe grammar for task IDs: lowercase alphanumerics in
 // single-hyphen-separated groups (kebab-case), e.g. "task-1", "implement-api".
 // Task IDs are interpolated verbatim into sentinel paths and shell commands
-// (e.g. .kiro-krew/artifacts/<agent>-<issue>-<task-id>.md and test -f checks),
+// (e.g. .kairon/artifacts/<agent>-<issue>-<task-id>.md and test -f checks),
 // so disallowing '/', '..', whitespace, and shell metacharacters prevents path
 // traversal and command injection via a crafted or malformed ID.
 var taskIDPattern = regexp.MustCompile(`^[a-z0-9]+(-[a-z0-9]+)*$`)

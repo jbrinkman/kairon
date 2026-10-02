@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/jbrinkman/kiro-krew/internal/config"
-	"github.com/jbrinkman/kiro-krew/internal/session"
+	"github.com/jbrinkman/kairon/internal/config"
+	"github.com/jbrinkman/kairon/internal/session"
 )
 
 // FooterManager manages the two-row footer display system

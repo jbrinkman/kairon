@@ -7,7 +7,7 @@ import (
 	"charm.land/bubbles/v2/viewport"
 	tea "charm.land/bubbletea/v2"
 
-	"github.com/jbrinkman/kiro-krew/internal/agent"
+	"github.com/jbrinkman/kairon/internal/agent"
 )
 
 // OutputView displays agent output in a scrollable view

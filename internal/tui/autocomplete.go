@@ -32,7 +32,7 @@ type AutocompleteInput struct {
 // NewAutocompleteInput creates a new autocomplete input component using built-in suggestions
 func NewAutocompleteInput(registry *CommandRegistry, styles *Styles) *AutocompleteInput {
 	ti := textinput.New()
-	ti.Prompt = "kiro-krew> "
+	ti.Prompt = "kairon> "
 
 	// Configure solid cursor (non-blinking)
 	currentStyles := ti.Styles()

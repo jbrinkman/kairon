@@ -29,7 +29,7 @@ type Registry struct {
 
 // NewRegistry creates a new container registry
 func NewRegistry() (*Registry, error) {
-	registryPath := filepath.Join(".kiro-krew", "evals", "tmp", "containers.json")
+	registryPath := filepath.Join(".kairon", "evals", "tmp", "containers.json")
 
 	// Ensure directory exists
 	if err := os.MkdirAll(filepath.Dir(registryPath), 0755); err != nil {

@@ -867,7 +867,7 @@ Perform strict criterion-by-criterion verification following validator-conventio
 gh issue view [number] --json body --repo [owner/repo]
 
 # Example
-gh issue view 235 --json body --repo jbrinkman/kiro-krew
+gh issue view 235 --json body --repo jbrinkman/kairon
 ```
 
 ### Create Sentinel File
@@ -877,12 +877,12 @@ Write your validation report to the sentinel file whose path is defined by the
 do NOT hard-code a path here. In brief:
 
 - **Plan task** (you were given a task `id`): use the task-scoped form
-  `.kiro-krew/artifacts/<agent>-<issue-number>-<task-id>.md`
-  (e.g. `.kiro-krew/artifacts/validator-235-verify-api.md`). The lead waits on
+  `.kairon/artifacts/<agent>-<issue-number>-<task-id>.md`
+  (e.g. `.kairon/artifacts/validator-235-verify-api.md`). The lead waits on
   exactly this path and will NOT accept the task-less fallback for a plan task.
 - **Legacy / no-plan run** (no task `id`): use the task-less form
-  `.kiro-krew/artifacts/validator-<issue-number>.md`
-  (e.g. `.kiro-krew/artifacts/validator-235.md`).
+  `.kairon/artifacts/validator-<issue-number>.md`
+  (e.g. `.kairon/artifacts/validator-235.md`).
 
 See `skill://.kiro/skills/sentinel-protocol/SKILL.md` for the authoritative
 rules, including the write/read contract.

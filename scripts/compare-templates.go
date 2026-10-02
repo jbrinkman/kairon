@@ -38,17 +38,17 @@ func main() {
 		MissingInLive:      []string{},
 	}
 
-	templateBase := "cmd/kiro-krew/templates"
+	templateBase := "cmd/kairon/templates"
 
-	// Compare kiro-krew directory
-	compareDirectory(templateBase+"/kiro-krew", ".kiro-krew", &report)
+	// Compare kairon directory
+	compareDirectory(templateBase+"/kairon", ".kairon", &report)
 
 	// Compare kiro directory
 	compareDirectory(templateBase+"/kiro", ".kiro", &report)
 
 	// Calculate summary
 	report.Summary.TotalTemplateFiles = countFiles(templateBase)
-	report.Summary.TotalLiveFiles = countFiles(".kiro-krew") + countFiles(".kiro")
+	report.Summary.TotalLiveFiles = countFiles(".kairon") + countFiles(".kiro")
 	report.Summary.SyncNeeded = len(report.MissingInTemplates) + len(report.ContentDifferences)
 
 	if report.Summary.SyncNeeded == 0 {

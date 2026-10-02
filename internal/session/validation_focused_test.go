@@ -254,7 +254,7 @@ func TestSimpleCorruptionRecovery(t *testing.T) {
 	defer os.Chdir(oldDir)
 
 	manager := NewSessionManager()
-	sessionDir := ".kiro-krew/sessions"
+	sessionDir := ".kairon/sessions"
 	os.MkdirAll(sessionDir, 0755)
 
 	// Test recoverable corruption

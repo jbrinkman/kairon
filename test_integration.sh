@@ -13,7 +13,7 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
-echo -e "${BLUE}=== Kiro-Krew Plan-and-Execute Integration Tests ===${NC}\n"
+echo -e "${BLUE}=== Kairon Plan-and-Execute Integration Tests ===${NC}\n"
 
 # Test counters
 TESTS_RUN=0
@@ -23,7 +23,7 @@ TESTS_FAILED=0
 # Private temp file for per-test output capture. Using mktemp (instead of a
 # fixed /tmp/test_output.log) avoids a predictable path that could be
 # pre-created as a symlink on a shared host and followed on redirect (CWE-377).
-TEST_OUTPUT="$(mktemp "${TMPDIR:-/tmp}/kiro-krew-itest.XXXXXX")"
+TEST_OUTPUT="$(mktemp "${TMPDIR:-/tmp}/kairon-itest.XXXXXX")"
 
 # Helper functions
 run_test() {
@@ -182,7 +182,7 @@ echo -e "\n${BLUE}Phase 5: Build Verification${NC}\n"
 
 # Test 10: Build verification
 run_test "Application builds successfully" \
-    "go build ./cmd/kiro-krew"
+    "go build ./cmd/kairon"
 
 echo -e "\n${BLUE}Phase 6: Existing Test Suite${NC}\n"
 

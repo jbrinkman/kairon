@@ -10,7 +10,7 @@ import (
 
 // resolveRunDirectory handles both old and new format detection
 func resolveRunDirectory(runName string) (string, error) {
-	resultsDir := filepath.Join(".kiro-krew", "evals", "results")
+	resultsDir := filepath.Join(".kairon", "evals", "results")
 
 	// If directory exists as-is, use it
 	fullPath := filepath.Join(resultsDir, runName)
@@ -48,7 +48,7 @@ func resolveRunDirectory(runName string) (string, error) {
 
 // Diff compares two eval runs and prints score/cost deltas.
 func Diff(runA, runB string) error {
-	resultsDir := filepath.Join(".kiro-krew", "evals", "results")
+	resultsDir := filepath.Join(".kairon", "evals", "results")
 
 	resolvedA, err := resolveRunDirectory(runA)
 	if err != nil {

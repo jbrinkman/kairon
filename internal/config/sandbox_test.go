@@ -9,7 +9,7 @@ import (
 
 func TestLoad_SandboxConfigDefaults(t *testing.T) {
 	tmpDir := t.TempDir()
-	configDir := tmpDir + string(os.PathSeparator) + ".kiro-krew"
+	configDir := tmpDir + string(os.PathSeparator) + ".kairon"
 	if err := os.Mkdir(configDir, 0755); err != nil {
 		t.Fatalf("Failed to create config dir: %v", err)
 	}
@@ -99,7 +99,7 @@ sandbox:`,
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			tmpDir := t.TempDir()
-			configDir := tmpDir + string(os.PathSeparator) + ".kiro-krew"
+			configDir := tmpDir + string(os.PathSeparator) + ".kairon"
 			if err := os.Mkdir(configDir, 0755); err != nil {
 				t.Fatalf("Failed to create config dir: %v", err)
 			}
@@ -201,7 +201,7 @@ sandbox:
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			tmpDir := t.TempDir()
-			configDir := tmpDir + string(os.PathSeparator) + ".kiro-krew"
+			configDir := tmpDir + string(os.PathSeparator) + ".kairon"
 			if err := os.Mkdir(configDir, 0755); err != nil {
 				t.Fatalf("Failed to create config dir: %v", err)
 			}
@@ -271,7 +271,7 @@ func TestLoad_DurationParsing(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			tmpDir := t.TempDir()
-			configDir := tmpDir + string(os.PathSeparator) + ".kiro-krew"
+			configDir := tmpDir + string(os.PathSeparator) + ".kairon"
 			if err := os.Mkdir(configDir, 0755); err != nil {
 				t.Fatalf("Failed to create config dir: %v", err)
 			}

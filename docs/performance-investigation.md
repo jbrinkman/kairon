@@ -38,10 +38,10 @@ All evaluation runs now include automatic performance profiling:
 
 ```bash
 # Regular evaluation includes performance metrics
-kiro-krew eval architect
+kairon eval architect
 
 # Single test case with performance tracking
-kiro-krew eval architect basic-spec-generation
+kairon eval architect basic-spec-generation
 ```
 
 ### Dedicated Performance Investigation
@@ -49,7 +49,7 @@ Run comprehensive performance analysis:
 
 ```bash
 # Full performance investigation for an agent
-kiro-krew eval architect --perf
+kairon eval architect --perf
 ```
 
 This mode:
@@ -176,5 +176,5 @@ Potential optimizations identified:
 - Performance module: `internal/eval/perf.go`
 - Test coverage: `internal/eval/perf_test.go`
 - Integration: Modified `internal/eval/runner.go`
-- CLI support: Enhanced `cmd/kiro-krew/cmd/eval.go`
-- Reports saved: `.kiro-krew/evals/results/<timestamp>/performance.json`
+- CLI support: Enhanced `cmd/kairon/cmd/eval.go`
+- Reports saved: `.kairon/evals/results/<timestamp>/performance.json`

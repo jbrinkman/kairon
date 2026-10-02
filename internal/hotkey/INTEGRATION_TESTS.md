@@ -11,12 +11,12 @@ This document describes the comprehensive integration tests created for Phase 6 
 **What it tests:**
 - Console to Planning mode switching via hotkey trigger
 - Planning to Console mode switching via hotkey trigger  
-- Error handling when hotkey is used outside kiro-krew context
+- Error handling when hotkey is used outside kairon context
 
 **Scenarios covered:**
 - ✅ Starting in console mode and switching to planning
 - ✅ Switching back from planning to console mode
-- ✅ Proper error messaging when used outside kiro-krew context
+- ✅ Proper error messaging when used outside kairon context
 
 ### 2. Session State Preservation (`TestSessionStatePreservation`)
 
@@ -50,7 +50,7 @@ This document describes the comprehensive integration tests created for Phase 6 
 - Environmental requirement validation
 
 **Scenarios covered:**
-- ✅ Valid context detection (`KIRO_KREW_WATCHER_PID` set)
+- ✅ Valid context detection (`KAIRON_WATCHER_PID` set)
 - ✅ Invalid context error handling (no environment variable)
 - ✅ Appropriate error messages for different failure modes
 
@@ -164,7 +164,7 @@ All integration tests pass, confirming:
 ✅ **Test hotkey functionality across different scenarios**
 - Console to planning mode switching
 - Planning to console mode switching
-- Error scenarios (outside kiro-krew context)
+- Error scenarios (outside kairon context)
 
 ✅ **Validate session state preservation**
 - Console session state maintained during planning mode

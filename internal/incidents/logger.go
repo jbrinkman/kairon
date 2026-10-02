@@ -27,7 +27,7 @@ func NewIncidentLogger() (*IncidentLogger, error) {
 		return nil, fmt.Errorf("failed to get user home directory: %w", err)
 	}
 
-	baseDir := filepath.Join(homeDir, ".kiro-krew", "logs")
+	baseDir := filepath.Join(homeDir, ".kairon", "logs")
 	repoName, err := getRepoName()
 	if err != nil {
 		return nil, fmt.Errorf("failed to get repository name: %w", err)
@@ -110,7 +110,7 @@ func parseIncidentFilename(filename string) (IncidentInfo, error) {
 }
 
 func getRepoName() (string, error) {
-	data, err := os.ReadFile(".kiro-krew/config.yaml")
+	data, err := os.ReadFile(".kairon/config.yaml")
 	if err != nil {
 		return "", fmt.Errorf("failed to read config: %w", err)
 	}

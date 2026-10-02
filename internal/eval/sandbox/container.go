@@ -19,11 +19,11 @@ import (
 	"github.com/docker/docker/pkg/stdcopy"
 	specs "github.com/opencontainers/image-spec/specs-go/v1"
 
-	"github.com/jbrinkman/kiro-krew/internal/eval/debug"
+	"github.com/jbrinkman/kairon/internal/eval/debug"
 )
 
 // ImageNamePrefix is the prefix used for custom eval images.
-const ImageNamePrefix = "kiro-eval"
+const ImageNamePrefix = "kairon-eval"
 
 // Container manages Docker container lifecycle
 type Container struct {
@@ -196,7 +196,7 @@ func (c *Container) CreateWithPlatform(ctx context.Context, config *container.Co
 
 		// Register container
 		if c.registry != nil {
-			if err := c.registry.Add(c.containerID, "kiro-eval", "debug", platform, imageToUse); err != nil {
+			if err := c.registry.Add(c.containerID, "kairon-eval", "debug", platform, imageToUse); err != nil {
 				fmt.Printf("⚠️ Warning: Failed to register container in debug registry: %v\n", err)
 			}
 		}
@@ -504,9 +504,9 @@ func (c *Container) GetCustomImageName(platform string) string {
 
 	// Add debug identifier for easy cleanup when in debug mode
 	if c.debugMode {
-		return fmt.Sprintf("kiro-eval-debug:%s-%d", safePlatform, timestamp)
+		return fmt.Sprintf("kairon-eval-debug:%s-%d", safePlatform, timestamp)
 	}
-	return fmt.Sprintf("kiro-eval:%s-%d", safePlatform, timestamp)
+	return fmt.Sprintf("kairon-eval:%s-%d", safePlatform, timestamp)
 }
 
 // RemoveImage removes a Docker image by name

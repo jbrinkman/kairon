@@ -32,6 +32,6 @@ const (
 const (
 	DefaultMaxBufferLines = 10000 // Default ring buffer size
 	DefaultMaxFileSizeMB  = 100   // Default max file size before rotation
-	DefaultLogDir         = ".kiro-krew/logs"
+	DefaultLogDir         = ".kairon/logs"
 	DefaultLevel          = LevelInfo
 )

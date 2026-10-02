@@ -5,7 +5,7 @@ import (
 	"io"
 	"testing"
 
-	"github.com/jbrinkman/kiro-krew/internal/config"
+	"github.com/jbrinkman/kairon/internal/config"
 )
 
 func TestManagerSuspendOnlyAffectsTerminalOutput(t *testing.T) {

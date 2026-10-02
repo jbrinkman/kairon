@@ -58,7 +58,7 @@ ERROR MESSAGE → Exception Location → Calling Function → Data Source → Ro
 ### Creation Guidelines
 ```bash
 # Create planning worktree for investigation
-.kiro-krew/scripts/planning-worktree-create.sh
+.kairon/scripts/planning-worktree-create.sh
 # Returns: /path/to/planning/worktree
 ```
 
@@ -72,7 +72,7 @@ ERROR MESSAGE → Exception Location → Calling Function → Data Source → Ro
 ### Cleanup Requirements
 ```bash
 # Mandatory cleanup after investigation
-.kiro-krew/scripts/planning-worktree-cleanup.sh <worktree-path>
+.kairon/scripts/planning-worktree-cleanup.sh <worktree-path>
 ```
 
 **Critical**: Planning worktrees must NEVER affect main branch. All changes are investigative only.

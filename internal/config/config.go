@@ -6,7 +6,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jbrinkman/kiro-krew/internal/logging"
+	"github.com/jbrinkman/kairon/internal/logging"
 	"gopkg.in/yaml.v3"
 )
 
@@ -52,7 +52,7 @@ func extractLeadingWhitespace(line string) string {
 
 func Load() (*Config, error) {
 	cfg := &Config{
-		Label:               "kiro-krew",
+		Label:               "kairon",
 		PollInterval:        5 * time.Minute,
 		MaxRetries:          3,
 		MaxQARetries:        3,
@@ -63,7 +63,7 @@ func Load() (*Config, error) {
 		Session: SessionConfig{
 			MaxHistoryMessages: 100,
 			MaxAge:             24 * time.Hour,
-			SessionsDir:        ".kiro-krew/sessions",
+			SessionsDir:        ".kairon/sessions",
 		},
 		Sandbox: SandboxConfig{
 			WorkspaceDir: "/workspace",
@@ -75,11 +75,11 @@ func Load() (*Config, error) {
 			DefaultLevel:   "info",
 			MaxBufferLines: 10000,
 			MaxFileSizeMB:  100,
-			LogDir:         ".kiro-krew/logs",
+			LogDir:         ".kairon/logs",
 		},
 	}
 
-	data, err := os.ReadFile(".kiro-krew/config.yaml")
+	data, err := os.ReadFile(".kairon/config.yaml")
 	if err != nil {
 		return nil, fmt.Errorf("failed to read config file: %w", err)
 	}
@@ -155,7 +155,7 @@ func Load() (*Config, error) {
 // Save writes the current configuration back to the config file,
 // preserving existing YAML structure and comments
 func (c *Config) Save() error {
-	configPath := ".kiro-krew/config.yaml"
+	configPath := ".kairon/config.yaml"
 
 	// Read existing file to preserve structure and comments
 	data, err := os.ReadFile(configPath)

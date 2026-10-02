@@ -1,11 +1,11 @@
 # Evaluation Framework
 
-The evaluation framework measures agent quality and cost, enabling data-driven prompt improvements.
+Kairon's evaluation framework measures agent quality and cost, enabling data-driven prompt improvements.
 
 ## Directory Structure
 
 ```
-.kiro-krew/evals/
+.kairon/evals/
   rubrics/           # Scoring criteria per agent
     architect.yaml
     builder.yaml
@@ -80,18 +80,18 @@ Fields:
 
 ```bash
 # Evaluate all agents
-kiro-krew eval
+kairon eval
 
 # Evaluate a specific agent
-kiro-krew eval architect
+kairon eval architect
 
 # Compare two runs
-kiro-krew eval diff abc1234 def5678
+kairon eval diff abc1234 def5678
 ```
 
 ## Adding Test Cases
 
-1. Create a YAML file in `.kiro-krew/evals/cases/<agent>/`
+1. Create a YAML file in `.kairon/evals/cases/<agent>/`
 2. Provide an `input` field with representative agent input
 3. Optionally capture real agent output in the `output` field for offline evaluation
 
@@ -118,7 +118,7 @@ Skipped criteria appear in results as:
 
 To get full scoring coverage, configure an LLM judge (future feature). Until then, aggregate scores reflect only deterministic criteria.
 
-Results are written to `.kiro-krew/evals/results/<git-hash>/` enabling before/after comparison when prompts change.
+Results are written to `.kairon/evals/results/<git-hash>/` enabling before/after comparison when prompts change.
 
 ## Agent Coverage
 
@@ -139,25 +139,25 @@ The evaluation framework serves as unit testing for prompt engineering. Follow t
 
 ### Before Making Changes (Baseline)
 
-**Required**: Run `kiro-krew eval` before making any prompt changes to establish a baseline:
+**Required**: Run `kairon eval` before making any prompt changes to establish a baseline:
 
 ```bash
 # Capture current performance
-kiro-krew eval
+kairon eval
 ```
 
-This creates a results snapshot at `.kiro-krew/evals/results/<git-hash>/` for comparison.
+This creates a results snapshot at `.kairon/evals/results/<git-hash>/` for comparison.
 
 ### After Making Changes (Verification)
 
-**Required**: Run `kiro-krew eval` after prompt changes to verify improvements:
+**Required**: Run `kairon eval` after prompt changes to verify improvements:
 
 ```bash
 # Test modified behavior
-kiro-krew eval
+kairon eval
 
 # Compare with baseline
-kiro-krew eval diff <baseline-hash> <current-hash>
+kairon eval diff <baseline-hash> <current-hash>
 ```
 
 ### Creating Test Cases for Behavioral Changes
@@ -165,24 +165,24 @@ kiro-krew eval diff <baseline-hash> <current-hash>
 When making specific behavioral changes, create targeted test cases:
 
 1. **Identify the behavior** — What specific agent behavior are you changing?
-2. **Create test case** — Add a case in `.kiro-krew/evals/cases/<agent>/` that exercises this behavior
+2. **Create test case** — Add a case in `.kairon/evals/cases/<agent>/` that exercises this behavior
 3. **Verify coverage** — Ensure existing rubric criteria measure the desired change
 4. **Test iteratively** — Run evaluations as you refine the prompt
 
 Example workflow for improving architect task decomposition:
 ```bash
 # 1. Baseline
-kiro-krew eval architect
+kairon eval architect
 
 # 2. Add test case for complex decomposition scenario
-# Edit .kiro-krew/evals/cases/architect/complex-decomposition.yaml
+# Edit .kairon/evals/cases/architect/complex-decomposition.yaml
 
 # 3. Modify architect prompt
-# Edit .kiro/agents/architect-prompt.md
+# Edit .kairon/agents/architect-prompt.md
 
 # 4. Verify improvement
-kiro-krew eval architect
-kiro-krew eval diff <baseline> <current>
+kairon eval architect
+kairon eval diff <baseline> <current>
 ```
 
 ### Evaluation as Unit Testing
@@ -203,13 +203,13 @@ Run agent evaluations in Docker containers for complete isolation:
 
 ```bash
 # Run all agents in sandbox containers
-kiro-krew eval --sandbox
+kairon eval --sandbox
 
 # Run specific agent in sandbox
-kiro-krew eval --sandbox architect
+kairon eval --sandbox architect
 
 # List available agents (detects project type)
-kiro-krew eval --sandbox --list architect
+kairon eval --sandbox --list architect
 ```
 
 The `--sandbox` flag automatically:
@@ -240,22 +240,22 @@ Containers run with strict resource limits to prevent runaway processes:
 
 | Resource | Default Limit | Environment Variable |
 |----------|---------------|----------------------|
-| CPU | 1.0 core (1,000,000 μs) | `KIRO_KREW_EVAL_CPU_QUOTA` |
-| Memory | 512MB | `KIRO_KREW_EVAL_MEMORY_LIMIT` |
-| Timeout | 5 minutes | `KIRO_KREW_EVAL_TIMEOUT` |
+| CPU | 1.0 core (1,000,000 μs) | `KAIRON_EVAL_CPU_QUOTA` |
+| Memory | 512MB | `KAIRON_EVAL_MEMORY_LIMIT` |
+| Timeout | 5 minutes | `KAIRON_EVAL_TIMEOUT` |
 | Network | Disabled | N/A |
 
 Configure resource limits via environment variables:
 
 ```bash
 # Restrict to 0.5 CPU cores and 256MB memory
-KIRO_KREW_EVAL_CPU_QUOTA=500000 \
-KIRO_KREW_EVAL_MEMORY_LIMIT=268435456 \
-kiro-krew eval --sandbox architect
+KAIRON_EVAL_CPU_QUOTA=500000 \
+KAIRON_EVAL_MEMORY_LIMIT=268435456 \
+kairon eval --sandbox architect
 
 # Set 30-second timeout for quick tests
-KIRO_KREW_EVAL_TIMEOUT=30s \
-kiro-krew eval --sandbox builder
+KAIRON_EVAL_TIMEOUT=30s \
+kairon eval --sandbox builder
 ```
 
 ### GitHub CLI Mocking
@@ -341,13 +341,13 @@ newgrp docker
 docker stats
 
 # Increase memory limit
-KIRO_KREW_EVAL_MEMORY_LIMIT=1073741824 kiro-krew eval --sandbox
+KAIRON_EVAL_MEMORY_LIMIT=1073741824 kairon eval --sandbox
 ```
 
 **Timeout errors:**
 ```bash
 # Increase timeout for complex evaluations
-KIRO_KREW_EVAL_TIMEOUT=10m kiro-krew eval --sandbox
+KAIRON_EVAL_TIMEOUT=10m kairon eval --sandbox
 ```
 
 **Build failures:**
@@ -356,14 +356,14 @@ KIRO_KREW_EVAL_TIMEOUT=10m kiro-krew eval --sandbox
 docker logs <container-id>
 
 # Verify project detection
-kiro-krew eval --sandbox --list
+kairon eval --sandbox --list
 ```
 
 **Network connectivity (for debugging only):**
 The sandbox disables network access by default. To enable for debugging:
 ```bash
 # ⚠️ Only for debugging - reduces security
-KIRO_KREW_EVAL_NETWORK_MODE=bridge kiro-krew eval --sandbox
+KAIRON_EVAL_NETWORK_MODE=bridge kairon eval --sandbox
 ```
 
 ### Security Considerations

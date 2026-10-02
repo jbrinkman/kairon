@@ -9,7 +9,7 @@ import (
 
 // SaveDockerfile saves the Dockerfile to debug artifacts directory with timestamp
 func SaveDockerfile(dockerfileContent, containerID string) error {
-	artifactDir := filepath.Join(".kiro-krew", "evals", "tmp", "dockerfiles")
+	artifactDir := filepath.Join(".kairon", "evals", "tmp", "dockerfiles")
 
 	// Ensure directory exists
 	if err := os.MkdirAll(artifactDir, 0755); err != nil {
@@ -40,7 +40,7 @@ func SaveDockerfile(dockerfileContent, containerID string) error {
 
 // CleanOldDockerfiles removes old Dockerfile artifacts (keep last 50 or 7 days)
 func CleanOldDockerfiles() error {
-	artifactDir := filepath.Join(".kiro-krew", "evals", "tmp", "dockerfiles")
+	artifactDir := filepath.Join(".kairon", "evals", "tmp", "dockerfiles")
 
 	entries, err := os.ReadDir(artifactDir)
 	if err != nil {

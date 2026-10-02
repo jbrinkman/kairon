@@ -3,7 +3,7 @@ package tui
 import (
 	"fmt"
 
-	"github.com/jbrinkman/kiro-krew/internal/version"
+	"github.com/jbrinkman/kairon/internal/version"
 )
 
 // AboutDialog manages about dialog state and content generation

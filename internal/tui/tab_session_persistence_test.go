@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jbrinkman/kiro-krew/internal/agent"
-	"github.com/jbrinkman/kiro-krew/internal/session"
+	"github.com/jbrinkman/kairon/internal/agent"
+	"github.com/jbrinkman/kairon/internal/session"
 )
 
 // TestTabDataAccumulatesContinuouslyDuringPlannerSessions verifies that agent output

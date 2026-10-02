@@ -4,8 +4,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jbrinkman/kiro-krew/internal/config"
-	"github.com/jbrinkman/kiro-krew/internal/eval/sandbox"
+	"github.com/jbrinkman/kairon/internal/config"
+	"github.com/jbrinkman/kairon/internal/eval/sandbox"
 )
 
 func TestCreateContainerConfig_WithSandboxConfig(t *testing.T) {

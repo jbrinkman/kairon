@@ -6,10 +6,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jbrinkman/kiro-krew/internal/agent"
-	"github.com/jbrinkman/kiro-krew/internal/config"
-	"github.com/jbrinkman/kiro-krew/internal/session"
-	"github.com/jbrinkman/kiro-krew/internal/watcher"
+	"github.com/jbrinkman/kairon/internal/agent"
+	"github.com/jbrinkman/kairon/internal/config"
+	"github.com/jbrinkman/kairon/internal/session"
+	"github.com/jbrinkman/kairon/internal/watcher"
 )
 
 func setupTestModel(t *testing.T) model {

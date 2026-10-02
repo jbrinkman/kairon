@@ -20,16 +20,16 @@
       {
         "assets": [
           {
-            "path": "dist/release/kiro-krew",
-            "label": "kiro-krew macOS ARM64"
+            "path": "dist/release/kairon",
+            "label": "kairon macOS ARM64"
           },
           {
-            "path": "dist/release/kiro-krew-linux-amd64",
-            "label": "kiro-krew Linux AMD64"
+            "path": "dist/release/kairon-linux-amd64",
+            "label": "kairon Linux AMD64"
           },
           {
-            "path": "dist/release/kiro-krew-linux-arm64",
-            "label": "kiro-krew Linux ARM64"
+            "path": "dist/release/kairon-linux-arm64",
+            "label": "kairon Linux ARM64"
           }
         ]
       }

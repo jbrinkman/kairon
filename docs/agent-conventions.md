@@ -1,17 +1,17 @@
 # Agent Conventions Skills
 
-Agent conventions skills allow you to create project-specific customizations for Kiro Krew agents without modifying core agent configurations. This system enables teams to define coding standards, patterns, and workflows that agents will follow automatically.
+Agent conventions skills allow you to create project-specific customizations for Kairon agents without modifying core agent configurations. This system enables teams to define coding standards, patterns, and workflows that agents will follow automatically.
 
 ## How It Works
 
-Kiro Krew agents can reference optional "conventions skills" through their manifest files. These skills contain project-specific instructions that supplement the agent's base behavior:
+Kairon agents can reference optional "conventions skills" through their manifest files. These skills contain project-specific instructions that supplement the agent's base behavior:
 
 ```json
 {
   "name": "builder",
   "description": "Focused engineering agent that executes ONE task at a time.",
   "prompt": "file://./builder-prompt.md",
-  "resources": ["skill://.kiro/skills/builder-conventions/SKILL.md"],
+  "resources": ["skill://.kairon/skills/builder-conventions/SKILL.md"],
   "tools": ["read", "write", "shell"]
 }
 ```
@@ -22,10 +22,10 @@ The `resources` array contains skill URI references that agents load at runtime.
 
 ### 1. Create the Skill Directory
 
-Conventions skills live in `.kiro/skills/` and follow the naming pattern `{agent-name}-conventions`:
+Conventions skills live in `.kairon/skills/` and follow the naming pattern `{agent-name}-conventions`:
 
 ```bash
-mkdir -p .kiro/skills/builder-conventions
+mkdir -p .kairon/skills/builder-conventions
 ```
 
 ### 2. Write the Skill File
@@ -71,7 +71,7 @@ You can create conventions for any agent:
 
 ## Template Synchronization
 
-The `builder-conventions` skill includes special instructions for maintaining synchronization between template files and live project files. This ensures that changes to configuration files are reflected in both the active project and the templates used for `kiro-krew init`.
+The `builder-conventions` skill includes special instructions for maintaining synchronization between template files and live project files. This ensures that changes to configuration files are reflected in both the active project and the templates used for `kairon init`.
 
 ### Synchronized File Types
 
@@ -79,11 +79,10 @@ When the builder agent modifies these file types, it automatically updates both 
 
 | File Type | Live Location | Template Location |
 |-----------|---------------|-------------------|
-| Agent Manifests | `.kiro/agents/*.json` | `cmd/kiro-krew/templates/kiro/agents/*.json` |
-| Evaluation Cases | `.kiro/evals/**/*` | `cmd/kiro-krew/templates/kiro/evals/**/*` |
-| Rubrics | `.kiro/rubrics/**/*` | `cmd/kiro-krew/templates/kiro/rubrics/**/*` |
-| Scripts | `.kiro-krew/scripts/**/*` | `cmd/kiro-krew/templates/kiro-krew/scripts/**/*` |
-| Themes | `.kiro/themes/**/*` | `cmd/kiro-krew/templates/kiro/themes/**/*` |
+| Agent Manifests | `.kiro/agents/*.json` | `cmd/kairon/templates/kiro/agents/*.json` |
+| Evaluation Cases | `.kairon/evals/cases/*, .kairon/evals/rubrics/*` | `cmd/kairon/templates/kairon/evals/cases/*, cmd/kairon/templates/kairon/evals/rubrics/*` |
+| Scripts | `.kairon/scripts/**/*` | `cmd/kairon/templates/kairon/scripts/**/*` |
+| Themes | `.kairon/themes/**/*` | `cmd/kairon/templates/kairon/themes/**/*` |
 
 ### Sync Verification
 
@@ -92,12 +91,12 @@ The builder-conventions skill provides commands to verify synchronization:
 ```bash
 # Check agent manifest sync
 for agent in architect builder documenter krew-lead planner validator; do
-  diff .kiro/agents/$agent.json cmd/kiro-krew/templates/kiro/agents/$agent.json
+  diff .kiro/agents/$agent.json cmd/kairon/templates/kiro/agents/$agent.json
 done
 
 # Verify script functionality
-.kiro-krew/scripts/worktree-create.sh test-worktree
-.kiro-krew/scripts/worktree-merge.sh test-worktree
+.kairon/scripts/worktree-create.sh test-worktree
+.kairon/scripts/worktree-merge.sh test-worktree
 ```
 
 ## Best Practices
@@ -242,7 +241,7 @@ description: React project standards and component patterns.
 
 To add conventions to an existing project:
 
-1. **Create skill directories**: `mkdir -p .kiro/skills/{agent-name}-conventions`
+1. **Create skill directories**: `mkdir -p .kairon/skills/{agent-name}-conventions`
 2. **Write skill files**: Start with your most critical standards
 3. **Test gracefully**: Existing workflows continue unchanged
 4. **Iterate**: Add more conventions as agents use them

@@ -9,7 +9,7 @@ Project-specific conventions, patterns, and best practices for the builder agent
 
 ## Mandatory Template Synchronization
 
-**Critical for Self-Hosting**: Kiro Krew uses itself to build itself. Live project files and embedded templates must stay in sync so that `kiro-krew init` and `kiro-krew update` always deploy current configurations.
+**Critical for Self-Hosting**: Kairon uses itself to build itself. Live project files and embedded templates must stay in sync so that `kairon init` and `kairon update` always deploy current configurations.
 
 Sync is **one-way** (live → template). CI enforces this via `task sync:check` in the Validate PR workflow.
 
@@ -17,14 +17,14 @@ Sync is **one-way** (live → template). CI enforces this via `task sync:check` 
 
 | Live Path | Template Path |
 |-----------|---------------|
-| `.kiro/agents/*.json` | `cmd/kiro-krew/templates/kiro/agents/` |
-| `.kiro/agents/*.md` | `cmd/kiro-krew/templates/kiro/agents/` |
-| `.kiro-krew/scripts/*.sh` | `cmd/kiro-krew/templates/kiro-krew/scripts/` |
-| `.kiro-krew/themes/*.yaml` | `cmd/kiro-krew/templates/kiro-krew/themes/` |
-| `.kiro-krew/evals/fixtures/*` | `cmd/kiro-krew/templates/kiro-krew/evals/fixtures/` |
-| `.kiro-krew/evals/rubrics/*` | `cmd/kiro-krew/templates/kiro-krew/evals/rubrics/` |
-| `.kiro-krew/evals/cases/**/*` | `cmd/kiro-krew/templates/kiro-krew/evals/cases/` |
-| `.kiro/skills/sentinel-protocol/*` | `cmd/kiro-krew/templates/kiro/skills/sentinel-protocol/` |
+| `.kiro/agents/*.json` | `cmd/kairon/templates/kiro/agents/` |
+| `.kiro/agents/*.md` | `cmd/kairon/templates/kiro/agents/` |
+| `.kairon/scripts/*.sh` | `cmd/kairon/templates/kairon/scripts/` |
+| `.kairon/themes/*.yaml` | `cmd/kairon/templates/kairon/themes/` |
+| `.kairon/evals/fixtures/*` | `cmd/kairon/templates/kairon/evals/fixtures/` |
+| `.kairon/evals/rubrics/*` | `cmd/kairon/templates/kairon/evals/rubrics/` |
+| `.kairon/evals/cases/**/*` | `cmd/kairon/templates/kairon/evals/cases/` |
+| `.kiro/skills/sentinel-protocol/*` | `cmd/kairon/templates/kiro/skills/sentinel-protocol/` |
 
 ### Exclusion Patterns
 
@@ -36,20 +36,20 @@ Run the appropriate commands after modifying any template-synchronized files:
 
 ```bash
 # Agent files (JSON configs and prompt files)
-cp .kiro/agents/*.json cmd/kiro-krew/templates/kiro/agents/
-cp .kiro/agents/*.md cmd/kiro-krew/templates/kiro/agents/
+cp .kiro/agents/*.json cmd/kairon/templates/kiro/agents/
+cp .kiro/agents/*.md cmd/kairon/templates/kiro/agents/
 
 # Scripts
-cp .kiro-krew/scripts/*.sh cmd/kiro-krew/templates/kiro-krew/scripts/
+cp .kairon/scripts/*.sh cmd/kairon/templates/kairon/scripts/
 
 # Themes
-cp .kiro-krew/themes/*.yaml cmd/kiro-krew/templates/kiro-krew/themes/
+cp .kairon/themes/*.yaml cmd/kairon/templates/kairon/themes/
 
 # Evals (excluding results directory)
-cp .kiro-krew/evals/fixtures/* cmd/kiro-krew/templates/kiro-krew/evals/fixtures/
-cp .kiro-krew/evals/rubrics/* cmd/kiro-krew/templates/kiro-krew/evals/rubrics/
-mkdir -p cmd/kiro-krew/templates/kiro-krew/evals/cases/
-cp -r .kiro-krew/evals/cases/* cmd/kiro-krew/templates/kiro-krew/evals/cases/
+cp .kairon/evals/fixtures/* cmd/kairon/templates/kairon/evals/fixtures/
+cp .kairon/evals/rubrics/* cmd/kairon/templates/kairon/evals/rubrics/
+mkdir -p cmd/kairon/templates/kairon/evals/cases/
+cp -r .kairon/evals/cases/* cmd/kairon/templates/kairon/evals/cases/
 ```
 
 ### Verification
@@ -86,14 +86,14 @@ Include sync verification status in sentinel files:
 - Sync Verification: ✅ PASS
 
 **Sync Commands Used**:
-- `cp .kiro/agents/builder.json cmd/kiro-krew/templates/kiro/agents/`
+- `cp .kiro/agents/builder.json cmd/kairon/templates/kiro/agents/`
 ```
 
 ## Implementation Patterns
 
 ### Quality Assurance
 - Run ALL discovered QA commands before completion
-- Use QA discovery results from `.kiro-krew/artifacts/qa-tools.md`
+- Use QA discovery results from `.kairon/artifacts/qa-tools.md`
 - Document specific QA command sources (CI vs build tool)
 
 ### File Modifications
@@ -103,7 +103,7 @@ Include sync verification status in sentinel files:
 - Document changes in sentinel files including sync status
 
 ### Error Recovery
-- Address validator feedback from `.kiro-krew/artifacts/validator-<issue>.md`
+- Address validator feedback from `.kairon/artifacts/validator-<issue>.md`
 - Focus on specific failing commands identified by validator
 - Include sync verification in error recovery process
 - Document how feedback was incorporated
