@@ -50,7 +50,7 @@ This document describes the comprehensive integration tests created for Phase 6 
 - Environmental requirement validation
 
 **Scenarios covered:**
-- ✅ Valid context detection (`KIRO_KREW_WATCHER_PID` set)
+- ✅ Valid context detection (`KAIRON_WATCHER_PID` set)
 - ✅ Invalid context error handling (no environment variable)
 - ✅ Appropriate error messages for different failure modes
 
