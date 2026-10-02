@@ -5,7 +5,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/jbrinkman/kiro-krew/internal/agent"
+	"github.com/jbrinkman/kairon/internal/agent"
 )
 
 // Command represents a command with its metadata for autocomplete

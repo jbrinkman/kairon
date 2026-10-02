@@ -1,6 +1,6 @@
-# Contributing
+# Contributing to Kairon
 
-Thank you for your interest in contributing! This document outlines the process for contributing to this project.
+Thank you for your interest in contributing to Kairon! This document outlines the process for contributing to the [jbrinkman/kairon](https://github.com/jbrinkman/kairon) project.
 
 ## Philosophy: Discussion Before Code
 
@@ -46,3 +46,32 @@ Be respectful and constructive in all interactions. We are all here to build som
 ## Questions?
 
 If you're unsure about anything, open an issue to ask. We'd rather answer questions early than review a PR that can't be accepted.
+
+## Development Setup
+
+To set up Kairon for development:
+
+1. Clone the repository:
+   ```bash
+   git clone https://github.com/jbrinkman/kairon.git
+   cd kairon
+   ```
+
+2. Build the project:
+   ```bash
+   task build
+   # or
+   go build ./cmd/kairon
+   ```
+
+3. Run tests:
+   ```bash
+   task test
+   ```
+
+4. The project structure includes:
+   - `.kairon/` — configuration and runtime files
+   - Agent configurations in `.kiro/agents/`
+   - Build automation via [Task](https://taskfile.dev)
+
+For more details on using Kairon, see the [README](README.md).

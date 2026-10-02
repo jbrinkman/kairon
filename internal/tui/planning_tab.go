@@ -14,9 +14,9 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 
-	"github.com/jbrinkman/kiro-krew/internal/acp"
-	"github.com/jbrinkman/kiro-krew/internal/logging"
-	"github.com/jbrinkman/kiro-krew/internal/session"
+	"github.com/jbrinkman/kairon/internal/acp"
+	"github.com/jbrinkman/kairon/internal/logging"
+	"github.com/jbrinkman/kairon/internal/session"
 )
 
 // PlanningMessage represents a single message in the planning conversation

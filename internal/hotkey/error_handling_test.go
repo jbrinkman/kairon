@@ -6,17 +6,17 @@ import (
 )
 
 func TestHotkeyErrorHandling(t *testing.T) {
-	// Test IsKiroKrewContext behavior
-	os.Unsetenv("KIRO_KREW_WATCHER_PID")
-	if IsKiroKrewContext() {
-		t.Error("Expected false when not in kiro-krew context")
+	// Test IsKaironContext behavior
+	os.Unsetenv("KAIRON_WATCHER_PID")
+	if IsKaironContext() {
+		t.Error("Expected false when not in kairon context")
 	}
 
-	os.Setenv("KIRO_KREW_WATCHER_PID", "12345")
-	if !IsKiroKrewContext() {
-		t.Error("Expected true when in kiro-krew context")
+	os.Setenv("KAIRON_WATCHER_PID", "12345")
+	if !IsKaironContext() {
+		t.Error("Expected true when in kairon context")
 	}
-	os.Unsetenv("KIRO_KREW_WATCHER_PID")
+	os.Unsetenv("KAIRON_WATCHER_PID")
 }
 
 func TestIsCtrlOptionPDetection(t *testing.T) {

@@ -11,11 +11,11 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 
-	"github.com/jbrinkman/kiro-krew/internal/agent"
-	"github.com/jbrinkman/kiro-krew/internal/config"
-	"github.com/jbrinkman/kiro-krew/internal/github"
-	"github.com/jbrinkman/kiro-krew/internal/incidents"
-	"github.com/jbrinkman/kiro-krew/internal/session"
+	"github.com/jbrinkman/kairon/internal/agent"
+	"github.com/jbrinkman/kairon/internal/config"
+	"github.com/jbrinkman/kairon/internal/github"
+	"github.com/jbrinkman/kairon/internal/incidents"
+	"github.com/jbrinkman/kairon/internal/session"
 )
 
 type runningWatcher interface {
@@ -420,7 +420,7 @@ func (m model) handleAbout() (model, tea.Cmd) {
 	m.aboutDialog.BuildContent()
 	m.aboutDialog.UpdateStatusLine([]string{"Checking for updates..."})
 
-	m = m.activateOverlay(overlayAbout, "Kiro-Krew Version Information", m.aboutDialog.GetFullContent())
+	m = m.activateOverlay(overlayAbout, "Kairon Version Information", m.aboutDialog.GetFullContent())
 	return m, checkForUpdateCmd()
 }
 
@@ -472,7 +472,7 @@ func (m model) handleTheme(args []string) (model, tea.Cmd) {
 
 func checkForUpdateCmd() tea.Cmd {
 	return func() tea.Msg {
-		release, err := github.GetLatestRelease("jbrinkman/kiro-krew")
+		release, err := github.GetLatestRelease("jbrinkman/kairon")
 		return updateCheckMsg{release: release, err: err}
 	}
 }
@@ -696,7 +696,7 @@ func (m model) handleLogs() (model, tea.Cmd) {
 
 		content = append(content, "")
 		content = append(content, m.styles.Prompt.Render("Log files location:"))
-		content = append(content, fmt.Sprintf("~/.kiro-krew/logs/%s/incidents/", logger.RepoName()))
+		content = append(content, fmt.Sprintf("~/.kairon/logs/%s/incidents/", logger.RepoName()))
 	}
 
 	m = m.activateOverlay(overlayLogs, "Incident Logs", content)

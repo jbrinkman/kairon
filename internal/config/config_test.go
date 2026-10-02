@@ -38,7 +38,7 @@ enable_copilot_review: false`,
 		t.Run(tt.name, func(t *testing.T) {
 			// Create temp config directory and file
 			tmpDir := t.TempDir()
-			configDir := tmpDir + string(os.PathSeparator) + ".kiro-krew"
+			configDir := tmpDir + string(os.PathSeparator) + ".kairon"
 			if err := os.Mkdir(configDir, 0755); err != nil {
 				t.Fatalf("Failed to create config dir: %v", err)
 			}
@@ -78,7 +78,7 @@ enable_copilot_review: false`,
 func TestLoad_AllDefaultValues(t *testing.T) {
 	// Test that all default values are set correctly
 	tmpDir := t.TempDir()
-	configDir := tmpDir + string(os.PathSeparator) + ".kiro-krew"
+	configDir := tmpDir + string(os.PathSeparator) + ".kairon"
 	if err := os.Mkdir(configDir, 0755); err != nil {
 		t.Fatalf("Failed to create config dir: %v", err)
 	}
@@ -108,8 +108,8 @@ func TestLoad_AllDefaultValues(t *testing.T) {
 	}
 
 	// Verify all default values
-	if cfg.Label != "kiro-krew" {
-		t.Errorf("Label = %s, expected kiro-krew", cfg.Label)
+	if cfg.Label != "kairon" {
+		t.Errorf("Label = %s, expected kairon", cfg.Label)
 	}
 	if cfg.PollInterval != 5*time.Minute {
 		t.Errorf("PollInterval = %v, expected 5m0s", cfg.PollInterval)

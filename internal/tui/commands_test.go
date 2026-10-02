@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jbrinkman/kiro-krew/internal/version"
+	"github.com/jbrinkman/kairon/internal/version"
 )
 
 func TestFormatCommitHash(t *testing.T) {

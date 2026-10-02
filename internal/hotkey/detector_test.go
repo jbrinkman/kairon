@@ -5,21 +5,21 @@ import (
 	"testing"
 )
 
-func TestIsKiroKrewContext(t *testing.T) {
+func TestIsKaironContext(t *testing.T) {
 	// Test without environment variable
-	os.Unsetenv("KIRO_KREW_WATCHER_PID")
-	if IsKiroKrewContext() {
-		t.Error("Expected IsKiroKrewContext to return false when KIRO_KREW_WATCHER_PID is not set")
+	os.Unsetenv("KAIRON_WATCHER_PID")
+	if IsKaironContext() {
+		t.Error("Expected IsKaironContext to return false when KAIRON_WATCHER_PID is not set")
 	}
 
 	// Test with environment variable
-	os.Setenv("KIRO_KREW_WATCHER_PID", "12345")
-	if !IsKiroKrewContext() {
-		t.Error("Expected IsKiroKrewContext to return true when KIRO_KREW_WATCHER_PID is set")
+	os.Setenv("KAIRON_WATCHER_PID", "12345")
+	if !IsKaironContext() {
+		t.Error("Expected IsKaironContext to return true when KAIRON_WATCHER_PID is set")
 	}
 
 	// Cleanup
-	os.Unsetenv("KIRO_KREW_WATCHER_PID")
+	os.Unsetenv("KAIRON_WATCHER_PID")
 }
 
 func TestIsCtrlOptionP(t *testing.T) {

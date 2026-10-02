@@ -1,12 +1,12 @@
 #!/bin/bash
 
-echo "=== Kiro-Krew Integration Validation ==="
+echo "=== Kairon Integration Validation ==="
 echo "Testing complete TUI integration for issue #45"
 echo
 
 # Test 1: Build verification
 echo "1. Build verification..."
-if go build -o kiro-krew-validation ./cmd/kiro-krew; then
+if go build -o kairon-validation ./cmd/kairon; then
     echo "✓ Build successful"
 else
     echo "✗ Build failed"
@@ -53,4 +53,4 @@ echo
 echo "Integration validation complete for issue #45."
 
 # Cleanup
-rm -f kiro-krew-validation
+rm -f kairon-validation

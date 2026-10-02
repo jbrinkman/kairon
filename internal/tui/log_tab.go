@@ -10,7 +10,7 @@ import (
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/log"
 
-	"github.com/jbrinkman/kiro-krew/internal/logging"
+	"github.com/jbrinkman/kairon/internal/logging"
 )
 
 const (

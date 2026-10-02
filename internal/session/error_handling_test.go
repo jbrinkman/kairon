@@ -16,7 +16,7 @@ func TestSessionCorruptionRecovery(t *testing.T) {
 	manager := NewSessionManager()
 
 	// Create a corrupted session file
-	sessionDir := ".kiro-krew/sessions"
+	sessionDir := ".kairon/sessions"
 	os.MkdirAll(sessionDir, 0755)
 
 	corruptedData := `{"type": "planning", "history": [invalid json`

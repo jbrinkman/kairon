@@ -11,9 +11,9 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/jbrinkman/kiro-krew/internal/agent"
-	"github.com/jbrinkman/kiro-krew/internal/config"
-	"github.com/jbrinkman/kiro-krew/internal/github"
+	"github.com/jbrinkman/kairon/internal/agent"
+	"github.com/jbrinkman/kairon/internal/config"
+	"github.com/jbrinkman/kairon/internal/github"
 )
 
 type Watcher struct {
@@ -221,7 +221,7 @@ func (w *Watcher) isProcessRunning(pid int) bool {
 }
 
 func (w *Watcher) hasExceededGlobalRetries(issueNumber int) bool {
-	retryFile := fmt.Sprintf(".kiro-krew/retries/issue-%d.count", issueNumber)
+	retryFile := fmt.Sprintf(".kairon/retries/issue-%d.count", issueNumber)
 	data, err := os.ReadFile(retryFile)
 	if err != nil {
 		return false
@@ -236,7 +236,7 @@ func (w *Watcher) hasExceededGlobalRetries(issueNumber int) bool {
 }
 
 func (w *Watcher) incrementGlobalRetryCount(issueNumber int) {
-	retryDir := ".kiro-krew/retries"
+	retryDir := ".kairon/retries"
 	os.MkdirAll(retryDir, 0755)
 
 	retryFile := fmt.Sprintf("%s/issue-%d.count", retryDir, issueNumber)
@@ -253,7 +253,7 @@ func (w *Watcher) incrementGlobalRetryCount(issueNumber int) {
 }
 
 func (w *Watcher) getCurrentRetryCount(issueNumber int) int {
-	retryFile := fmt.Sprintf(".kiro-krew/retries/issue-%d.count", issueNumber)
+	retryFile := fmt.Sprintf(".kairon/retries/issue-%d.count", issueNumber)
 	data, err := os.ReadFile(retryFile)
 	if err != nil {
 		return 0

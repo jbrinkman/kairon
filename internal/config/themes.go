@@ -163,7 +163,7 @@ func LoadTheme(name string) (*Theme, error) {
 	if !validThemeNamePattern.MatchString(name) {
 		return nil, fmt.Errorf("invalid theme name '%s': only alphanumeric, '-', and '_' characters are allowed", name)
 	}
-	path := fmt.Sprintf(".kiro-krew/themes/%s.yaml", name)
+	path := fmt.Sprintf(".kairon/themes/%s.yaml", name)
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("theme '%s' not found: %w", name, err)
@@ -184,7 +184,7 @@ func LoadTheme(name string) (*Theme, error) {
 func GetAvailableThemes() []string {
 	var themes []string
 
-	entries, err := os.ReadDir(".kiro-krew/themes")
+	entries, err := os.ReadDir(".kairon/themes")
 	if err != nil {
 		return themes
 	}

@@ -95,9 +95,9 @@ func (im *ImageManager) generateImageName(platform string) string {
 	safePlatform := strings.ReplaceAll(platform, "/", "-")
 
 	if im.debugMode {
-		return fmt.Sprintf("kiro-eval-debug:%s-%s", im.evaluationID, safePlatform)
+		return fmt.Sprintf("kairon-eval-debug:%s-%s", im.evaluationID, safePlatform)
 	}
-	return fmt.Sprintf("kiro-eval:%s-%s", im.evaluationID, safePlatform)
+	return fmt.Sprintf("kairon-eval:%s-%s", im.evaluationID, safePlatform)
 }
 
 // Cleanup removes all built images for this evaluation (preserves in debug mode)

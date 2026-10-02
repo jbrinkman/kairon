@@ -10,7 +10,7 @@ import (
 
 func TestValidateTestCase(t *testing.T) {
 	// Create a temporary test structure
-	tempDir, err := os.MkdirTemp("", "kiro-krew-test")
+	tempDir, err := os.MkdirTemp("", "kairon-test")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -27,7 +27,7 @@ func TestValidateTestCase(t *testing.T) {
 	defer os.Chdir(oldWd)
 
 	// Create test case structure
-	casesDir := filepath.Join(".kiro-krew", "evals", "cases", "test-agent")
+	casesDir := filepath.Join(".kairon", "evals", "cases", "test-agent")
 	if err := os.MkdirAll(casesDir, 0755); err != nil {
 		t.Fatal(err)
 	}
@@ -66,7 +66,7 @@ agent: test-agent
 
 func TestGetTestCase(t *testing.T) {
 	// Create a temporary test structure
-	tempDir, err := os.MkdirTemp("", "kiro-krew-test")
+	tempDir, err := os.MkdirTemp("", "kairon-test")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -83,7 +83,7 @@ func TestGetTestCase(t *testing.T) {
 	defer os.Chdir(oldWd)
 
 	// Create test case structure
-	casesDir := filepath.Join(".kiro-krew", "evals", "cases", "test-agent")
+	casesDir := filepath.Join(".kairon", "evals", "cases", "test-agent")
 	if err := os.MkdirAll(casesDir, 0755); err != nil {
 		t.Fatal(err)
 	}
@@ -122,7 +122,7 @@ agent: test-agent
 
 func TestListAvailableTestCases(t *testing.T) {
 	// Create a temporary test structure
-	tempDir, err := os.MkdirTemp("", "kiro-krew-test")
+	tempDir, err := os.MkdirTemp("", "kairon-test")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -139,7 +139,7 @@ func TestListAvailableTestCases(t *testing.T) {
 	defer os.Chdir(oldWd)
 
 	// Create test case structure
-	casesDir := filepath.Join(".kiro-krew", "evals", "cases", "test-agent")
+	casesDir := filepath.Join(".kairon", "evals", "cases", "test-agent")
 	if err := os.MkdirAll(casesDir, 0755); err != nil {
 		t.Fatal(err)
 	}

@@ -6,8 +6,8 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
-	"github.com/jbrinkman/kiro-krew/internal/agent"
-	"github.com/jbrinkman/kiro-krew/internal/session"
+	"github.com/jbrinkman/kairon/internal/agent"
+	"github.com/jbrinkman/kairon/internal/session"
 )
 
 // TabManager manages the lifecycle and state of all tabs

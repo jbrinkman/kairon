@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jbrinkman/kiro-krew/internal/logging"
+	"github.com/jbrinkman/kairon/internal/logging"
 )
 
 // SessionManager handles CRUD operations and persistence for sessions
@@ -33,7 +33,7 @@ func (e *ValidationError) Error() string {
 // NewSessionManager creates a new session manager
 func NewSessionManager() *SessionManager {
 	return &SessionManager{
-		sessionsDir: ".kiro-krew/sessions",
+		sessionsDir: ".kairon/sessions",
 	}
 }
 

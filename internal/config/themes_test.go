@@ -156,7 +156,7 @@ func TestGetAvailableThemes(t *testing.T) {
 	})
 
 	tempDir := t.TempDir()
-	themesDir := filepath.Join(tempDir, ".kiro-krew", "themes")
+	themesDir := filepath.Join(tempDir, ".kairon", "themes")
 	if err := os.MkdirAll(themesDir, 0o755); err != nil {
 		t.Fatalf("failed to create themes directory: %v", err)
 	}

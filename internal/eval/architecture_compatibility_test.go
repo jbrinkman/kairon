@@ -5,7 +5,7 @@ import (
 	"runtime"
 	"testing"
 
-	"github.com/jbrinkman/kiro-krew/internal/eval/sandbox"
+	"github.com/jbrinkman/kairon/internal/eval/sandbox"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )

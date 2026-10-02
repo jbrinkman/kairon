@@ -1,0 +1,454 @@
+{
+  "layers": [
+    {
+      "layer": 0,
+      "tasks": [
+        {
+          "id": "rename-directories",
+          "agent": "builder",
+          "description": "Rename directory structures from kiro-krew to kairon (cmd/kiro-krew/ → cmd/kairon/, .kiro-krew/ → .kairon/, templates/kiro-krew/ → templates/kairon/)",
+          "dependencies": [],
+          "acceptance_criteria": [
+            "Directory cmd/kairon/ exists",
+            "Directory .kairon/ exists",
+            "Directory cmd/kairon/templates/kairon/ exists",
+            "No cmd/kiro-krew/ directory remains",
+            "Historical artifact directories preserved in .kairon/"
+          ],
+          "validation_commands": [
+            "test -d cmd/kairon",
+            "test -d .kairon",
+            "test -d cmd/kairon/templates/kairon",
+            "test ! -d cmd/kiro-krew"
+          ]
+        },
+        {
+          "id": "sync-eval-templates",
+          "agent": "builder",
+          "description": "Update embedded evaluation templates (fixtures, rubrics, cases) with kairon references",
+          "dependencies": [],
+          "acceptance_criteria": [
+            "All eval templates use Kairon for project name",
+            "All eval templates use jbrinkman/kairon for repository",
+            "All eval templates use .kairon/ paths",
+            "No kiro-krew references in eval templates"
+          ],
+          "validation_commands": [
+            "grep -q 'Kairon' cmd/kairon/templates/kairon/evals/fixtures/codebase-context.md"
+          ]
+        },
+        {
+          "id": "update-changelog",
+          "agent": "builder",
+          "description": "Update CHANGELOG.md header (structure only, not historical entries)",
+          "dependencies": [],
+          "acceptance_criteria": [
+            "Header references Kairon",
+            "Historical entries unchanged"
+          ],
+          "validation_commands": [
+            "grep -q 'Kairon' CHANGELOG.md"
+          ]
+        },
+        {
+          "id": "update-contributing",
+          "agent": "builder",
+          "description": "Update CONTRIBUTING.md with kairon references",
+          "dependencies": [],
+          "acceptance_criteria": [
+            "Uses Kairon for project name",
+            "Uses jbrinkman/kairon for repository",
+            "Uses kairon for commands",
+            "Uses .kairon/ for paths",
+            "No kiro-krew references"
+          ],
+          "validation_commands": [
+            "grep -q 'Kairon' CONTRIBUTING.md"
+          ]
+        },
+        {
+          "id": "update-docs",
+          "agent": "builder",
+          "description": "Update all documentation files in docs/ directory with kairon references",
+          "dependencies": [],
+          "acceptance_criteria": [
+            "All docs use Kairon for prose",
+            "All docs use kairon for technical references",
+            "All docs use .kairon/ paths",
+            "No kiro-krew references remain in docs"
+          ],
+          "validation_commands": [
+            "grep -q 'Kairon' docs/evaluation.md"
+          ]
+        },
+        {
+          "id": "update-npm-config",
+          "agent": "builder",
+          "description": "Update package.json and .releaserc.json with kairon references",
+          "dependencies": [],
+          "acceptance_criteria": [
+            "package.json has name kairon",
+            "package.json repository URL is https://github.com/jbrinkman/kairon.git",
+            ".releaserc.json asset paths reference dist/release/kairon",
+            "No kiro-krew references in package.json or .releaserc.json"
+          ],
+          "validation_commands": [
+            "grep -q '\"name\": \"kairon\"' package.json",
+            "grep -q 'jbrinkman/kairon' package.json",
+            "grep -q 'dist/release/kairon' .releaserc.json"
+          ]
+        },
+        {
+          "id": "update-readme",
+          "agent": "builder",
+          "description": "Update README.md with comprehensive kairon references (title, prose, commands, paths, URLs)",
+          "dependencies": [],
+          "acceptance_criteria": [
+            "Title is Kairon",
+            "All prose uses Kairon (capitalized)",
+            "All technical references use kairon (lowercase)",
+            "All paths use .kairon/",
+            "All URLs reference kairon",
+            "No kiro-krew references remain"
+          ],
+          "validation_commands": [
+            "grep -q '# Kairon' README.md",
+            "grep -q '.kairon/' README.md"
+          ]
+        }
+      ]
+    },
+    {
+      "layer": 1,
+      "tasks": [
+        {
+          "id": "update-agent-prompts",
+          "agent": "builder",
+          "description": "Update all agent prompt markdown files in .kiro/agents/ with .kairon/ paths, KAIRON_* env vars, and kairon commands",
+          "dependencies": [
+            "rename-directories"
+          ],
+          "acceptance_criteria": [
+            "All prompts use .kairon/ paths",
+            "All prompts use KAIRON_* environment variables",
+            "All prompts use kairon for commands",
+            "No kiro-krew references in agent prompts"
+          ],
+          "validation_commands": [
+            "grep -q '.kairon/' .kiro/agents/krew-lead-prompt.md"
+          ]
+        },
+        {
+          "id": "update-config-yaml",
+          "agent": "builder",
+          "description": "Update .kairon/config.yaml with new repository name, label, and paths",
+          "dependencies": [
+            "rename-directories"
+          ],
+          "acceptance_criteria": [
+            "repo field is jbrinkman/kairon",
+            "label field is kairon",
+            "sessions_dir is .kairon/sessions",
+            "log_dir is .kairon/logs",
+            "No kiro-krew references in config.yaml"
+          ],
+          "validation_commands": [
+            "grep -q 'repo: jbrinkman/kairon' .kairon/config.yaml",
+            "grep -q 'label: kairon' .kairon/config.yaml"
+          ]
+        },
+        {
+          "id": "update-go-module",
+          "agent": "builder",
+          "description": "Update Go module path from github.com/jbrinkman/kiro-krew to github.com/jbrinkman/kairon and update all import statements",
+          "dependencies": [
+            "rename-directories"
+          ],
+          "acceptance_criteria": [
+            "go.mod declares module github.com/jbrinkman/kairon",
+            "No Go files contain imports of github.com/jbrinkman/kiro-krew",
+            "go mod tidy runs without errors",
+            "All Go files compile without import errors"
+          ],
+          "validation_commands": [
+            "grep -q 'module github.com/jbrinkman/kairon' go.mod",
+            "go mod tidy",
+            "go build ./..."
+          ]
+        },
+        {
+          "id": "update-integration-tests",
+          "agent": "builder",
+          "description": "Update test_integration.sh and validate_integration.sh with kairon references",
+          "dependencies": [
+            "rename-directories"
+          ],
+          "acceptance_criteria": [
+            "Scripts reference kairon binary",
+            "Scripts use .kairon/ paths",
+            "Scripts use KAIRON_* environment variables",
+            "No kiro-krew references remain"
+          ],
+          "validation_commands": [
+            "grep -q 'kairon' test_integration.sh"
+          ]
+        },
+        {
+          "id": "update-kairon-scripts",
+          "agent": "builder",
+          "description": "Update shell scripts in .kairon/scripts/ directory with new path references",
+          "dependencies": [
+            "rename-directories"
+          ],
+          "acceptance_criteria": [
+            "All scripts use .kairon/ paths",
+            "No kiro-krew references in script files",
+            "Scripts maintain executable permissions"
+          ],
+          "validation_commands": [
+            "test -x .kairon/scripts/worktree-create.sh"
+          ]
+        },
+        {
+          "id": "update-skills",
+          "agent": "builder",
+          "description": "Update all skill documentation files with .kairon/ paths and cmd/kairon/ template paths",
+          "dependencies": [
+            "rename-directories"
+          ],
+          "acceptance_criteria": [
+            "All skills use .kairon/ paths",
+            "All skills use cmd/kairon/ template paths",
+            "Sync mappings table updated in builder-conventions",
+            "No kiro-krew references in skills"
+          ],
+          "validation_commands": [
+            "grep -q '.kairon/' .kiro/skills/builder-conventions/SKILL.md",
+            "grep -q 'cmd/kairon/' .kiro/skills/builder-conventions/SKILL.md"
+          ]
+        }
+      ]
+    },
+    {
+      "layer": 2,
+      "tasks": [
+        {
+          "id": "sync-agent-templates",
+          "agent": "builder",
+          "description": "Copy updated agent files from .kiro/agents/ to cmd/kairon/templates/kiro/agents/",
+          "dependencies": [
+            "update-agent-prompts"
+          ],
+          "acceptance_criteria": [
+            "Template agent files match live agent files",
+            "No kiro-krew references in template agents",
+            "All agent prompts use .kairon/ paths"
+          ],
+          "validation_commands": [
+            "diff -r .kiro/agents/ cmd/kairon/templates/kiro/agents/"
+          ]
+        },
+        {
+          "id": "sync-script-templates",
+          "agent": "builder",
+          "description": "Copy updated scripts from .kairon/scripts/ to cmd/kairon/templates/kairon/scripts/",
+          "dependencies": [
+            "update-kairon-scripts"
+          ],
+          "acceptance_criteria": [
+            "Template scripts match live scripts",
+            "No kiro-krew references in template scripts",
+            "Scripts maintain executable permissions"
+          ],
+          "validation_commands": [
+            "diff -r .kairon/scripts/ cmd/kairon/templates/kairon/scripts/"
+          ]
+        },
+        {
+          "id": "sync-skills-template",
+          "agent": "builder",
+          "description": "Update embedded sentinel-protocol skill template with .kairon/ paths",
+          "dependencies": [
+            "update-skills"
+          ],
+          "acceptance_criteria": [
+            "Sentinel protocol template uses .kairon/ paths",
+            "No kiro-krew references in template"
+          ],
+          "validation_commands": [
+            "grep -q '.kairon/' cmd/kairon/templates/kiro/skills/sentinel-protocol/SKILL.md"
+          ]
+        },
+        {
+          "id": "update-go-source",
+          "agent": "builder",
+          "description": "Update all Go source files: string literals, comments, environment variables (KIRO_KREW_* → KAIRON_*), paths (.kiro-krew/ → .kairon/), binary name references",
+          "dependencies": [
+            "update-go-module"
+          ],
+          "acceptance_criteria": [
+            "No Go files contain kiro-krew in string literals",
+            "Environment variables use KAIRON_ prefix",
+            "Path references use .kairon/",
+            "Binary name references use kairon",
+            "Code compiles without errors"
+          ],
+          "validation_commands": [
+            "go build ./..."
+          ]
+        },
+        {
+          "id": "update-helper-scripts",
+          "agent": "builder",
+          "description": "Update helper scripts in scripts/ directory (template-sync-summary.sh, compare-templates.go)",
+          "dependencies": [
+            "rename-directories",
+            "update-go-module"
+          ],
+          "acceptance_criteria": [
+            "Scripts use .kairon/ and cmd/kairon/ paths",
+            "No kiro-krew references in scripts",
+            "Scripts execute without errors"
+          ],
+          "validation_commands": [
+            "bash -n scripts/template-sync-summary.sh"
+          ]
+        },
+        {
+          "id": "update-taskfile",
+          "agent": "builder",
+          "description": "Update Taskfile.yml configuration: BINARY_NAME to kairon, ldflags module path, build paths, sync:check paths",
+          "dependencies": [
+            "rename-directories",
+            "update-go-module"
+          ],
+          "acceptance_criteria": [
+            "BINARY_NAME variable set to kairon",
+            "All ldflags reference github.com/jbrinkman/kairon",
+            "Build paths point to ./cmd/kairon",
+            "Sync check paths reference .kairon/",
+            "No kiro-krew references in Taskfile.yml"
+          ],
+          "validation_commands": [
+            "grep -q 'BINARY_NAME: kairon' Taskfile.yml",
+            "grep -q 'github.com/jbrinkman/kairon/internal/version' Taskfile.yml"
+          ]
+        },
+        {
+          "id": "update-template-config",
+          "agent": "builder",
+          "description": "Update embedded template config.yaml in cmd/kairon/templates/kairon/",
+          "dependencies": [
+            "rename-directories",
+            "update-config-yaml"
+          ],
+          "acceptance_criteria": [
+            "Template config.yaml uses kairon label",
+            "Template config.yaml uses .kairon/ paths",
+            "No kiro-krew references in template config"
+          ],
+          "validation_commands": [
+            "grep -q 'label: kairon' cmd/kairon/templates/kairon/config.yaml"
+          ]
+        }
+      ]
+    },
+    {
+      "layer": 3,
+      "tasks": [
+        {
+          "id": "update-github-workflows",
+          "agent": "builder",
+          "description": "Update GitHub Actions workflows to reference kairon binaries and assets",
+          "dependencies": [
+            "update-taskfile"
+          ],
+          "acceptance_criteria": [
+            ".github/workflows/release.yml references dist/release/kairon binaries",
+            "Release asset labels reference kairon",
+            "No kiro-krew references in workflow files"
+          ],
+          "validation_commands": [
+            "grep -q 'kairon' .github/workflows/release.yml"
+          ]
+        },
+        {
+          "id": "update-test-files",
+          "agent": "builder",
+          "description": "Update all test files with kairon references, test fixtures, and assertions",
+          "dependencies": [
+            "update-go-source"
+          ],
+          "acceptance_criteria": [
+            "Test files use kairon references",
+            "Test fixtures use .kairon/ paths",
+            "All tests pass"
+          ],
+          "validation_commands": [
+            "go test ./..."
+          ]
+        }
+      ]
+    },
+    {
+      "layer": 4,
+      "tasks": [
+        {
+          "id": "validate-complete",
+          "agent": "validator",
+          "description": "Execute comprehensive validation: build, tests, formatting, template sync, linting, directory structure, module path",
+          "dependencies": [
+            "rename-directories",
+            "update-go-module",
+            "update-taskfile",
+            "update-npm-config",
+            "update-github-workflows",
+            "update-config-yaml",
+            "update-template-config",
+            "update-go-source",
+            "update-test-files",
+            "update-kairon-scripts",
+            "update-helper-scripts",
+            "update-integration-tests",
+            "update-readme",
+            "update-docs",
+            "update-changelog",
+            "update-contributing",
+            "update-agent-prompts",
+            "update-skills",
+            "sync-agent-templates",
+            "sync-script-templates",
+            "sync-eval-templates",
+            "sync-skills-template"
+          ],
+          "acceptance_criteria": [
+            "go mod tidy runs without errors",
+            "task build produces dist/kairon binary",
+            "task test passes all tests",
+            "task fmt:check passes",
+            "task sync:check passes",
+            "task lint passes",
+            "No kiro-krew in source files (excluding historical paths)",
+            "Directory .kairon/ exists",
+            "Directory cmd/kairon/ exists",
+            "Module path is github.com/jbrinkman/kairon"
+          ],
+          "validation_commands": [
+            "go mod tidy",
+            "task build",
+            "task test",
+            "task fmt:check",
+            "task sync:check",
+            "task lint",
+            "test -f dist/kairon",
+            "test -d .kairon",
+            "test -d cmd/kairon",
+            "grep -q 'module github.com/jbrinkman/kairon' go.mod"
+          ]
+        }
+      ]
+    }
+  ],
+  "status": "valid",
+  "total_tasks": 23
+}

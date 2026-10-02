@@ -13,8 +13,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/jbrinkman/kiro-krew/internal/config"
-	"github.com/jbrinkman/kiro-krew/internal/github"
+	"github.com/jbrinkman/kairon/internal/config"
+	"github.com/jbrinkman/kairon/internal/github"
 )
 
 type Status string
@@ -188,7 +188,7 @@ func (m *Manager) Spawn(issueNumber int, repo string) (*Agent, error) {
 	worktreeName := fmt.Sprintf("issue-%d-%d", issueNumber, os.Getpid())
 
 	// Create worktree before spawning agent so it runs inside it
-	createScript := filepath.Join(".kiro-krew", "scripts", "worktree-create.sh")
+	createScript := filepath.Join(".kairon", "scripts", "worktree-create.sh")
 	createCmd := exec.Command("bash", createScript, worktreeName)
 	wtOutput, err := createCmd.Output()
 	if err != nil {
@@ -199,7 +199,7 @@ func (m *Manager) Spawn(issueNumber int, repo string) (*Agent, error) {
 	log.Printf("[agent] created worktree at %s", worktreePath)
 
 	// Create per-issue log file for agent output
-	agentLogDir := filepath.Join(".kiro-krew", "logs")
+	agentLogDir := filepath.Join(".kairon", "logs")
 	os.MkdirAll(agentLogDir, 0755)
 	agentLogPath := filepath.Join(agentLogDir, fmt.Sprintf("issue-%d.log", issueNumber))
 	agentLogFile, err := os.OpenFile(agentLogPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
@@ -226,7 +226,7 @@ func (m *Manager) Spawn(issueNumber int, repo string) (*Agent, error) {
 	cmd.Env = append(os.Environ(),
 		fmt.Sprintf("ISSUE_NUMBER=%d", issueNumber),
 		fmt.Sprintf("REPO=%s", repo),
-		fmt.Sprintf("KIRO_KREW_WATCHER_PID=%d", os.Getpid()),
+		fmt.Sprintf("KAIRON_WATCHER_PID=%d", os.Getpid()),
 		fmt.Sprintf("WORKTREE_PATH=%s", worktreePath))
 
 	if err := cmd.Start(); err != nil {
@@ -454,7 +454,7 @@ func (m *Manager) retryAgent(agent *Agent) {
 
 	// Ensure worktree exists (it should from initial spawn, but recreate if needed)
 	if _, err := os.Stat(worktreePath); os.IsNotExist(err) {
-		createScript := filepath.Join(".kiro-krew", "scripts", "worktree-create.sh")
+		createScript := filepath.Join(".kairon", "scripts", "worktree-create.sh")
 		createCmd := exec.Command("bash", createScript, worktreeName)
 		if wtOutput, err := createCmd.Output(); err != nil {
 			log.Printf("[agent] retry failed to create worktree for issue #%d: %v", agent.IssueNumber, err)
@@ -474,7 +474,7 @@ func (m *Manager) retryAgent(agent *Agent) {
 	}
 
 	// Reopen log file for retry (append mode)
-	agentLogPath := filepath.Join(".kiro-krew", "logs", fmt.Sprintf("issue-%d.log", agent.IssueNumber))
+	agentLogPath := filepath.Join(".kairon", "logs", fmt.Sprintf("issue-%d.log", agent.IssueNumber))
 	agentLogFile, err := os.OpenFile(agentLogPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 	if err != nil {
 		log.Printf("[agent] retry failed to open log file for issue #%d: %v", agent.IssueNumber, err)
@@ -503,7 +503,7 @@ func (m *Manager) retryAgent(agent *Agent) {
 	cmd.Env = append(os.Environ(),
 		fmt.Sprintf("ISSUE_NUMBER=%d", agent.IssueNumber),
 		fmt.Sprintf("REPO=%s", m.config.Repo),
-		fmt.Sprintf("KIRO_KREW_WATCHER_PID=%d", os.Getpid()),
+		fmt.Sprintf("KAIRON_WATCHER_PID=%d", os.Getpid()),
 		fmt.Sprintf("WORKTREE_PATH=%s", worktreePath))
 
 	if err := cmd.Start(); err != nil {
@@ -555,7 +555,7 @@ func (m *Manager) cleanupWorktree(issueNumber, pid int) error {
 
 // cleanupRetryFile removes the retry count file for the given issue
 func (m *Manager) cleanupRetryFile(issueNumber int) error {
-	retryPath := filepath.Join(".kiro-krew", "retries", fmt.Sprintf("issue-%d.count", issueNumber))
+	retryPath := filepath.Join(".kairon", "retries", fmt.Sprintf("issue-%d.count", issueNumber))
 	if err := os.Remove(retryPath); err != nil {
 		if os.IsNotExist(err) {
 			return nil

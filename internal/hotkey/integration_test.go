@@ -8,7 +8,7 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
-	"github.com/jbrinkman/kiro-krew/internal/session"
+	"github.com/jbrinkman/kairon/internal/session"
 )
 
 // mockTUIModel simulates the TUI model for testing
@@ -61,9 +61,9 @@ func TestHotkeyIntegrationEndToEnd(t *testing.T) {
 	defer os.Chdir(originalDir)
 	os.Chdir(tempDir)
 
-	// Set kiro-krew context
-	os.Setenv("KIRO_KREW_WATCHER_PID", "12345")
-	defer os.Unsetenv("KIRO_KREW_WATCHER_PID")
+	// Set kairon context
+	os.Setenv("KAIRON_WATCHER_PID", "12345")
+	defer os.Unsetenv("KAIRON_WATCHER_PID")
 
 	model := newMockTUIModel()
 
@@ -124,8 +124,8 @@ func TestHotkeyIntegrationEndToEnd(t *testing.T) {
 	})
 
 	t.Run("Error Handling Outside Context", func(t *testing.T) {
-		// Remove kiro-krew context
-		os.Unsetenv("KIRO_KREW_WATCHER_PID")
+		// Remove kairon context
+		os.Unsetenv("KAIRON_WATCHER_PID")
 
 		// Create fresh model
 		errorModel := newMockTUIModel()
@@ -139,21 +139,21 @@ func TestHotkeyIntegrationEndToEnd(t *testing.T) {
 			errorModel.update(msg)
 		} else {
 			// Manually trigger error since we can't create exact KeyMsg
-			errorMsg := HotkeyErrorMsg{Err: ErrNotInKiroKrewContext}
+			errorMsg := HotkeyErrorMsg{Err: ErrNotInKaironContext}
 			errorModel.update(errorMsg)
 		}
 
 		// Verify error was received
 		if errorModel.errorReceived == nil {
-			t.Error("Expected error when hotkey pressed outside kiro-krew context")
+			t.Error("Expected error when hotkey pressed outside kairon context")
 		}
 
-		if !strings.Contains(errorModel.errorReceived.Error(), "not available outside kiro-krew context") {
+		if !strings.Contains(errorModel.errorReceived.Error(), "not available outside kairon context") {
 			t.Errorf("Expected context error, got: %v", errorModel.errorReceived)
 		}
 
 		// Restore context for other tests
-		os.Setenv("KIRO_KREW_WATCHER_PID", "12345")
+		os.Setenv("KAIRON_WATCHER_PID", "12345")
 	})
 }
 
@@ -309,7 +309,7 @@ func TestSessionIntegration(t *testing.T) {
 }
 
 // Error for context validation
-var ErrNotInKiroKrewContext = fmt.Errorf("hotkey toggle not available outside kiro-krew context")
+var ErrNotInKaironContext = fmt.Errorf("hotkey toggle not available outside kairon context")
 
 func TestHotkeyValidation(t *testing.T) {
 	tests := []struct {
@@ -332,13 +332,13 @@ func TestHotkeyValidation(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			if tt.contextSet {
-				os.Setenv("KIRO_KREW_WATCHER_PID", "12345")
+				os.Setenv("KAIRON_WATCHER_PID", "12345")
 			} else {
-				os.Unsetenv("KIRO_KREW_WATCHER_PID")
+				os.Unsetenv("KAIRON_WATCHER_PID")
 			}
 
 			// Test context validation
-			isValid := IsKiroKrewContext()
+			isValid := IsKaironContext()
 			if isValid != tt.contextSet {
 				t.Errorf("Expected context validity %v, got %v", tt.contextSet, isValid)
 			}
@@ -346,13 +346,13 @@ func TestHotkeyValidation(t *testing.T) {
 			// Test error handling
 			if !tt.contextSet {
 				// Simulate error condition manually since we can't create exact KeyMsg
-				errorMsg := HotkeyErrorMsg{Err: ErrNotInKiroKrewContext}
+				errorMsg := HotkeyErrorMsg{Err: ErrNotInKaironContext}
 				if errorMsg.Err == nil {
-					t.Error("Expected error when not in kiro-krew context")
+					t.Error("Expected error when not in kairon context")
 				}
 			}
 
-			os.Unsetenv("KIRO_KREW_WATCHER_PID")
+			os.Unsetenv("KAIRON_WATCHER_PID")
 		})
 	}
 }
@@ -364,8 +364,8 @@ func TestCompleteWorkflow(t *testing.T) {
 	defer os.Chdir(originalDir)
 	os.Chdir(tempDir)
 
-	os.Setenv("KIRO_KREW_WATCHER_PID", "12345")
-	defer os.Unsetenv("KIRO_KREW_WATCHER_PID")
+	os.Setenv("KAIRON_WATCHER_PID", "12345")
+	defer os.Unsetenv("KAIRON_WATCHER_PID")
 
 	model := newMockTUIModel()
 
@@ -433,9 +433,9 @@ func TestCompleteWorkflow(t *testing.T) {
 		}
 
 		// Step 7: Test error conditions
-		os.Unsetenv("KIRO_KREW_WATCHER_PID")
+		os.Unsetenv("KAIRON_WATCHER_PID")
 		model.errorReceived = nil
-		model.update(HotkeyErrorMsg{Err: ErrNotInKiroKrewContext})
+		model.update(HotkeyErrorMsg{Err: ErrNotInKaironContext})
 
 		if model.errorReceived == nil {
 			t.Error("Should receive error when hotkey used outside context")

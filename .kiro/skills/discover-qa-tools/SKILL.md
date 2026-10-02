@@ -32,7 +32,7 @@ Discover all quality assurance commands available in the current project by exam
 
 ## Output Format
 
-Write the discovery results to `.kiro-krew/artifacts/qa-tools.md`:
+Write the discovery results to `.kairon/artifacts/qa-tools.md`:
 
 ```markdown
 # QA Tools Discovery
@@ -57,7 +57,7 @@ Write the discovery results to `.kiro-krew/artifacts/qa-tools.md`:
 
 ## Caching
 
-The output file at `.kiro-krew/artifacts/qa-tools.md` serves as a cache. It should be regenerated if:
+The output file at `.kairon/artifacts/qa-tools.md` serves as a cache. It should be regenerated if:
 - The file does not exist
 - The file is older than 24 hours
 - CI configuration files have been modified since the last discovery

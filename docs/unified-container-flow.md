@@ -30,7 +30,7 @@ The eval system now uses a unified **generate → build → create → verify** 
 **Steps:**
 1. Create tar archive containing Dockerfile
 2. Call Docker API to build image with platform-specific settings
-3. Generate unique image name: `kiro-eval[-debug]:platform-timestamp`
+3. Generate unique image name: `kairon-eval[-debug]:platform-timestamp`
 4. Wait for build completion
 
 **Performance:** ~30-60s (Docker image build with kiro-cli download)
@@ -104,7 +104,7 @@ The eval system now uses a unified **generate → build → create → verify** 
 1. **Dockerfile:** Saved via `debug.SaveDockerfile()` 
 2. **Container Info:** Container ID, image name, platform saved to artifacts
 3. **Container Preservation:** Failed containers preserved for inspection
-4. **Debug Image Naming:** Uses `kiro-eval-debug:` prefix for easy identification
+4. **Debug Image Naming:** Uses `kairon-eval-debug:` prefix for easy identification
 
 ### Debug Commands
 ```bash
@@ -112,11 +112,11 @@ The eval system now uses a unified **generate → build → create → verify** 
 kiro-cli eval --debug --sandbox architect simple-task
 
 # Check saved artifacts
-ls -la .kiro-krew/evals/tmp/dockerfiles/
-cat .kiro-krew/evals/tmp/containers.json
+ls -la .kairon/evals/tmp/dockerfiles/
+cat .kairon/evals/tmp/containers.json
 
 # Inspect debug containers
-docker ps -a | grep kiro-eval-debug
+docker ps -a | grep kairon-eval-debug
 docker exec -it <container-id> sh
 ```
 
@@ -140,10 +140,10 @@ go test ./internal/eval/sandbox -v -run TestFlowConsistency
 time kiro-cli eval --debug architect simple-task
 
 # Verify custom image creation
-docker images | grep kiro-eval
+docker images | grep kairon-eval
 
 # Test pre-installed kiro-cli
-docker run --rm <kiro-eval-image> kiro-cli --version
+docker run --rm <kairon-eval-image> kiro-cli --version
 ```
 
 ### Manual Flow Verification

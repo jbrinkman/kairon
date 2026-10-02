@@ -53,7 +53,7 @@ func TestEndToEndFlow(t *testing.T) {
 
 	customImageName := c.GetCustomImageName(hostPlatform)
 	require.NotEmpty(t, customImageName)
-	assert.Contains(t, customImageName, "kiro-eval:")
+	assert.Contains(t, customImageName, "kairon-eval:")
 
 	err = c.BuildImageFromDockerfile(ctx, dockerfile, customImageName, hostPlatform)
 	require.NoError(t, err)
@@ -140,7 +140,7 @@ func TestEndToEndFlowWithDebug(t *testing.T) {
 	require.NoError(t, err)
 
 	customImageName := c.GetCustomImageName(hostPlatform)
-	assert.Contains(t, customImageName, "kiro-eval-debug:", "Debug mode should use debug image naming")
+	assert.Contains(t, customImageName, "kairon-eval-debug:", "Debug mode should use debug image naming")
 
 	err = c.BuildImageFromDockerfile(ctx, dockerfile, customImageName, hostPlatform)
 	require.NoError(t, err)
@@ -178,7 +178,7 @@ func TestEndToEndFlowWithDebug(t *testing.T) {
 	assert.NotEmpty(t, imageName, "Debug mode should provide image name")
 
 	// Exercise the artifact-saving path (same as runner.go debug flow)
-	debugDir := filepath.Join(os.TempDir(), "kiro-eval-debug-test")
+	debugDir := filepath.Join(os.TempDir(), "kairon-eval-debug-test")
 	err = os.MkdirAll(debugDir, 0755)
 	require.NoError(t, err)
 	defer os.RemoveAll(debugDir)

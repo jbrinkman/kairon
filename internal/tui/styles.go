@@ -3,7 +3,7 @@ package tui
 import (
 	"charm.land/lipgloss/v2"
 
-	"github.com/jbrinkman/kiro-krew/internal/config"
+	"github.com/jbrinkman/kairon/internal/config"
 )
 
 // getColorOrFallback returns the primary color if not empty, otherwise returns fallback

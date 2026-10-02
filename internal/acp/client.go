@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/coder/acp-go-sdk"
-	"github.com/jbrinkman/kiro-krew/internal/logging"
+	"github.com/jbrinkman/kairon/internal/logging"
 )
 
 // KiroACPClient implements the Client interface using the official ACP SDK

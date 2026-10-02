@@ -1,7 +1,7 @@
 package eval
 
 import (
-	"github.com/jbrinkman/kiro-krew/internal/eval/sandbox"
+	"github.com/jbrinkman/kairon/internal/eval/sandbox"
 )
 
 // Rubric defines scoring criteria for an agent.

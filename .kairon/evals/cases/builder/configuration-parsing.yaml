@@ -1,0 +1,27 @@
+name: configuration-parsing
+description: "Test builder's implementation of configuration validation and parsing"
+agent: builder
+input: |
+  Implement configuration validation for .kairon/config.yaml with detailed error messages
+  and support for environment variable overrides.
+  
+  Task: Add validation to internal/config/config.go with env var support
+setup:
+  - type: text
+    label: "Config Schema"
+    content: "repo (required), label (default: kairon), poll_interval (default: 5m), max_retries (default: 3)"
+  - type: text
+    label: "Env Overrides"
+    content: "KAIRON_REPO, KAIRON_LABEL, KAIRON_POLL_INTERVAL, KAIRON_MAX_RETRIES"
+context:
+  - "Validation should provide clear error messages"
+  - "Environment variables should override YAML values"
+  - "Default values should be applied when missing"
+  - "Invalid values should be rejected with helpful errors"
+expected_output: |
+  Configuration implementation with:
+  - Struct validation using tags or custom validation
+  - Environment variable override handling
+  - Clear validation error messages
+  - Default value application
+  - Type conversion with error handling (duration, int)

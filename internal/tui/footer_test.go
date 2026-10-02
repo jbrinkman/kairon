@@ -4,8 +4,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/jbrinkman/kiro-krew/internal/agent"
-	"github.com/jbrinkman/kiro-krew/internal/config"
+	"github.com/jbrinkman/kairon/internal/agent"
+	"github.com/jbrinkman/kairon/internal/config"
 )
 
 func TestFooterRendersExactly3Lines(t *testing.T) {

@@ -9,9 +9,9 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
-	"github.com/jbrinkman/kiro-krew/internal/agent"
-	"github.com/jbrinkman/kiro-krew/internal/config"
-	"github.com/jbrinkman/kiro-krew/internal/session"
+	"github.com/jbrinkman/kairon/internal/agent"
+	"github.com/jbrinkman/kairon/internal/config"
+	"github.com/jbrinkman/kairon/internal/session"
 )
 
 func TestMultipleAgentsOutputCapture(t *testing.T) {
@@ -481,7 +481,7 @@ func TestTask8Integration(t *testing.T) {
 
 // Helper function to create a test session manager
 func createTestSessionManager() *session.SessionManager {
-	dir, err := os.MkdirTemp("", "kiro-krew-test-sessions-*")
+	dir, err := os.MkdirTemp("", "kairon-test-sessions-*")
 	if err != nil {
 		// Fallback to default if temp dir creation fails
 		return session.NewSessionManager()
