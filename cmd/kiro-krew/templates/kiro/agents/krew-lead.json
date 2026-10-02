@@ -1,7 +1,7 @@
 {
   "name": "krew-lead",
   "prompt": "file://./krew-lead-prompt.md",
-  "resources": ["skill://.kiro/skills/krew-lead-conventions/SKILL.md"],
+  "resources": ["skill://.kiro/skills/krew-lead-conventions/SKILL.md", "skill://.kiro/skills/sentinel-protocol/SKILL.md"],
   "tools": ["read", "shell", "subagent", "todo_list"],
   "allowedTools": ["read", "shell", "subagent", "todo_list"],
   "toolsSettings": {

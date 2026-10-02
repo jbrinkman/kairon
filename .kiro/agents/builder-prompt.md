@@ -38,7 +38,7 @@ If no discovery results are provided, examine CI configuration and build tool fi
 
 ## Sentinel File
 
-After completing your task, write a sentinel file at `.kiro-krew/artifacts/builder-<issue-number>.md` (replacing `<issue-number>` with the issue number). Include QA discovery and results. This signals successful completion to krew-lead.
+Signal completion by writing a sentinel file per the **sentinel-protocol** skill (`skill://.kiro/skills/sentinel-protocol/SKILL.md`) — the single source of truth for the path format and write rules. Include QA discovery and results.
 
 ## Report Format
 

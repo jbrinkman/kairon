@@ -59,6 +59,7 @@ tasks:
         diff -rq .kiro-krew/scripts/ cmd/kiro-krew/templates/kiro-krew/scripts/ || error=1
         diff -rq .kiro-krew/themes/ cmd/kiro-krew/templates/kiro-krew/themes/ || error=1
         diff -rq --exclude=results --exclude=.DS_Store --exclude=tmp .kiro-krew/evals/ cmd/kiro-krew/templates/kiro-krew/evals/ || error=1
+        diff -rq .kiro/skills/sentinel-protocol/ cmd/kiro-krew/templates/kiro/skills/sentinel-protocol/ || error=1
 
         if [ $error -eq 0 ]; then
           echo "✅ All template-synchronized files match"

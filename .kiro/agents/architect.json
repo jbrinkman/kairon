@@ -2,7 +2,7 @@
   "name": "architect",
   "description": "Analyzes issues and creates design specifications.",
   "prompt": "file://./architect-prompt.md",
-  "resources": ["skill://.kiro/skills/architect-conventions/SKILL.md"],
+  "resources": ["skill://.kiro/skills/architect-conventions/SKILL.md", "skill://.kiro/skills/sentinel-protocol/SKILL.md"],
   "tools": ["read", "write", "shell"],
   "allowedTools": ["read", "write", "shell"],
   "model": "claude-sonnet-4.5"

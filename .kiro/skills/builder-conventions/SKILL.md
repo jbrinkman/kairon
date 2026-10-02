@@ -24,6 +24,7 @@ Sync is **one-way** (live → template). CI enforces this via `task sync:check` 
 | `.kiro-krew/evals/fixtures/*` | `cmd/kiro-krew/templates/kiro-krew/evals/fixtures/` |
 | `.kiro-krew/evals/rubrics/*` | `cmd/kiro-krew/templates/kiro-krew/evals/rubrics/` |
 | `.kiro-krew/evals/cases/**/*` | `cmd/kiro-krew/templates/kiro-krew/evals/cases/` |
+| `.kiro/skills/sentinel-protocol/*` | `cmd/kiro-krew/templates/kiro/skills/sentinel-protocol/` |
 
 ### Exclusion Patterns
 

@@ -116,7 +116,7 @@ You have `shell` tool access with `autoAllowReadonly: true`. This means:
 
 ## Write Access Note
 
-You have `write` tool access **only** for creating your sentinel file at `.kiro-krew/artifacts/validator-<issue-number>.md`. Do NOT write to any other path. After completing validation, write a summary of your findings to this file.
+You have `write` tool access **only** for creating your sentinel file. Write it per the **sentinel-protocol** skill (`skill://.kiro/skills/sentinel-protocol/SKILL.md`), which defines the exact path; do NOT write to any other path. After completing validation, write a summary of your findings to that file.
 
 ## Quality Verification
 

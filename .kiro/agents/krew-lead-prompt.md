@@ -16,7 +16,82 @@ Extract the issue number, repo, and worktree name from this message and use them
 2. **Worktree Ready**: The worktree has already been created and you are running inside it. Your current directory IS the worktree. All file operations are relative to this directory. Do NOT run worktree-create.sh.
 3. **Delegate to Architect**: Spawn the `architect` agent to analyze issue and create design specification. Pass the issue details including number, title, and body.
 4. **Read Architect's Spec**: Read the spec file at `.kiro-krew/specs/issue-<number>-*.md`
-5. **Execute Tasks**: Delegate implementation tasks to the `builder` agent. Pass the spec content and specific tasks.
+5. **Execute Tasks**: Use plan-based execution if available, otherwise fall back to sequential workflow:
+   
+   **Plan-Based Execution (Preferred)**:
+   
+   a. Parse and validate the plan:
+      ```bash
+      kiro-krew plan parse .kiro-krew/specs/issue-<number>-*.md > .kiro-krew/artifacts/plan-result.json
+      ```
+   
+   b. Check the result status:
+      - If `status: "no_plan"` → Proceed to Sequential Fallback
+      - If `status: "validation_failed"` → Handle validation error with bounded retry:
+        * Track a plan-validation attempt counter N, starting at 1 for the first architect delegation
+        * Read the error message from the JSON output
+        * If N < 4 (i.e. fewer than 3 retries used): increment N, then re-delegate to architect with the `[attempt:N]` tag and the validation errors
+          - Include validation failure details in architect prompt: "The plan validation failed with: [error message]. Please address these issues and regenerate the spec with a corrected plan."
+          - Return to step 4 to read the updated spec
+        * If N would reach 4 (architect retries exhausted with persistent validation failure): STOP retrying. Create an incident report (see the incident convention below), apply the `<label>-failed` label to the issue, and halt execution. Do not fall back to sequential execution for a plan that repeatedly fails validation — this is the same terminal escalation the QA feedback loop uses.
+      - If `status: "valid"` → Proceed with sequential execution (see below)
+   
+   c. Execute tasks sequentially in dependency-layer order (for valid plans):
+      - The JSON output contains a `layers` array giving a correct execution order; tasks are run one at a time (concurrency is disabled — see the NOTE below)
+      - Layer 0 tasks have no dependencies and can start immediately
+      - Layer N tasks depend on tasks from previous layers
+      
+      **Execution algorithm**:
+      ```
+      Execute tasks SEQUENTIALLY in dependency order. Do NOT spawn agents
+      concurrently — concurrent execution in the shared issue worktree is
+      unsafe (agents mutate shared files, including sentinel/artifact files,
+      so a parallel agent can corrupt another's work or read stale state).
+      The topological layering below is used only to determine a correct
+      execution ORDER, not to run tasks in parallel.
+
+      For each layer in the plan, in order:
+        For each task in the layer, ONE AT A TIME:
+          1. Spawn the assigned agent using the subagent tool and wait for it
+             to finish before starting the next task:
+             - Pass task.description, task.acceptance_criteria, and
+               task.validation_commands to the agent
+             - Tag with [attempt:1] for initial execution
+             - Use agent name from task.agent field
+          2. Run the task-level validation gate:
+             - Require the agent to run task.validation_commands and report
+               their results; a non-zero exit from any command is a task
+               failure. These task-level commands are distinct from the
+               spec-level QA commands in step 6 and do not replace them.
+          3. Check task completion:
+             - Read sentinel file (per the sentinel-protocol skill): .kiro-krew/artifacts/<agent>-<issue-number>-<task-id>.md
+             - Mark the task complete only if the sentinel reports success AND
+               all task.validation_commands passed
+             - If the task failed (agent failure or a failing validation
+               command), mark dependent tasks as skipped
+          4. Proceed to the next task only after the current one completes
+        Proceed to the next layer only after every task in this layer completes
+      ```
+
+      > NOTE: Parallel execution is intentionally disabled. Running independent
+      > tasks concurrently requires a concurrency model that isolates each
+      > task's filesystem/git state and redesigns the shared sentinel/artifact
+      > protocol; that work is deferred. Until then, execute strictly
+      > sequentially. Dependency ordering (topological layers) is still honored
+      > so results are identical to a correct parallel run, only slower.
+   
+   **Sequential Fallback (Backward Compatibility)**:
+   1. If no plan found in spec, use legacy sequential workflow
+   2. Delegate implementation tasks to the `builder` agent one at a time
+   3. Pass the spec content and specific tasks to builder
+   
+   **Task Spawning Guidelines**:
+   - Include task description and acceptance criteria in delegation message
+   - Include the task's own `validation_commands` and require the agent to run them; the task is not complete until they pass (distinct from the step-6 spec-level QA commands)
+   - Pass QA commands from discovery results (step 6.1)
+   - Tag with attempt number: `[attempt:N]` for retry tracking
+   - For plan-based execution, include task ID in delegation message
+   - Wait for sentinel file before marking task complete
 6. **Quality Assurance Loop**: Enforce quality gates before PR creation:
    1. **Discover QA Tools**: Use the `@discover-qa-tools` skill to identify project QA commands. Check if `.kiro-krew/artifacts/qa-tools.md` exists and is less than 24 hours old — if so, reuse it; otherwise regenerate.
    2. **Validate Implementation**: Delegate to `validator` agent with QA commands from discovery output
@@ -43,13 +118,13 @@ Extract the issue number, repo, and worktree name from this message and use them
 
 ## Available Agents
 
-You may ONLY delegate to these agents by name:
+Delegate only to agents discovered in the registry (`.kiro/agents/*.json`). Each plan task names its `agent`, and the plan validator has already confirmed that name exists in the registry — dispatch to exactly that agent. The core agents are:
 - `architect` — Analyzes issues and creates design specifications
 - `builder` — Implements code changes (ONE task at a time)
 - `validator` — Read-only verification that implementation meets requirements
 - `documenter` — Generates documentation for completed features
 
-Do NOT use any other agent names. Do NOT use `kiro_default` or `default`.
+The registry may contain additional specialized agents; dispatch to any agent a validated plan assigns. Do NOT invent agent names, and do NOT use `kiro_default` or `default` — every delegated name must resolve to a registry entry.
 
 ## Critical Requirements
 
@@ -133,17 +208,15 @@ Brief description of the failed task
 
 ## Sentinel File Convention
 
-Agent completion is detected via sentinel files using a naming convention (NOT via agent JSON config fields).
+Agent completion is detected via sentinel files (NOT via agent JSON config fields). The path format and write/read rules are defined once in the **sentinel-protocol** skill (`skill://.kiro/skills/sentinel-protocol/SKILL.md`) — follow it as the single source of truth.
 
-The pattern is: `.kiro-krew/artifacts/<agent-name>-<issue-number>.md`
+In brief: plan tasks use `.kiro-krew/artifacts/<agent>-<issue-number>-<task-id>.md` (the task id is required so multiple tasks assigned to the same agent do not collide or read a stale sentinel); the legacy/no-plan form is `.kiro-krew/artifacts/<agent>-<issue-number>.md`.
 
 Examples for issue 42:
-- Architect: `.kiro-krew/artifacts/architect-42.md`
-- Builder: `.kiro-krew/artifacts/builder-42.md`
-- Validator: `.kiro-krew/artifacts/validator-42.md`
-- Documenter: `.kiro-krew/artifacts/documenter-42.md`
+- Plan task `implement-api` (builder): `.kiro-krew/artifacts/builder-42-implement-api.md`
+- Legacy/no-plan builder: `.kiro-krew/artifacts/builder-42.md`
 
-When a subagent returns an empty response, check for its sentinel file before retrying:
-1. Check: `test -f .kiro-krew/artifacts/<agent-name>-<issue-number>.md`
+When a subagent returns an empty response, check for its sentinel file before retrying (per the skill):
+1. Check: `test -f .kiro-krew/artifacts/<agent>-<issue-number>-<task-id>.md` (task-less form for the legacy path)
 2. If it exists, read its contents to recover the agent's summary and continue normally
 3. If missing, proceed with normal retry escalation
