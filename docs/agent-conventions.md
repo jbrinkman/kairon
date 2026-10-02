@@ -79,9 +79,8 @@ When the builder agent modifies these file types, it automatically updates both 
 
 | File Type | Live Location | Template Location |
 |-----------|---------------|-------------------|
-| Agent Manifests | `.kairon/agents/*.json` | `cmd/kairon/templates/kairon/agents/*.json` |
-| Evaluation Cases | `.kairon/evals/**/*` | `cmd/kairon/templates/kairon/evals/**/*` |
-| Rubrics | `.kairon/rubrics/**/*` | `cmd/kairon/templates/kairon/rubrics/**/*` |
+| Agent Manifests | `.kiro/agents/*.json` | `cmd/kairon/templates/kiro/agents/*.json` |
+| Evaluation Cases | `.kairon/evals/cases/*, .kairon/evals/rubrics/*` | `cmd/kairon/templates/kairon/evals/cases/*, cmd/kairon/templates/kairon/evals/rubrics/*` |
 | Scripts | `.kairon/scripts/**/*` | `cmd/kairon/templates/kairon/scripts/**/*` |
 | Themes | `.kairon/themes/**/*` | `cmd/kairon/templates/kairon/themes/**/*` |
 
