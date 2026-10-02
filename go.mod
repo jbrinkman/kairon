@@ -1,6 +1,6 @@
 module github.com/jbrinkman/kiro-krew
 
-go 1.25.0
+go 1.26.5
 
 require (
 	charm.land/bubbles/v2 v2.1.0
