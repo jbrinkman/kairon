@@ -91,7 +91,7 @@ The builder-conventions skill provides commands to verify synchronization:
 ```bash
 # Check agent manifest sync
 for agent in architect builder documenter krew-lead planner validator; do
-  diff .kairon/agents/$agent.json cmd/kairon/templates/kairon/agents/$agent.json
+  diff .kiro/agents/$agent.json cmd/kairon/templates/kiro/agents/$agent.json
 done
 
 # Verify script functionality
