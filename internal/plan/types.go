@@ -2,6 +2,7 @@ package plan
 
 import (
 	"fmt"
+	"regexp"
 )
 
 // Plan represents a machine-readable execution plan for an issue
@@ -26,8 +27,17 @@ var (
 	ErrDuplicateTaskID = fmt.Errorf("duplicate task ID")
 	ErrMissingAgent    = fmt.Errorf("missing agent assignment")
 	ErrMissingTaskID   = fmt.Errorf("missing task ID")
+	ErrInvalidTaskID   = fmt.Errorf("invalid task ID")
 	ErrEmptyPlan       = fmt.Errorf("plan has no tasks")
 )
+
+// taskIDPattern is the safe grammar for task IDs: lowercase alphanumerics in
+// single-hyphen-separated groups (kebab-case), e.g. "task-1", "implement-api".
+// Task IDs are interpolated verbatim into sentinel paths and shell commands
+// (e.g. .kiro-krew/artifacts/<agent>-<issue>-<task-id>.md and test -f checks),
+// so disallowing '/', '..', whitespace, and shell metacharacters prevents path
+// traversal and command injection via a crafted or malformed ID.
+var taskIDPattern = regexp.MustCompile(`^[a-z0-9]+(-[a-z0-9]+)*$`)
 
 // Validate performs schema validation on the plan.
 //
@@ -67,6 +77,19 @@ func (p *Plan) Validate() error {
 			})
 			// Without an ID the remaining per-task checks can't reference the
 			// task meaningfully; skip to the next task.
+			continue
+		}
+
+		// Enforce the safe task-ID grammar before the ID is ever interpolated
+		// into sentinel paths or shell commands downstream.
+		if !taskIDPattern.MatchString(task.ID) {
+			errs = append(errs, ValidationError{
+				Field:   fmt.Sprintf("task[%s].id", task.ID),
+				Message: fmt.Sprintf("%v: '%s' must be kebab-case (lowercase alphanumerics separated by single hyphens)", ErrInvalidTaskID, task.ID),
+				Err:     ErrInvalidTaskID,
+			})
+			// A malformed ID can't be trusted in paths/commands or as a map key
+			// for duplicate detection; skip the remaining checks for this task.
 			continue
 		}
 

@@ -226,3 +226,57 @@ func TestPlanGetTaskIDs_EmptyPlan(t *testing.T) {
 		t.Errorf("expected 0 task IDs, got %d", len(ids))
 	}
 }
+
+// TestPlanValidate_TaskIDGrammar verifies the task-ID safe grammar: valid
+// kebab-case IDs pass, and IDs with characters dangerous in paths/shell
+// (slashes, dots, whitespace, metacharacters, uppercase, bad hyphenation) are
+// rejected with ErrInvalidTaskID before they can be interpolated downstream.
+func TestPlanValidate_TaskIDGrammar(t *testing.T) {
+	mkPlan := func(id string) *Plan {
+		return &Plan{
+			Version: "1.0",
+			Tasks: []Task{
+				{
+					ID:                 id,
+					Agent:              "builder",
+					Description:        "task",
+					AcceptanceCriteria: []string{"Done"},
+					ValidationCommands: []string{"go test"},
+				},
+			},
+		}
+	}
+
+	valid := []string{"task-1", "implement-api", "t1", "a", "a-b-c", "task-10-retry"}
+	for _, id := range valid {
+		t.Run("valid/"+id, func(t *testing.T) {
+			if err := mkPlan(id).Validate(); err != nil {
+				t.Errorf("expected ID %q to be valid, got: %v", id, err)
+			}
+		})
+	}
+
+	invalid := []string{
+		"../etc/passwd", // path traversal
+		"a/b",           // slash
+		"a..b",          // dot-dot
+		"a b",           // whitespace
+		"$(whoami)",     // shell metacharacters
+		"UPPER",         // uppercase
+		"-lead",         // leading hyphen
+		"trail-",        // trailing hyphen
+		"a--b",          // double hyphen
+		"task_1",        // underscore
+	}
+	for _, id := range invalid {
+		t.Run("invalid/"+id, func(t *testing.T) {
+			err := mkPlan(id).Validate()
+			if err == nil {
+				t.Fatalf("expected ID %q to be rejected", id)
+			}
+			if !errors.Is(err, ErrInvalidTaskID) {
+				t.Errorf("expected ErrInvalidTaskID for %q, got: %v", id, err)
+			}
+		})
+	}
+}
