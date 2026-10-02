@@ -15,7 +15,7 @@ The system uses `kiro-cli` agents working in isolated git worktrees. Each issue 
 
 ## Prerequisites
 
-- [Go 1.21+](https://go.dev/dl/)
+- [Go 1.26+](https://go.dev/dl/)
 - [GitHub CLI (`gh`)](https://cli.github.com/) — authenticated via `gh auth login`
 - [Kiro CLI (`kiro-cli`)](https://kiro.dev) — for running AI agents
 
