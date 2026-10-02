@@ -872,12 +872,20 @@ gh issue view 235 --json body --repo jbrinkman/kiro-krew
 
 ### Create Sentinel File
 
-Write validation report to:
-```
-.kiro-krew/artifacts/validator-[issue-number].md
-```
+Write your validation report to the sentinel file whose path is defined by the
+**sentinel-protocol** skill (the single source of truth for sentinel naming) —
+do NOT hard-code a path here. In brief:
 
-**Example**: `.kiro-krew/artifacts/validator-235.md`
+- **Plan task** (you were given a task `id`): use the task-scoped form
+  `.kiro-krew/artifacts/<agent>-<issue-number>-<task-id>.md`
+  (e.g. `.kiro-krew/artifacts/validator-235-verify-api.md`). The lead waits on
+  exactly this path and will NOT accept the task-less fallback for a plan task.
+- **Legacy / no-plan run** (no task `id`): use the task-less form
+  `.kiro-krew/artifacts/validator-<issue-number>.md`
+  (e.g. `.kiro-krew/artifacts/validator-235.md`).
+
+See `skill://.kiro/skills/sentinel-protocol/SKILL.md` for the authoritative
+rules, including the write/read contract.
 
 ### Report to Krew-Lead
 
