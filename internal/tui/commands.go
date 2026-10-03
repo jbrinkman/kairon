@@ -263,6 +263,9 @@ func (m model) handlePlan(description string) (model, tea.Cmd) {
 		return m, nil
 	}
 
+	// Pre-seed focus state to target message input when tab opens
+	m.tabFocusStates[planningTab.ID()] = FocusTargetMessage
+
 	// Set the tab title if description was provided
 	if description != "" {
 		planningTab.SetTitle(tabTitle)
@@ -278,6 +281,8 @@ func (m model) handlePlan(description string) (model, tea.Cmd) {
 	// Add initial message with connection status feedback
 	if description != "" {
 		planningTab.AddMessage("user", description)
+		// Position cursor at end of pre-filled description
+		planningTab.textinput.CursorEnd()
 		planningTab.AddMessage("system", "💡 Planning tab ready. ACP connection will be established when you send your first message.")
 	} else {
 		planningTab.AddMessage("system", "🚀 ACP-based Planning Tab ready. Type your message to start planning.")
