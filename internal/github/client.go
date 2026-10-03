@@ -41,6 +41,16 @@ func GetToken() (string, error) {
 	return strings.TrimSpace(string(output)), nil
 }
 
+// GetAuthenticatedUser returns the username of the authenticated GitHub user.
+func GetAuthenticatedUser() (string, error) {
+	cmd := exec.Command("gh", "api", "user", "--jq", ".login")
+	output, err := cmd.Output()
+	if err != nil {
+		return "", fmt.Errorf("gh api user failed: %w", err)
+	}
+	return strings.TrimSpace(string(output)), nil
+}
+
 func GetIssueDetails(repo string, number int) (*IssueDetails, error) {
 	cmd := exec.Command("gh", "issue", "view", fmt.Sprintf("%d", number), "--repo", repo, "--json", "body,state")
 	output, err := cmd.Output()
@@ -56,8 +66,15 @@ func GetIssueDetails(repo string, number int) (*IssueDetails, error) {
 	return &details, nil
 }
 
-func ListIssues(repo, label string) ([]Issue, error) {
-	cmd := exec.Command("gh", "issue", "list", "--repo", repo, "--label", label, "--state", "open", "--json", "number,title,body,labels")
+func ListIssues(repo, label, assignee string) ([]Issue, error) {
+	args := []string{"issue", "list", "--repo", repo, "--label", label, "--state", "open", "--json", "number,title,body,labels"}
+
+	// Add assignee filter if specified
+	if assignee != "" {
+		args = append(args, "--assignee", assignee)
+	}
+
+	cmd := exec.Command("gh", args...)
 	output, err := cmd.Output()
 	if err != nil {
 		if isRateLimited(err) {
