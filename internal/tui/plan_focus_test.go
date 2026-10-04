@@ -80,6 +80,21 @@ func execCommandViaUpdate(t *testing.T, m model, command string) model {
 	return m
 }
 
+// execCommandViaUpdateReturningCmd is like execCommandViaUpdate but returns the
+// command produced by the Enter handler so a caller can assert on it (e.g. that
+// a subprocess launch command was actually created). It does NOT drain the
+// command, leaving that to the caller.
+func execCommandViaUpdateReturningCmd(t *testing.T, m model, command string) (model, tea.Cmd) {
+	t.Helper()
+
+	m.input.SetValue(command)
+	m.input.SetFocus(true)
+
+	enter := tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter})
+	updated, cmd := m.Update(enter)
+	return updated.(model), cmd
+}
+
 // TestPlanWithDescriptionFocusesMessageInput tests T1: plan [description] focuses message input
 func TestPlanWithDescriptionFocusesMessageInput(t *testing.T) {
 	m := setupPlanFocusTestModel(t)
@@ -412,8 +427,15 @@ func TestPlanningTabSwitchPreservesDefaultFocus(t *testing.T) {
 func TestPlanClassicUnchanged(t *testing.T) {
 	m := setupPlanFocusTestModel(t)
 
-	// Execute plan classic command
-	m, _ = m.executeCommand("plan classic test description")
+	// Execute plan classic command through the full Update path and capture
+	// the launch command so we can assert the subprocess was actually started.
+	var launchCmd tea.Cmd
+	m, launchCmd = execCommandViaUpdateReturningCmd(t, m, "plan classic test description")
+
+	// Verify a launch command was produced (classic planning starts a kiro-cli subprocess)
+	if launchCmd == nil {
+		t.Fatal("Expected plan classic to produce a non-nil subprocess launch command")
+	}
 
 	// Verify mode switched to planning (classic mode)
 	if m.currentMode != "planning" {
