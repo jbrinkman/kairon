@@ -155,6 +155,15 @@ func TestPlanEmptyFocusesMessageInput(t *testing.T) {
 	if m.input.Focused() {
 		t.Error("Expected footer input to NOT be focused when message input should have focus")
 	}
+
+	// Verify the input is empty with the cursor ready at position 0 so the
+	// user lands ready to type (mirrors a fresh kiro-cli chat session).
+	if inputValue := planningTab.textinput.Value(); inputValue != "" {
+		t.Errorf("Expected empty textinput for the empty plan command, got %q", inputValue)
+	}
+	if cursorPosition := planningTab.textinput.Position(); cursorPosition != 0 {
+		t.Errorf("Expected cursor at position 0 for empty input, got %d", cursorPosition)
+	}
 }
 
 // TestPlanDescriptionCursorAtEnd tests T3: cursor positioned at end of description
@@ -171,35 +180,24 @@ func TestPlanDescriptionCursorAtEnd(t *testing.T) {
 		t.Fatal("Active tab is not a PlanningTab")
 	}
 
-	// Verify the description was added as a message to the history
-	// (not to the textinput field, which remains empty for user to type)
-	if len(planningTab.messages) < 1 {
-		t.Fatal("Expected at least one message in planning tab history")
-	}
-
-	// Find the user message with the description
-	foundDescription := false
+	// Verify the description was staged in the textinput (NOT added to
+	// conversation history) so the user can edit it before sending.
 	for _, msg := range planningTab.messages {
 		if msg.Role == "user" && msg.Content == description {
-			foundDescription = true
-			break
+			t.Errorf("Description %q should be staged in the input, not added to message history", description)
 		}
 	}
 
-	if !foundDescription {
-		t.Errorf("Expected to find user message with description %q in message history", description)
-	}
-
-	// Verify textinput is empty and ready for user input
+	// Verify textinput holds the description, ready for the user to edit/send
 	inputValue := planningTab.textinput.Value()
-	if inputValue != "" {
-		t.Errorf("Expected textinput to be empty for user input, got %q", inputValue)
+	if inputValue != description {
+		t.Errorf("Expected textinput to hold the description %q, got %q", description, inputValue)
 	}
 
-	// Verify cursor is at position 0 (empty input, ready to type)
+	// Verify cursor is at the end of the pre-filled description
 	cursorPosition := planningTab.textinput.Position()
-	if cursorPosition != 0 {
-		t.Errorf("Expected cursor at position 0 (empty input), got %d", cursorPosition)
+	if cursorPosition != len(description) {
+		t.Errorf("Expected cursor at end of description (position %d), got %d", len(description), cursorPosition)
 	}
 }
 
