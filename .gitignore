@@ -17,6 +17,7 @@ cmd/kairon/kairon
 /test-build
 .kairon/sessions/
 .kairon/artifacts/
+.kairon/sentinels/
 **/.kairon/sessions/
 coverage.out
 coverage.html
