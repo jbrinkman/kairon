@@ -130,3 +130,62 @@ func TestLoad_AllDefaultValues(t *testing.T) {
 		t.Errorf("EnableCopilotReview = %v, expected true", cfg.EnableCopilotReview)
 	}
 }
+
+func TestLoad_UserField(t *testing.T) {
+	tests := []struct {
+		name          string
+		configContent string
+		expectedUser  string
+	}{
+		{
+			name: "user field omitted - should default to empty (auto-detect sentinel)",
+			configContent: `repo: test/repo
+label: test-label`,
+			expectedUser: "",
+		},
+		{
+			name: "user field explicitly set",
+			configContent: `repo: test/repo
+label: test-label
+user: octocat`,
+			expectedUser: "octocat",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tmpDir := t.TempDir()
+			configDir := tmpDir + string(os.PathSeparator) + ".kairon"
+			if err := os.Mkdir(configDir, 0755); err != nil {
+				t.Fatalf("Failed to create config dir: %v", err)
+			}
+
+			configFile := configDir + string(os.PathSeparator) + "config.yaml"
+			if err := os.WriteFile(configFile, []byte(tt.configContent), 0644); err != nil {
+				t.Fatalf("Failed to write config file: %v", err)
+			}
+
+			oldDir, err := os.Getwd()
+			if err != nil {
+				t.Fatalf("Failed to get working directory: %v", err)
+			}
+			t.Cleanup(func() {
+				if err := os.Chdir(oldDir); err != nil {
+					t.Errorf("Failed to restore working directory: %v", err)
+				}
+			})
+			if err := os.Chdir(tmpDir); err != nil {
+				t.Fatalf("Failed to change directory: %v", err)
+			}
+
+			cfg, err := Load()
+			if err != nil {
+				t.Fatalf("Load() error = %v", err)
+			}
+
+			if cfg.User != tt.expectedUser {
+				t.Errorf("User = %q, expected %q", cfg.User, tt.expectedUser)
+			}
+		})
+	}
+}

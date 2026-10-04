@@ -9,6 +9,7 @@ import (
 
 	"github.com/jbrinkman/kairon/internal/agent"
 	"github.com/jbrinkman/kairon/internal/config"
+	"github.com/jbrinkman/kairon/internal/github"
 	"github.com/jbrinkman/kairon/internal/tui"
 	"github.com/jbrinkman/kairon/internal/version"
 	"github.com/jbrinkman/kairon/internal/watcher"
@@ -43,7 +44,19 @@ var rootCmd = &cobra.Command{
 		}
 
 		manager := agent.NewManager(cfg)
-		w := watcher.New(cfg, manager)
+
+		// Resolve GitHub username for assignee filtering
+		user := cfg.User
+		if user == "" {
+			// Auto-detect authenticated user
+			detectedUser, err := github.GetAuthenticatedUser()
+			if err != nil {
+				return fmt.Errorf("failed to auto-detect GitHub user (gh auth required): %w", err)
+			}
+			user = detectedUser
+		}
+
+		w := watcher.New(cfg, manager, user)
 
 		defer manager.StopAll()
 		defer w.Stop()

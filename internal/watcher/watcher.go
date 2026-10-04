@@ -19,6 +19,7 @@ import (
 type Watcher struct {
 	config              *config.Config
 	manager             *agent.Manager
+	user                string // GitHub username for assignee filtering
 	stop                chan struct{}
 	tracked             map[int]bool
 	mu                  sync.RWMutex
@@ -27,10 +28,11 @@ type Watcher struct {
 	dependencyValidator *DependencyValidator
 }
 
-func New(cfg *config.Config, mgr *agent.Manager) *Watcher {
+func New(cfg *config.Config, mgr *agent.Manager, user string) *Watcher {
 	return &Watcher{
 		config:              cfg,
 		manager:             mgr,
+		user:                user,
 		tracked:             make(map[int]bool),
 		backoffTracker:      NewBackoffTracker(),
 		dependencyValidator: NewDependencyValidator(),
@@ -44,7 +46,13 @@ func (w *Watcher) Start() {
 	w.cleanupOrphanedWorktrees()
 	w.stop = make(chan struct{})
 	w.started = true
-	log.Printf("[watcher] started — polling %s every %s for label %q", w.config.Repo, w.config.PollInterval, w.config.Label)
+
+	if w.user != "" {
+		log.Printf("[watcher] started — polling %s every %s for label %q (assignee: %s)", w.config.Repo, w.config.PollInterval, w.config.Label, w.user)
+	} else {
+		log.Printf("[watcher] started — polling %s every %s for label %q", w.config.Repo, w.config.PollInterval, w.config.Label)
+	}
+
 	go w.pollLoop()
 }
 
@@ -79,7 +87,7 @@ func (w *Watcher) checkIssues() {
 	w.backoffTracker.IncrementRound()
 
 	log.Printf("[watcher] polling for issues...")
-	issues, err := github.ListIssues(w.config.Repo, w.config.Label)
+	issues, err := github.ListIssues(w.config.Repo, w.config.Label, w.user)
 	if err != nil {
 		log.Printf("[watcher] error fetching issues: %v", err)
 		return
