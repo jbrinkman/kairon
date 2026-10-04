@@ -52,13 +52,41 @@ func setupPlanFocusTestModel(t *testing.T) model {
 	return m
 }
 
+// execCommandViaUpdate drives a command through the full top-level input path
+// exactly as a real keystroke would: it types the command into the footer
+// input, focuses the footer, and sends an Enter key through model.Update. The
+// Enter handler trims and clears the footer value and dispatches the command,
+// so this also exercises footer focus, Enter routing, and input clearing — not
+// just the private command dispatcher. Any follow-up command the Enter produces
+// (e.g. a focus-transfer message) is drained so post-conditions are observable.
+func execCommandViaUpdate(t *testing.T, m model, command string) model {
+	t.Helper()
+
+	m.input.SetValue(command)
+	m.input.SetFocus(true)
+
+	enter := tea.KeyPressMsg(tea.Key{Code: tea.KeyEnter})
+	updated, cmd := m.Update(enter)
+	m = updated.(model)
+
+	// Drain a single follow-up command (focus transfer, etc.) if present.
+	if cmd != nil {
+		if msg := cmd(); msg != nil {
+			updated, _ = m.Update(msg)
+			m = updated.(model)
+		}
+	}
+
+	return m
+}
+
 // TestPlanWithDescriptionFocusesMessageInput tests T1: plan [description] focuses message input
 func TestPlanWithDescriptionFocusesMessageInput(t *testing.T) {
 	m := setupPlanFocusTestModel(t)
 
 	// Execute plan command with description through full Update routing
 	description := "implement user authentication"
-	m, _ = m.executeCommand("plan " + description)
+	m = execCommandViaUpdate(t, m, "plan "+description)
 
 	// Verify a planning tab was created
 	tabs := m.tabManager.GetTabs()
@@ -110,7 +138,7 @@ func TestPlanEmptyFocusesMessageInput(t *testing.T) {
 	m := setupPlanFocusTestModel(t)
 
 	// Execute plan command without description
-	m, _ = m.executeCommand("plan")
+	m = execCommandViaUpdate(t, m, "plan")
 
 	// Verify a planning tab was created
 	tabs := m.tabManager.GetTabs()
@@ -172,7 +200,7 @@ func TestPlanDescriptionCursorAtEnd(t *testing.T) {
 
 	// Execute plan command with description
 	description := "add payment processing"
-	m, _ = m.executeCommand("plan " + description)
+	m = execCommandViaUpdate(t, m, "plan "+description)
 
 	activeTab := m.tabManager.GetActiveTab()
 	planningTab, ok := activeTab.(*PlanningTab)
@@ -208,7 +236,7 @@ func TestTabToggleAfterPlanFocus(t *testing.T) {
 	m := setupPlanFocusTestModel(t)
 
 	// Execute plan command with description
-	m, _ = m.executeCommand("plan implement search")
+	m = execCommandViaUpdate(t, m, "plan implement search")
 
 	activeTab := m.tabManager.GetActiveTab()
 	planningTab, ok := activeTab.(*PlanningTab)
@@ -298,7 +326,7 @@ func TestPlanningTabSwitchPreservesDefaultFocus(t *testing.T) {
 	m := setupPlanFocusTestModel(t)
 
 	// Create a planning tab through normal command (empty)
-	m, _ = m.executeCommand("plan")
+	m = execCommandViaUpdate(t, m, "plan")
 
 	activeTab := m.tabManager.GetActiveTab()
 	planningTab, ok := activeTab.(*PlanningTab)
