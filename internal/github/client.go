@@ -48,7 +48,11 @@ func GetAuthenticatedUser() (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("gh api user failed: %w", err)
 	}
-	return strings.TrimSpace(string(output)), nil
+	user := strings.TrimSpace(string(output))
+	if user == "" {
+		return "", fmt.Errorf("gh api user returned an empty login")
+	}
+	return user, nil
 }
 
 func GetIssueDetails(repo string, number int) (*IssueDetails, error) {
