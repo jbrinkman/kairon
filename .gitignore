@@ -23,3 +23,7 @@ coverage.out
 coverage.html
 *_coverage.out
 dist/
+
+# Kiro runtime artifacts
+.kiro/settings/
+**/.kiro-krew/
