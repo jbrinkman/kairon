@@ -263,6 +263,9 @@ func (m model) handlePlan(description string) (model, tea.Cmd) {
 		return m, nil
 	}
 
+	// Pre-seed focus state to target message input when tab opens
+	m.tabFocusStates[planningTab.ID()] = FocusTargetMessage
+
 	// Set the tab title if description was provided
 	if description != "" {
 		planningTab.SetTitle(tabTitle)
@@ -275,9 +278,16 @@ func (m model) handlePlan(description string) (model, tea.Cmd) {
 	var focusCmd tea.Cmd
 	m, focusCmd = m.switchActiveTab(len(m.tabManager.GetTabs()) - 1)
 
-	// Add initial message with connection status feedback
+	// Pre-fill the message input with the description (if any) so the user
+	// lands in the input ready to type/edit, cursor at end — mirroring a
+	// fresh kiro-cli chat session. The description is staged in the input,
+	// NOT added to conversation history: nothing is sent until the user
+	// submits it.
+	planningTab.textinput.SetValue(description)
+	planningTab.textinput.CursorEnd()
+
+	// Add connection status feedback as a system message
 	if description != "" {
-		planningTab.AddMessage("user", description)
 		planningTab.AddMessage("system", "💡 Planning tab ready. ACP connection will be established when you send your first message.")
 	} else {
 		planningTab.AddMessage("system", "🚀 ACP-based Planning Tab ready. Type your message to start planning.")
