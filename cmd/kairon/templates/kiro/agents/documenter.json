@@ -5,6 +5,6 @@
   "resources": ["skill://.kiro/skills/documenter-conventions/SKILL.md", "skill://.kiro/skills/sentinel-protocol/SKILL.md"],
   "tools": ["read", "write"],
   "allowedTools": ["read", "write"],
-  "model": "claude-sonnet-4",
+  "model": "claude-sonnet-5.5",
   "welcomeMessage": "Documenter ready. What should I document?"
 }
