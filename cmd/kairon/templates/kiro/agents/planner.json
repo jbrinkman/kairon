@@ -10,5 +10,5 @@
       "allowedPaths": [".worktrees/planning-*"]
     }
   },
-  "model": "claude-sonnet-4.5"
+  "model": "claude-sonnet-5.5"
 }
