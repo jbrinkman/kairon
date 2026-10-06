@@ -12,6 +12,12 @@ CONFIG_FILE=".kairon/config.yaml"
 # read_config_base_branch prints the top-level (column 0) base_branch value from
 # the kairon config, with surrounding quotes, trailing comments and whitespace
 # stripped. Prints nothing if the key is absent or empty.
+#
+# Only simple scalar values are supported: quotes are stripped but YAML escape
+# sequences are not decoded, so this can diverge from Config.BaseBranch for
+# escaped values (e.g. base_branch: "a\"b"). Such values are not valid Git
+# branch names anyway, so the git check-ref-format guard below rejects them and
+# the script fails safe rather than branching from the wrong ref.
 read_config_base_branch() {
     [ -f "$CONFIG_FILE" ] || return 0
     sed -n 's/^base_branch:[[:space:]]*//p' "$CONFIG_FILE" 2>/dev/null \
