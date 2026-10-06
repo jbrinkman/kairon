@@ -122,7 +122,7 @@ func TestPrintCaseResultBreakdownOnlyBelowThreshold(t *testing.T) {
 }
 
 func TestPrintCaseResultNoBreakdownWhenPassing(t *testing.T) {
-	// 9/10 = 90% >= 80% threshold, even though "weak" is below 3/4 of its max.
+	// 17/20 = 85% >= 80% threshold, even though "weak" is below 3/4 of its max.
 	cr := CaseResult{ActualOutput: "out", Scores: []CriterionScore{
 		{Name: "weak", Score: 2, MaxScore: 5},
 		{Name: "strong", Score: 5, MaxScore: 5},
