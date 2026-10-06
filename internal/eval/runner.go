@@ -429,73 +429,10 @@ func evaluate(rubric Rubric, cases []TestCase, gitHash string, out io.Writer, cC
 		}
 
 		// Task 4: Criterion-by-criterion evaluation display
-		for _, criterion := range rubric.Criteria {
-			if criterion.Type == "cost" {
-				continue // cost is tracked separately
-			}
-
-			score := CriterionScore{
-				Name:          criterion.Name,
-				MaxScore:      parseMaxScore(criterion.Scoring),
-				Deterministic: criterion.Deterministic,
-			}
-
-			if criterion.Deterministic {
-				score.Score, score.Reasoning, score.Skipped = scoreDeterministic(criterion, tc, cr.ActualOutput)
-			} else {
-				// LLM-judged criteria
-				if cr.ActualOutput == "" {
-					score.Score = 0
-					score.Skipped = true
-					score.Reasoning = "no output available for LLM judging"
-				} else {
-					judgeCost, judgeScore, reasoning, skipped := scoreLLMJudge(criterion, tc, cr.ActualOutput)
-					cr.JudgeCost.Add(judgeCost)
-					score.Score = judgeScore
-					score.Reasoning = reasoning
-					score.Skipped = skipped
-				}
-			}
-
-			cr.Scores = append(cr.Scores, score)
-		}
+		scoreCase(rubric, tc, &cr)
 
 		// Task 4: Color-coded final status for the case
-		if cr.ActualOutput != "" {
-			totalScore := 0
-			maxTotal := 0
-			for _, s := range cr.Scores {
-				if !s.Skipped {
-					totalScore += s.Score
-					maxTotal += s.MaxScore
-				}
-			}
-			if maxTotal == 0 {
-				fmt.Fprintf(out, " ⚠️  no scored criteria\n")
-			} else {
-				pct := float64(totalScore) / float64(maxTotal) * 100
-				threshold := getThreshold(tc)
-
-				if pct >= threshold {
-					fmt.Fprintf(out, " ✅ %.0f%% (threshold: %.0f%%)\n", pct, threshold)
-				} else if pct >= 60 {
-					fmt.Fprintf(out, " ⚠️  %.0f%% (threshold: %.0f%%)\n", pct, threshold)
-				} else {
-					fmt.Fprintf(out, " ❌ %.0f%% (threshold: %.0f%%)\n", pct, threshold)
-				}
-
-				// Show criterion breakdown for scores below threshold
-				if pct < threshold {
-					for _, s := range cr.Scores {
-						if !s.Skipped && s.Score < s.MaxScore*3/4 {
-							fmt.Fprintf(out, "      %s: %d/%d\n", s.Name, s.Score, s.MaxScore)
-						}
-					}
-				}
-			}
-		} else {
-			fmt.Fprintf(out, " ❌ no output\n")
-		}
+		printCaseResult(out, tc, cr)
 
 		// Track test case completion for performance profiling
 		testDuration := time.Since(testStart)
@@ -1386,35 +1323,7 @@ func evaluateProgressive(rubric Rubric, cases []TestCase, gitHash string, out io
 		}
 
 		// Score the test case
-		for _, criterion := range rubric.Criteria {
-			if criterion.Type == "cost" {
-				continue
-			}
-
-			score := CriterionScore{
-				Name:          criterion.Name,
-				MaxScore:      parseMaxScore(criterion.Scoring),
-				Deterministic: criterion.Deterministic,
-			}
-
-			if criterion.Deterministic {
-				score.Score, score.Reasoning, score.Skipped = scoreDeterministic(criterion, tc, cr.ActualOutput)
-			} else {
-				if cr.ActualOutput == "" {
-					score.Score = 0
-					score.Skipped = true
-					score.Reasoning = "no output available for LLM judging"
-				} else {
-					judgeCost, judgeScore, reasoning, skipped := scoreLLMJudge(criterion, tc, cr.ActualOutput)
-					cr.JudgeCost.Add(judgeCost)
-					score.Score = judgeScore
-					score.Reasoning = reasoning
-					score.Skipped = skipped
-				}
-			}
-
-			cr.Scores = append(cr.Scores, score)
-		}
+		scoreCase(rubric, tc, &cr)
 
 		// Add or update the case result
 		found := false
@@ -1439,40 +1348,7 @@ func evaluateProgressive(rubric Rubric, cases []TestCase, gitHash string, out io
 		TrackTestCase(tc.Name, testDuration)
 
 		// Display result
-		if cr.ActualOutput != "" {
-			totalScore := 0
-			maxTotal := 0
-			for _, s := range cr.Scores {
-				if !s.Skipped {
-					totalScore += s.Score
-					maxTotal += s.MaxScore
-				}
-			}
-			if maxTotal == 0 {
-				fmt.Fprintf(out, " ⚠️  no scored criteria\n")
-			} else {
-				pct := float64(totalScore) / float64(maxTotal) * 100
-				threshold := getThreshold(tc)
-
-				if pct >= threshold {
-					fmt.Fprintf(out, " ✅ %.0f%% (threshold: %.0f%%)\n", pct, threshold)
-				} else if pct >= 60 {
-					fmt.Fprintf(out, " ⚠️  %.0f%% (threshold: %.0f%%)\n", pct, threshold)
-				} else {
-					fmt.Fprintf(out, " ❌ %.0f%% (threshold: %.0f%%)\n", pct, threshold)
-				}
-
-				if pct < threshold {
-					for _, s := range cr.Scores {
-						if !s.Skipped && s.Score < s.MaxScore*3/4 {
-							fmt.Fprintf(out, "      %s: %d/%d\n", s.Name, s.Score, s.MaxScore)
-						}
-					}
-				}
-			}
-		} else {
-			fmt.Fprintf(out, " ❌ no output\n")
-		}
+		printCaseResult(out, tc, cr)
 	}
 
 	return result
