@@ -50,6 +50,11 @@ tasks:
     cmds:
       - test -z "$(gofmt -l .)"
 
+  eval:selftest:
+    desc: Run the eval harness self-test with the deterministic stub backend (no model calls)
+    cmds:
+      - go run ./cmd/kairon eval --backend stub --evals-dir internal/eval/testdata/evals selftest
+
   sync:check:
     desc: Verify template-synchronized files match their live counterparts
     cmds:
