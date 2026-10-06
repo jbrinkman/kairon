@@ -134,6 +134,10 @@ func (*kiroCLIBackend) invokeJudge(parent context.Context, req Request) (Respons
 		}
 	}
 
+	// Judge output is returned raw (unlike the agent path, which strips ANSI):
+	// this preserves the old runKiroCLI cmd.Output() behaviour, and the
+	// ===JSON_START===/===JSON_END=== parse tolerates surrounding ANSI. Do not
+	// "normalize" this to match the agent path — it would break judge parity.
 	resp.Text = string(out)
 	resp.Usage = EstimateUsage(req.Prompt, resp.Text)
 	return resp, nil
@@ -192,6 +196,9 @@ func copyDir(src, dst string) error {
 		if err != nil {
 			return err
 		}
+		// Mode is intentionally normalized to 0o644: this stages JSON/markdown
+		// agent configs, which are never executable. An executable fixture in an
+		// agents/ dir would silently lose its exec bit here.
 		return os.WriteFile(target, data, 0o644)
 	})
 }

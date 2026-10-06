@@ -27,6 +27,11 @@ type runConfig struct {
 
 // cfg is the active run configuration. Call configure before use; tests
 // reset it with resetConfig.
+//
+// Invariant: configure runs once before a run starts and cfg is only read
+// (never reassigned) during the run. InvestigateParallelExecution reads
+// cfg.backend from parallel goroutines, so configuring while a run is in
+// flight would be a data race.
 var cfg = newDefaultConfig()
 
 func newDefaultConfig() runConfig {

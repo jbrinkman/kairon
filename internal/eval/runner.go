@@ -827,6 +827,8 @@ func invokeAgentViaBackend(agent, prompt string, stub *inference.StubScript) (st
 		Timeout:        timeout,
 		AgentConfigDir: agentConfigDir(agent),
 		Stub:           stub,
+		// Turn is left 0: multi-turn stub selection lands with E9 (multi-turn
+		// cases). StubScript.Turns is a slice for that future, not yet wired.
 	})
 
 	if resp.Duration > 30*time.Second {
