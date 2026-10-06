@@ -273,7 +273,7 @@ Results go to `internal/eval/testdata/evals/results/`, which is git-ignored (`.g
    - `Invoke(ctx, Request) (Response, error)` — handle `RoleAgent` and `RoleJudge`.
 2. Add a name constant and register a constructor in the `registry` map in `internal/inference/inference.go`. `inference.Names()` feeds both the `--backend` help text and the unknown-backend error, so no CLI change is needed.
 3. Follow the contract:
-   - Fill `Response.Usage` with `Source` set to `inference.UsageReported` only when the counts really come from the model; otherwise use `inference.EstimateUsage`.
+   - Fill `Response.Usage` with `Source` set to `inference.UsageReported` when the backend supplies real token counts (for the stub, from the case's `stub.turns[].usage`); otherwise use `inference.EstimateUsage`.
    - Set `Response.Model` when known.
    - Populate `Command`, `Stderr`, `ExitCode` and `Duration` even when returning an error, since the harness builds `error_context` from them.
    - Wrap `inference.ErrTimeout` on timeouts so `errors.Is(err, inference.ErrTimeout)` holds.
