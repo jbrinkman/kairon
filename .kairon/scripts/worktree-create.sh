@@ -98,6 +98,8 @@ fi
 # Determine the start point: the freshly fetched tip of origin/<base>
 if git remote get-url origin >/dev/null 2>&1; then
     echo -e "${BLUE}Fetching origin/${BASE_BRANCH}...${NC}" >&2
+    # The leading '+' force-updates the tracking ref so we always branch from the
+    # current remote tip, even if the integration branch was rewritten upstream.
     if ! git fetch origin "+refs/heads/${BASE_BRANCH}:refs/remotes/origin/${BASE_BRANCH}" --quiet >&2; then
         if git rev-parse --verify --quiet "refs/remotes/origin/${BASE_BRANCH}^{commit}" >/dev/null; then
             echo -e "${YELLOW}Warning: fetch failed; using last-known origin/${BASE_BRANCH}${NC}" >&2
