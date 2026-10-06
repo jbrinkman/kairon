@@ -14,6 +14,7 @@ import (
 )
 
 func TestDockerfileGeneration_IncludesKiroCLI(t *testing.T) {
+	skipIfNoContainerDaemon(t)
 	tests := []struct {
 		name     string
 		platform string
@@ -219,6 +220,7 @@ func TestInstallationFailures_ErrorHandling(t *testing.T) {
 }
 
 func TestDockerfileGeneration_ProjectDetection(t *testing.T) {
+	skipIfNoContainerDaemon(t)
 	tempDir := t.TempDir()
 
 	c, err := NewContainer("alpine:3.19")
@@ -257,7 +259,7 @@ func TestBuildTimeVsRuntime_Installation(t *testing.T) {
 	})
 
 	t.Run("RuntimeVerification", func(t *testing.T) {
-		skipIfNoDocker(t)
+		skipIfNoContainerDaemon(t)
 
 		c, err := NewContainer("alpine:3.19")
 		require.NoError(t, err)
@@ -297,6 +299,7 @@ func TestPlatformSpecificBinaries(t *testing.T) {
 }
 
 func TestContainer_LogStartup(t *testing.T) {
+	skipIfNoContainerDaemon(t)
 	c, err := NewContainer("alpine:3.19")
 	require.NoError(t, err)
 	defer c.Close()
@@ -313,6 +316,7 @@ func TestContainer_LogStartup(t *testing.T) {
 }
 
 func TestContainer_GetContainerInfo(t *testing.T) {
+	skipIfNoContainerDaemon(t)
 	c, err := NewContainer("alpine:3.19")
 	require.NoError(t, err)
 	defer c.Close()
@@ -337,7 +341,7 @@ func TestDetectHostArchitecture_Unsupported(t *testing.T) {
 }
 
 func TestValidateKiroCLI_Verification(t *testing.T) {
-	skipIfNoDocker(t)
+	skipIfNoContainerDaemon(t)
 
 	c, err := NewContainer("alpine:3.19")
 	require.NoError(t, err)
@@ -366,7 +370,7 @@ func TestResourceLimits_Coverage(t *testing.T) {
 }
 
 func TestKiroCLIVerification_Detailed(t *testing.T) {
-	skipIfNoDocker(t)
+	skipIfNoContainerDaemon(t)
 
 	c, err := NewContainer("alpine:3.19")
 	require.NoError(t, err)
@@ -398,6 +402,7 @@ func TestProjectDetection_Coverage(t *testing.T) {
 }
 
 func TestContainer_ArchitectureErrors(t *testing.T) {
+	skipIfNoContainerDaemon(t)
 	c, err := NewContainer("alpine:3.19")
 	require.NoError(t, err)
 	defer c.Close()
@@ -413,6 +418,7 @@ func TestContainer_ArchitectureErrors(t *testing.T) {
 }
 
 func TestGenerateDockerfile_ErrorHandling(t *testing.T) {
+	skipIfNoContainerDaemon(t)
 	c, err := NewContainer("alpine:3.19")
 	require.NoError(t, err)
 	defer c.Close()
@@ -425,7 +431,7 @@ func TestGenerateDockerfile_ErrorHandling(t *testing.T) {
 
 func TestMockGitHub_Functions(t *testing.T) {
 	// Test mock functions for coverage even though they're not installation-related
-	skipIfNoDocker(t)
+	skipIfNoContainerDaemon(t)
 
 	c, err := NewContainer("alpine:3.19")
 	require.NoError(t, err)
@@ -462,7 +468,8 @@ func TestMockGitHub_Functions(t *testing.T) {
 }
 
 func TestContainer_CompleteInstallationFlow(t *testing.T) {
-	// Test complete installation flow without Docker dependency
+	skipIfNoContainerDaemon(t)
+	// Test complete installation flow against a live container daemon (Podman or Docker)
 	c, err := NewContainer("alpine:3.19")
 	require.NoError(t, err)
 	defer c.Close()

@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/docker/docker/api/types/image"
 	"github.com/docker/docker/client"
@@ -23,17 +22,16 @@ type ImageManager struct {
 
 // NewImageManager creates a new ImageManager for an evaluation run
 func NewImageManager(evaluationID string, debugMode bool) (*ImageManager, error) {
+	// Resolve a reachable container daemon (Docker or Podman) first; this may
+	// export DOCKER_HOST for a discovered Podman socket so the client below
+	// connects to it.
+	if err := EnsureContainerDaemon(); err != nil {
+		return nil, DaemonNotRunningError(err)
+	}
+
 	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
 	if err != nil {
 		return nil, fmt.Errorf("creating Docker client: %w", err)
-	}
-
-	// Verify Docker is running
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if _, err := cli.Ping(ctx); err != nil {
-		cli.Close()
-		return nil, fmt.Errorf("Docker is not running. Start Docker and try again: %w", err)
 	}
 
 	return &ImageManager{

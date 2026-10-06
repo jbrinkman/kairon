@@ -25,21 +25,14 @@ import (
 // ansiRegex matches all CSI (Control Sequence Introducer) escape sequences.
 var ansiRegex = regexp.MustCompile(`\x1b\[[0-9;]*[a-zA-Z]`)
 
-// checkDockerAvailability verifies Docker daemon is running and accessible
+// checkDockerAvailability verifies a container daemon (Podman or Docker) is
+// running and accessible. It delegates to sandbox.EnsureContainerDaemon so the
+// eval runner and the sandbox constructors share one Podman-aware detection
+// path and the same user-facing error message.
 func checkDockerAvailability() error {
-	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
-	if err != nil {
-		return err
+	if err := sandbox.EnsureContainerDaemon(); err != nil {
+		return sandbox.DaemonNotRunningError(err)
 	}
-	defer cli.Close()
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	if _, err := cli.Ping(ctx); err != nil {
-		return fmt.Errorf("Docker is not running. Start Docker and try again: %w", err)
-	}
-
 	return nil
 }
 
