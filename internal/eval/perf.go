@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 	"sync"
@@ -73,7 +72,7 @@ func StartProfiling() {
 	globalProfiler.startupMeasured = false
 }
 
-// MeasureStartupOverhead profiles kiro-cli startup time.
+// MeasureStartupOverhead profiles the inference backend's startup time.
 func MeasureStartupOverhead() time.Duration {
 	globalProfiler.mu.Lock()
 	defer globalProfiler.mu.Unlock()
@@ -82,11 +81,9 @@ func MeasureStartupOverhead() time.Duration {
 		return globalProfiler.startupOverhead
 	}
 
-	// Measure startup overhead with minimal command
-	start := time.Now()
-	cmd := exec.Command("kiro-cli", "--version")
-	cmd.Run()
-	overhead := time.Since(start)
+	// Measure startup overhead via the configured backend (0 for backends
+	// that start no process).
+	overhead := cfg.backend.StartupProbe()
 
 	globalProfiler.startupOverhead = overhead
 	globalProfiler.startupMeasured = true
@@ -282,7 +279,7 @@ func InvestigateParallelExecution(agent string) (*ParallelBenchmark, error) {
 		if err != nil {
 			continue
 		}
-		_, _, _, invokeErr := invokeAgent(agent, prompt, nil)
+		_, _, _, invokeErr := invokeAgent(agent, prompt, nil, tc.Stub)
 		if invokeErr != nil {
 			return nil, fmt.Errorf("sequential benchmark failed: %w", invokeErr)
 		}
@@ -302,7 +299,7 @@ func InvestigateParallelExecution(agent string) (*ParallelBenchmark, error) {
 			if err != nil {
 				return
 			}
-			_, _, _, invokeErr := invokeAgent(agent, prompt, nil)
+			_, _, _, invokeErr := invokeAgent(agent, prompt, nil, testCase.Stub)
 			if invokeErr != nil {
 				errMu.Lock()
 				parallelErr = invokeErr

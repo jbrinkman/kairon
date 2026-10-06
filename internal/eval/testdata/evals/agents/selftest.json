@@ -1,0 +1,7 @@
+{
+  "name": "selftest",
+  "description": "Minimal agent used only by the eval self-test fixtures.",
+  "prompt": "file://./selftest-prompt.md",
+  "tools": ["read"],
+  "allowedTools": ["read"]
+}

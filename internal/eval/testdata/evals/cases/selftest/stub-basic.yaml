@@ -1,0 +1,23 @@
+name: stub-basic
+description: "Self-test: stub backend returns a canned structured response; exercises setup file rebasing"
+agent: selftest
+input: |
+  Summarize the attached self-test input document.
+setup:
+  - type: file
+    label: "Self-test Input"
+    path: ".kairon/evals/fixtures/selftest-input.md"
+context:
+  - "This case runs against the deterministic stub backend"
+expected_output: |
+  A short summary with a top-level section and at least one subsection.
+stub:
+  turns:
+    - response: |
+        ## Summary
+
+        The input document describes the Kairon eval self-test fixture set.
+
+        ### Details
+
+        It is used to exercise the harness without invoking a real model.

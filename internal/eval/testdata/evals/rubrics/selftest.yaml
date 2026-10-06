@@ -1,0 +1,12 @@
+agent: selftest
+criteria:
+  - name: structural_completeness
+    description: "Output contains the expected section (##) and subsection (###) headings"
+    scoring: 1-5
+    deterministic: true
+  - name: clarity
+    description: "Output is clearly written and easy to follow"
+    scoring: 1-5
+  - name: cost_efficiency
+    description: "Token usage relative to output quality"
+    type: cost

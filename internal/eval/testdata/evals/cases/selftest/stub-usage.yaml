@@ -1,0 +1,23 @@
+name: stub-usage
+description: "Self-test: stub turn reports model and token usage, which must surface as reported usage"
+agent: selftest
+input: |
+  Describe what the self-test verifies.
+context:
+  - "This case runs against the deterministic stub backend"
+expected_output: |
+  A short description with a top-level section and at least one subsection.
+stub:
+  turns:
+    - response: |
+        ## Self-test
+
+        The self-test verifies the harness runs end to end without a real model.
+
+        ### Usage
+
+        Token usage comes from the stub turn and is reported, not estimated.
+      model: stub-model
+      usage:
+        input_tokens: 123
+        output_tokens: 45

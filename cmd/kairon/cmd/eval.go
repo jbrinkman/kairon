@@ -1,9 +1,11 @@
 package cmd
 
 import (
+	"fmt"
 	"strings"
 
 	"github.com/jbrinkman/kairon/internal/eval"
+	"github.com/jbrinkman/kairon/internal/inference"
 	"github.com/spf13/cobra"
 )
 
@@ -17,6 +19,8 @@ var (
 	evalResourceLimit []string
 	evalDebug         bool
 	evalCleanup       bool
+	evalBackend       string
+	evalEvalsDir      string
 )
 
 var evalCmd = &cobra.Command{
@@ -36,16 +40,6 @@ var evalCmd = &cobra.Command{
 			testcase = evalCase
 		}
 
-		// Handle cleanup operation
-		if evalCleanup {
-			return eval.RunCleanup()
-		}
-
-		// Handle performance investigation
-		if evalPerf {
-			return eval.RunPerformanceInvestigation(agent)
-		}
-
 		// Parse resource limits
 		resourceLimits := make(map[string]string)
 		for _, limit := range evalResourceLimit {
@@ -63,6 +57,9 @@ var evalCmd = &cobra.Command{
 			ResourceLimit: resourceLimits,
 			Debug:         evalDebug,
 			Cleanup:       evalCleanup,
+			Perf:          evalPerf,
+			Backend:       evalBackend,
+			EvalsDir:      evalEvalsDir,
 		})
 	},
 }
@@ -72,7 +69,7 @@ var diffCmd = &cobra.Command{
 	Short: "Compare two evaluation runs",
 	Args:  cobra.ExactArgs(2),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		return eval.Diff(args[0], args[1])
+		return eval.DiffWithOptions(args[0], args[1], eval.RunOptions{EvalsDir: evalEvalsDir})
 	},
 }
 
@@ -86,6 +83,10 @@ func init() {
 	evalCmd.Flags().StringSliceVar(&evalResourceLimit, "resource-limit", nil, "Override resource limits (cpu=1.0, memory=1073741824, timeout=5m)")
 	evalCmd.Flags().BoolVarP(&evalDebug, "debug", "d", false, "Enable debug mode with verbose logging and container persistence")
 	evalCmd.Flags().BoolVar(&evalCleanup, "cleanup", false, "Stop and remove all tracked debug containers and clean artifacts")
+	evalCmd.Flags().StringVar(&evalBackend, "backend", inference.NameKiroCLI,
+		fmt.Sprintf("Inference backend for agent and judge calls (%s)", strings.Join(inference.Names(), ", ")))
+	evalCmd.PersistentFlags().StringVar(&evalEvalsDir, "evals-dir", "",
+		"Evals directory holding rubrics, cases, fixtures and results (default \".kairon/evals\")")
 
 	evalCmd.AddCommand(diffCmd)
 	rootCmd.AddCommand(evalCmd)

@@ -10,7 +10,7 @@ import (
 
 // resolveRunDirectory handles both old and new format detection
 func resolveRunDirectory(runName string) (string, error) {
-	resultsDir := filepath.Join(".kairon", "evals", "results")
+	resultsDir := evalsPath("results")
 
 	// If directory exists as-is, use it
 	fullPath := filepath.Join(resultsDir, runName)
@@ -46,9 +46,18 @@ func resolveRunDirectory(runName string) (string, error) {
 	return "", fmt.Errorf("run directory %s not found", runName)
 }
 
+// DiffWithOptions is like Diff but first applies opts (notably EvalsDir) so
+// that results are read from the configured evals directory.
+func DiffWithOptions(runA, runB string, opts RunOptions) error {
+	if err := configure(opts); err != nil {
+		return err
+	}
+	return Diff(runA, runB)
+}
+
 // Diff compares two eval runs and prints score/cost deltas.
 func Diff(runA, runB string) error {
-	resultsDir := filepath.Join(".kairon", "evals", "results")
+	resultsDir := evalsPath("results")
 
 	resolvedA, err := resolveRunDirectory(runA)
 	if err != nil {

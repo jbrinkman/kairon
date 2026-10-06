@@ -2,6 +2,7 @@ package eval
 
 import (
 	"github.com/jbrinkman/kairon/internal/eval/sandbox"
+	"github.com/jbrinkman/kairon/internal/inference"
 )
 
 // Rubric defines scoring criteria for an agent.
@@ -37,6 +38,10 @@ type TestCase struct {
 	Setup          []SetupEntry `yaml:"setup,omitempty" json:"setup,omitempty"`
 	Agent          string       `yaml:"agent" json:"agent"`
 	MinScore       *float64     `yaml:"min_score,omitempty" json:"min_score,omitempty"` // Success threshold (0-100), defaults to 80%
+
+	// Stub scripts the agent's response for the stub inference backend.
+	// Other backends ignore it.
+	Stub *inference.StubScript `yaml:"stub,omitempty" json:"stub,omitempty"`
 }
 
 // CostInfo tracks token usage and estimated cost.
@@ -44,6 +49,51 @@ type CostInfo struct {
 	TokensIn     int     `json:"tokens_in"`
 	TokensOut    int     `json:"tokens_out"`
 	EstimatedUSD float64 `json:"estimated_usd"`
+
+	// Model is the model that served the request, when known.
+	Model string `json:"model,omitempty"`
+	// UsageSource is "reported" or "estimated" (see inference.UsageSource).
+	UsageSource string `json:"usage_source,omitempty"`
+}
+
+// Add accumulates other into c. Model is kept if c has none yet. The merged
+// UsageSource is "reported" only if every contributing part is "reported";
+// a part with no source contributes nothing when the receiver is empty, and
+// counts as not reported otherwise.
+func (c *CostInfo) Add(other CostInfo) {
+	empty := c.TokensIn == 0 && c.TokensOut == 0 && c.EstimatedUSD == 0 && c.UsageSource == ""
+
+	c.TokensIn += other.TokensIn
+	c.TokensOut += other.TokensOut
+	c.EstimatedUSD += other.EstimatedUSD
+
+	if c.Model == "" {
+		c.Model = other.Model
+	}
+
+	switch {
+	case empty:
+		c.UsageSource = other.UsageSource
+	case other.UsageSource == "" && other.TokensIn == 0 && other.TokensOut == 0 && other.EstimatedUSD == 0:
+		// other is an empty cost; it does not change the merged source.
+	case c.UsageSource == string(inference.UsageReported) && other.UsageSource == string(inference.UsageReported):
+		c.UsageSource = string(inference.UsageReported)
+	default:
+		c.UsageSource = string(inference.UsageEstimated)
+	}
+}
+
+// costFromUsage converts inference usage to a CostInfo using the Claude
+// Sonnet pricing estimate ($3/M input, $15/M output tokens).
+func costFromUsage(model string, u inference.Usage) CostInfo {
+	cost := (float64(u.InputTokens) * 3.0 / 1_000_000) + (float64(u.OutputTokens) * 15.0 / 1_000_000)
+	return CostInfo{
+		TokensIn:     u.InputTokens,
+		TokensOut:    u.OutputTokens,
+		EstimatedUSD: cost,
+		Model:        model,
+		UsageSource:  string(u.Source),
+	}
 }
 
 // CriterionScore is the score for a single criterion on a single test case.
@@ -95,6 +145,9 @@ type RunOptions struct {
 	ResourceLimit map[string]string // Resource limit overrides (cpu, memory, timeout)
 	Debug         bool              // Enable debug mode with verbose logging
 	Cleanup       bool              // Stop and remove tracked containers
+	Backend       string            // Inference backend name (default "kiro-cli")
+	EvalsDir      string            // Evals directory (default ".kairon/evals")
+	Perf          bool              // Run performance investigation
 }
 
 // Summary holds aggregate results for an eval run.

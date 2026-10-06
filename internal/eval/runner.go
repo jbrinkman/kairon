@@ -3,6 +3,7 @@ package eval
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -17,6 +18,7 @@ import (
 	"github.com/docker/docker/client"
 	"github.com/jbrinkman/kairon/internal/config"
 	"github.com/jbrinkman/kairon/internal/eval/sandbox"
+	"github.com/jbrinkman/kairon/internal/inference"
 	"gopkg.in/yaml.v3"
 )
 
@@ -43,9 +45,26 @@ func checkDockerAvailability() error {
 
 // RunWithOptions executes evaluation with extended CLI options.
 func RunWithOptions(agent string, testcase string, options RunOptions) error {
+	// Apply backend / evals-dir configuration before doing any work so that
+	// an unknown backend is rejected up front.
+	if err := configure(options); err != nil {
+		return err
+	}
+
+	// The stub backend never starts a process, while the sandbox path runs
+	// kiro-cli inside a container; the two cannot be combined.
+	if options.Sandbox && !options.NoSandbox && cfg.backend.Name() == inference.NameStub {
+		return fmt.Errorf("❌ --backend %s cannot be combined with --sandbox: the sandbox runs kiro-cli in a container", inference.NameStub)
+	}
+
 	// Handle cleanup operation early
 	if options.Cleanup {
 		return RunCleanup()
+	}
+
+	// Handle performance investigation
+	if options.Perf {
+		return RunPerformanceInvestigation(agent)
 	}
 
 	// Configure container sandboxing
@@ -221,7 +240,7 @@ func runSingleTestCase(agent string, testcase string) error {
 	}
 
 	timestamp := generateTimestampPrefix()
-	resultsDir := filepath.Join(".kairon", "evals", "results", timestamp)
+	resultsDir := evalsPath("results", timestamp)
 	if err := os.MkdirAll(resultsDir, 0755); err != nil {
 		return fmt.Errorf("failed to create results directory: %w", err)
 	}
@@ -315,19 +334,19 @@ func Run(agent string, cConfig *ContainerConfig) error {
 	}
 
 	// Measure startup overhead
-	fmt.Print("📊 Measuring kiro-cli startup overhead...")
+	fmt.Printf("📊 Measuring %s startup overhead...", cfg.backend.Name())
 	startupTime := MeasureStartupOverhead()
 	fmt.Printf(" %v\n", startupTime)
 
 	// Task 2: Validate rubrics directory exists
-	rubricsDir := filepath.Join(".kairon", "evals", "rubrics")
+	rubricsDir := evalsPath("rubrics")
 	if _, err := os.Stat(rubricsDir); os.IsNotExist(err) {
 		return fmt.Errorf("❌ Fatal: rubrics directory not found at %s", rubricsDir)
 	}
 
-	// Task 2: Check kiro-cli availability
-	if _, err := exec.LookPath("kiro-cli"); err != nil {
-		return fmt.Errorf("❌ Fatal: kiro-cli not found in PATH")
+	// Task 2: Check backend availability
+	if err := cfg.backend.Available(); err != nil {
+		return fmt.Errorf("❌ Fatal: %s not found in PATH", cfg.backend.Name())
 	}
 
 	gitHash, err := getGitShortHash()
@@ -341,11 +360,11 @@ func Run(agent string, cConfig *ContainerConfig) error {
 	}
 
 	if len(rubrics) == 0 {
-		return fmt.Errorf("❌ Fatal: no rubrics found in .kairon/evals/rubrics/")
+		return fmt.Errorf("❌ Fatal: no rubrics found in %s/", evalsPath("rubrics"))
 	}
 
 	timestamp := generateTimestampPrefix()
-	resultsDir := filepath.Join(".kairon", "evals", "results", timestamp+"-"+gitHash)
+	resultsDir := evalsPath("results", timestamp+"-"+gitHash)
 	if err := os.MkdirAll(resultsDir, 0755); err != nil {
 		return fmt.Errorf("failed to create results directory: %w", err)
 	}
@@ -393,7 +412,7 @@ func evaluate(rubric Rubric, cases []TestCase, gitHash string, out io.Writer, cC
 			cr.ActualOutput = ""
 		} else {
 			fmt.Fprintf(out, " → running agent...")
-			actualOutput, cost, errorContext, err := invokeAgent(rubric.Agent, prompt, cConfig)
+			actualOutput, cost, errorContext, err := invokeAgent(rubric.Agent, prompt, cConfig, tc.Stub)
 			if err != nil {
 				fmt.Fprintf(out, " ❌ (agent failed)\n")
 				fmt.Fprintf(out, "      Error: %v\n", err)
@@ -429,9 +448,7 @@ func evaluate(rubric Rubric, cases []TestCase, gitHash string, out io.Writer, cC
 					score.Reasoning = "no output available for LLM judging"
 				} else {
 					judgeCost, judgeScore, reasoning, skipped := scoreLLMJudge(criterion, tc, cr.ActualOutput)
-					cr.JudgeCost.TokensIn += judgeCost.TokensIn
-					cr.JudgeCost.TokensOut += judgeCost.TokensOut
-					cr.JudgeCost.EstimatedUSD += judgeCost.EstimatedUSD
+					cr.JudgeCost.Add(judgeCost)
 					score.Score = judgeScore
 					score.Reasoning = reasoning
 					score.Skipped = skipped
@@ -504,9 +521,10 @@ func assemblePrompt(setup []SetupEntry, input string) (string, error) {
 			if entry.Path == "" {
 				return "", fmt.Errorf("setup entry '%s' has type 'file' but no path", entry.Label)
 			}
-			content, err := os.ReadFile(entry.Path)
+			path := rebaseEvalsPath(entry.Path)
+			content, err := os.ReadFile(path)
 			if err != nil {
-				return "", fmt.Errorf("failed to read setup file %s: %w", entry.Path, err)
+				return "", fmt.Errorf("failed to read setup file %s: %w", path, err)
 			}
 			label := entry.Label
 			if label == "" {
@@ -528,14 +546,17 @@ func assemblePrompt(setup []SetupEntry, input string) (string, error) {
 	return strings.Join(parts, "\n\n"), nil
 }
 
-// invokeAgent executes kiro-cli with the given agent and prompt, with timeout support
-func invokeAgent(agent, prompt string, cConfig *ContainerConfig) (string, CostInfo, *ErrorContext, error) {
+// invokeAgent runs the agent with the given prompt, with timeout support.
+// With a container config it runs in Docker; otherwise it goes through the
+// configured inference backend. stub is the case's scripted response, used
+// only by the stub backend.
+func invokeAgent(agent, prompt string, cConfig *ContainerConfig, stub *inference.StubScript) (string, CostInfo, *ErrorContext, error) {
 	// Use container execution if configured
 	if cConfig != nil {
 		return invokeAgentInContainer(agent, prompt, cConfig)
 	}
 
-	return invokeAgentNative(agent, prompt)
+	return invokeAgentViaBackend(agent, prompt, stub)
 }
 
 // createContainerConfig builds container configuration from CLI options
@@ -765,8 +786,19 @@ func invokeAgentInContainer(agent, prompt string, cConfig *ContainerConfig) (str
 	return result, cost, nil, nil
 }
 
-// invokeAgentNative executes kiro-cli natively (original implementation)
-func invokeAgentNative(agent, prompt string) (string, CostInfo, *ErrorContext, error) {
+// agentConfigDir returns the evals-dir agents directory when it holds a config
+// for agent, so it takes precedence over the repo's .kiro/agents. It returns ""
+// otherwise, leaving backend behaviour unchanged.
+func agentConfigDir(agent string) string {
+	dir := evalsPath("agents")
+	if _, err := os.Stat(filepath.Join(dir, agent+".json")); err != nil {
+		return ""
+	}
+	return dir
+}
+
+// invokeAgentViaBackend runs the agent through the configured inference backend.
+func invokeAgentViaBackend(agent, prompt string, stub *inference.StubScript) (string, CostInfo, *ErrorContext, error) {
 	timeoutStr := os.Getenv("KAIRON_EVAL_TIMEOUT")
 	timeout := 2 * time.Minute
 	if timeoutStr != "" {
@@ -774,12 +806,6 @@ func invokeAgentNative(agent, prompt string) (string, CostInfo, *ErrorContext, e
 			timeout = parsedTimeout
 		}
 	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
-
-	cmd := exec.CommandContext(ctx, "kiro-cli", "chat", "--agent", agent, "--no-interactive", "--trust-all-tools")
-	cmd.Stdin = strings.NewReader(prompt)
 
 	// Capture working directory
 	workingDir, _ := os.Getwd()
@@ -792,58 +818,39 @@ func invokeAgentNative(agent, prompt string) (string, CostInfo, *ErrorContext, e
 		}
 	}
 
-	start := time.Now()
-	var stdout, stderr []byte
-	var err error
+	resp, err := cfg.backend.Invoke(context.Background(), inference.Request{
+		Role:           inference.RoleAgent,
+		Agent:          agent,
+		Prompt:         prompt,
+		Timeout:        timeout,
+		AgentConfigDir: agentConfigDir(agent),
+		Stub:           stub,
+	})
 
-	// Use CombinedOutput to capture both stdout and stderr
-	output := &strings.Builder{}
-	errOutput := &strings.Builder{}
-
-	cmd.Stdout = output
-	cmd.Stderr = errOutput
-
-	err = cmd.Run()
-	elapsed := time.Since(start)
-
-	if elapsed > 30*time.Second {
+	if resp.Duration > 30*time.Second {
 		fmt.Printf(" (>30s)")
 	}
 
-	stdout = []byte(output.String())
-	stderr = []byte(errOutput.String())
-
 	// Create error context for any execution issues
 	var errorContext *ErrorContext
-	if err != nil || len(stderr) > 0 {
-		exitCode := 0
-		if exitError, ok := err.(*exec.ExitError); ok {
-			exitCode = exitError.ExitCode()
-		}
-
+	if err != nil || len(resp.Stderr) > 0 {
 		errorContext = &ErrorContext{
-			Command:     fmt.Sprintf("kiro-cli chat --agent %s --no-interactive --trust-all-tools", agent),
+			Command:     resp.Command,
 			WorkingDir:  workingDir,
 			Environment: envVars,
-			Stderr:      string(stderr),
-			ExitCode:    exitCode,
+			Stderr:      resp.Stderr,
+			ExitCode:    resp.ExitCode,
 		}
 	}
 
 	if err != nil {
-		if ctx.Err() == context.DeadlineExceeded {
-			if errorContext != nil {
-				errorContext.Stderr = fmt.Sprintf("timeout after %v\n%s", timeout, errorContext.Stderr)
-			}
-			return "", CostInfo{}, errorContext, fmt.Errorf("kiro-cli timeout after %v", timeout)
+		if errors.Is(err, inference.ErrTimeout) && errorContext != nil {
+			errorContext.Stderr = fmt.Sprintf("timeout after %v\n%s", timeout, errorContext.Stderr)
 		}
-		return "", CostInfo{}, errorContext, fmt.Errorf("kiro-cli invocation failed: %w", err)
+		return "", CostInfo{}, errorContext, err
 	}
 
-	result := stripANSISequences(string(stdout))
-	cost := estimateCost(prompt, result)
-
-	return result, cost, errorContext, nil
+	return resp.Text, costFromUsage(resp.Model, resp.Usage), errorContext, nil
 }
 
 func scoreDeterministic(criterion Criterion, tc TestCase, actualOutput string) (int, string, bool) {
@@ -1039,15 +1046,6 @@ func scoreDeterministic(criterion Criterion, tc TestCase, actualOutput string) (
 	}
 }
 
-func runKiroCLI(prompt string) ([]byte, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-	defer cancel()
-
-	cmd := exec.CommandContext(ctx, "kiro-cli", "chat", "--no-interactive")
-	cmd.Stdin = strings.NewReader(prompt)
-	return cmd.Output()
-}
-
 func scoreLLMJudge(criterion Criterion, tc TestCase, actualOutput string) (CostInfo, int, string, bool) {
 	contextSection := ""
 	if len(tc.Context) > 0 {
@@ -1080,12 +1078,18 @@ INPUT:
 ACTUAL OUTPUT TO EVALUATE:
 %s`, criterion.Name, criterion.Description, contextSection, expectedSection, tc.Input, actualOutput)
 
-	output, err := runKiroCLI(prompt)
+	resp, err := cfg.backend.Invoke(context.Background(), inference.Request{
+		Role:    inference.RoleJudge,
+		Prompt:  prompt,
+		Timeout: 2 * time.Minute,
+	})
 	if err != nil {
-		return CostInfo{}, 0, fmt.Sprintf("kiro-cli chat failed: %v", err), true
+		// The backend's error already carries the historical wording
+		// (e.g. "kiro-cli chat failed: ...").
+		return CostInfo{}, 0, err.Error(), true
 	}
 
-	raw := string(output)
+	raw := resp.Text
 	start := strings.Index(raw, "===JSON_START===")
 	end := strings.Index(raw, "===JSON_END===")
 	if start == -1 || end == -1 || end <= start {
@@ -1105,21 +1109,12 @@ ACTUAL OUTPUT TO EVALUATE:
 	}
 
 	score := max(1, min(response.Score, 5))
-	cost := estimateCost(prompt, raw)
+	cost := costFromUsage(resp.Model, resp.Usage)
 	return cost, score, response.Reasoning, false
 }
 
 func estimateCost(input, output string) CostInfo {
-	// Rough estimate: ~4 chars per token
-	tokensIn := len(input) / 4
-	tokensOut := len(output) / 4
-	// Claude Sonnet pricing estimate: $3/M input, $15/M output
-	cost := (float64(tokensIn) * 3.0 / 1_000_000) + (float64(tokensOut) * 15.0 / 1_000_000)
-	return CostInfo{
-		TokensIn:     tokensIn,
-		TokensOut:    tokensOut,
-		EstimatedUSD: cost,
-	}
+	return costFromUsage("", inference.EstimateUsage(input, output))
 }
 
 func buildSummary(results []AgentResult, gitHash string) Summary {
@@ -1164,7 +1159,7 @@ func parseMaxScore(scoring string) int {
 }
 
 func loadRubrics(agentFilter string) ([]Rubric, error) {
-	dir := filepath.Join(".kairon", "evals", "rubrics")
+	dir := evalsPath("rubrics")
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read rubrics directory: %w", err)
@@ -1195,7 +1190,7 @@ func loadRubrics(agentFilter string) ([]Rubric, error) {
 }
 
 func loadCases(agent string) ([]TestCase, error) {
-	dir := filepath.Join(".kairon", "evals", "cases", agent)
+	dir := evalsPath("cases", agent)
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read cases directory for %s: %w", agent, err)
@@ -1248,7 +1243,7 @@ func getGitShortHash() (string, error) {
 func runWithResume(agent string) error {
 	fmt.Println("🔄 Scanning for incomplete evaluations...")
 
-	resultsBaseDir := filepath.Join(".kairon", "evals", "results")
+	resultsBaseDir := evalsPath("results")
 	entries, err := os.ReadDir(resultsBaseDir)
 	if err != nil {
 		return fmt.Errorf("❌ failed to read results directory: %w", err)
@@ -1372,7 +1367,7 @@ func evaluateProgressive(rubric Rubric, cases []TestCase, gitHash string, out io
 			cr.ActualOutput = ""
 		} else {
 			fmt.Fprintf(out, " → running agent...")
-			actualOutput, cost, errorContext, err := invokeAgent(rubric.Agent, prompt, cConfig)
+			actualOutput, cost, errorContext, err := invokeAgent(rubric.Agent, prompt, cConfig, tc.Stub)
 			if err != nil {
 				fmt.Fprintf(out, " ❌ (agent failed)\n")
 				fmt.Fprintf(out, "      Error: %v\n", err)
@@ -1407,9 +1402,7 @@ func evaluateProgressive(rubric Rubric, cases []TestCase, gitHash string, out io
 					score.Reasoning = "no output available for LLM judging"
 				} else {
 					judgeCost, judgeScore, reasoning, skipped := scoreLLMJudge(criterion, tc, cr.ActualOutput)
-					cr.JudgeCost.TokensIn += judgeCost.TokensIn
-					cr.JudgeCost.TokensOut += judgeCost.TokensOut
-					cr.JudgeCost.EstimatedUSD += judgeCost.EstimatedUSD
+					cr.JudgeCost.Add(judgeCost)
 					score.Score = judgeScore
 					score.Reasoning = reasoning
 					score.Skipped = skipped
@@ -1681,7 +1674,7 @@ func RunPerformanceInvestigation(agent string) error {
 	// Create results directory for performance report
 	timestamp := generateTimestampPrefix()
 	gitHash, _ := getGitShortHash()
-	resultsDir := filepath.Join(".kairon", "evals", "results", timestamp+"-perf-"+gitHash)
+	resultsDir := evalsPath("results", timestamp+"-perf-"+gitHash)
 	if err := os.MkdirAll(resultsDir, 0755); err != nil {
 		return fmt.Errorf("failed to create results directory: %w", err)
 	}
