@@ -7,6 +7,11 @@ max_activity_lines: 1000
 enable_copilot_review: true  # Enable AI-powered code review feedback
 # console_logging: false  # Enable real-time agent output in console
 
+# Base branch for new issue worktrees (optional).
+# When unset, Kairon auto-detects the repository's default branch.
+# Uncomment to force a specific branch (e.g. main, develop).
+# base_branch: main
+
 # Theme selection (optional, defaults to 'default')
 # Available themes: default, high-contrast, light
 # theme: default

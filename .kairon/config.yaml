@@ -5,6 +5,11 @@ max_retries: 3
 console_logging: false
 enable_copilot_review: false
 
+# Base branch for new issue worktrees (optional).
+# When unset, Kairon auto-detects the repository's default branch.
+# Uncomment to force a specific branch (e.g. main, develop).
+# base_branch: main
+
 # Theme selection (optional, defaults to 'default')
 # Available themes: default, high-contrast, light
 theme: "high-contrast"
