@@ -348,7 +348,7 @@ func Run(agent string, cConfig *ContainerConfig) error {
 
 	// Task 2: Check backend availability
 	if err := cfg.backend.Available(); err != nil {
-		return fmt.Errorf("❌ Fatal: %s not found in PATH", cfg.backend.Name())
+		return fmt.Errorf("❌ Fatal: %s unavailable: %w", cfg.backend.Name(), err)
 	}
 
 	gitHash, err := getGitShortHash()

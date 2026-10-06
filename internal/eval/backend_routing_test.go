@@ -251,7 +251,7 @@ func TestRunStubBackendSkipsPathCheck(t *testing.T) {
 	resetConfig()
 	writeCfgFile(t, filepath.Join(".kairon", "evals", "rubrics", "x.yaml"), "agent: x\ncriteria: []\n")
 	err = Run("x", nil)
-	if err == nil || err.Error() != "❌ Fatal: kiro-cli not found in PATH" {
+	if err == nil || !strings.Contains(err.Error(), "❌ Fatal: kiro-cli unavailable:") {
 		t.Fatalf("err = %v", err)
 	}
 }
