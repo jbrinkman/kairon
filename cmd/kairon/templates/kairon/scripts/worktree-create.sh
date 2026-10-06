@@ -72,7 +72,7 @@ WORKTREE_PATH=".worktrees/${SPEC_NAME}"
 BRANCH_NAME="spec/${SPEC_NAME}"
 
 # Idempotency: if worktree already exists, print path and exit 0
-if [ -d "$WORKTREE_PATH" ] && git worktree list | grep -q "$WORKTREE_PATH"; then
+if [ -d "$WORKTREE_PATH" ] && git worktree list --porcelain | grep -qxF "worktree $(pwd)/${WORKTREE_PATH}"; then
     echo -e "${YELLOW}Worktree already exists at ${WORKTREE_PATH}${NC}" >&2
     echo "$(pwd)/${WORKTREE_PATH}"
     exit 0
