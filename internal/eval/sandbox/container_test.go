@@ -8,27 +8,12 @@ import (
 	"time"
 
 	"github.com/docker/docker/api/types/container"
-	"github.com/docker/docker/client"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-func skipIfNoDocker(t *testing.T) {
-	t.Helper()
-	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
-	if err != nil {
-		t.Skip("Docker client unavailable:", err)
-	}
-	defer cli.Close()
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	if _, err := cli.Ping(ctx); err != nil {
-		t.Skip("Docker not running:", err)
-	}
-}
-
 func TestContainer_Lifecycle(t *testing.T) {
-	skipIfNoDocker(t)
+	skipIfNoContainerDaemon(t)
 
 	ctx := context.Background()
 	c, err := NewContainer("alpine:3.19")
@@ -65,7 +50,7 @@ func TestContainer_Lifecycle(t *testing.T) {
 }
 
 func TestContainer_CopyTo(t *testing.T) {
-	skipIfNoDocker(t)
+	skipIfNoContainerDaemon(t)
 
 	ctx := context.Background()
 	c, err := NewContainer("alpine:3.19")
@@ -199,7 +184,7 @@ func TestResourceLimits(t *testing.T) {
 }
 
 func TestResourceLimitsEnforcement(t *testing.T) {
-	skipIfNoDocker(t)
+	skipIfNoContainerDaemon(t)
 
 	ctx := context.Background()
 	c, err := NewContainer("alpine:3.19")
@@ -273,7 +258,7 @@ ENV PATH=$PATH:/usr/local/go/bin:$GOPATH/bin
 }
 
 func TestGitHubCLIMocking(t *testing.T) {
-	skipIfNoDocker(t)
+	skipIfNoContainerDaemon(t)
 	testdataDir := "testdata/github-cli-mock"
 
 	// Check mock script exists locally
@@ -289,7 +274,7 @@ func TestGitHubCLIMocking(t *testing.T) {
 }
 
 func TestContainerTimeout(t *testing.T) {
-	skipIfNoDocker(t)
+	skipIfNoContainerDaemon(t)
 
 	ctx := context.Background()
 
@@ -323,7 +308,7 @@ func TestContainerTimeout(t *testing.T) {
 }
 
 func TestContainer_WorkspacePermissions(t *testing.T) {
-	skipIfNoDocker(t)
+	skipIfNoContainerDaemon(t)
 
 	ctx := context.Background()
 	c, err := NewContainer("alpine:3.19")
@@ -360,7 +345,7 @@ func TestContainer_WorkspacePermissions(t *testing.T) {
 
 // TestWorkspaceValidation tests comprehensive workspace validation per Task 5
 func TestWorkspaceValidation(t *testing.T) {
-	skipIfNoDocker(t)
+	skipIfNoContainerDaemon(t)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
@@ -481,7 +466,7 @@ func TestWorkspaceValidation(t *testing.T) {
 }
 
 func TestExecWithOutput_ErrorHandling(t *testing.T) {
-	skipIfNoDocker(t)
+	skipIfNoContainerDaemon(t)
 
 	ctx := context.Background()
 	c, err := NewContainer("alpine:3.19")
@@ -516,7 +501,7 @@ func TestExecWithOutput_ErrorHandling(t *testing.T) {
 }
 
 func TestKiroCLIInstallation_VerificationLogic(t *testing.T) {
-	skipIfNoDocker(t)
+	skipIfNoContainerDaemon(t)
 
 	ctx := context.Background()
 	c, err := NewContainer("alpine:3.19")
@@ -541,7 +526,7 @@ func TestKiroCLIInstallation_VerificationLogic(t *testing.T) {
 }
 
 func TestContainer_GitHubMockingSetup(t *testing.T) {
-	skipIfNoDocker(t)
+	skipIfNoContainerDaemon(t)
 
 	ctx := context.Background()
 	c, err := NewContainer("alpine:3.19")
@@ -582,7 +567,7 @@ WORKDIR /workspace
 }
 
 func TestWorkspacePermissions(t *testing.T) {
-	skipIfNoDocker(t)
+	skipIfNoContainerDaemon(t)
 
 	ctx := context.Background()
 	c, err := NewContainerWithDebug("test-workspace-perms", true)

@@ -18,7 +18,7 @@ import (
 // TestEndToEndFlow validates the complete unified container creation flow:
 // generate → build → create → verify
 func TestEndToEndFlow(t *testing.T) {
-	skipIfNoDocker(t)
+	skipIfNoContainerDaemon(t)
 
 	hostPlatform, err := DetectHostArchitecture()
 	require.NoError(t, err)
@@ -122,7 +122,7 @@ func TestEndToEndFlow(t *testing.T) {
 
 // TestEndToEndFlowWithDebug validates debug mode includes proper artifact saving
 func TestEndToEndFlowWithDebug(t *testing.T) {
-	skipIfNoDocker(t)
+	skipIfNoContainerDaemon(t)
 
 	hostPlatform, err := DetectHostArchitecture()
 	require.NoError(t, err)
@@ -206,7 +206,7 @@ func TestEndToEndFlowWithDebug(t *testing.T) {
 // TestFlowConsistencyBetweenTestAndProduction validates that test and production
 // paths use the same container creation flow
 func TestFlowConsistencyBetweenTestAndProduction(t *testing.T) {
-	skipIfNoDocker(t)
+	skipIfNoContainerDaemon(t)
 
 	hostPlatform, err := DetectHostArchitecture()
 	require.NoError(t, err)

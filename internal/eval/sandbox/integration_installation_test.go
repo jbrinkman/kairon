@@ -12,7 +12,7 @@ import (
 )
 
 func TestContainerIntegration_KiroCLIInstallation(t *testing.T) {
-	skipIfNoDocker(t)
+	skipIfNoContainerDaemon(t)
 
 	// Only test the host architecture — cross-platform testing requires matrixed CI
 	hostPlatform, err := DetectHostArchitecture()
@@ -72,7 +72,7 @@ func TestContainerIntegration_KiroCLIInstallation(t *testing.T) {
 }
 
 func TestKiroCLIExecution_SandboxUser(t *testing.T) {
-	skipIfNoDocker(t)
+	skipIfNoContainerDaemon(t)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
@@ -144,7 +144,7 @@ func TestKiroCLIExecution_SandboxUser(t *testing.T) {
 }
 
 func TestCrossPlatform_InstallationVerification(t *testing.T) {
-	skipIfNoDocker(t)
+	skipIfNoContainerDaemon(t)
 
 	// Only test container creation for the host architecture
 	hostPlatform, err := DetectHostArchitecture()

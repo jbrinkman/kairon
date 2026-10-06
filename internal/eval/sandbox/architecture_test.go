@@ -99,7 +99,7 @@ func TestGetKiroCLIDownloadURL(t *testing.T) {
 }
 
 func TestCreateWithPlatform(t *testing.T) {
-	skipIfNoDocker(t)
+	skipIfNoContainerDaemon(t)
 
 	tests := []struct {
 		name     string
@@ -145,7 +145,7 @@ func TestCreateWithPlatform(t *testing.T) {
 }
 
 func TestArchitectureDetectionInContainer(t *testing.T) {
-	skipIfNoDocker(t)
+	skipIfNoContainerDaemon(t)
 
 	ctx := context.Background()
 	c, err := NewContainer("alpine:3.19")
@@ -195,7 +195,7 @@ func TestArchitectureDetectionInContainer(t *testing.T) {
 }
 
 func TestPlatformSpecificImagePulling(t *testing.T) {
-	skipIfNoDocker(t)
+	skipIfNoContainerDaemon(t)
 
 	ctx := context.Background()
 
@@ -231,7 +231,7 @@ func TestPlatformSpecificImagePulling(t *testing.T) {
 }
 
 func TestKiroCLIInstallationMocking(t *testing.T) {
-	skipIfNoDocker(t)
+	skipIfNoContainerDaemon(t)
 
 	ctx := context.Background()
 	c, err := NewContainer("alpine:3.19")

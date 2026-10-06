@@ -23,7 +23,7 @@ func TestArchitectureIntegration_ContainerLifecycle(t *testing.T) {
 	if testing.Short() {
 		t.Skip("Skipping integration test in short mode")
 	}
-	skipIfNoDocker(t)
+	skipIfNoContainerDaemon(t)
 
 	tests := []struct {
 		name     string
@@ -98,7 +98,7 @@ func TestArchitectureIntegration_KiroCLIInstallation(t *testing.T) {
 	if testing.Short() {
 		t.Skip("Skipping integration test in short mode")
 	}
-	skipIfNoDocker(t)
+	skipIfNoContainerDaemon(t)
 
 	// Only test on the current architecture to avoid long pull times
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
@@ -183,7 +183,7 @@ func TestArchitectureIntegration_MultiPlatformDockerfile(t *testing.T) {
 	if testing.Short() {
 		t.Skip("Skipping integration test in short mode")
 	}
-	skipIfNoDocker(t)
+	skipIfNoContainerDaemon(t)
 
 	// Create a temporary project directory
 	tmpDir := t.TempDir()
@@ -222,7 +222,7 @@ func TestArchitectureIntegration_ResourceLimitsAcrossArchitectures(t *testing.T)
 	if testing.Short() {
 		t.Skip("Skipping integration test in short mode")
 	}
-	skipIfNoDocker(t)
+	skipIfNoContainerDaemon(t)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Minute)
 	defer cancel()

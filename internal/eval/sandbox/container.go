@@ -107,7 +107,7 @@ func NewContainerWithDebug(imageName string, debugMode bool) (*Container, error)
 	defer cancel()
 	if _, err := cli.Ping(ctx); err != nil {
 		cli.Close()
-		return nil, fmt.Errorf("Docker is not running. Start Docker and try again: %w", err)
+		return nil, daemonNotRunningError(err)
 	}
 
 	var registry *Registry
