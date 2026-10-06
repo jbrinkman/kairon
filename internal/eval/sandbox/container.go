@@ -97,17 +97,16 @@ func NewContainer(imageName string) (*Container, error) {
 
 // NewContainerWithDebug creates a new container manager with debug options
 func NewContainerWithDebug(imageName string, debugMode bool) (*Container, error) {
+	// Resolve a reachable container daemon (Docker or Podman) first; this may
+	// export DOCKER_HOST for a discovered Podman socket so the client below
+	// connects to it.
+	if err := EnsureContainerDaemon(); err != nil {
+		return nil, DaemonNotRunningError(err)
+	}
+
 	cli, err := client.NewClientWithOpts(client.FromEnv, client.WithAPIVersionNegotiation())
 	if err != nil {
 		return nil, err
-	}
-
-	// Verify Docker is running
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if _, err := cli.Ping(ctx); err != nil {
-		cli.Close()
-		return nil, daemonNotRunningError(err)
 	}
 
 	var registry *Registry

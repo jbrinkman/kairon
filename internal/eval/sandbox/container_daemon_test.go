@@ -1,7 +1,6 @@
 package sandbox
 
 import (
-	"context"
 	"fmt"
 	"net"
 	"net/http"
@@ -12,80 +11,14 @@ import (
 	"testing"
 	"time"
 
-	"github.com/docker/docker/client"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-// daemonPingTimeout bounds every daemon reachability probe.
-const daemonPingTimeout = 2 * time.Second
-
-// pingFunc checks whether a container daemon is reachable. An empty host means
-// "use the environment" (client.FromEnv, i.e. DOCKER_HOST or the default
-// Docker socket); a non-empty host is an explicit endpoint such as
-// unix:///path/to/podman.sock.
-type pingFunc func(host string) error
-
-// pingContainerDaemon is the production pingFunc: it pings the daemon through
-// the Docker SDK (which also speaks to Podman's Docker-compatible API) with
-// API version negotiation and a 2s timeout. The podman binary is never used.
-func pingContainerDaemon(host string) error {
-	opts := []client.Opt{client.WithAPIVersionNegotiation()}
-	if host == "" {
-		opts = append(opts, client.FromEnv)
-	} else {
-		opts = append(opts, client.WithHost(host))
-	}
-	cli, err := client.NewClientWithOpts(opts...)
-	if err != nil {
-		return fmt.Errorf("container client unavailable: %w", err)
-	}
-	defer cli.Close()
-
-	ctx, cancel := context.WithTimeout(context.Background(), daemonPingTimeout)
-	defer cancel()
-	_, err = cli.Ping(ctx)
-	return err
-}
-
-// podmanSocketCandidates returns well-known Podman API socket paths for the
-// given OS. It is pure (no filesystem or process-environment access) so it can
-// be unit tested on any host.
-func podmanSocketCandidates(goos string, getenv func(string) string, uid int) []string {
-	var candidates []string
-	switch goos {
-	case "linux":
-		if xdg := getenv("XDG_RUNTIME_DIR"); xdg != "" {
-			candidates = append(candidates, filepath.Join(xdg, "podman", "podman.sock"))
-		} else if uid > 0 {
-			candidates = append(candidates, fmt.Sprintf("/run/user/%d/podman/podman.sock", uid))
-		}
-		candidates = append(candidates, "/run/podman/podman.sock")
-	case "darwin":
-		if tmp := getenv("TMPDIR"); tmp != "" {
-			candidates = append(candidates, filepath.Join(tmp, "podman", "podman-machine-default-api.sock"))
-		}
-		if home := getenv("HOME"); home != "" {
-			candidates = append(candidates,
-				filepath.Join(home, ".local", "share", "containers", "podman", "machine", "podman.sock"),
-				filepath.Join(home, ".local", "share", "containers", "podman", "machine", "podman-machine-default", "podman.sock"),
-			)
-		}
-	}
-	return candidates
-}
-
-// existingSockets filters candidates down to paths that exist on disk, so that
-// absent sockets do not cost a ping timeout.
-func existingSockets(candidates []string) []string {
-	var found []string
-	for _, p := range candidates {
-		if fi, err := os.Stat(p); err == nil && fi.Mode()&os.ModeSocket != 0 {
-			found = append(found, p)
-		}
-	}
-	return found
-}
+// pingContainerDaemon, podmanSocketCandidates, existingSockets, the
+// daemonPingTimeout constant and the pingFunc type now live in daemon.go
+// (production code) so the eval runner and sandbox constructors share one
+// Podman-aware detection path. The test-only helpers below build on them.
 
 // ensureContainerDaemon makes a container daemon reachable for the current
 // test. If DOCKER_HOST is set, or the default endpoint answers, nothing
@@ -266,4 +199,64 @@ func TestSkipIfNoContainerDaemon_MessageNamesPodmanAndDocker(t *testing.T) {
 	assert.Contains(t, msg, "Podman")
 	assert.Contains(t, msg, "Docker")
 	assert.True(t, strings.Contains(msg, "boom"), "underlying error should be included")
+}
+
+// --- Production detection (daemon.go) unit tests ---
+
+func TestDiscoverDaemonHost_DefaultEndpointAnswers(t *testing.T) {
+	host, err := discoverDaemonHost(
+		func(string) error { return nil },
+		[]string{"/unused.sock"},
+		false,
+	)
+	require.NoError(t, err)
+	assert.Empty(t, host, "no DOCKER_HOST override when the default endpoint answers")
+}
+
+func TestDiscoverDaemonHost_SelectsFirstLivePodmanSocket(t *testing.T) {
+	host, err := discoverDaemonHost(
+		func(h string) error {
+			if h == "unix:///run/podman/podman.sock" {
+				return nil
+			}
+			return fmt.Errorf("unreachable: %s", h)
+		},
+		[]string{"/run/user/1000/podman/podman.sock", "/run/podman/podman.sock"},
+		false,
+	)
+	require.NoError(t, err)
+	assert.Equal(t, "unix:///run/podman/podman.sock", host)
+}
+
+func TestDiscoverDaemonHost_ExplicitDockerHostSkipsProbing(t *testing.T) {
+	var probed []string
+	host, err := discoverDaemonHost(
+		func(h string) error {
+			probed = append(probed, h)
+			return fmt.Errorf("down")
+		},
+		[]string{"/run/podman/podman.sock"},
+		true, // DOCKER_HOST is set
+	)
+	require.Error(t, err)
+	assert.Empty(t, host)
+	assert.Equal(t, []string{""}, probed, "an explicit DOCKER_HOST must not trigger candidate probing")
+}
+
+func TestDiscoverDaemonHost_NothingReachable(t *testing.T) {
+	host, err := discoverDaemonHost(
+		func(string) error { return fmt.Errorf("down") },
+		[]string{"/run/podman/podman.sock"},
+		false,
+	)
+	require.Error(t, err)
+	assert.Empty(t, host)
+}
+
+func TestDaemonNotRunningError_NamesBothRuntimesAndWraps(t *testing.T) {
+	cause := fmt.Errorf("boom")
+	err := DaemonNotRunningError(cause)
+	assert.Contains(t, err.Error(), "Podman")
+	assert.Contains(t, err.Error(), "Docker")
+	assert.ErrorIs(t, err, cause, "underlying error must stay unwrappable via errors.Is")
 }
