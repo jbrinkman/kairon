@@ -42,7 +42,7 @@ func scoreCase(rubric Rubric, tc TestCase, cr *CaseResult) {
 }
 
 // printCaseResult writes the final status line for a scored case:
-// "no output" / "all criteria skipped" / pass (✅) / warn (⚠️, pct>=60) / fail (❌),
+// "no output" / "no scored criteria" / pass (✅) / warn (⚠️, pct>=60) / fail (❌),
 // plus the breakdown of criteria scoring below 3/4 of max when pct < threshold.
 func printCaseResult(out io.Writer, tc TestCase, cr CaseResult) {
 	if cr.ActualOutput != "" {
