@@ -112,7 +112,8 @@ func TestExistingSockets_FiltersMissingAndNonSockets(t *testing.T) {
 
 // startFakePodmanSocket serves a minimal Docker-compatible /_ping endpoint on a
 // unix socket and returns its path. A short /tmp path is used because unix
-// socket paths are limited to ~104 bytes on macOS.
+// socket paths are limited to ~104 bytes on macOS; t.TempDir()'s
+// /var/folders/... paths overflow sun_path, so it is deliberately avoided here.
 func startFakePodmanSocket(t *testing.T) string {
 	t.Helper()
 	dir, err := os.MkdirTemp("/tmp", "kpm")
@@ -149,7 +150,7 @@ func noDefaultDaemon(host string) error {
 
 func TestPodmanDiscovery_SelectsFakePodmanSocket(t *testing.T) {
 	sock := startFakePodmanSocket(t)
-	t.Setenv("DOCKER_HOST", "") // treated as unset; restored at test end
+	t.Setenv("DOCKER_HOST", "") // empty is treated as unset by the os.Getenv(...) != "" check; restored at test end
 
 	// Dead candidate first proves ordering/fallthrough; the live one must win.
 	dead := filepath.Join(t.TempDir(), "dead.sock")
