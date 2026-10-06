@@ -33,7 +33,8 @@ type LoggingConfig struct {
 type Config struct {
 	Repo                string        `yaml:"repo"`
 	Label               string        `yaml:"label"`
-	User                string        `yaml:"user"` // Optional GitHub username for issue filtering (auto-detects if empty)
+	User                string        `yaml:"user"`        // Optional GitHub username for issue filtering (auto-detects if empty)
+	BaseBranch          string        `yaml:"base_branch"` // Optional base branch for new worktrees (auto-detects if empty)
 	PollInterval        time.Duration `yaml:"poll_interval"`
 	MaxRetries          int           `yaml:"max_retries"`
 	MaxQARetries        int           `yaml:"max_qa_retries"`

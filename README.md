@@ -101,6 +101,7 @@ max_retries: 3
 | `label` | Issue label to watch for | `kairon` |
 | `poll_interval` | How often to poll GitHub | `5m` |
 | `max_retries` | Max retry attempts per issue | `3` |
+| `base_branch` | Integration branch that new issue worktrees are created from (optional) | auto-detect from `origin/HEAD`, else `main` |
 
 ### 3. Run
 
@@ -183,6 +184,21 @@ Each issue is processed in an isolated git worktree named `issue-<number>-<pid>`
 - `.kairon/scripts/worktree-create.sh <name>` — creates `.worktrees/<name>/` on branch `spec/<name>`
 - `.kairon/scripts/worktree-merge.sh <name>` — merges back, removes worktree, deletes branch
 - Orphaned worktrees (from crashed processes) are cleaned up automatically by checking if the PID is still running
+
+**Branching from a fresh `origin/<branch>`:** the long-lived main checkout is never fast-forwarded, so `worktree-create.sh` does not branch from its local `HEAD`. Instead it fetches the integration branch from `origin` and creates `spec/<name>` from `origin/<branch>` (with `--no-track`, so the spec branch has no upstream). Issues picked up after other PRs have merged therefore start from the latest remote tip.
+
+The integration branch is resolved in this order (first non-empty wins):
+
+1. `KAIRON_BASE_BRANCH` environment variable
+2. `base_branch` in `.kairon/config.yaml`
+3. The default branch of `origin` (`origin/HEAD`)
+4. `main`
+
+Fallbacks:
+- **Offline / fetch fails:** if a cached `origin/<branch>` already exists, the script warns and branches from that last-known ref. If none exists, it exits with an error.
+- **No `origin` remote:** the script warns and branches from local `HEAD` (useful for local-only repositories).
+
+`base_branch` only controls which branch the worktree starts from. Pull requests are still created against the repository's default branch.
 
 ### Issue Lifecycle
 

@@ -189,3 +189,69 @@ user: octocat`,
 		})
 	}
 }
+
+func TestLoad_BaseBranch(t *testing.T) {
+	tests := []struct {
+		name          string
+		configContent string
+		expected      string
+	}{
+		{
+			name: "base_branch omitted - should default to empty (auto-detect)",
+			configContent: `repo: test/repo
+label: test-label`,
+			expected: "",
+		},
+		{
+			name: "base_branch explicitly set",
+			configContent: `repo: test/repo
+label: test-label
+base_branch: develop`,
+			expected: "develop",
+		},
+		{
+			name: "base_branch only in a comment - should remain empty",
+			configContent: `repo: test/repo
+label: test-label
+# base_branch: main`,
+			expected: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tmpDir := t.TempDir()
+			configDir := tmpDir + string(os.PathSeparator) + ".kairon"
+			if err := os.Mkdir(configDir, 0755); err != nil {
+				t.Fatalf("Failed to create config dir: %v", err)
+			}
+
+			configFile := configDir + string(os.PathSeparator) + "config.yaml"
+			if err := os.WriteFile(configFile, []byte(tt.configContent), 0644); err != nil {
+				t.Fatalf("Failed to write config file: %v", err)
+			}
+
+			oldDir, err := os.Getwd()
+			if err != nil {
+				t.Fatalf("Failed to get working directory: %v", err)
+			}
+			t.Cleanup(func() {
+				if err := os.Chdir(oldDir); err != nil {
+					t.Errorf("Failed to restore working directory: %v", err)
+				}
+			})
+			if err := os.Chdir(tmpDir); err != nil {
+				t.Fatalf("Failed to change directory: %v", err)
+			}
+
+			cfg, err := Load()
+			if err != nil {
+				t.Fatalf("Load() error = %v", err)
+			}
+
+			if cfg.BaseBranch != tt.expected {
+				t.Errorf("BaseBranch = %q, expected %q", cfg.BaseBranch, tt.expected)
+			}
+		})
+	}
+}
