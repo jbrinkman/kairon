@@ -51,10 +51,12 @@ func RunWithOptions(agent string, testcase string, options RunOptions) error {
 		return err
 	}
 
-	// The stub backend never starts a process, while the sandbox path runs
-	// kiro-cli inside a container; the two cannot be combined.
-	if options.Sandbox && !options.NoSandbox && cfg.backend.Name() == inference.NameStub {
-		return fmt.Errorf("❌ --backend %s cannot be combined with --sandbox: the sandbox runs kiro-cli in a container", inference.NameStub)
+	// The sandbox path is hard-coded to run kiro-cli inside a container, so it
+	// is only valid for the kiro-cli backend. Reject --sandbox for every other
+	// backend (an allowlist, not a stub denylist) so a future backend used with
+	// --sandbox fails loudly instead of silently running kiro-cli.
+	if options.Sandbox && !options.NoSandbox && cfg.backend.Name() != inference.NameKiroCLI {
+		return fmt.Errorf("❌ --backend %s cannot be combined with --sandbox: the sandbox runs kiro-cli in a container", cfg.backend.Name())
 	}
 
 	// Handle cleanup operation early
