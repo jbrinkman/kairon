@@ -1,7 +1,6 @@
 # AGENTS.md
 
 Guidance for AI agents (coding, review, and comment-resolution agents) working in this repository.
-Humans are welcome to read it too.
 
 Most of this repository is live and should be edited freely to fix bugs and address review feedback: Go code,
 tests, `README.md`, `CONTRIBUTING.md`, `docs/`, agent prompts, skills, scripts and templates. A small, explicitly
