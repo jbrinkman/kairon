@@ -1344,8 +1344,10 @@ func runProgressiveEvaluation(agent, resultsDir string, isResume bool, cConfig *
 
 // checkResumeIntegrity refuses to resume into a result file that was written
 // with a different prompt or different models, so one file never mixes two
-// prompt/model versions. Files without a recorded prompt_sha256 (written
-// before provenance existed) and unpinned runs are not checked.
+// prompt/model versions. A legacy file (no recorded prompt_sha256) is refused
+// when it already holds saved cases, since resuming would stamp the current
+// models/hash onto scores produced under unknown inputs; an empty legacy file,
+// and unpinned runs, are not checked.
 func checkResumeIntegrity(resultsDir, agent string) error {
 	pin, ok := cfg.pins.pinOf(agent)
 	if !ok {
@@ -1373,7 +1375,18 @@ func checkResumeIntegrity(resultsDir, agent string) error {
 		return nil
 	}
 	var existing AgentResult
-	if json.Unmarshal(data, &existing) != nil || existing.PromptSHA256 == "" {
+	if json.Unmarshal(data, &existing) != nil {
+		return nil
+	}
+	if existing.PromptSHA256 == "" {
+		// Legacy result written before provenance existed. Resuming would stamp
+		// the current models/hash onto its saved cases, claiming a provenance
+		// they never had. Refuse when there is anything to mis-attribute; an
+		// empty legacy file has no scores to protect.
+		if len(existing.Cases) > 0 {
+			return fmt.Errorf("❌ cannot resume: %s.json predates run provenance and has %d saved case(s); its scores cannot be attributed to the current prompt/models — start a fresh run (without --resume)",
+				agent, len(existing.Cases))
+		}
 		return nil
 	}
 	if existing.PromptSHA256 != pin.Provenance.PromptSHA256 ||

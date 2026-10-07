@@ -502,3 +502,31 @@ func TestCheckResumeIntegrityGuardsRunLevelJudge(t *testing.T) {
 		t.Fatalf("unchanged judge should pass: %v", err)
 	}
 }
+
+// TestCheckResumeIntegrityRefusesLegacyWithCases covers a legacy result file
+// (no prompt_sha256) written before provenance existed: resuming it would stamp
+// the current models/hash onto scores produced under unknown inputs. It is
+// refused when it holds saved cases and allowed when it is empty.
+func TestCheckResumeIntegrityRefusesLegacyWithCases(t *testing.T) {
+	setupPinProject(t, "", "")
+	resultsDir := ".kairon/evals/results/run1"
+	cfg.pins = &runPins{
+		Judge:  "claude-sonnet-5.5",
+		Agents: map[string]agentPin{"architect": {Model: "claude-sonnet-5.5", Provenance: agentProvenance{PromptSHA256: "newhash"}}},
+	}
+
+	// Legacy file with a saved case and no prompt_sha256: refused.
+	writeProjectFile(t, filepath.Join(resultsDir, "architect.json"),
+		`{"agent":"architect","git_hash":"old","cases":[{"case_name":"c1"}]}`)
+	err := checkResumeIntegrity(resultsDir, "architect")
+	if err == nil || !strings.Contains(err.Error(), "predates run provenance") {
+		t.Fatalf("err = %v, want legacy-with-cases refusal", err)
+	}
+
+	// Legacy file with no saved cases: allowed (nothing to mis-attribute).
+	writeProjectFile(t, filepath.Join(resultsDir, "architect.json"),
+		`{"agent":"architect","git_hash":"old","cases":[]}`)
+	if err := checkResumeIntegrity(resultsDir, "architect"); err != nil {
+		t.Fatalf("empty legacy file should be allowed: %v", err)
+	}
+}

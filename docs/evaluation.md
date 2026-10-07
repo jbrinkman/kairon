@@ -410,7 +410,7 @@ When an `<evals-dir>/agents/` overlay is used, `kiro-cli` runs in a temporary wo
 ❌ cannot resume: prompt or models changed since the interrupted run of architect (recorded agent_model=… judge_model=… prompt_sha256=…; now agent_model=… judge_model=… prompt_sha256=…)
 ```
 
-Start a fresh run (without `--resume`) after changing a prompt, a resource or `evals`. Result files written before provenance existed (no `prompt_sha256`) are not checked, and an unchanged resume continues as before.
+Start a fresh run (without `--resume`) after changing a prompt, a resource or `evals`. A result file written before provenance existed (no `prompt_sha256`) is **refused when it already holds saved cases** — resuming would attribute those scores to the current prompt and models, which were unknown when they were produced; an empty legacy file is allowed. An unchanged resume continues as before.
 
 ## Evals Directory (`--evals-dir`)
 
