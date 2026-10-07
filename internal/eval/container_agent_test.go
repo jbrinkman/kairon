@@ -142,7 +142,7 @@ func pinAgentModel(agent, model string) {
 
 // 1 MiB prompt with quotes, newlines and command substitutions.
 func nastyPrompt() string {
-	const unit = "PROMPT-MARKER \"double\" 'single' `tick`\n$(touch /tmp/pwned) ${HOME} \\n ; rm -rf / #\n"
+	const unit = "PROMPT-MARKER \"double\" 'single' `tick`\n$(echo marker) ${HOME} \\n ; false && true || true | cat #\n"
 	return strings.Repeat(unit, (1<<20)/len(unit)+1)[:1<<20]
 }
 
