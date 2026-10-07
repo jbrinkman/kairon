@@ -76,6 +76,10 @@ type Request struct {
 	// any prompt files it references). When it contains <Agent>.json it takes
 	// precedence over the working directory's .kiro/agents.
 	AgentConfigDir string
+	// Model pins the model for this call. "" means the backend default
+	// (unpinned). The kiro-cli backend passes it as --model; the stub backend
+	// ignores it.
+	Model string
 	// Stub is used only by the stub backend.
 	Stub *StubScript
 	// Turn is the stub turn index to answer with (0 for now).

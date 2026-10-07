@@ -147,3 +147,37 @@ func TestStub_CancelledContext(t *testing.T) {
 		t.Error("expected context error")
 	}
 }
+
+func TestStub_IgnoresRequestModel(t *testing.T) {
+	b := newTestStub(t)
+
+	agent, err := b.Invoke(context.Background(), Request{
+		Role: RoleAgent, Prompt: "p", Model: "claude-sonnet-5.5",
+		Stub: &StubScript{Turns: []StubTurn{{Response: "r", Model: "stub-model"}}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if agent.Model != "stub-model" {
+		t.Errorf("agent Model = %q, want scripted %q", agent.Model, "stub-model")
+	}
+
+	agentNoScriptModel, err := b.Invoke(context.Background(), Request{
+		Role: RoleAgent, Prompt: "p", Model: "claude-sonnet-5.5",
+		Stub: &StubScript{Turns: []StubTurn{{Response: "r"}}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if agentNoScriptModel.Model != "" {
+		t.Errorf("agent Model = %q, want empty (Request.Model must be ignored)", agentNoScriptModel.Model)
+	}
+
+	judge, err := b.Invoke(context.Background(), Request{Role: RoleJudge, Prompt: "p", Model: "claude-sonnet-5.5"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if judge.Model != "stub" {
+		t.Errorf("judge Model = %q, want %q", judge.Model, "stub")
+	}
+}

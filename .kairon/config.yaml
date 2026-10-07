@@ -34,3 +34,18 @@ logging:
 #   cpu_cores: 1.0                 # CPU limit in cores
 #   memory_mb: 1024                # Memory limit in megabytes
 #   timeout: "5m"                  # Maximum execution time
+
+# Eval model pinning (optional). Applies to `kairon eval`.
+# Every agent call and judge call is pinned to a model; a run is refused before
+# any case starts if the effective agent model or the judge model is empty,
+# "auto", or not in allowed_models.
+# evals:
+#   agent_model: ""                 # override the agent-under-test model; default: the "model" in its agent config
+#   judge_model: "claude-sonnet-5.5"
+#   allowed_models:
+#     - "claude-sonnet-5.5"
+#     - "claude-sonnet-5"
+#     - "claude-sonnet-4.6"
+#     - "claude-sonnet-4.5"
+#     - "claude-sonnet-4"
+#     - "claude-haiku-4.5"

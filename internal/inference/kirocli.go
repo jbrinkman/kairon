@@ -50,7 +50,7 @@ func (b *kiroCLIBackend) Invoke(ctx context.Context, req Request) (Response, err
 	}
 }
 
-// invokeAgent runs `kiro-cli chat --agent <agent> --no-interactive --trust-all-tools`
+// invokeAgent runs `kiro-cli chat --agent <agent> --no-interactive --trust-all-tools [--model <m>]`
 // with the prompt on stdin. stdout/stderr are captured separately and ANSI
 // sequences are stripped from the returned text.
 func (*kiroCLIBackend) invokeAgent(parent context.Context, req Request) (Response, error) {
@@ -58,12 +58,19 @@ func (*kiroCLIBackend) invokeAgent(parent context.Context, req Request) (Respons
 	ctx, cancel := context.WithTimeout(parent, timeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, "kiro-cli", "chat", "--agent", req.Agent, "--no-interactive", "--trust-all-tools")
+	args := []string{"chat", "--agent", req.Agent, "--no-interactive", "--trust-all-tools"}
+	command := fmt.Sprintf("kiro-cli chat --agent %s --no-interactive --trust-all-tools", req.Agent)
+	if req.Model != "" {
+		args = append(args, "--model", req.Model)
+		command += " --model " + req.Model
+	}
+
+	cmd := exec.CommandContext(ctx, "kiro-cli", args...)
 	cmd.Stdin = strings.NewReader(req.Prompt)
 
-	resp := Response{
-		Command: fmt.Sprintf("kiro-cli chat --agent %s --no-interactive --trust-all-tools", req.Agent),
-	}
+	// kiro-cli cannot report the model that served the call, so Model echoes
+	// the requested one (also on error paths).
+	resp := Response{Command: command, Model: req.Model}
 
 	cleanup, err := applyAgentConfigOverlay(cmd, req.AgentConfigDir, req.Agent)
 	if err != nil {
@@ -101,17 +108,24 @@ func (*kiroCLIBackend) invokeAgent(parent context.Context, req Request) (Respons
 	return resp, nil
 }
 
-// invokeJudge runs `kiro-cli chat --no-interactive` with the prompt on stdin
+// invokeJudge runs `kiro-cli chat --no-interactive [--model <m>]` with the prompt on stdin
 // using cmd.Output() semantics. The raw (un-stripped) stdout is returned.
 func (*kiroCLIBackend) invokeJudge(parent context.Context, req Request) (Response, error) {
 	timeout := timeoutOrDefault(req.Timeout)
 	ctx, cancel := context.WithTimeout(parent, timeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, "kiro-cli", "chat", "--no-interactive")
+	args := []string{"chat", "--no-interactive"}
+	command := "kiro-cli chat --no-interactive"
+	if req.Model != "" {
+		args = append(args, "--model", req.Model)
+		command += " --model " + req.Model
+	}
+
+	cmd := exec.CommandContext(ctx, "kiro-cli", args...)
 	cmd.Stdin = strings.NewReader(req.Prompt)
 
-	resp := Response{Command: "kiro-cli chat --no-interactive"}
+	resp := Response{Command: command, Model: req.Model}
 
 	start := time.Now()
 	out, runErr := cmd.Output()

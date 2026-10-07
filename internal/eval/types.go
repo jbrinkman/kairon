@@ -1,6 +1,8 @@
 package eval
 
 import (
+	"encoding/json"
+
 	"github.com/jbrinkman/kairon/internal/eval/sandbox"
 	"github.com/jbrinkman/kairon/internal/inference"
 )
@@ -114,6 +116,8 @@ type CaseResult struct {
 	AgentCost    CostInfo         `json:"agent_cost"`
 	JudgeCost    CostInfo         `json:"judge_cost"`
 	ErrorContext *ErrorContext    `json:"error_context,omitempty"`
+	// Calls holds one record per agent call and per judge call, in execution order.
+	Calls []inference.CallRecord `json:"calls,omitempty"`
 }
 
 // ErrorContext captures execution details for debugging failed tests.
@@ -131,9 +135,16 @@ type ErrorContext struct {
 
 // AgentResult holds all case results for one agent.
 type AgentResult struct {
-	Agent   string       `json:"agent"`
-	GitHash string       `json:"git_hash"`
-	Cases   []CaseResult `json:"cases"`
+	Agent        string `json:"agent"`
+	GitHash      string `json:"git_hash"`
+	AgentModel   string `json:"agent_model,omitempty"`
+	JudgeModel   string `json:"judge_model,omitempty"`
+	PromptSHA256 string `json:"prompt_sha256,omitempty"`
+	// ResourcesPresent lists the config resources that existed when the hash
+	// was computed. It is not omitempty: a resolved-but-empty list serialises
+	// as [] so that "the missing resource was omitted" is observable.
+	ResourcesPresent []string     `json:"resources_present"`
+	Cases            []CaseResult `json:"cases"`
 }
 
 // RunOptions configures evaluation execution.
@@ -155,6 +166,43 @@ type Summary struct {
 	GitHash     string             `json:"git_hash"`
 	TotalCost   CostInfo           `json:"total_cost"`
 	AgentScores map[string]float64 `json:"agent_scores"` // agent -> average score
+
+	// Provenance. JudgeModel and Agents are always set for a pinned run; the
+	// top-level agent fields are populated only when the run covers exactly
+	// one agent (len(Agents) == 1), since several agents would make a single
+	// value ambiguous.
+	JudgeModel       string                     `json:"judge_model,omitempty"`
+	AgentModel       string                     `json:"agent_model,omitempty"`
+	PromptSHA256     string                     `json:"prompt_sha256,omitempty"`
+	ResourcesPresent []string                   `json:"resources_present,omitempty"`
+	Agents           map[string]AgentProvenance `json:"agents,omitempty"`
+}
+
+// MarshalJSON emits resources_present whenever the top-level agent fields are
+// populated (single-agent run), including as [] when the list is empty, and
+// omits it otherwise. A plain omitempty tag would drop the empty list, hiding
+// "every declared resource was missing".
+func (s Summary) MarshalJSON() ([]byte, error) {
+	type plain Summary
+	aux := struct {
+		plain
+		ResourcesPresent *[]string `json:"resources_present,omitempty"`
+	}{plain: plain(s)}
+	if s.PromptSHA256 != "" {
+		rp := s.ResourcesPresent
+		if rp == nil {
+			rp = []string{}
+		}
+		aux.ResourcesPresent = &rp
+	}
+	return json.Marshal(aux)
+}
+
+// AgentProvenance is the per-agent provenance recorded in Summary.Agents.
+type AgentProvenance struct {
+	AgentModel       string   `json:"agent_model"`
+	PromptSHA256     string   `json:"prompt_sha256"`
+	ResourcesPresent []string `json:"resources_present"`
 }
 
 // ContainerConfig configures containerized execution
