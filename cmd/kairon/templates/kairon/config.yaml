@@ -15,3 +15,18 @@ enable_copilot_review: true  # Enable AI-powered code review feedback
 # Theme selection (optional, defaults to 'default')
 # Available themes: default, high-contrast, light
 # theme: default
+
+# Eval model pinning (optional). Applies to `kairon eval`.
+# Every agent call and judge call is pinned to a model; a run is refused before
+# any case starts if the effective agent model or the judge model is empty,
+# "auto", or not in allowed_models.
+# evals:
+#   agent_model: ""                 # override the agent-under-test model; default: the "model" in its agent config
+#   judge_model: "claude-sonnet-5.5"
+#   allowed_models:
+#     - "claude-sonnet-5.5"
+#     - "claude-sonnet-5"
+#     - "claude-sonnet-4.6"
+#     - "claude-sonnet-4.5"
+#     - "claude-sonnet-4"
+#     - "claude-haiku-4.5"

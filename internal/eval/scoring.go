@@ -29,7 +29,8 @@ func scoreCase(rubric Rubric, tc TestCase, cr *CaseResult) {
 				score.Skipped = true
 				score.Reasoning = "no output available for LLM judging"
 			} else {
-				judgeCost, judgeScore, reasoning, skipped := scoreLLMJudge(criterion, tc, cr.ActualOutput)
+				judgeCost, judgeScore, reasoning, skipped, rec := scoreLLMJudge(criterion, tc, cr.ActualOutput)
+				cr.Calls = append(cr.Calls, rec)
 				cr.JudgeCost.Add(judgeCost)
 				score.Score = judgeScore
 				score.Reasoning = reasoning

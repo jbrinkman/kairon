@@ -2,6 +2,8 @@
   "name": "selftest",
   "description": "Minimal agent used only by the eval self-test fixtures.",
   "prompt": "file://./selftest-prompt.md",
+  "model": "claude-sonnet-5.5",
+  "resources": ["skill://.kiro/skills/selftest-conventions/SKILL.md"],
   "tools": ["read"],
   "allowedTools": ["read"]
 }

@@ -37,6 +37,15 @@ func checkDockerAvailability() error {
 }
 
 // RunWithOptions executes evaluation with extended CLI options.
+// willContainerize reports whether a non-nil ContainerConfig actually reaches
+// Run for these options: a sandbox run that is not opted out and not diverted
+// to the perf, single-case, or resume paths (which never containerise). It is
+// the single source of truth the model pre-flight uses to decide whether
+// evals.agent_model applies (it does not inside a container).
+func willContainerize(testcase string, options RunOptions) bool {
+	return options.Sandbox && !options.NoSandbox && !options.Perf && testcase == "" && !options.Resume
+}
+
 func RunWithOptions(agent string, testcase string, options RunOptions) error {
 	// Apply backend / evals-dir configuration before doing any work so that
 	// an unknown backend is rejected up front.
@@ -57,12 +66,24 @@ func RunWithOptions(agent string, testcase string, options RunOptions) error {
 		return RunCleanup()
 	}
 
+	// Pre-flight: pin and validate the judge and agent models before any
+	// case (or kiro-cli call) starts. willContainerize is the single source of
+	// truth for whether a non-nil ContainerConfig reaches Run.
+	if !options.List {
+		if err := pinRun(agent, options, willContainerize(testcase, options)); err != nil {
+			return err
+		}
+	}
+
 	// Handle performance investigation
 	if options.Perf {
 		return RunPerformanceInvestigation(agent)
 	}
 
-	// Configure container sandboxing
+	// Configure container sandboxing. (The guard is broader than
+	// willContainerize because the single-case/resume paths below build and
+	// then ignore cConfig; willContainerize captures when it actually reaches
+	// Run, which is what the pre-flight above must mirror.)
 	var cConfig *ContainerConfig
 	if options.Sandbox && !options.NoSandbox {
 		// Early Docker availability check before any configuration work
@@ -254,6 +275,11 @@ func runSingleTestCase(agent string, testcase string) error {
 		return fmt.Errorf("failed to write result file: %w", err)
 	}
 
+	// Single-case runs also get a summary.json carrying the provenance fields.
+	if err := updateIncrementalSummary(filepath.Join(resultsDir, "summary.json"), result, gitHash); err != nil {
+		return fmt.Errorf("failed to write summary: %w", err)
+	}
+
 	// Generate and display performance analysis for single test
 	profile := GenerateProfile()
 
@@ -392,6 +418,7 @@ func evaluate(rubric Rubric, cases []TestCase, gitHash string, out io.Writer, cC
 		Agent:   rubric.Agent,
 		GitHash: gitHash,
 	}
+	cfg.pins.applyTo(&result)
 
 	for i, tc := range cases {
 		fmt.Fprintf(out, "   [%d/%d] %s", i+1, len(cases), tc.Name)
@@ -407,7 +434,8 @@ func evaluate(rubric Rubric, cases []TestCase, gitHash string, out io.Writer, cC
 			cr.ActualOutput = ""
 		} else {
 			fmt.Fprintf(out, " → running agent...")
-			actualOutput, cost, errorContext, err := invokeAgent(rubric.Agent, prompt, cConfig, tc.Stub)
+			actualOutput, cost, rec, errorContext, err := invokeAgent(rubric.Agent, prompt, cConfig, tc.Stub)
+			cr.Calls = append(cr.Calls, rec)
 			if err != nil {
 				fmt.Fprintf(out, " ❌ (agent failed)\n")
 				fmt.Fprintf(out, "      Error: %v\n", err)
@@ -482,10 +510,28 @@ func assemblePrompt(setup []SetupEntry, input string) (string, error) {
 // With a container config it runs in Docker; otherwise it goes through the
 // configured inference backend. stub is the case's scripted response, used
 // only by the stub backend.
-func invokeAgent(agent, prompt string, cConfig *ContainerConfig, stub *inference.StubScript) (string, CostInfo, *ErrorContext, error) {
+//
+// The returned CallRecord describes the call (also when it failed).
+func invokeAgent(agent, prompt string, cConfig *ContainerConfig, stub *inference.StubScript) (string, CostInfo, inference.CallRecord, *ErrorContext, error) {
 	// Use container execution if configured
 	if cConfig != nil {
-		return invokeAgentInContainer(agent, prompt, cConfig)
+		start := time.Now()
+		out, cost, ec, err := invokeAgentInContainer(agent, prompt, cConfig)
+		rec := inference.CallRecord{
+			Role:         string(inference.RoleAgent),
+			Model:        cfg.pins.agentModel(agent),
+			Agent:        agent,
+			InputTokens:  cost.TokensIn,
+			OutputTokens: cost.TokensOut,
+			CostUSD:      cost.EstimatedUSD,
+			Estimated:    true,
+			DurationMS:   time.Since(start).Milliseconds(),
+			PromptSHA256: cfg.pins.agentPromptSHA(agent),
+		}
+		if err != nil {
+			rec.Error = err.Error()
+		}
+		return out, cost, rec, ec, err
 	}
 
 	return invokeAgentViaBackend(agent, prompt, stub)
@@ -730,7 +776,7 @@ func agentConfigDir(agent string) string {
 }
 
 // invokeAgentViaBackend runs the agent through the configured inference backend.
-func invokeAgentViaBackend(agent, prompt string, stub *inference.StubScript) (string, CostInfo, *ErrorContext, error) {
+func invokeAgentViaBackend(agent, prompt string, stub *inference.StubScript) (string, CostInfo, inference.CallRecord, *ErrorContext, error) {
 	timeoutStr := os.Getenv("KAIRON_EVAL_TIMEOUT")
 	timeout := 2 * time.Minute
 	if timeoutStr != "" {
@@ -750,16 +796,21 @@ func invokeAgentViaBackend(agent, prompt string, stub *inference.StubScript) (st
 		}
 	}
 
-	resp, err := cfg.backend.Invoke(context.Background(), inference.Request{
+	req := inference.Request{
 		Role:           inference.RoleAgent,
 		Agent:          agent,
 		Prompt:         prompt,
 		Timeout:        timeout,
 		AgentConfigDir: agentConfigDir(agent),
+		Model:          cfg.pins.agentModel(agent),
 		Stub:           stub,
 		// Turn is left 0: multi-turn stub selection lands with E9 (multi-turn
 		// cases). StubScript.Turns is a slice for that future, not yet wired.
-	})
+	}
+	wallStart := time.Now()
+	resp, err := cfg.backend.Invoke(context.Background(), req)
+	rec := newCallRecord(req, resp, err, time.Since(wallStart), costFromUsage(resp.Model, resp.Usage))
+	rec.PromptSHA256 = cfg.pins.agentPromptSHA(agent)
 
 	if resp.Duration > 30*time.Second {
 		fmt.Printf(" (>30s)")
@@ -781,10 +832,10 @@ func invokeAgentViaBackend(agent, prompt string, stub *inference.StubScript) (st
 		if errors.Is(err, inference.ErrTimeout) && errorContext != nil {
 			errorContext.Stderr = fmt.Sprintf("timeout after %v\n%s", timeout, errorContext.Stderr)
 		}
-		return "", CostInfo{}, errorContext, err
+		return "", CostInfo{}, rec, errorContext, err
 	}
 
-	return resp.Text, costFromUsage(resp.Model, resp.Usage), errorContext, nil
+	return resp.Text, costFromUsage(resp.Model, resp.Usage), rec, errorContext, nil
 }
 
 func scoreDeterministic(criterion Criterion, tc TestCase, actualOutput string) (int, string, bool) {
@@ -980,7 +1031,9 @@ func scoreDeterministic(criterion Criterion, tc TestCase, actualOutput string) (
 	}
 }
 
-func scoreLLMJudge(criterion Criterion, tc TestCase, actualOutput string) (CostInfo, int, string, bool) {
+// The returned CallRecord describes the judge call (also when it failed or
+// its output could not be parsed, since tokens were spent).
+func scoreLLMJudge(criterion Criterion, tc TestCase, actualOutput string) (CostInfo, int, string, bool, inference.CallRecord) {
 	contextSection := ""
 	if len(tc.Context) > 0 {
 		contextSection = fmt.Sprintf("\nCONTEXT FACTS (use for hallucination detection — deduct for contradictions):\n%s\n", strings.Join(tc.Context, "\n"))
@@ -1012,22 +1065,32 @@ INPUT:
 ACTUAL OUTPUT TO EVALUATE:
 %s`, criterion.Name, criterion.Description, contextSection, expectedSection, tc.Input, actualOutput)
 
-	resp, err := cfg.backend.Invoke(context.Background(), inference.Request{
+	req := inference.Request{
 		Role:    inference.RoleJudge,
 		Prompt:  prompt,
 		Timeout: 2 * time.Minute,
-	})
+		Model:   cfg.pins.judgeModel(),
+	}
+	wallStart := time.Now()
+	resp, err := cfg.backend.Invoke(context.Background(), req)
+	rec := newCallRecord(req, resp, err, time.Since(wallStart), costFromUsage(resp.Model, resp.Usage))
+	rec.Criterion = criterion.Name
+	// On a failed or unparseable call this returns CostInfo{} (zero), so the
+	// case's judge_cost deliberately keeps its historical zero-on-failure
+	// behaviour. The tokens that were actually spent are not lost: rec already
+	// carries the real cost and is appended to the case's calls[]. Do not add
+	// rec's cost back into judge_cost — that would double-count against calls[].
 	if err != nil {
 		// The backend's error already carries the historical wording
 		// (e.g. "kiro-cli chat failed: ...").
-		return CostInfo{}, 0, err.Error(), true
+		return CostInfo{}, 0, err.Error(), true, rec
 	}
 
 	raw := resp.Text
 	start := strings.Index(raw, "===JSON_START===")
 	end := strings.Index(raw, "===JSON_END===")
 	if start == -1 || end == -1 || end <= start {
-		return CostInfo{}, 0, fmt.Sprintf("JSON delimiters not found in output"), true
+		return CostInfo{}, 0, fmt.Sprintf("JSON delimiters not found in output"), true, rec
 	}
 	jsonStr := raw[start+len("===JSON_START===") : end]
 	jsonStr = stripANSISequences(strings.TrimSpace(jsonStr))
@@ -1039,12 +1102,39 @@ ACTUAL OUTPUT TO EVALUATE:
 	}
 
 	if err := json.Unmarshal([]byte(strings.TrimSpace(jsonStr)), &response); err != nil {
-		return CostInfo{}, 0, fmt.Sprintf("JSON parse error: %v", err), true
+		return CostInfo{}, 0, fmt.Sprintf("JSON parse error: %v", err), true, rec
 	}
 
 	score := max(1, min(response.Score, 5))
 	cost := costFromUsage(resp.Model, resp.Usage)
-	return cost, score, response.Reasoning, false
+	return cost, score, response.Reasoning, false, rec
+}
+
+// newCallRecord builds the audit record for one backend call. Model is the
+// served model when the backend reports one, else the pinned (requested) one;
+// DurationMS prefers the backend's measurement over the wall clock (the stub
+// reports 0). A failed call is still recorded, with Error set.
+func newCallRecord(req inference.Request, resp inference.Response, err error, wall time.Duration, cost CostInfo) inference.CallRecord {
+	rec := inference.CallRecord{
+		Role:         string(req.Role),
+		Model:        resp.Model,
+		Agent:        req.Agent,
+		InputTokens:  cost.TokensIn,
+		OutputTokens: cost.TokensOut,
+		CostUSD:      cost.EstimatedUSD,
+		Estimated:    resp.Usage.Source != inference.UsageReported,
+		DurationMS:   resp.Duration.Milliseconds(),
+	}
+	if rec.Model == "" {
+		rec.Model = req.Model
+	}
+	if resp.Duration == 0 {
+		rec.DurationMS = wall.Milliseconds()
+	}
+	if err != nil {
+		rec.Error = err.Error()
+	}
+	return rec
 }
 
 func estimateCost(input, output string) CostInfo {
@@ -1243,6 +1333,12 @@ func runProgressiveEvaluation(agent, resultsDir string, isResume bool, cConfig *
 			continue
 		}
 
+		if isResume {
+			if err := checkResumeIntegrity(resultsDir, rubric.Agent); err != nil {
+				return err
+			}
+		}
+
 		result := evaluateProgressive(rubric, cases, gitHash, os.Stdout, resultsDir, isResume, cConfig)
 
 		// Final save
@@ -1262,12 +1358,70 @@ func runProgressiveEvaluation(agent, resultsDir string, isResume bool, cConfig *
 	return nil
 }
 
+// checkResumeIntegrity refuses to resume into a result file that was written
+// with a different prompt or different models, so one file never mixes two
+// prompt/model versions. A legacy file (no recorded prompt_sha256) is refused
+// when it already holds saved cases, since resuming would stamp the current
+// models/hash onto scores produced under unknown inputs; an empty legacy file,
+// and unpinned runs, are not checked.
+func checkResumeIntegrity(resultsDir, agent string) error {
+	pin, ok := cfg.pins.pinOf(agent)
+	if !ok {
+		return nil
+	}
+
+	// A resumed run must keep the judge model recorded for the run as a whole,
+	// even for an agent that has no result file yet. In a multi-agent run
+	// interrupted after one agent was saved but before this one's file exists,
+	// the per-agent check below is a no-op (nothing to read), yet
+	// updateIncrementalSummary would overwrite summary.judge_model with the new
+	// value and leave the already-saved agent's scores attributed to a judge it
+	// never ran on. Guard against a run-level judge change independently.
+	if sumData, err := os.ReadFile(filepath.Join(resultsDir, "summary.json")); err == nil {
+		var existingSum Summary
+		if json.Unmarshal(sumData, &existingSum) == nil &&
+			existingSum.JudgeModel != "" && existingSum.JudgeModel != cfg.pins.Judge {
+			return fmt.Errorf("❌ cannot resume: judge_model changed since the interrupted run (summary recorded judge_model=%s; now %s)",
+				existingSum.JudgeModel, cfg.pins.Judge)
+		}
+	}
+
+	data, err := os.ReadFile(filepath.Join(resultsDir, agent+".json"))
+	if err != nil {
+		return nil
+	}
+	var existing AgentResult
+	if json.Unmarshal(data, &existing) != nil {
+		return nil
+	}
+	if existing.PromptSHA256 == "" {
+		// Legacy result written before provenance existed. Resuming would stamp
+		// the current models/hash onto its saved cases, claiming a provenance
+		// they never had. Refuse when there is anything to mis-attribute; an
+		// empty legacy file has no scores to protect.
+		if len(existing.Cases) > 0 {
+			return fmt.Errorf("❌ cannot resume: %s.json predates run provenance and has %d saved case(s); its scores cannot be attributed to the current prompt/models — start a fresh run (without --resume)",
+				agent, len(existing.Cases))
+		}
+		return nil
+	}
+	if existing.PromptSHA256 != pin.Provenance.PromptSHA256 ||
+		existing.AgentModel != pin.Model ||
+		existing.JudgeModel != cfg.pins.Judge {
+		return fmt.Errorf("❌ cannot resume: prompt or models changed since the interrupted run of %s (recorded agent_model=%s judge_model=%s prompt_sha256=%s; now agent_model=%s judge_model=%s prompt_sha256=%s)",
+			agent, existing.AgentModel, existing.JudgeModel, existing.PromptSHA256,
+			pin.Model, cfg.pins.Judge, pin.Provenance.PromptSHA256)
+	}
+	return nil
+}
+
 // evaluateProgressive runs evaluation with progressive result saving after each test case.
 func evaluateProgressive(rubric Rubric, cases []TestCase, gitHash string, out io.Writer, resultsDir string, isResume bool, cConfig *ContainerConfig) AgentResult {
 	result := AgentResult{
 		Agent:   rubric.Agent,
 		GitHash: gitHash,
 	}
+	cfg.pins.applyTo(&result)
 
 	// If resuming, load existing results
 	if isResume {
@@ -1275,6 +1429,9 @@ func evaluateProgressive(rubric Rubric, cases []TestCase, gitHash string, out io
 			var existing AgentResult
 			if json.Unmarshal(existingData, &existing) == nil {
 				result = existing
+				// Provenance is verified equal by checkResumeIntegrity (or the
+				// file predates provenance); stamp it from the current pins.
+				cfg.pins.applyTo(&result)
 			}
 		}
 	}
@@ -1301,7 +1458,8 @@ func evaluateProgressive(rubric Rubric, cases []TestCase, gitHash string, out io
 			cr.ActualOutput = ""
 		} else {
 			fmt.Fprintf(out, " → running agent...")
-			actualOutput, cost, errorContext, err := invokeAgent(rubric.Agent, prompt, cConfig, tc.Stub)
+			actualOutput, cost, rec, errorContext, err := invokeAgent(rubric.Agent, prompt, cConfig, tc.Stub)
+			cr.Calls = append(cr.Calls, rec)
 			if err != nil {
 				fmt.Fprintf(out, " ❌ (agent failed)\n")
 				fmt.Fprintf(out, "      Error: %v\n", err)
@@ -1446,6 +1604,30 @@ func updateIncrementalSummary(summaryFile string, agentResult AgentResult, gitHa
 
 	// Update total cost (this is cumulative across all agents)
 	summary.TotalCost = agentCost
+
+	// Provenance. A multi-agent run cannot carry a single top-level agent
+	// model/hash, so those are set only when exactly one agent is covered.
+	if agentResult.JudgeModel != "" {
+		summary.JudgeModel = agentResult.JudgeModel
+	}
+	if agentResult.PromptSHA256 != "" {
+		if summary.Agents == nil {
+			summary.Agents = make(map[string]AgentProvenance)
+		}
+		summary.Agents[agentResult.Agent] = AgentProvenance{
+			AgentModel:       agentResult.AgentModel,
+			PromptSHA256:     agentResult.PromptSHA256,
+			ResourcesPresent: append([]string{}, agentResult.ResourcesPresent...),
+		}
+	}
+	summary.AgentModel, summary.PromptSHA256, summary.ResourcesPresent = "", "", nil
+	if len(summary.Agents) == 1 {
+		for _, p := range summary.Agents {
+			summary.AgentModel = p.AgentModel
+			summary.PromptSHA256 = p.PromptSHA256
+			summary.ResourcesPresent = p.ResourcesPresent
+		}
+	}
 
 	// Write updated summary
 	data, err := json.MarshalIndent(summary, "", "  ")

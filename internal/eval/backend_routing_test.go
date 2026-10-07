@@ -47,7 +47,7 @@ func TestInvokeAgentDefaultBackendCommandLine(t *testing.T) {
 	chdirTemp(t)
 	_, calls := installFakeKiroCLI(t, "cat >/dev/null\nprintf '\\033[1mhello\\033[0m'")
 
-	out, cost, ec, err := invokeAgent("builder", "prompt text here", nil, nil)
+	out, cost, _, ec, err := invokeAgent("builder", "prompt text here", nil, nil)
 	if err != nil {
 		t.Fatalf("invokeAgent: %v", err)
 	}
@@ -71,7 +71,7 @@ func TestInvokeAgentDefaultBackendErrorContext(t *testing.T) {
 	chdirTemp(t)
 	installFakeKiroCLI(t, "cat >/dev/null\necho boom >&2\nexit 3")
 
-	_, _, ec, err := invokeAgent("builder", "p", nil, nil)
+	_, _, _, ec, err := invokeAgent("builder", "p", nil, nil)
 	if err == nil || !strings.HasPrefix(err.Error(), "kiro-cli invocation failed: ") {
 		t.Fatalf("err = %v, want kiro-cli invocation failed prefix", err)
 	}
@@ -97,7 +97,7 @@ func TestInvokeAgentDefaultBackendTimeout(t *testing.T) {
 	installFakeKiroCLI(t, "sleep 5")
 	t.Setenv("KAIRON_EVAL_TIMEOUT", "200ms")
 
-	_, _, ec, err := invokeAgent("builder", "p", nil, nil)
+	_, _, _, ec, err := invokeAgent("builder", "p", nil, nil)
 	if err == nil || err.Error() != "kiro-cli timeout after 200ms" {
 		t.Fatalf("err = %v, want %q", err, "kiro-cli timeout after 200ms")
 	}
@@ -116,7 +116,7 @@ func TestInvokeAgentStderrOnSuccessKeepsErrorContext(t *testing.T) {
 	chdirTemp(t)
 	installFakeKiroCLI(t, "cat >/dev/null\necho warn >&2\necho ok")
 
-	out, _, ec, err := invokeAgent("builder", "p", nil, nil)
+	out, _, _, ec, err := invokeAgent("builder", "p", nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -133,7 +133,7 @@ func TestScoreLLMJudgeDefaultBackend(t *testing.T) {
 	_, calls := installFakeKiroCLI(t, `cat >/dev/null
 printf 'noise ===JSON_START===\n{"score": 4, "reasoning": "fine", "pass": true}\n===JSON_END==='`)
 
-	cost, score, reasoning, skipped := scoreLLMJudge(
+	cost, score, reasoning, skipped, _ := scoreLLMJudge(
 		Criterion{Name: "clarity", Description: "d"}, TestCase{Input: "in"}, "actual")
 	if skipped || score != 4 || reasoning != "fine" {
 		t.Fatalf("got score=%d reasoning=%q skipped=%v", score, reasoning, skipped)
@@ -151,7 +151,7 @@ func TestScoreLLMJudgeFailureWording(t *testing.T) {
 	chdirTemp(t)
 	installFakeKiroCLI(t, "cat >/dev/null\nexit 2")
 
-	_, score, reasoning, skipped := scoreLLMJudge(Criterion{Name: "c"}, TestCase{}, "actual")
+	_, score, reasoning, skipped, _ := scoreLLMJudge(Criterion{Name: "c"}, TestCase{}, "actual")
 	if !skipped || score != 0 {
 		t.Errorf("score=%d skipped=%v", score, skipped)
 	}
@@ -171,7 +171,7 @@ func TestStubBackendNeverStartsKiroCLI(t *testing.T) {
 		Usage:    &inference.StubUsage{InputTokens: 123, OutputTokens: 45},
 	}}}
 
-	out, cost, ec, err := invokeAgent("selftest", "prompt", nil, stub)
+	out, cost, _, ec, err := invokeAgent("selftest", "prompt", nil, stub)
 	if err != nil || ec != nil {
 		t.Fatalf("err=%v ec=%+v", err, ec)
 	}
@@ -182,7 +182,7 @@ func TestStubBackendNeverStartsKiroCLI(t *testing.T) {
 		t.Errorf("cost = %+v", cost)
 	}
 
-	jc, score, _, skipped := scoreLLMJudge(Criterion{Name: "clarity"}, TestCase{}, out)
+	jc, score, _, skipped, _ := scoreLLMJudge(Criterion{Name: "clarity"}, TestCase{}, out)
 	if skipped || score != 5 {
 		t.Errorf("judge score=%d skipped=%v", score, skipped)
 	}
@@ -204,7 +204,7 @@ func TestStubAgentMissingScriptIsError(t *testing.T) {
 	chdirTemp(t)
 	useStubBackend(t)
 
-	_, _, ec, err := invokeAgent("a", "p", nil, nil)
+	_, _, _, ec, err := invokeAgent("a", "p", nil, nil)
 	if err == nil || !strings.Contains(err.Error(), "stub.turns[0].response") {
 		t.Fatalf("err = %v", err)
 	}

@@ -350,3 +350,141 @@ func TestKiroCLI_OverlayCleanedUpOnFailure(t *testing.T) {
 		t.Errorf("overlay dir %s should be cleaned up after failure", pwd)
 	}
 }
+
+func TestKiroCLI_AgentModelFlag(t *testing.T) {
+	rec := installFakeKiro(t, "")
+	resp, err := newKiro(t).Invoke(context.Background(), Request{
+		Role: RoleAgent, Agent: "my-agent", Prompt: "p", Model: "claude-sonnet-5.5",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := strings.TrimSpace(readRec(t, rec, "args")),
+		"chat --agent my-agent --no-interactive --trust-all-tools --model claude-sonnet-5.5"; got != want {
+		t.Errorf("argv = %q, want %q", got, want)
+	}
+	if want := "kiro-cli chat --agent my-agent --no-interactive --trust-all-tools --model claude-sonnet-5.5"; resp.Command != want {
+		t.Errorf("Command = %q, want %q", resp.Command, want)
+	}
+	if resp.Model != "claude-sonnet-5.5" {
+		t.Errorf("Model = %q", resp.Model)
+	}
+}
+
+func TestKiroCLI_JudgeModelFlag(t *testing.T) {
+	rec := installFakeKiro(t, "")
+	resp, err := newKiro(t).Invoke(context.Background(), Request{
+		Role: RoleJudge, Prompt: "p", Model: "claude-haiku-4.5",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := strings.TrimSpace(readRec(t, rec, "args")), "chat --no-interactive --model claude-haiku-4.5"; got != want {
+		t.Errorf("argv = %q, want %q", got, want)
+	}
+	if want := "kiro-cli chat --no-interactive --model claude-haiku-4.5"; resp.Command != want {
+		t.Errorf("Command = %q, want %q", resp.Command, want)
+	}
+	if resp.Model != "claude-haiku-4.5" {
+		t.Errorf("Model = %q", resp.Model)
+	}
+}
+
+func TestKiroCLI_NoModelLeavesArgvAndCommandUnchanged(t *testing.T) {
+	rec := installFakeKiro(t, "")
+	resp, err := newKiro(t).Invoke(context.Background(), Request{Role: RoleAgent, Agent: "a", Prompt: "p"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.TrimSpace(readRec(t, rec, "args")); got != "chat --agent a --no-interactive --trust-all-tools" {
+		t.Errorf("agent argv = %q", got)
+	}
+	if resp.Command != "kiro-cli chat --agent a --no-interactive --trust-all-tools" || resp.Model != "" {
+		t.Errorf("agent Command=%q Model=%q", resp.Command, resp.Model)
+	}
+
+	resp, err = newKiro(t).Invoke(context.Background(), Request{Role: RoleJudge, Prompt: "p"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.TrimSpace(readRec(t, rec, "args")); got != "chat --no-interactive" {
+		t.Errorf("judge argv = %q", got)
+	}
+	if resp.Command != "kiro-cli chat --no-interactive" || resp.Model != "" {
+		t.Errorf("judge Command=%q Model=%q", resp.Command, resp.Model)
+	}
+}
+
+func TestKiroCLI_ResponseModelEchoedOnError(t *testing.T) {
+	const m = "claude-sonnet-4.5"
+	reqs := map[string]Request{
+		"agent failure": {Role: RoleAgent, Agent: "a", Prompt: "p", Model: m},
+		"judge failure": {Role: RoleJudge, Prompt: "p", Model: m},
+	}
+	for name, req := range reqs {
+		t.Run(name, func(t *testing.T) {
+			installFakeKiro(t, "fail")
+			resp, err := newKiro(t).Invoke(context.Background(), req)
+			if err == nil {
+				t.Fatal("expected error")
+			}
+			if resp.Model != m {
+				t.Errorf("Model = %q, want %q", resp.Model, m)
+			}
+			if !strings.HasSuffix(resp.Command, " --model "+m) {
+				t.Errorf("Command = %q", resp.Command)
+			}
+		})
+	}
+
+	t.Run("agent timeout", func(t *testing.T) {
+		installFakeKiro(t, "sleep")
+		resp, err := newKiro(t).Invoke(context.Background(), Request{
+			Role: RoleAgent, Agent: "a", Prompt: "p", Model: m, Timeout: 300 * time.Millisecond,
+		})
+		if !errors.Is(err, ErrTimeout) {
+			t.Fatalf("expected ErrTimeout, got %v", err)
+		}
+		if resp.Model != m {
+			t.Errorf("Model = %q, want %q", resp.Model, m)
+		}
+	})
+
+	t.Run("judge timeout", func(t *testing.T) {
+		installFakeKiro(t, "sleep")
+		resp, err := newKiro(t).Invoke(context.Background(), Request{
+			Role: RoleJudge, Prompt: "p", Model: m, Timeout: 300 * time.Millisecond,
+		})
+		if !errors.Is(err, ErrTimeout) {
+			t.Fatalf("expected ErrTimeout, got %v", err)
+		}
+		if resp.Model != m {
+			t.Errorf("Model = %q, want %q", resp.Model, m)
+		}
+	})
+
+	t.Run("binary missing", func(t *testing.T) {
+		t.Setenv("PATH", t.TempDir())
+		resp, err := newKiro(t).Invoke(context.Background(), Request{Role: RoleAgent, Agent: "a", Prompt: "p", Model: m})
+		if err == nil {
+			t.Fatal("expected error")
+		}
+		if resp.Model != m {
+			t.Errorf("Model = %q, want %q", resp.Model, m)
+		}
+	})
+}
+
+func TestKiroCLI_ModelWithAgentConfigOverlay(t *testing.T) {
+	rec := installFakeKiro(t, "overlay")
+	dir := writeAgentDir(t, "selftest")
+	if _, err := newKiro(t).Invoke(context.Background(), Request{
+		Role: RoleAgent, Agent: "selftest", Prompt: "p", AgentConfigDir: dir, Model: "claude-sonnet-5",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := strings.TrimSpace(readRec(t, rec, "args")),
+		"chat --agent selftest --no-interactive --trust-all-tools --model claude-sonnet-5"; got != want {
+		t.Errorf("argv = %q, want %q", got, want)
+	}
+}

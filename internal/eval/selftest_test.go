@@ -12,6 +12,20 @@ import (
 // package directory (the working directory of `go test`).
 const selftestEvalsDir = "testdata/evals"
 
+// copyFixturesTo copies the checked-in self-test fixtures to dst, excluding the
+// git-ignored results/ directory. `task eval:selftest` (and the in-place tests
+// below) write run output into testdata/evals/results/, and a copy must not
+// inherit stale runs from a developer's working tree.
+func copyFixturesTo(t *testing.T, dst string) {
+	t.Helper()
+	if err := os.CopyFS(dst, os.DirFS(selftestEvalsDir)); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(filepath.Join(dst, "results")); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // snapshotDirs returns the names of the entries directly under dir. A missing
 // dir yields an empty set.
 func snapshotDirs(t *testing.T, dir string) map[string]bool {
@@ -188,9 +202,7 @@ func TestSelfTestStubRunDoesNotConsultPath(t *testing.T) {
 	t.Cleanup(resetConfig)
 
 	evalsDir := filepath.Join(t.TempDir(), "evals")
-	if err := os.CopyFS(evalsDir, os.DirFS(selftestEvalsDir)); err != nil {
-		t.Fatal(err)
-	}
+	copyFixturesTo(t, evalsDir)
 	t.Setenv("PATH", pathWithoutKiroCLI(t))
 
 	err := RunWithOptions("selftest", "", RunOptions{Backend: "stub", EvalsDir: evalsDir})

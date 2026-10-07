@@ -147,7 +147,7 @@ Every "send a prompt to a model, get text back" call made by the harness (the ag
 
 | Backend | Behaviour |
 |---------|-----------|
-| `kiro-cli` (default) | Shells out to `kiro-cli`. Agent: `kiro-cli chat --agent <agent> --no-interactive --trust-all-tools`; judge: `kiro-cli chat --no-interactive`; prompt on stdin. Usage is always **estimated**. Requires `kiro-cli` on `PATH`. |
+| `kiro-cli` (default) | Shells out to `kiro-cli`. Agent: `kiro-cli chat --agent <agent> --no-interactive --trust-all-tools [--model <model>]`; judge: `kiro-cli chat --no-interactive [--model <model>]`; prompt on stdin. `--model` is appended when the request carries a model, which is always the case in a normal `kairon eval` run (see [Model Pinning and Run Provenance](#model-pinning-and-run-provenance)). Usage is always **estimated**. Requires `kiro-cli` on `PATH`. |
 | `stub` | Deterministic and in-process. Never starts a process or touches the network, and does not require `kiro-cli`. The agent's output comes from the case's `stub.turns`; every judge call returns score 5 (the maximum of the judge scale) with `pass: true`. |
 
 ```bash
@@ -157,7 +157,7 @@ kairon eval --backend stub --evals-dir internal/eval/testdata/evals selftest
 Notes:
 - The `kiro-cli` startup probe (`kiro-cli --version`) and the PATH availability check are performed by the selected backend; the stub reports zero startup overhead and is always available.
 - `--backend stub` cannot be combined with `--sandbox` (the sandbox runs `kiro-cli` inside a container); the run fails with an error.
-- The Docker sandbox path still runs `kiro-cli` directly in the container and always reports estimated usage.
+- The Docker sandbox path still runs `kiro-cli` directly in the container, always reports estimated usage, and does **not** honor `evals.agent_model` (see [`--sandbox` and `evals.agent_model`](#--sandbox-and-evalsagent_model)).
 
 ### Stub Case Fields
 
@@ -192,10 +192,11 @@ Each `agent_cost` and `judge_cost` in a result file carries `model` (when known)
 | `reported` | Token counts were supplied by the backend (for the stub: `stub.turns[].usage`). |
 | `estimated` | Token counts were estimated as roughly 4 characters per token (`len/4`) of the prompt and the output. |
 
-- `kiro-cli` exposes neither model nor token counts, so its usage is always `estimated` and `model` is empty (omitted from JSON).
+- `kiro-cli` exposes neither the served model nor token counts, so its usage is always `estimated`. The `model` it records is the model the process was *launched with* (the value passed as `--model`, i.e. the pinned model), not a model confirmed by the service. It is empty (omitted from JSON) only for unpinned calls, such as code paths that do not go through `kairon eval`.
 - `estimated_usd` is always computed from the token counts at a fixed $3 / $15 per million input / output tokens, whether the counts were reported or estimated.
 - When several judge calls are accumulated into `judge_cost`, the merged `usage_source` is `reported` only if every contributing call was `reported`; otherwise it is `estimated`. The stub judge always produces estimated usage with model `stub`.
-- `summary.json` totals only `tokens_in`, `tokens_out` and `estimated_usd`.
+- `summary.json` totals only `tokens_in`, `tokens_out` and `estimated_usd` (plus the provenance fields described below).
+- The individual calls behind `agent_cost` and `judge_cost` are listed in each case's `calls` array (see [Per-call records](#per-call-records-calls)).
 
 Example from the self-test `stub-usage` case:
 
@@ -208,6 +209,208 @@ Example from the self-test `stub-usage` case:
   "usage_source": "reported"
 }
 ```
+
+## Model Pinning and Run Provenance
+
+Every agent call and judge call in a `kairon eval` run is pinned to an explicit model, and every result records which models and which prompt produced it. A run cannot silently fall back to the account default (`auto`), which may be a frontier model.
+
+### The `evals` block
+
+Configure pinning in the `evals` block of `.kairon/config.yaml`. The block is optional: when it is absent, or only partly present, the defaults below apply. Only the `evals` key is read, so eval runs do not need `repo:` to be set, and a missing `.kairon/config.yaml` simply means "all defaults". A config file that cannot be read or parsed refuses the run instead of guessing.
+
+```yaml
+evals:
+  agent_model: ""                  # optional override for the agent under test
+  judge_model: "claude-sonnet-5.5"
+  allowed_models:
+    - "claude-sonnet-5.5"
+    - "claude-sonnet-5"
+    - "claude-sonnet-4.6"
+    - "claude-sonnet-4.5"
+    - "claude-sonnet-4"
+    - "claude-haiku-4.5"
+```
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `evals.agent_model` | empty (not set) | Model for the agent under test. When set, it is used for every agent in the run and **overrides** the `model` in the agent's config. When empty, each agent runs on the `model` from its own agent config (`<evals-dir>/agents/<agent>.json` if present, else `.kiro/agents/<agent>.json`). |
+| `evals.judge_model` | `claude-sonnet-5.5` | Model for every LLM-judge call. An explicit empty value stays empty and is refused. |
+| `evals.allowed_models` | the six models listed above, in that order | Allowlist. The effective agent model and the judge model must each be exactly one of these entries. |
+
+Notes:
+- A user-supplied `allowed_models` list **replaces** the default list; it is not appended to it. Omit the key to keep the defaults.
+- All values are whitespace-trimmed, and empty `allowed_models` entries are dropped.
+- Use `agent_model` to run on a model that is available on your machine without editing agent configs (for example `agent_model: claude-sonnet-4.5` when `claude-sonnet-5.5` is not available). The override must itself be in `allowed_models`.
+- Agent configs are never modified; the model is passed to `kiro-cli` with `--model`.
+
+### Allowlist refusal
+
+Before the first case starts, `kairon eval` resolves the judge model and the effective model of every agent in scope (the named agent, or every agent that has a rubric) and checks each against `allowed_models`. A model is **rejected** when it is:
+
+- empty (for example `judge_model: ""`, or an agent config with no `model` and no `evals.agent_model` override),
+- `auto` (case-insensitive), or
+- not exactly one of the `allowed_models` entries (including the case where `allowed_models` is empty, which permits nothing).
+
+The check runs in the pre-flight step of the run, so a refused run:
+
+- starts no case and makes no `kiro-cli` call (not even the `--version` startup probe),
+- creates no results directory, and
+- exits with an error.
+
+It applies to both backends (the stub backend is refused the same way) and to single-test-case and `--resume` runs. `--list` and `--cleanup` are not blocked.
+
+**All violations are reported together**, judge first, then agents, so one run shows everything that needs fixing. Each line names the setting or agent, the rejected value (or says it is empty), where an agent's model came from (`evals.agent_model` or the agent config path), and the full allowlist, followed by a hint to edit the `evals` block:
+
+```
+❌ eval model pinning refused the run before any case started:
+  - evals.judge_model: model "auto" is not permitted; allowed_models: [claude-sonnet-5.5, claude-sonnet-5, claude-sonnet-4.6, claude-sonnet-4.5, claude-sonnet-4, claude-haiku-4.5]
+  - agent "architect" (model from .kiro/agents/architect.json "model"): model is empty; allowed_models: [claude-sonnet-5.5, claude-sonnet-5, claude-sonnet-4.6, claude-sonnet-4.5, claude-sonnet-4, claude-haiku-4.5]
+Edit the evals block in .kairon/config.yaml (agent_model, judge_model, allowed_models)
+```
+
+An agent whose config cannot be found or parsed, or whose `prompt: file://...` file is missing, is reported in the same list (the error names both config paths that were tried). If `allowed_models` is empty the message says `allowed_models is empty: no model can be used`.
+
+When the pre-flight passes, one line summarises what the run is pinned to:
+
+```
+🔒 Models: judge=claude-sonnet-5.5, architect=claude-sonnet-5.5 (prompt sha256 1a2b3c4d…)
+```
+
+### `--sandbox` and `evals.agent_model`
+
+**`--sandbox` runs do not honor `evals.agent_model`.** In a sandboxed run the agent is executed inside the container with its own `kiro-cli chat --agent <agent> --no-interactive --trust-all-tools` command, which does not pass `--model`, so the agent runs on the `model` in its agent config. The run prints a warning that `evals.agent_model` is ignored, validates the agent config's model against `allowed_models`, and records that config model as `agent_model`. The container also ignores the `<evals-dir>/agents/` overlay, so provenance is computed from `.kiro/agents/<agent>.json`.
+
+`evals.judge_model` **is still honored** in a sandboxed run: judge calls execute on the host through the inference backend, pinned with `--model <judge_model>`, and are subject to the same allowlist check.
+
+### Recorded provenance
+
+#### Per-call records (`calls`)
+
+Each case in `<agent>.json` carries a `calls` array with one record per agent call and one per judge call, in execution order. The record shape is the shared `inference.CallRecord`:
+
+| Field | Description |
+|-------|-------------|
+| `role` | `agent` or `judge`. |
+| `model` | The model that served the call when the backend reports one, otherwise the pinned (requested) model. `kiro-cli` cannot report the served model, so its records carry the pinned model; the stub records `stub` / `stub-model`. |
+| `agent` | Agent name (agent calls only). |
+| `criterion` | Rubric criterion being judged (judge calls only). |
+| `input_tokens` / `output_tokens` | Token counts for the call. |
+| `cost_usd` | Cost of the call, using the same fixed $3 / $15 per million tokens estimate as `agent_cost` / `judge_cost`. |
+| `estimated` | `true` unless the usage was `reported` by the backend. |
+| `duration_ms` | Call duration in milliseconds: the backend's measurement, or wall-clock time when the backend reports none (the stub). |
+| `prompt_sha256` | Hash of the agent's prompt inputs (agent calls only; same value as the file-level `prompt_sha256`, see below). |
+| `error` | Set when the call failed. A failed call is still recorded. |
+
+Details:
+- `agent_cost` and `judge_cost` are unchanged; `calls` is the per-call breakdown behind them.
+- No agent record is written when prompt assembly failed, because no call was made.
+- A judge call is recorded even when its output could not be parsed (the tokens were spent). Its cost appears in that call's `calls[]` record but **not** in the case's `judge_cost`, which keeps a zero cost for a failed or unparseable judge call — so for such a case the sum of `calls[].cost_usd` can exceed `judge_cost`.
+- In a `--sandbox` run the agent record is built from wall-clock time and the estimated cost, with `estimated: true` and the agent config's model.
+
+The per-call records (field values below are illustrative):
+
+```json
+{
+  "case_name": "stub-usage",
+  "calls": [
+    {
+      "role": "agent",
+      "model": "stub-model",
+      "agent": "selftest",
+      "input_tokens": 123,
+      "output_tokens": 45,
+      "cost_usd": 0.001044,
+      "estimated": false,
+      "duration_ms": 0,
+      "prompt_sha256": "9f2c…"
+    },
+    {
+      "role": "judge",
+      "model": "stub",
+      "criterion": "clarity",
+      "input_tokens": 210,
+      "output_tokens": 18,
+      "cost_usd": 0.0009,
+      "estimated": true,
+      "duration_ms": 0
+    }
+  ]
+}
+```
+
+#### Run-level fields in `<agent>.json`
+
+The per-agent result file always carries:
+
+| Field | Description |
+|-------|-------------|
+| `agent_model` | The effective model the agent ran on (`evals.agent_model`, else the agent config's `model`; in a sandbox run always the config's `model`). |
+| `judge_model` | The model used for judge calls. |
+| `prompt_sha256` | Hash of everything that shapes the agent's prompt (see below). |
+| `resources_present` | The agent-config `resources` entries that existed when the hash was computed. Always written; an empty list serialises as `[]`. |
+
+```json
+{
+  "agent": "selftest",
+  "git_hash": "a1b2c3d",
+  "agent_model": "claude-sonnet-5.5",
+  "judge_model": "claude-sonnet-5.5",
+  "prompt_sha256": "9f2c…",
+  "resources_present": [],
+  "cases": [ … ]
+}
+```
+
+#### Run summary (`summary.json`)
+
+`summary.json` always carries `judge_model` and an `agents` map with `agent_model`, `prompt_sha256` and `resources_present` per agent:
+
+```json
+{
+  "git_hash": "a1b2c3d",
+  "total_cost": { … },
+  "agent_scores": { "architect": 0.85, "builder": 0.8 },
+  "judge_model": "claude-sonnet-5.5",
+  "agents": {
+    "architect": { "agent_model": "claude-sonnet-5.5", "prompt_sha256": "…", "resources_present": [] },
+    "builder":   { "agent_model": "claude-sonnet-5.5", "prompt_sha256": "…", "resources_present": [] }
+  }
+}
+```
+
+**Single-agent rule.** A run can cover several agents (`kairon eval` with no agent), each with its own model and prompt hash, so one top-level value would be ambiguous. The top-level `agent_model`, `prompt_sha256` and `resources_present` are therefore written **only when the run covers exactly one agent** (`kairon eval <agent>`, a single-case run, or the self-test) and are omitted otherwise. Use the `agents` map, or the per-agent `<agent>.json`, for multi-agent runs. Single-case runs also write a `summary.json`, with the same provenance fields.
+
+#### How `prompt_sha256` is computed
+
+`prompt_sha256` is a lowercase hex SHA-256 (64 characters). It is a hash only; the prompt text itself is not stored. It is computed over an ordered sequence of parts:
+
+1. **config** — the raw bytes of the agent config file. The config is `<evals-dir>/agents/<agent>.json` when it exists, else `.kiro/agents/<agent>.json` relative to the working directory (in a sandbox run only the latter).
+2. **prompt** — if the config's `prompt` starts with `file://`, the bytes of that file. A relative path resolves against the config file's directory; absolute paths are allowed. A missing or unreadable prompt file is an error. An inline prompt is already covered by the config bytes.
+3. **resource** — for each entry of the config's `resources` array, in config order, the bytes of every existing matching file.
+
+Each part is framed as `<kind>\x00<decimal length>\x00<bytes>` (`kind` is `config`, `prompt` or `resource`), so parts cannot run together ambiguously. File paths are not hashed, so the same contents give the same hash on any machine.
+
+Consequently, editing the prompt file, the config, or any present resource changes the hash, and so does reordering resources. Running the same inputs twice gives an identical hash, which makes a before/after comparison of two runs a check that only the intended thing changed.
+
+Resource handling:
+- Only string entries of `resources` are considered; object entries are ignored.
+- A `file://` or `skill://` prefix is stripped. Any other scheme is not a local file and counts as not present.
+- Relative paths resolve against the **process working directory** (the repository root for a normal run), not against the config file.
+- An entry containing `*`, `?` or `[` is expanded as a glob (matches sorted). It counts as present if at least one regular file matches, and every match is hashed.
+- **A missing resource is normal, not an error.** Resources such as `skill://.kiro/skills/<agent>-conventions/SKILL.md` are optional per-project overrides and often do not exist. A missing entry is skipped: it does not contribute to the hash and is omitted from `resources_present`. If the file is created later, it appears in `resources_present` and the hash changes.
+- `resources_present` lists entries exactly as written in the config (for example `skill://.kiro/skills/sentinel-protocol/SKILL.md`), in config order.
+
+When an `<evals-dir>/agents/` overlay is used, `kiro-cli` runs in a temporary working directory (see the [overlay caveat](#agent-configs-agents-precedence)) and does not load relative resources from the repository. The hash reflects the files the harness can see from the repository root.
+
+### Resume refusal
+
+`kairon eval --resume` refuses to continue into a result file that was written under a different prompt or different models, so one `<agent>.json` never mixes two versions. If the existing file has a `prompt_sha256` and that value, its `agent_model` or its `judge_model` differs from what the resumed run is now pinned to, the run stops with an error:
+
+```
+❌ cannot resume: prompt or models changed since the interrupted run of architect (recorded agent_model=… judge_model=… prompt_sha256=…; now agent_model=… judge_model=… prompt_sha256=…)
+```
+
+Start a fresh run (without `--resume`) after changing a prompt, a resource or `evals`. A result file written before provenance existed (no `prompt_sha256`) is **refused when it already holds saved cases** — resuming would attribute those scores to the current prompt and models, which were unknown when they were produced; an empty legacy file is allowed. An unchanged resume continues as before.
 
 ## Evals Directory (`--evals-dir`)
 
@@ -252,13 +455,18 @@ Fixtures live in `internal/eval/testdata/evals/`:
 
 ```
 internal/eval/testdata/evals/
-  agents/selftest.json              # minimal agent config (prompt: file://./selftest-prompt.md)
+  agents/selftest.json              # minimal agent config (model: claude-sonnet-5.5; prompt: file://./selftest-prompt.md;
+                                    #   resources: a non-existent selftest-conventions skill, so resources_present is [])
   agents/selftest-prompt.md
   rubrics/selftest.yaml             # structural_completeness (deterministic), clarity (LLM-judged), cost_efficiency (cost)
   cases/selftest/stub-basic.yaml    # no stub usage -> estimated; setup file exercises path rebasing
   cases/selftest/stub-usage.yaml    # stub model + usage 123/45 -> reported
   fixtures/selftest-input.md        # referenced as .kairon/evals/fixtures/selftest-input.md
 ```
+
+`selftest.json` declares a `model` so the self-test passes the model-pinning pre-flight, and lists a `skill://.kiro/skills/selftest-conventions/SKILL.md` resource that intentionally does not exist. It exercises the "missing resources are normal" rule: the run succeeds and the recorded `resources_present` is `[]`.
+
+The self-test runs with the stub backend, so its per-call `model` values are `stub` / `stub-model` (what the stub reports) rather than the pinned names. The pinned models still appear in the run-level `agent_model` and `judge_model` fields.
 
 To list the self-test cases: `kairon eval --evals-dir internal/eval/testdata/evals --list selftest`.
 
@@ -379,6 +587,8 @@ The `--sandbox` flag automatically:
 - Creates isolated container with resource limits
 - Mocks GitHub CLI operations
 - Copies project files and runs evaluations safely
+
+> **Model pinning in sandbox runs:** `--sandbox` does **not** honor `evals.agent_model`; sandboxed agent calls run on the `model` in the agent config. `evals.judge_model` is still honored for judge calls. See [`--sandbox` and `evals.agent_model`](#--sandbox-and-evalsagent_model).
 
 ### Project Detection
 

@@ -45,6 +45,7 @@ type Config struct {
 	Session             SessionConfig `yaml:"session"`
 	Sandbox             SandboxConfig `yaml:"sandbox"`
 	Logging             LoggingConfig `yaml:"logging"`
+	Evals               EvalsConfig   `yaml:"evals"`
 	LoadedTheme         *Theme        `yaml:"-"`
 }
 
@@ -79,6 +80,9 @@ func Load() (*Config, error) {
 			MaxFileSizeMB:  100,
 			LogDir:         ".kairon/logs",
 		},
+		// Model values are not validated here; enforcement is a run-time
+		// concern of the eval harness.
+		Evals: DefaultEvalsConfig(),
 	}
 
 	data, err := os.ReadFile(".kairon/config.yaml")

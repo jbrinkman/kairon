@@ -23,6 +23,10 @@ const (
 type runConfig struct {
 	evalsDir string
 	backend  inference.Backend
+	// pins is the run's pinned models and prompt provenance, set by pinRun.
+	// nil means unpinned (direct calls that bypass RunWithOptions): empty
+	// Request.Model and no provenance fields.
+	pins *runPins
 }
 
 // cfg is the active run configuration. Call configure before use; tests
@@ -66,7 +70,7 @@ func configure(opts RunOptions) error {
 		dir = defaultEvalsDir
 	}
 
-	cfg = runConfig{evalsDir: dir, backend: backend}
+	cfg = runConfig{evalsDir: dir, backend: backend} // pins reset to nil
 	return nil
 }
 
