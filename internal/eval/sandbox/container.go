@@ -351,7 +351,12 @@ func (c *Container) ExecWithStdin(ctx context.Context, cmd []string, stdin io.Re
 		return ExecResult{}, out.err
 	}
 
-	// Surface a failure reading the caller's stdin, if the copier has finished.
+	// Surface a failure reading the caller's stdin. Wait for the copier
+	// goroutine to finish so its recorded error cannot be missed (a plain
+	// non-blocking check could race the goroutine's close of stdinDone), but
+	// stay bounded by ctx so a reader that blocks forever inside Read cannot
+	// hang the call. The demux goroutine (buffered, cap-1 channel) and the
+	// stdin copier are detached but bounded on cancellation.
 	hijacked.Close()
 	select {
 	case <-stdinDone:
@@ -361,7 +366,8 @@ func (c *Container) ExecWithStdin(ctx context.Context, cmd []string, stdin io.Re
 		if rerr != nil {
 			return ExecResult{}, fmt.Errorf("reading stdin: %w", rerr)
 		}
-	default:
+	case <-ctx.Done():
+		return ExecResult{}, ctx.Err()
 	}
 
 	inspect, err := c.client.ContainerExecInspect(ctx, resp.ID)

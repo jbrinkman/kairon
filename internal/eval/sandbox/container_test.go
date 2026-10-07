@@ -3,6 +3,8 @@ package sandbox
 import (
 	"bytes"
 	"context"
+	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"testing"
@@ -656,4 +658,34 @@ func TestContainer_ExecWithStdin(t *testing.T) {
 		assert.ErrorIs(t, err, context.DeadlineExceeded)
 		assert.Less(t, time.Since(start), 10*time.Second)
 	})
+
+	t.Run("a stdin read error is surfaced, not silently dropped", func(t *testing.T) {
+		sentinel := errors.New("boom reading stdin")
+		_, err := c.ExecWithStdin(ctx, []string{"cat"}, &errAfterReader{data: []byte("some bytes"), err: sentinel})
+		require.Error(t, err)
+		assert.ErrorIs(t, err, sentinel)
+		assert.Contains(t, err.Error(), "reading stdin")
+	})
 }
+
+// errAfterReader yields data once, then fails with err on the next Read, to
+// exercise the stdin-read-error path of ExecWithStdin.
+type errAfterReader struct {
+	data []byte
+	err  error
+	done bool
+}
+
+func (r *errAfterReader) Read(p []byte) (int, error) {
+	if !r.done && len(r.data) > 0 {
+		n := copy(p, r.data)
+		r.data = r.data[n:]
+		if len(r.data) == 0 {
+			r.done = true
+		}
+		return n, nil
+	}
+	return 0, r.err
+}
+
+var _ io.Reader = (*errAfterReader)(nil)
