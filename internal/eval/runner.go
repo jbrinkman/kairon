@@ -37,6 +37,15 @@ func checkDockerAvailability() error {
 }
 
 // RunWithOptions executes evaluation with extended CLI options.
+// willContainerize reports whether a non-nil ContainerConfig actually reaches
+// Run for these options: a sandbox run that is not opted out and not diverted
+// to the perf, single-case, or resume paths (which never containerise). It is
+// the single source of truth the model pre-flight uses to decide whether
+// evals.agent_model applies (it does not inside a container).
+func willContainerize(testcase string, options RunOptions) bool {
+	return options.Sandbox && !options.NoSandbox && !options.Perf && testcase == "" && !options.Resume
+}
+
 func RunWithOptions(agent string, testcase string, options RunOptions) error {
 	// Apply backend / evals-dir configuration before doing any work so that
 	// an unknown backend is rejected up front.
@@ -58,11 +67,10 @@ func RunWithOptions(agent string, testcase string, options RunOptions) error {
 	}
 
 	// Pre-flight: pin and validate the judge and agent models before any
-	// case (or kiro-cli call) starts. container mirrors exactly when a non-nil
-	// ContainerConfig reaches Run.
+	// case (or kiro-cli call) starts. willContainerize is the single source of
+	// truth for whether a non-nil ContainerConfig reaches Run.
 	if !options.List {
-		container := options.Sandbox && !options.NoSandbox && !options.Perf && testcase == "" && !options.Resume
-		if err := pinRun(agent, options, container); err != nil {
+		if err := pinRun(agent, options, willContainerize(testcase, options)); err != nil {
 			return err
 		}
 	}
@@ -72,7 +80,10 @@ func RunWithOptions(agent string, testcase string, options RunOptions) error {
 		return RunPerformanceInvestigation(agent)
 	}
 
-	// Configure container sandboxing
+	// Configure container sandboxing. (The guard is broader than
+	// willContainerize because the single-case/resume paths below build and
+	// then ignore cConfig; willContainerize captures when it actually reaches
+	// Run, which is what the pre-flight above must mirror.)
 	var cConfig *ContainerConfig
 	if options.Sandbox && !options.NoSandbox {
 		// Early Docker availability check before any configuration work
