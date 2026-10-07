@@ -1351,6 +1351,23 @@ func checkResumeIntegrity(resultsDir, agent string) error {
 	if !ok {
 		return nil
 	}
+
+	// A resumed run must keep the judge model recorded for the run as a whole,
+	// even for an agent that has no result file yet. In a multi-agent run
+	// interrupted after one agent was saved but before this one's file exists,
+	// the per-agent check below is a no-op (nothing to read), yet
+	// updateIncrementalSummary would overwrite summary.judge_model with the new
+	// value and leave the already-saved agent's scores attributed to a judge it
+	// never ran on. Guard against a run-level judge change independently.
+	if sumData, err := os.ReadFile(filepath.Join(resultsDir, "summary.json")); err == nil {
+		var existingSum Summary
+		if json.Unmarshal(sumData, &existingSum) == nil &&
+			existingSum.JudgeModel != "" && existingSum.JudgeModel != cfg.pins.Judge {
+			return fmt.Errorf("❌ cannot resume: judge_model changed since the interrupted run (summary recorded judge_model=%s; now %s)",
+				existingSum.JudgeModel, cfg.pins.Judge)
+		}
+	}
+
 	data, err := os.ReadFile(filepath.Join(resultsDir, agent+".json"))
 	if err != nil {
 		return nil

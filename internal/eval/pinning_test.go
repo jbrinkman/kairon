@@ -475,3 +475,30 @@ func TestPinResumeRefusedWhenPromptOrModelsChanged(t *testing.T) {
 		t.Fatalf("err = %v, want resume refusal on model change", err)
 	}
 }
+
+// TestCheckResumeIntegrityGuardsRunLevelJudge covers the multi-agent gap: an
+// agent with no result file yet must still be refused when the run's recorded
+// judge_model (in summary.json) differs from the current pin, so a resumed run
+// cannot silently rescore one agent under a new judge while another agent's
+// saved scores keep the old one.
+func TestCheckResumeIntegrityGuardsRunLevelJudge(t *testing.T) {
+	setupPinProject(t, "", "")
+	resultsDir := ".kairon/evals/results/run1"
+	writeProjectFile(t, filepath.Join(resultsDir, "summary.json"),
+		`{"judge_model":"claude-haiku-4.5","agents":{"architect":{"agent_model":"claude-sonnet-5.5","prompt_sha256":"x","resources_present":[]}}}`)
+
+	// Pin the run to the default judge (claude-sonnet-5.5), which differs from
+	// the summary's recorded judge. "builder" has no result file.
+	cfg.pins = &runPins{Judge: "claude-sonnet-5.5", Agents: map[string]agentPin{"builder": {Model: "claude-sonnet-5.5"}}}
+	err := checkResumeIntegrity(resultsDir, "builder")
+	if err == nil || !strings.Contains(err.Error(), "judge_model changed") {
+		t.Fatalf("err = %v, want run-level judge refusal", err)
+	}
+
+	// Same judge as the summary: no run-level refusal, and with no builder.json
+	// the per-agent check is a no-op, so it passes.
+	cfg.pins = &runPins{Judge: "claude-haiku-4.5", Agents: map[string]agentPin{"builder": {Model: "claude-sonnet-5.5"}}}
+	if err := checkResumeIntegrity(resultsDir, "builder"); err != nil {
+		t.Fatalf("unchanged judge should pass: %v", err)
+	}
+}
