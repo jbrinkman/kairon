@@ -208,39 +208,67 @@ func TestPinDoesNotBlockListOrCleanup(t *testing.T) {
 	}
 }
 
-func TestPinRunSandboxIgnoresAgentModel(t *testing.T) {
+func TestPinRunSandboxHonoursAgentModel(t *testing.T) {
 	setupPinProject(t, "", "evals:\n  agent_model: claude-sonnet-4.5\n")
 
-	if err := pinRun("architect", RunOptions{}, true); err != nil {
-		t.Fatalf("pinRun(container): %v", err)
+	// ignoreOverlay=true is the kiro-cli --sandbox case: evals.agent_model is
+	// still the pinned model (it is passed as --model) and nothing warns.
+	out := captureStdout(t, func() {
+		if err := pinRun("architect", RunOptions{}, true); err != nil {
+			t.Fatalf("pinRun(container): %v", err)
+		}
+	})
+	if got := cfg.pins.agentModel("architect"); got != "claude-sonnet-4.5" {
+		t.Errorf("container pin = %q, want evals.agent_model claude-sonnet-4.5", got)
 	}
-	pin, ok := cfg.pins.pinOf("architect")
-	if !ok || pin.Model != "claude-sonnet-5.5" {
-		t.Errorf("container pin = %+v, want config model claude-sonnet-5.5", pin)
+	if strings.Contains(out, "ignored") || strings.Contains(out, "⚠️") {
+		t.Errorf("unexpected warning: %q", out)
 	}
 	if cfg.pins.judgeModel() != "claude-sonnet-5.5" {
 		t.Errorf("judge = %q", cfg.pins.judgeModel())
 	}
 
-	// The config model is validated, not the ignored override.
+	// The override is validated against allowed_models like any other path.
+	writeProjectFile(t, ".kairon/config.yaml", "evals:\n  agent_model: gpt-9\n")
 	if err := configure(RunOptions{}); err != nil {
 		t.Fatal(err)
 	}
-	writeProjectFile(t, ".kiro/agents/architect.json", `{"name":"architect","model":"gpt-9","prompt":"inline"}`)
 	err := pinRun("architect", RunOptions{}, true)
-	if err == nil || !strings.Contains(err.Error(), `"gpt-9"`) {
-		t.Fatalf("err = %v, want config-model refusal", err)
+	if err == nil || !strings.Contains(err.Error(), `"gpt-9"`) || !strings.Contains(err.Error(), "evals.agent_model") {
+		t.Fatalf("err = %v, want evals.agent_model refusal", err)
 	}
 
-	// Non-container: the override applies.
-	if err := configure(RunOptions{}); err != nil {
+	// Without an override the agent config's model is pinned (both paths).
+	writeProjectFile(t, ".kairon/config.yaml", "")
+	for _, ignoreOverlay := range []bool{true, false} {
+		if err := configure(RunOptions{}); err != nil {
+			t.Fatal(err)
+		}
+		if err := pinRun("architect", RunOptions{}, ignoreOverlay); err != nil {
+			t.Fatalf("pinRun(ignoreOverlay=%v): %v", ignoreOverlay, err)
+		}
+		if got := cfg.pins.agentModel("architect"); got != "claude-sonnet-5.5" {
+			t.Errorf("ignoreOverlay=%v: model = %q", ignoreOverlay, got)
+		}
+	}
+}
+
+func TestPinRunOverlayIgnoredOnlyWhenRequested(t *testing.T) {
+	setupPinProject(t, "", "")
+	writeProjectFile(t, "ev/agents/architect.json", `{"name":"architect","model":"claude-haiku-4.5","prompt":"overlay"}`)
+	cfg.evalsDir = "ev"
+
+	if err := pinRun("architect", RunOptions{}, true); err != nil {
 		t.Fatal(err)
 	}
-	if err := pinRun("architect", RunOptions{}, false); err != nil {
-		t.Fatalf("pinRun(host): %v", err)
+	if pin, _ := cfg.pins.pinOf("architect"); pin.Provenance.ConfigPath != filepath.Join(".kiro", "agents", "architect.json") {
+		t.Errorf("kiro-cli container should ignore overlay: %+v", pin.Provenance)
 	}
-	if got := cfg.pins.agentModel("architect"); got != "claude-sonnet-4.5" {
-		t.Errorf("host agent model = %q", got)
+	if err := pinRun("architect", RunOptions{}, false); err != nil {
+		t.Fatal(err)
+	}
+	if pin, _ := cfg.pins.pinOf("architect"); pin.Provenance.ConfigPath != filepath.Join("ev", "agents", "architect.json") {
+		t.Errorf("overlay should apply otherwise: %+v", pin.Provenance)
 	}
 }
 

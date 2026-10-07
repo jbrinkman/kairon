@@ -40,8 +40,9 @@ func checkDockerAvailability() error {
 // willContainerize reports whether a non-nil ContainerConfig actually reaches
 // Run for these options: a sandbox run that is not opted out and not diverted
 // to the perf, single-case, or resume paths (which never containerise). It is
-// the single source of truth the model pre-flight uses to decide whether
-// evals.agent_model applies (it does not inside a container).
+// the single source of truth the model pre-flight uses to decide whether the
+// evals-dir agent overlay is visible to the agent (it is not inside a kiro-cli
+// container).
 func willContainerize(testcase string, options RunOptions) bool {
 	return options.Sandbox && !options.NoSandbox && !options.Perf && testcase == "" && !options.Resume
 }
@@ -53,14 +54,6 @@ func RunWithOptions(agent string, testcase string, options RunOptions) error {
 		return err
 	}
 
-	// The sandbox path is hard-coded to run kiro-cli inside a container, so it
-	// is only valid for the kiro-cli backend. Reject --sandbox for every other
-	// backend (an allowlist, not a stub denylist) so a future backend used with
-	// --sandbox fails loudly instead of silently running kiro-cli.
-	if options.Sandbox && !options.NoSandbox && cfg.backend.Name() != inference.NameKiroCLI {
-		return fmt.Errorf("❌ --backend %s cannot be combined with --sandbox: the sandbox runs kiro-cli in a container", cfg.backend.Name())
-	}
-
 	// Handle cleanup operation early
 	if options.Cleanup {
 		return RunCleanup()
@@ -70,7 +63,8 @@ func RunWithOptions(agent string, testcase string, options RunOptions) error {
 	// case (or kiro-cli call) starts. willContainerize is the single source of
 	// truth for whether a non-nil ContainerConfig reaches Run.
 	if !options.List {
-		if err := pinRun(agent, options, willContainerize(testcase, options)); err != nil {
+		ignoreOverlay := willContainerize(testcase, options) && cfg.backend.Name() == inference.NameKiroCLI
+		if err := pinRun(agent, options, ignoreOverlay); err != nil {
 			return err
 		}
 	}
@@ -507,37 +501,115 @@ func assemblePrompt(setup []SetupEntry, input string) (string, error) {
 }
 
 // invokeAgent runs the agent with the given prompt, with timeout support.
-// With a container config it runs in Docker; otherwise it goes through the
-// configured inference backend. stub is the case's scripted response, used
-// only by the stub backend.
+// Both paths share one inference.Request (newAgentRequest) and one completion
+// (completeAgentCall); they differ only in where the backend process runs:
+// in-process through the configured backend, or inside a container when a
+// container config is given. stub is the case's scripted response, used only
+// by the stub backend.
 //
 // The returned CallRecord describes the call (also when it failed).
 func invokeAgent(agent, prompt string, cConfig *ContainerConfig, stub *inference.StubScript) (string, CostInfo, inference.CallRecord, *ErrorContext, error) {
-	// Use container execution if configured
+	req := newAgentRequest(agent, prompt, stub)
+
 	if cConfig != nil {
+		// The container exec is bounded by the sandbox timeout, and the
+		// in-container backend must honour the same bound.
+		if cConfig.ResourceLimits.Timeout > 0 {
+			req.Timeout = cConfig.ResourceLimits.Timeout
+		}
+		// The agent config directory is a host path; nothing in the
+		// container can read it.
+		req.AgentConfigDir = ""
+
 		start := time.Now()
-		out, cost, ec, err := invokeAgentInContainer(agent, prompt, cConfig)
-		rec := inference.CallRecord{
-			Role:         string(inference.RoleAgent),
-			Model:        cfg.pins.agentModel(agent),
-			Agent:        agent,
-			InputTokens:  cost.TokensIn,
-			OutputTokens: cost.TokensOut,
-			CostUSD:      cost.EstimatedUSD,
-			Estimated:    true,
-			DurationMS:   time.Since(start).Milliseconds(),
-			PromptSHA256: cfg.pins.agentPromptSHA(agent),
-		}
-		if err != nil {
-			rec.Error = err.Error()
-		}
-		return out, cost, rec, ec, err
+		resp, baseEC, err := invokeInContainer(req, cConfig)
+		return completeAgentCall(req, resp, err, time.Since(start), baseEC)
 	}
 
-	return invokeAgentViaBackend(agent, prompt, stub)
+	// Capture working directory and relevant environment for error context.
+	workingDir, _ := os.Getwd()
+	envVars := make(map[string]string)
+	for _, key := range []string{"KAIRON_EVAL_TIMEOUT"} {
+		if val := os.Getenv(key); val != "" {
+			envVars[key] = val
+		}
+	}
+
+	start := time.Now()
+	resp, err := cfg.backend.Invoke(context.Background(), req)
+	return completeAgentCall(req, resp, err, time.Since(start), &ErrorContext{WorkingDir: workingDir, Environment: envVars})
 }
 
-// createContainerConfig builds container configuration from CLI options
+// newAgentRequest builds the inference request for one agent call. It is
+// shared by the native and container paths so both send the same model,
+// timeout and stub script.
+func newAgentRequest(agent, prompt string, stub *inference.StubScript) inference.Request {
+	timeoutStr := os.Getenv("KAIRON_EVAL_TIMEOUT")
+	timeout := 2 * time.Minute
+	if timeoutStr != "" {
+		if parsedTimeout, err := time.ParseDuration(timeoutStr); err == nil {
+			timeout = parsedTimeout
+		}
+	}
+
+	return inference.Request{
+		Role:           inference.RoleAgent,
+		Agent:          agent,
+		Prompt:         prompt,
+		Timeout:        timeout,
+		AgentConfigDir: agentConfigDir(agent),
+		Model:          cfg.pins.agentModel(agent),
+		Stub:           stub,
+		// Turn is left 0: multi-turn stub selection lands with E9 (multi-turn
+		// cases). StubScript.Turns is a slice for that future, not yet wired.
+	}
+}
+
+// completeAgentCall turns a backend result into invokeAgent's return values:
+// cost from the reported/estimated usage, the audit CallRecord, and the
+// ErrorContext. baseEC carries transport-specific context (working directory
+// natively; container id/image in a container) and may be nil; the fields the
+// backend reported (command, stderr, exit code) are filled into it.
+func completeAgentCall(req inference.Request, resp inference.Response, err error, wall time.Duration, baseEC *ErrorContext) (string, CostInfo, inference.CallRecord, *ErrorContext, error) {
+	cost := costFromUsage(resp.Model, resp.Usage)
+	rec := newCallRecord(req, resp, err, wall, cost)
+	rec.PromptSHA256 = cfg.pins.agentPromptSHA(req.Agent)
+
+	if resp.Duration > 30*time.Second {
+		fmt.Printf(" (>30s)")
+	}
+
+	// Create error context for any execution issues
+	var errorContext *ErrorContext
+	if err != nil || len(resp.Stderr) > 0 {
+		errorContext = baseEC
+		if errorContext == nil {
+			errorContext = &ErrorContext{}
+		}
+		if errorContext.Command == "" {
+			errorContext.Command = resp.Command
+		}
+		if errorContext.Stderr == "" {
+			errorContext.Stderr = resp.Stderr
+		}
+		if errorContext.ExitCode == 0 {
+			errorContext.ExitCode = resp.ExitCode
+		}
+	}
+
+	if err != nil {
+		if errors.Is(err, inference.ErrTimeout) && errorContext != nil {
+			errorContext.Stderr = fmt.Sprintf("timeout after %v\n%s", req.Timeout, errorContext.Stderr)
+		}
+		return "", CostInfo{}, rec, errorContext, err
+	}
+
+	return resp.Text, cost, rec, errorContext, nil
+}
+
+// createContainerConfig builds container configuration from CLI options. It
+// is backend-agnostic: which backend runs inside the container is decided by
+// cfg.backend (see runAgentInContainer).
 func createContainerConfig(sandboxCfg *config.SandboxConfig, resourceLimits map[string]string, debug bool) *ContainerConfig {
 	// Detect host architecture for platform-aware container creation
 	platform, err := sandbox.DetectHostArchitecture()
@@ -605,13 +677,16 @@ func createContainerConfig(sandboxCfg *config.SandboxConfig, resourceLimits map[
 	return config
 }
 
-// invokeAgentInContainer executes kiro-cli in a Docker container with cached images
-func invokeAgentInContainer(agent, prompt string, cConfig *ContainerConfig) (string, CostInfo, *ErrorContext, error) {
+// invokeAgentInContainer runs one agent request inside a Docker container with
+// cached images. The container is only a transport: the backend selected by
+// cfg.backend runs inside it (see runAgentInContainer) and the result is
+// completed by the same logic as a native call.
+func invokeAgentInContainer(req inference.Request, cConfig *ContainerConfig) (inference.Response, *ErrorContext, error) {
 	ctx := context.Background()
 
 	c, err := sandbox.NewContainerWithDebug("", cConfig.Debug)
 	if err != nil {
-		return "", CostInfo{}, nil, fmt.Errorf("creating container: %w", err)
+		return inference.Response{}, nil, fmt.Errorf("creating container: %w", err)
 	}
 	defer c.Close()
 
@@ -627,12 +702,12 @@ func invokeAgentInContainer(agent, prompt string, cConfig *ContainerConfig) (str
 		buildStart := time.Now()
 		dockerfile, err := c.GenerateDockerfileWithPlatform(cConfig.WorkspaceDir, cConfig.Platform)
 		if err != nil {
-			return "", CostInfo{}, nil, fmt.Errorf("generating dockerfile: %w", err)
+			return inference.Response{}, nil, fmt.Errorf("generating dockerfile: %w", err)
 		}
 
 		customImageName = c.GetCustomImageName(cConfig.Platform)
 		if err := c.BuildImageFromDockerfile(buildCtx, dockerfile, customImageName, cConfig.Platform); err != nil {
-			return "", CostInfo{}, nil, fmt.Errorf("building custom image: %w", err)
+			return inference.Response{}, nil, fmt.Errorf("building custom image: %w", err)
 		}
 		fmt.Printf("  Image build: %v\n", time.Since(buildStart))
 
@@ -668,7 +743,7 @@ func invokeAgentInContainer(agent, prompt string, cConfig *ContainerConfig) (str
 
 	// Use platform-aware container creation
 	if err := c.CreateWithPlatform(ctx, containerCfg, hostConfig, cConfig.Platform); err != nil {
-		return "", CostInfo{}, nil, fmt.Errorf("creating container: %w", err)
+		return inference.Response{}, nil, fmt.Errorf("creating container: %w", err)
 	}
 	containerFailed := false
 	defer func() {
@@ -676,7 +751,7 @@ func invokeAgentInContainer(agent, prompt string, cConfig *ContainerConfig) (str
 	}()
 
 	if err := c.Start(ctx); err != nil {
-		return "", CostInfo{}, nil, fmt.Errorf("starting container: %w", err)
+		return inference.Response{}, nil, fmt.Errorf("starting container: %w", err)
 	}
 
 	c.LogStartup(cConfig.ResourceLimits)
@@ -685,7 +760,7 @@ func invokeAgentInContainer(agent, prompt string, cConfig *ContainerConfig) (str
 	// Debug mode: Save container registry information
 	if cConfig.Debug {
 		shortID, imageName := c.GetContainerInfo()
-		if err := saveDebugContainerInfo(shortID, imageName, customImageName, cConfig.Platform, agent); err != nil {
+		if err := saveDebugContainerInfo(shortID, imageName, customImageName, cConfig.Platform, req.Agent); err != nil {
 			fmt.Printf("⚠️ Warning: Failed to save debug container info: %v\n", err)
 		}
 	}
@@ -693,75 +768,227 @@ func invokeAgentInContainer(agent, prompt string, cConfig *ContainerConfig) (str
 	// Container setup (same as before)
 	setupStart := time.Now()
 
-	// Verify kiro-cli is pre-installed and functional
-	if err := c.ValidateKiroCLI(ctx, cConfig.Platform); err != nil {
-		return "", CostInfo{}, nil, fmt.Errorf("validating kiro-cli: %w", err)
-	}
-
-	// Setup GitHub mocking if enabled
-	if cConfig.MockGitHub {
-		if err := c.SetupGitHubMocking(ctx, cConfig.WorkspaceDir); err != nil {
-			return "", CostInfo{}, nil, fmt.Errorf("setting up GitHub mocking: %w", err)
+	// kiro-cli validation and GitHub mocking exist solely for the kiro-cli
+	// backend; other backends (the stub) run a copied helper binary instead.
+	if cfg.backend.Name() == inference.NameKiroCLI {
+		// Verify kiro-cli is pre-installed and functional
+		if err := c.ValidateKiroCLI(ctx, cConfig.Platform); err != nil {
+			return inference.Response{}, nil, fmt.Errorf("validating kiro-cli: %w", err)
 		}
 
-		if err := c.ConfigureMockGitHubPath(ctx); err != nil {
-			return "", CostInfo{}, nil, fmt.Errorf("configuring mock GitHub PATH: %w", err)
+		// Setup GitHub mocking if enabled
+		if cConfig.MockGitHub {
+			if err := c.SetupGitHubMocking(ctx, cConfig.WorkspaceDir); err != nil {
+				return inference.Response{}, nil, fmt.Errorf("setting up GitHub mocking: %w", err)
+			}
+
+			if err := c.ConfigureMockGitHubPath(ctx); err != nil {
+				return inference.Response{}, nil, fmt.Errorf("configuring mock GitHub PATH: %w", err)
+			}
 		}
 	}
 
 	fmt.Printf("  Container setup: %v\n", time.Since(setupStart))
 
-	// Command execution (same as before)
-	timeoutCtx, cancel := context.WithTimeout(ctx, cConfig.ResourceLimits.Timeout)
-	defer cancel()
-
-	cmd := []string{"kiro-cli", "chat", "--agent", agent, "--no-interactive", "--trust-all-tools"}
-
 	executionStart := time.Now()
-	output, err := c.ExecWithOutput(timeoutCtx, cmd)
+	resp, ec, err := runAgentInContainer(ctx, c, req, cConfig)
 	executionDuration := time.Since(executionStart)
 
 	if err != nil {
-		// Enhanced error context with container information
-		shortID, imageName := c.GetContainerInfo()
-
-		errorContext := &ErrorContext{
-			Command:        strings.Join(cmd, " "),
-			WorkingDir:     cConfig.WorkspaceDir,
-			Environment:    cConfig.Environment,
-			Stderr:         err.Error(),
-			ContainerID:    shortID,
-			ContainerImage: imageName,
-			Platform:       cConfig.Platform,
-			DockerError:    err.Error(),
-		}
-
 		// In debug mode, preserve the failed container
 		if cConfig.Debug {
 			containerFailed = true
 		}
-
-		// Provide actionable error messages for common container issues
-		if strings.Contains(err.Error(), "timeout") || timeoutCtx.Err() == context.DeadlineExceeded {
-			return "", CostInfo{}, errorContext, fmt.Errorf("⏱️ Container execution timeout after %v. Consider increasing --resource-limit timeout=", cConfig.ResourceLimits.Timeout)
-		}
-		if strings.Contains(err.Error(), "out of memory") || strings.Contains(err.Error(), "OOMKilled") {
-			memoryMB := cConfig.ResourceLimits.Memory / (1024 * 1024)
-			return "", CostInfo{}, errorContext, fmt.Errorf("💾 Container ran out of memory (%dMB limit). Consider increasing --resource-limit memory=", memoryMB)
-		}
-		if strings.Contains(err.Error(), "no such image") || strings.Contains(err.Error(), "pull access denied") {
-			return "", CostInfo{}, errorContext, fmt.Errorf("❌ Failed to pull image %s: %v. Check internet connection", imageName, err)
-		}
-
-		return "", CostInfo{}, errorContext, fmt.Errorf("container execution failed: %w", err)
+		return resp, ec, err
 	}
 
 	fmt.Printf("  Execution time: %v\n", executionDuration)
+	return resp, ec, nil
+}
 
-	result := stripANSISequences(output)
-	cost := estimateCost(prompt, result)
+// invokeInContainer is a seam so tests can run invokeAgent's container branch
+// against a fake executor instead of a real container.
+var invokeInContainer = invokeAgentInContainer
 
-	return result, cost, nil, nil
+// agentExecer is the part of *sandbox.Container that runAgentInContainer
+// needs. It is a seam so the container path is unit-testable without a
+// container daemon.
+type agentExecer interface {
+	CopyTo(ctx context.Context, destPath, srcPath string) error
+	ExecWithStdin(ctx context.Context, cmd []string, stdin io.Reader) (sandbox.ExecResult, error)
+}
+
+// containerHelperPath is where the kairon helper binary is copied in the
+// container (/tmp is writable by the non-root sandbox user).
+const containerHelperPath = "/tmp/kairon"
+
+// resolveLinuxBinary is a seam for tests; production uses sandbox.ResolveLinuxBinary.
+var resolveLinuxBinary = sandbox.ResolveLinuxBinary
+
+// containerError is an error with a fixed user-facing message that unwraps to
+// sentinel errors (so a timeout still satisfies errors.Is(err, inference.ErrTimeout)).
+type containerError struct {
+	msg  string
+	errs []error
+}
+
+func (e *containerError) Error() string   { return e.msg }
+func (e *containerError) Unwrap() []error { return e.errs }
+
+// runAgentInContainer executes one inference request inside the container x.
+// The prompt is always delivered on stdin, never on argv.
+//
+//   - kiro-cli runs directly with the same argv as the native backend
+//     (inference.KiroCLIAgentCommand) and its output is decoded by the same
+//     function (inference.KiroCLIAgentResponse).
+//   - every other backend runs in-process in the container through
+//     "kairon inference-exec --backend <name>", fed the JSON request.
+//
+// The returned ErrorContext (non-nil on failure) holds container details.
+func runAgentInContainer(ctx context.Context, x agentExecer, req inference.Request, cConfig *ContainerConfig) (inference.Response, *ErrorContext, error) {
+	backendName := cfg.backend.Name()
+	if cConfig.Debug {
+		fmt.Printf("🔧 Debug: container invoke backend=%s agent=%s model=%s\n", backendName, req.Agent, req.Model)
+	}
+
+	timeout := cConfig.ResourceLimits.Timeout
+	if timeout <= 0 {
+		timeout = timeoutOrDefaultRequest(req)
+	}
+	req.Timeout = timeout
+
+	var (
+		cmd     []string
+		command string
+		stdin   string
+	)
+	if backendName == inference.NameKiroCLI {
+		args, c := inference.KiroCLIAgentCommand(req)
+		cmd = append([]string{"kiro-cli"}, args...)
+		command = c
+		stdin = req.Prompt
+	} else {
+		bin, err := resolveLinuxBinary(cConfig.Platform)
+		if err != nil {
+			return inference.Response{}, nil, fmt.Errorf("preparing %s helper for the container: %w", backendName, err)
+		}
+		if err := x.CopyTo(ctx, containerHelperPath, bin); err != nil {
+			return inference.Response{}, nil, fmt.Errorf("copying %s helper into the container: %w", backendName, err)
+		}
+		payload, err := json.Marshal(req)
+		if err != nil {
+			return inference.Response{}, nil, fmt.Errorf("encoding inference request: %w", err)
+		}
+		cmd = []string{containerHelperPath, "inference-exec", "--backend", backendName}
+		command = strings.Join(cmd, " ")
+		stdin = string(payload)
+	}
+
+	execCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	start := time.Now()
+	res, execErr := x.ExecWithStdin(execCtx, cmd, strings.NewReader(stdin))
+	elapsed := time.Since(start)
+
+	resp := inference.Response{Command: command, Model: req.Model, Duration: elapsed}
+
+	// Container details for the error context.
+	var shortID, imageName string
+	if info, ok := x.(interface{ GetContainerInfo() (string, string) }); ok {
+		shortID, imageName = info.GetContainerInfo()
+	}
+	newEC := func(stderr string) *ErrorContext {
+		return &ErrorContext{
+			Command:        strings.Join(cmd, " "),
+			WorkingDir:     cConfig.WorkspaceDir,
+			Environment:    cConfig.Environment,
+			Stderr:         stderr,
+			ContainerID:    shortID,
+			ContainerImage: imageName,
+			Platform:       cConfig.Platform,
+			DockerError:    stderr,
+		}
+	}
+
+	// Transport failure (exec could not run, or the context ended).
+	if execErr != nil {
+		ec := newEC(execErr.Error())
+		return resp, ec, mapContainerError(execErr, execCtx, imageName, cConfig, fmt.Errorf("container execution failed: %w", execErr))
+	}
+
+	resp.ExitCode = res.ExitCode
+	if res.ExitCode != 0 {
+		resp.Stderr = res.Stderr
+		detail := fmt.Errorf("command failed with exit code %d: %s", res.ExitCode, strings.TrimSpace(res.Stderr))
+		var fallback error
+		if backendName == inference.NameKiroCLI {
+			fallback = fmt.Errorf("kiro-cli invocation failed: exit status %d", res.ExitCode)
+		} else {
+			fallback = fmt.Errorf("%s helper failed: exit status %d: %s", backendName, res.ExitCode, strings.TrimSpace(res.Stderr))
+		}
+		ec := newEC(detail.Error())
+		ec.Stderr = res.Stderr
+		return resp, ec, mapContainerError(detail, execCtx, imageName, cConfig, fallback)
+	}
+
+	if backendName == inference.NameKiroCLI {
+		return inference.KiroCLIAgentResponse(req, res.Stdout, res.Stderr, 0, elapsed), nil, nil
+	}
+
+	out, decodeErr := inference.DecodeExecResult([]byte(res.Stdout))
+	if decodeErr == nil {
+		return out, nil, nil
+	}
+
+	if strings.HasPrefix(decodeErr.Error(), "decoding inference result") {
+		// The helper did not produce a readable envelope.
+		resp.Stderr = res.Stderr
+		return resp, newEC(res.Stderr), fmt.Errorf("%s helper returned an unreadable result: %w", backendName, decodeErr)
+	}
+
+	// The in-container backend itself failed. decodeErr already carries the
+	// backend-authored, user-facing message, so it is returned as-is rather
+	// than through mapContainerError: the OOM/image-pull remapping applies to
+	// transport failures, not to a backend that ran and reported an error, and
+	// a reported timeout is already ErrTimeout-wrapped by DecodeExecResult.
+	if out.Command == "" {
+		out.Command = command
+	}
+	if out.Stderr == "" {
+		out.Stderr = res.Stderr
+	}
+	return out, newEC(out.Stderr), decodeErr
+}
+
+// timeoutOrDefaultRequest returns req.Timeout, or the inference default when unset.
+func timeoutOrDefaultRequest(req inference.Request) time.Duration {
+	if req.Timeout > 0 {
+		return req.Timeout
+	}
+	return inference.DefaultTimeout
+}
+
+// mapContainerError converts a container failure into the actionable
+// user-facing message for the common cases (timeout, OOM, image pull) and
+// falls back to the supplied error otherwise. Timeouts also satisfy
+// errors.Is(err, inference.ErrTimeout).
+func mapContainerError(err error, execCtx context.Context, imageName string, cConfig *ContainerConfig, fallback error) error {
+	msg := err.Error()
+	if strings.Contains(msg, "timeout") || execCtx.Err() == context.DeadlineExceeded || errors.Is(err, context.DeadlineExceeded) {
+		return &containerError{
+			msg:  fmt.Sprintf("⏱️ Container execution timeout after %v. Consider increasing --resource-limit timeout=", cConfig.ResourceLimits.Timeout),
+			errs: []error{inference.ErrTimeout, err},
+		}
+	}
+	if strings.Contains(msg, "out of memory") || strings.Contains(msg, "OOMKilled") {
+		memoryMB := cConfig.ResourceLimits.Memory / (1024 * 1024)
+		return fmt.Errorf("💾 Container ran out of memory (%dMB limit). Consider increasing --resource-limit memory=", memoryMB)
+	}
+	if strings.Contains(msg, "no such image") || strings.Contains(msg, "pull access denied") {
+		return fmt.Errorf("❌ Failed to pull image %s: %v. Check internet connection", imageName, err)
+	}
+	return fallback
 }
 
 // agentConfigDir returns the evals-dir agents directory when it holds a config
@@ -773,69 +1000,6 @@ func agentConfigDir(agent string) string {
 		return ""
 	}
 	return dir
-}
-
-// invokeAgentViaBackend runs the agent through the configured inference backend.
-func invokeAgentViaBackend(agent, prompt string, stub *inference.StubScript) (string, CostInfo, inference.CallRecord, *ErrorContext, error) {
-	timeoutStr := os.Getenv("KAIRON_EVAL_TIMEOUT")
-	timeout := 2 * time.Minute
-	if timeoutStr != "" {
-		if parsedTimeout, err := time.ParseDuration(timeoutStr); err == nil {
-			timeout = parsedTimeout
-		}
-	}
-
-	// Capture working directory
-	workingDir, _ := os.Getwd()
-
-	// Capture relevant environment variables
-	envVars := make(map[string]string)
-	for _, key := range []string{"KAIRON_EVAL_TIMEOUT"} {
-		if val := os.Getenv(key); val != "" {
-			envVars[key] = val
-		}
-	}
-
-	req := inference.Request{
-		Role:           inference.RoleAgent,
-		Agent:          agent,
-		Prompt:         prompt,
-		Timeout:        timeout,
-		AgentConfigDir: agentConfigDir(agent),
-		Model:          cfg.pins.agentModel(agent),
-		Stub:           stub,
-		// Turn is left 0: multi-turn stub selection lands with E9 (multi-turn
-		// cases). StubScript.Turns is a slice for that future, not yet wired.
-	}
-	wallStart := time.Now()
-	resp, err := cfg.backend.Invoke(context.Background(), req)
-	rec := newCallRecord(req, resp, err, time.Since(wallStart), costFromUsage(resp.Model, resp.Usage))
-	rec.PromptSHA256 = cfg.pins.agentPromptSHA(agent)
-
-	if resp.Duration > 30*time.Second {
-		fmt.Printf(" (>30s)")
-	}
-
-	// Create error context for any execution issues
-	var errorContext *ErrorContext
-	if err != nil || len(resp.Stderr) > 0 {
-		errorContext = &ErrorContext{
-			Command:     resp.Command,
-			WorkingDir:  workingDir,
-			Environment: envVars,
-			Stderr:      resp.Stderr,
-			ExitCode:    resp.ExitCode,
-		}
-	}
-
-	if err != nil {
-		if errors.Is(err, inference.ErrTimeout) && errorContext != nil {
-			errorContext.Stderr = fmt.Sprintf("timeout after %v\n%s", timeout, errorContext.Stderr)
-		}
-		return "", CostInfo{}, rec, errorContext, err
-	}
-
-	return resp.Text, costFromUsage(resp.Model, resp.Usage), rec, errorContext, nil
 }
 
 func scoreDeterministic(criterion Criterion, tc TestCase, actualOutput string) (int, string, bool) {
@@ -1135,10 +1299,6 @@ func newCallRecord(req inference.Request, resp inference.Response, err error, wa
 		rec.Error = err.Error()
 	}
 	return rec
-}
-
-func estimateCost(input, output string) CostInfo {
-	return costFromUsage("", inference.EstimateUsage(input, output))
 }
 
 func buildSummary(results []AgentResult, gitHash string) Summary {

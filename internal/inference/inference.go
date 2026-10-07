@@ -42,9 +42,9 @@ const (
 
 // Usage holds token accounting for one invocation.
 type Usage struct {
-	InputTokens  int
-	OutputTokens int
-	Source       UsageSource
+	InputTokens  int         `json:"InputTokens"`
+	OutputTokens int         `json:"OutputTokens"`
+	Source       UsageSource `json:"Source"`
 }
 
 // StubScript is test-double data carried on a Request; real backends ignore it.
@@ -66,36 +66,41 @@ type StubUsage struct {
 }
 
 // Request describes one inference call.
+//
+// The json tags keep the Go field names as keys so a Request can be sent over
+// the wire (see ServeExec); Timeout is integer nanoseconds.
 type Request struct {
-	Role   Role
-	Agent  string // agent name (RoleAgent only)
-	Prompt string
+	Role   Role   `json:"Role"`
+	Agent  string `json:"Agent"` // agent name (RoleAgent only)
+	Prompt string `json:"Prompt"`
 	// Timeout bounds the call. Zero means DefaultTimeout.
-	Timeout time.Duration
+	Timeout time.Duration `json:"Timeout"`
 	// AgentConfigDir optionally names a directory holding <agent>.json (plus
 	// any prompt files it references). When it contains <Agent>.json it takes
 	// precedence over the working directory's .kiro/agents.
-	AgentConfigDir string
+	AgentConfigDir string `json:"AgentConfigDir"`
 	// Model pins the model for this call. "" means the backend default
 	// (unpinned). The kiro-cli backend passes it as --model; the stub backend
 	// ignores it.
-	Model string
+	Model string `json:"Model"`
 	// Stub is used only by the stub backend.
-	Stub *StubScript
+	Stub *StubScript `json:"Stub"`
 	// Turn is the stub turn index to answer with (0 for now).
-	Turn int
+	Turn int `json:"Turn"`
 }
 
 // Response is the result of an invocation. Invoke populates it (Command,
 // Stderr, ExitCode, Duration) even when it also returns an error.
+//
+// The json tags keep the Go field names as keys; Duration is integer nanoseconds.
 type Response struct {
-	Text     string
-	Model    string // "" when unknown
-	Usage    Usage
-	Command  string // human-readable command line (for error context)
-	Stderr   string
-	ExitCode int
-	Duration time.Duration
+	Text     string        `json:"Text"`
+	Model    string        `json:"Model"` // "" when unknown
+	Usage    Usage         `json:"Usage"`
+	Command  string        `json:"Command"` // human-readable command line (for error context)
+	Stderr   string        `json:"Stderr"`
+	ExitCode int           `json:"ExitCode"`
+	Duration time.Duration `json:"Duration"`
 }
 
 // Backend performs inference.
