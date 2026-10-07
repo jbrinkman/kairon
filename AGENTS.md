@@ -31,12 +31,6 @@ lint findings, or "stale content" observations.
    decline with no change.
 4. **Resolve the thread.**
 
-Suggested reply:
-
-> `.kairon/specs/` holds point-in-time architect design specs and is intentionally not edited after the fact
-> (see `AGENTS.md`). I have not changed this file. The underlying concern is valid, so I fixed it in
-> `<live file>` instead (`<commit>`). / The concern only affects the historical wording, so no change is needed.
-
 Example: on PR #291, review comments asked to edit
 `.kairon/specs/issue-290-skip-sandbox-tests-no-container-daemon.md`. The correct response is to leave that spec
 alone and, if the point was valid, change the code or test that the spec describes.
