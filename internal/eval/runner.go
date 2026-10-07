@@ -947,7 +947,11 @@ func runAgentInContainer(ctx context.Context, x agentExecer, req inference.Reque
 		return resp, newEC(res.Stderr), fmt.Errorf("%s helper returned an unreadable result: %w", backendName, decodeErr)
 	}
 
-	// The backend itself failed (including timeouts, which keep ErrTimeout).
+	// The in-container backend itself failed. decodeErr already carries the
+	// backend-authored, user-facing message, so it is returned as-is rather
+	// than through mapContainerError: the OOM/image-pull remapping applies to
+	// transport failures, not to a backend that ran and reported an error, and
+	// a reported timeout is already ErrTimeout-wrapped by DecodeExecResult.
 	if out.Command == "" {
 		out.Command = command
 	}
