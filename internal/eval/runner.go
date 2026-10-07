@@ -571,7 +571,8 @@ func newAgentRequest(agent, prompt string, stub *inference.StubScript) inference
 // natively; container id/image in a container) and may be nil; the fields the
 // backend reported (command, stderr, exit code) are filled into it.
 func completeAgentCall(req inference.Request, resp inference.Response, err error, wall time.Duration, baseEC *ErrorContext) (string, CostInfo, inference.CallRecord, *ErrorContext, error) {
-	rec := newCallRecord(req, resp, err, wall, costFromUsage(resp.Model, resp.Usage))
+	cost := costFromUsage(resp.Model, resp.Usage)
+	rec := newCallRecord(req, resp, err, wall, cost)
 	rec.PromptSHA256 = cfg.pins.agentPromptSHA(req.Agent)
 
 	if resp.Duration > 30*time.Second {
@@ -603,7 +604,7 @@ func completeAgentCall(req inference.Request, resp inference.Response, err error
 		return "", CostInfo{}, rec, errorContext, err
 	}
 
-	return resp.Text, costFromUsage(resp.Model, resp.Usage), rec, errorContext, nil
+	return resp.Text, cost, rec, errorContext, nil
 }
 
 // createContainerConfig builds container configuration from CLI options. It
