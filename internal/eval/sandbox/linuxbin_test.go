@@ -3,6 +3,7 @@ package sandbox
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -122,4 +123,44 @@ func TestResolveLinuxBinary_BadOverrideNamesEnv(t *testing.T) {
 	_, err := ResolveLinuxBinary("linux/amd64")
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), LinuxBinaryEnv)
+}
+
+// This whole suite is a `go test` binary, so the guard must see it as one.
+func TestRunningUnderGoTest(t *testing.T) {
+	assert.True(t, runningUnderGoTest(), "the test binary must be detected as a go test binary")
+}
+
+// ResolveLinuxBinary must never hand back the running executable when that
+// executable is a go test binary (e.g. eval.test): it has no inference-exec
+// command. On a Linux host of the container's architecture — the only case
+// where the executable shortcut would otherwise fire — the resolver must fall
+// through to cross-compile or an error, never to the test binary itself.
+func TestResolveLinuxBinary_SkipsGoTestExecutable(t *testing.T) {
+	t.Setenv(LinuxBinaryEnv, "") // no override, so only the exe/build paths remain
+
+	platform := "linux/" + runtime.GOARCH
+	if runtime.GOOS != "linux" {
+		// Cross-OS always builds; assert the pure decision rejects a test-like
+		// executable candidate by never selecting sourceExecutable here.
+		exe, err := os.Executable()
+		require.NoError(t, err)
+		// With the guard the gatherer leaves Executable empty; emulate that in
+		// the pure planner to prove it would not pick the executable.
+		plan, perr := planLinuxBinary(linuxBinaryInputs{
+			Platform: platform, HostGOOS: runtime.GOOS, HostGOARCH: runtime.GOARCH,
+			Executable: "", ModuleRoot: "/src",
+		})
+		require.NoError(t, perr)
+		assert.Equal(t, sourceBuild, plan.Source, "test binary %q must not be selected", exe)
+		return
+	}
+
+	got, err := ResolveLinuxBinary(platform)
+	if err != nil {
+		// No module root / no Go: acceptable, as long as it did not return the exe.
+		return
+	}
+	exe, eerr := os.Executable()
+	require.NoError(t, eerr)
+	assert.NotEqual(t, exe, got, "resolver returned the go test binary itself")
 }

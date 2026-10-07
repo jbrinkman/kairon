@@ -2,6 +2,7 @@ package sandbox
 
 import (
 	"bufio"
+	"flag"
 	"fmt"
 	"os"
 	"os/exec"
@@ -106,7 +107,11 @@ func ResolveLinuxBinary(platform string) (string, error) {
 		HostGOOS:   runtime.GOOS,
 		HostGOARCH: runtime.GOARCH,
 	}
-	if exe, err := os.Executable(); err == nil {
+	// A `go test` binary (e.g. eval.test, when the sandbox self-test runs via
+	// `go test`) can match the container OS/arch, but it is not the kairon CLI
+	// and has no `inference-exec` command. Excluding it here makes the resolver
+	// fall through to cross-compiling a real kairon from source.
+	if exe, err := os.Executable(); err == nil && !runningUnderGoTest() {
 		if resolved, rerr := filepath.EvalSymlinks(exe); rerr == nil {
 			exe = resolved
 		}
@@ -140,6 +145,14 @@ func ResolveLinuxBinary(platform string) (string, error) {
 
 	linuxBinaryCache[key] = path
 	return path, nil
+}
+
+// runningUnderGoTest reports whether the current process is a `go test`
+// binary. The testing package registers the `test.v` flag only in test
+// binaries, so its presence is a reliable signal that os.Executable() is a
+// compiled test binary (e.g. eval.test) rather than the kairon CLI.
+func runningUnderGoTest() bool {
+	return flag.Lookup("test.v") != nil
 }
 
 // findKaironModuleRoot walks up from start looking for a go.mod that declares
