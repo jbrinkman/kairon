@@ -10,17 +10,18 @@ import (
 )
 
 var (
-	evalList          bool
-	evalResume        bool
-	evalCase          string
-	evalPerf          bool
-	evalSandbox       bool
-	evalNoSandbox     bool
-	evalResourceLimit []string
-	evalDebug         bool
-	evalCleanup       bool
-	evalBackend       string
-	evalEvalsDir      string
+	evalList           bool
+	evalResume         bool
+	evalCase           string
+	evalPerf           bool
+	evalSandbox        bool
+	evalNoSandbox      bool
+	evalResourceLimit  []string
+	evalDebug          bool
+	evalCleanup        bool
+	evalBackend        string
+	evalEvalsDir       string
+	evalKeepWorkspaces bool
 )
 
 var evalCmd = &cobra.Command{
@@ -50,16 +51,17 @@ var evalCmd = &cobra.Command{
 		}
 
 		return eval.RunWithOptions(agent, testcase, eval.RunOptions{
-			List:          evalList,
-			Resume:        evalResume,
-			Sandbox:       evalSandbox,
-			NoSandbox:     evalNoSandbox,
-			ResourceLimit: resourceLimits,
-			Debug:         evalDebug,
-			Cleanup:       evalCleanup,
-			Perf:          evalPerf,
-			Backend:       evalBackend,
-			EvalsDir:      evalEvalsDir,
+			List:           evalList,
+			Resume:         evalResume,
+			Sandbox:        evalSandbox,
+			NoSandbox:      evalNoSandbox,
+			ResourceLimit:  resourceLimits,
+			Debug:          evalDebug,
+			Cleanup:        evalCleanup,
+			Perf:           evalPerf,
+			Backend:        evalBackend,
+			EvalsDir:       evalEvalsDir,
+			KeepWorkspaces: evalKeepWorkspaces,
 		})
 	},
 }
@@ -85,6 +87,7 @@ func init() {
 	evalCmd.Flags().BoolVar(&evalCleanup, "cleanup", false, "Stop and remove all tracked debug containers and clean artifacts")
 	evalCmd.Flags().StringVar(&evalBackend, "backend", inference.NameKiroCLI,
 		fmt.Sprintf("Inference backend for agent and judge calls (%s)", strings.Join(inference.Names(), ", ")))
+	evalCmd.Flags().BoolVar(&evalKeepWorkspaces, "keep-workspaces", false, "Keep per-case workspaces after the run (their paths are recorded as workspace_dir in the results)")
 	evalCmd.PersistentFlags().StringVar(&evalEvalsDir, "evals-dir", "",
 		"Evals directory holding rubrics, cases, fixtures and results (default \".kairon/evals\")")
 

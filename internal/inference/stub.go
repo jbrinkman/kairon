@@ -1,8 +1,12 @@
 package inference
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"fmt"
+	"os/exec"
+	"strings"
 	"time"
 )
 
@@ -49,6 +53,12 @@ func (*stubBackend) Invoke(ctx context.Context, req Request) (Response, error) {
 			Model:   turn.Model,
 			Command: "stub agent",
 		}
+		if len(turn.Commands) > 0 {
+			if cmdResp, err := runStubCommands(ctx, req, turn.Commands); err != nil {
+				cmdResp.Command = resp.Command
+				return cmdResp, err
+			}
+		}
 		if turn.Usage != nil {
 			resp.Usage = Usage{
 				InputTokens:  turn.Usage.InputTokens,
@@ -63,4 +73,54 @@ func (*stubBackend) Invoke(ctx context.Context, req Request) (Response, error) {
 	default:
 		return Response{}, fmt.Errorf("stub backend: unsupported role %q", req.Role)
 	}
+}
+
+// stubCommandWaitDelay bounds how long Wait lingers for output pipes to close
+// after a command was killed.
+const stubCommandWaitDelay = time.Second
+
+// runStubCommands runs each command with `sh -c` in req.WorkDir, in order, under
+// one deadline of req.Timeout (DefaultTimeout when zero). It stops at the first
+// failure. On failure the returned Response carries Stderr/ExitCode/Duration and
+// no Text.
+func runStubCommands(parent context.Context, req Request, commands []string) (Response, error) {
+	if req.WorkDir == "" {
+		return Response{}, errors.New("stub turn has commands but the request has no WorkDir; refusing to run them in the process working directory")
+	}
+
+	timeout := timeoutOrDefault(req.Timeout)
+	ctx, cancel := context.WithTimeout(parent, timeout)
+	defer cancel()
+
+	start := time.Now()
+	for _, command := range commands {
+		cmd := exec.CommandContext(ctx, "sh", "-c", command)
+		cmd.Dir = req.WorkDir
+		cmd.WaitDelay = stubCommandWaitDelay
+		setProcessGroup(cmd)
+		var stderr bytes.Buffer
+		cmd.Stderr = &stderr
+
+		runErr := cmd.Run()
+		if runErr == nil {
+			continue
+		}
+
+		resp := Response{Stderr: stderr.String(), Duration: time.Since(start)}
+		var exitErr *exec.ExitError
+		if errors.As(runErr, &exitErr) {
+			resp.ExitCode = exitErr.ExitCode()
+		}
+		if ctx.Err() == context.DeadlineExceeded {
+			return resp, &invokeError{
+				msg:  fmt.Sprintf("stub timeout after %v", timeout),
+				errs: []error{ErrTimeout, runErr},
+			}
+		}
+		if parent.Err() != nil {
+			return resp, parent.Err()
+		}
+		return resp, fmt.Errorf("stub command %q failed: %w: %s", command, runErr, strings.TrimSpace(resp.Stderr))
+	}
+	return Response{}, nil
 }

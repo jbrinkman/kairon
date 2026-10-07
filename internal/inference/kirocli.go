@@ -67,9 +67,16 @@ func (*kiroCLIBackend) invokeAgent(parent context.Context, req Request) (Respons
 	// the requested one (also on error paths).
 	resp := Response{Command: command, Model: req.Model}
 
-	cleanup, err := applyAgentConfigOverlay(cmd, req.AgentConfigDir, req.Agent)
-	if err != nil {
-		return resp, fmt.Errorf("kiro-cli invocation failed: %w", err)
+	cleanup := func() {}
+	if req.WorkDir != "" {
+		// An explicit working directory wins; it carries its own .kiro/agents.
+		cmd.Dir = req.WorkDir
+	} else {
+		var err error
+		cleanup, err = applyAgentConfigOverlay(cmd, req.AgentConfigDir, req.Agent)
+		if err != nil {
+			return resp, fmt.Errorf("kiro-cli invocation failed: %w", err)
+		}
 	}
 	defer cleanup()
 

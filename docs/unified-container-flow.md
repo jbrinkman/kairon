@@ -2,121 +2,84 @@
 
 ## Overview
 
-The eval system now uses a unified **generate → build → create → verify** flow for both test and production environments, ensuring consistent behavior and eliminating separate code paths.
+The eval system uses one **ensure image → build workspace → create → verify → execute** flow for both test and production environments. A single tools-only base image is built once and reused; everything that varies per case is supplied from the host through bind mounts. Nothing is generated, copied or installed inside a running container.
+
+See [evaluation.md](evaluation.md#container-sandboxing) for the user-facing description (mounts, ownership rules, platform notes, cache rules). This page describes the code flow.
 
 ## Complete Flow Analysis
 
-### Phase 1: Generate Dockerfile
-**Location:** `internal/eval/sandbox/container.go` - `GenerateDockerfileWithPlatform()`
+### Phase 1: Ensure the base image
+**Location:** `internal/eval/sandbox/baseimage.go` - `ImageManager.EnsureBaseImage()`
+**Used by:** Tests and Production (called once per run from `eval.Run()`)
+**Purpose:** Return the tag of the tools-only base image, building it only when it does not exist.
+
+**Steps:**
+1. Resolve the pinned tool set (`DefaultToolSet`: kiro-cli and gh versions) into Docker build args with `ToolSet.BuildArgs(platform)`.
+2. Compute the tag `kairon-eval-base:<platform>-<12 hex>` with `BaseImageTag`, a pure function of the embedded `base.Dockerfile` bytes, the platform and the build args. Nothing else (evals directory, agents, skills, cases, cwd, environment) participates.
+3. `ImageInspect(tag)`: if the image exists, reuse it (`built=false`).
+4. Otherwise build it once (mutex-guarded) and return `built=true`.
+
+`Run()` prints `✅ Base image reused: <tag>` or `🔨 Base image built: <tag>`. The image is persistent: it is never removed at the end of a run. Building needs network access (kiro-cli and gh are downloaded as root at build time).
+
+### Phase 2: Build the case workspace (host side)
+**Location:** `internal/eval/workspace.go` - `newCaseWorkspace()`
+**Used by:** Native and container runs (via `executeCase`)
+**Purpose:** Create the per-case git workspace, staged `.kiro/` and `.eval/` on the host.
+
+The workspace is a temp directory under `KAIRON_EVAL_WORKSPACE_ROOT` (or the OS temp directory), symlink-resolved, containing the case fixture as the single git commit, a staged `.kiro/` (fixture > `<evals-dir>/agents` > project `.kiro`) and an empty `.eval/`. See [Case Workspaces](evaluation.md#case-workspaces).
+
+### Phase 3: Create container
+**Location:** `internal/eval/runner.go` - `invokeAgentInContainer()`, `internal/eval/sandbox/mounts.go` - `NewHostConfigWithMounts()`
 **Used by:** Tests and Production
-**Purpose:** Creates Dockerfile with kiro-cli pre-installed
+**Purpose:** Create a container from the cached base image with explicit bind mounts.
 
 **Steps:**
-1. Detect target platform (linux/amd64 or linux/arm64)
-2. Generate Dockerfile content with:
-   - Base image: `alpine:3.19`
-   - Package updates and curl installation
-   - kiro-cli download and installation to `/usr/local/bin/kiro-cli`
-   - Executable permissions and verification
-   - Working directory setup
+1. Build the mount list (`buildContainerMounts`): `<ws>/.kiro` read-only, `<ws>` read-write and `<ws>/.eval` read-write at the configured workspace path, plus the linux `kairon` helper read-only at `/opt/kairon/kairon` for non-`kiro-cli` backends only.
+2. Validate every host path (absolute, exists, symlink-resolved) before the container is created. Structured `HostConfig.Mounts` are used, not `Binds` strings, so a missing path fails instead of being created as a root-owned directory.
+3. Apply resource limits (CPU, memory) and `NetworkMode: none`; no tmpfs is mounted at the workspace path.
+4. Set `User: sandbox`, `WorkingDir`, `HOME=/home/sandbox` and the git `safe.directory=*` environment, plus the configured environment (for example `KIRO_CLI_DISABLE_TELEMETRY=1`).
+5. On SELinux-enforcing hosts, add `label=disable`.
+6. Create and start the container.
 
-**Performance:** ~50ms (Dockerfile generation)
-
-### Phase 2: Build Custom Image
-**Location:** `internal/eval/sandbox/container.go` - `BuildImageFromDockerfile()`
-**Used by:** Tests and Production  
-**Purpose:** Builds Docker image from generated Dockerfile
-
-**Steps:**
-1. Create tar archive containing Dockerfile
-2. Call Docker API to build image with platform-specific settings
-3. Generate unique image name: `kairon-eval[-debug]:platform-timestamp`
-4. Wait for build completion
-
-**Performance:** ~30-60s (Docker image build with kiro-cli download)
-
-### Phase 3: Create Container
-**Location:** `internal/eval/sandbox/container.go` - `CreateWithPlatform()`
-**Used by:** Tests and Production
-**Purpose:** Creates container instance using custom-built image
-
-**Steps:**
-1. Configure container with custom image (not alpine:3.19)
-2. Set environment variables (KIRO_CLI_DISABLE_TELEMETRY=1, etc.)
-3. Apply resource limits (CPU, memory, timeout)
-4. Create container with platform-specific settings
-5. Start container process
-
-**Performance:** ~2-5s (Container creation and startup)
-
-### Phase 4: Verify Installation
+### Phase 4: Verify
 **Location:** `internal/eval/sandbox/container.go` - `ValidateKiroCLI()`
-**Used by:** Tests and Production
-**Purpose:** Validates kiro-cli is pre-installed and functional
+**Used by:** Tests and Production (`kiro-cli` backend)
+**Purpose:** Check, read-only, that the baked `kiro-cli` is present and executable. Nothing is installed.
 
-**Steps:**
-1. Check if `/usr/local/bin/kiro-cli` exists and is executable
-2. Provide detailed error reporting if validation fails
-3. Optionally test kiro-cli execution with `--version`
-
-**Performance:** ~100-500ms (Binary verification)
+### Phase 5: Execute
+**Location:** `internal/eval/runner.go` - `runAgentInContainer()`
+Every exec is wrapped by `sandbox.WithOpenUmask` (`sh -c 'umask 000; exec "$@"' kairon-exec …`) so files created by the agent are world-accessible and the host can score and delete them. The prompt is delivered on stdin only. The host exec deadline equals the effective timeout for `kiro-cli` and the timeout plus 10 seconds for helper backends. The `agentExecer` interface has only `ExecWithStdin`; there is no copy-into-container operation.
 
 ## Flow Consistency Verification
 
-### Test Environment
-- Tests use `GenerateDockerfileWithPlatform()` to create custom images
-- Tests call `BuildImageFromDockerfile()` to build images  
-- Tests use `CreateWithPlatform()` with custom image names
-- Tests call `ValidateKiroCLI()` to verify pre-installation
+Test and production environments share the same code:
 
-### Production Environment  
-- Production uses `GenerateDockerfileWithPlatform()` to create custom images
-- Production calls `BuildImageFromDockerfile()` to build images
-- Production uses `CreateWithPlatform()` with custom image names  
-- Production calls `ValidateKiroCLI()` to verify pre-installation
+- `EnsureBaseImage()` obtains the image.
+- `newCaseWorkspace()` builds the workspace.
+- `NewHostConfigWithMounts()` and `CreateWithPlatform()` create the container from the base image name.
+- `ValidateKiroCLI()` verifies the pre-installed binary.
 
-**Result:** ✅ Identical code paths ensure test coverage matches production behavior
+A source-level guard test fails if `runner.go` reintroduces `SetupGitHubMocking`, `ConfigureMockGitHubPath` or a `.CopyTo(` call.
 
-## Performance Analysis
+## Performance Notes
 
-### Total End-to-End Time
-- **Generate:** ~50ms
-- **Build:** ~30-60s (dominated by kiro-cli download)  
-- **Create:** ~2-5s
-- **Verify:** ~100-500ms
-- **Total:** ~35-70s per evaluation
+- **Cold run:** one base-image build (dominated by downloading kiro-cli and gh), then container creation per case.
+- **Warm run:** the image is reused (`ImageInspect` only). Editing agents, skills, rubrics or cases never triggers a rebuild; only a change to `base.Dockerfile`, a tool pin or the platform does.
+- Timings were not re-measured for this change; the numbers previously listed on this page described the removed per-run generate-and-build flow.
 
-### Performance Impact Assessment
-- **Previous flow:** Container creation (~2-5s) + runtime installation (~10-20s) = ~15-25s
-- **New unified flow (cold):** Full build (~35-70s) but with consistent, pre-installed environment
-- **New unified flow (cached):** ~250ms when Docker layers are cached (typical after first run)
-- **Trade-off:** Longer initial cold-build time for reliability, consistency, and faster cached runs
+## Debug Mode
 
-### Performance Optimizations
-1. **Image caching:** Docker automatically caches layers between builds
-2. **Debug mode:** Uses unique image names for debugging without affecting performance tests
-3. **Parallel builds:** Multiple evaluations can build images concurrently
-4. **Resource limits:** Configurable CPU/memory limits prevent resource exhaustion
+With `--debug`, failed containers are preserved for inspection and `kairon eval --cleanup` removes tracked debug containers. Debug mode does not preserve workspaces: use `--keep-workspaces` together with `--debug` to inspect both.
 
-## Debug Mode Enhancements
-
-### Debug Artifacts Saved
-1. **Dockerfile:** Saved via `debug.SaveDockerfile()` 
-2. **Container Info:** Container ID, image name, platform saved to artifacts
-3. **Container Preservation:** Failed containers preserved for inspection
-4. **Debug Image Naming:** Uses `kairon-eval-debug:` prefix for easy identification
-
-### Debug Commands
 ```bash
-# Run with debug mode
-kiro-cli eval --debug --sandbox architect simple-task
+# Run with debug mode and keep workspaces
+kairon eval --debug --keep-workspaces --sandbox architect
 
-# Check saved artifacts
-ls -la .kairon/evals/tmp/dockerfiles/
-cat .kairon/evals/tmp/containers.json
+# Inspect the cached base image
+docker images | grep kairon-eval-base
 
 # Inspect debug containers
-docker ps -a | grep kairon-eval-debug
+docker ps -a | grep kairon-eval
 docker exec -it <container-id> sh
 ```
 
@@ -124,69 +87,39 @@ docker exec -it <container-id> sh
 
 ### Unit Tests
 ```bash
-# Test unified flow methods
-go test ./internal/eval/sandbox -v -run TestEndToEndFlow
-
-# Test debug mode
-go test ./internal/eval/sandbox -v -run TestEndToEndFlowWithDebug  
-
-# Test flow consistency
-go test ./internal/eval/sandbox -v -run TestFlowConsistency
+go test ./internal/eval/sandbox/... -count=1   # base image tag, mounts, umask wrapper
+go test ./internal/eval/... -count=1           # workspace, executeCase, container runner (fake executor)
 ```
 
-### Integration Validation
+### Daemon-gated tests (need Podman or Docker, network for the first build)
 ```bash
-# Full eval with timing
-time kiro-cli eval --debug architect simple-task
-
-# Verify custom image creation
-docker images | grep kairon-eval
-
-# Test pre-installed kiro-cli
-docker run --rm <kairon-eval-image> kiro-cli --version
+task eval:selftest:sandbox
 ```
 
-### Manual Flow Verification
+### Manual Verification
 ```bash
-# Trace complete flow with verbose logging
-kiro-cli eval --debug architect simple-task 2>&1 | grep -E "(Generate|Build|Create|Verify|Phase)"
-
-# Expected output pattern:
-# Phase 1: Generate Dockerfile  
-# Phase 2: Build custom image
-# Image build: 45s
-# Phase 3: Container startup  
-# Container startup: 3s
-# Phase 4: Verify pre-installed kiro-cli
-# Container setup: 200ms
+# Tools-only base image: no mounts, nothing project-specific inside
+docker run --rm kairon-eval-base:<platform>-<hash> sh -c 'id -un; command -v kiro-cli gh git sh; ls -A /workspace'
 ```
 
 ## Error Handling and Diagnostics
 
 ### Common Issues and Solutions
 
-1. **Build Failures:** Check internet connectivity for kiro-cli download
-2. **Platform Mismatches:** Verify platform detection matches target architecture  
-3. **Permission Issues:** Validate kiro-cli executable permissions in Dockerfile
-4. **Resource Limits:** Adjust CPU/memory limits for build-heavy workloads
+1. **Build failures:** check network connectivity for the kiro-cli and gh downloads.
+2. **Platform mismatches:** verify platform detection matches the target architecture (`linux/amd64` or `linux/arm64`).
+3. **Mount failures on macOS:** set `KAIRON_EVAL_WORKSPACE_ROOT` to a directory shared with the Docker Desktop / Podman machine VM.
+4. **Helper binary not usable:** the helper mounted at `/opt/kairon/kairon` must be readable and executable by uid 1000 (`0755`); set `KAIRON_SANDBOX_BINARY` to a prebuilt static linux binary.
+5. **Resource limits:** adjust CPU/memory/timeout limits for heavy workloads; a case can set its own `timeout`.
 
 ### Enhanced Error Messages
-- Container timeout: Suggests increasing timeout limit
-- Out of memory: Suggests increasing memory limit  
-- Image pull failures: Provides network connectivity guidance
-- Binary not found: Detailed troubleshooting for installation failures
-
-## Success Metrics Met
-
-✅ **Functional:** Tests and production use identical container creation flow  
-✅ **Debug:** Debug mode saves both Dockerfile and container registry info  
-✅ **Performance:** New flow completes within acceptable time limits; cached builds run in <1s  
-✅ **Reliability:** Zero regression in existing eval test success rates  
-✅ **Maintainability:** Single code path reduces maintenance complexity
+- Container timeout: names the effective timeout and suggests the case `timeout` or `--resource-limit timeout=`
+- Out of memory: suggests increasing the memory limit
+- Image pull failures: provides network connectivity guidance
+- Binary not found: detailed troubleshooting for installation failures
 
 ## Future Enhancements
 
-1. **Image Registry:** Push built images to registry for sharing across instances
-2. **Build Caching:** Implement smarter caching to reduce build times  
-3. **Multi-stage Builds:** Optimize Dockerfile for smaller final image size
-4. **Health Checks:** Add container health checks for better reliability monitoring
+1. **Image Registry:** Push built images to a registry for sharing across instances
+2. **Containment:** read-only root filesystem, network policy, fake `gh` and tool trust (#298)
+3. **Health Checks:** Add container health checks for better reliability monitoring

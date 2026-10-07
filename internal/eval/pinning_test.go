@@ -275,7 +275,7 @@ func TestPinRunOverlayIgnoredOnlyWhenRequested(t *testing.T) {
 func TestPinUnpinnedCallsOmitModel(t *testing.T) {
 	chdirTemp(t)
 	_, calls := installFakeKiroCLI(t, "cat >/dev/null\necho ok")
-	if _, _, rec, _, err := invokeAgent("builder", "p", nil, nil); err != nil || rec.Role != "agent" || rec.Model != "" {
+	if _, _, rec, _, err := invokeAgent("builder", "p", nil, callOpts{}); err != nil || rec.Role != "agent" || rec.Model != "" {
 		t.Fatalf("rec=%+v err=%v", rec, err)
 	}
 	if got := readCalls(t, calls); len(got) != 1 || strings.Contains(got[0], "--model") {
@@ -287,7 +287,7 @@ func TestCallRecordsFailedCallStillRecorded(t *testing.T) {
 	chdirTemp(t)
 	cfg.pins = &runPins{Judge: "j", Agents: map[string]agentPin{"a": {Model: "m"}}}
 	installFakeKiroCLI(t, "cat >/dev/null\nexit 3")
-	_, _, rec, _, err := invokeAgent("a", "p", nil, nil)
+	_, _, rec, _, err := invokeAgent("a", "p", nil, callOpts{})
 	if err == nil || rec.Error == "" || rec.Model != "m" {
 		t.Errorf("err=%v rec=%+v", err, rec)
 	}

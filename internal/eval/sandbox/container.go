@@ -19,8 +19,6 @@ import (
 	"github.com/docker/docker/client"
 	"github.com/docker/docker/pkg/stdcopy"
 	specs "github.com/opencontainers/image-spec/specs-go/v1"
-
-	"github.com/jbrinkman/kairon/internal/eval/debug"
 )
 
 // ImageNamePrefix is the prefix used for custom eval images.
@@ -28,13 +26,12 @@ const ImageNamePrefix = "kairon-eval"
 
 // Container manages Docker container lifecycle
 type Container struct {
-	client       *client.Client
-	containerID  string
-	imageName    string
-	debugMode    bool
-	registry     *Registry
-	platform     string
-	imageManager *ImageManager
+	client      *client.Client
+	containerID string
+	imageName   string
+	debugMode   bool
+	registry    *Registry
+	platform    string
 }
 
 // DetectHostArchitecture returns the Docker platform string for the host architecture
@@ -47,11 +44,6 @@ func DetectHostArchitecture() (string, error) {
 	default:
 		return "", fmt.Errorf("unsupported architecture: %s", runtime.GOARCH)
 	}
-}
-
-// SetImageManager enables image reuse workflow for evaluation runs
-func (c *Container) SetImageManager(imageManager *ImageManager) {
-	c.imageManager = imageManager
 }
 
 // SetDebugMode enables or disables debug mode
@@ -170,7 +162,7 @@ func (c *Container) CreateWithPlatform(ctx context.Context, config *container.Co
 		defer reader.Close()
 		io.Copy(io.Discard, reader)
 	} else if err != nil && isCustomImage {
-		return fmt.Errorf("custom image %s not found locally - it should be built with BuildImageFromDockerfile first", imageToUse)
+		return fmt.Errorf("custom image %s not found locally - it should be built with ImageManager.EnsureBaseImage first", imageToUse)
 	}
 
 	// Parse platform string for ContainerCreate
@@ -468,81 +460,13 @@ func (c *Container) CleanupWithDebugInfo(ctx context.Context, failed bool) error
 	return err
 }
 
-// GenerateDockerfileWithPlatform creates a custom Dockerfile with platform-specific kiro-cli installation
-func (c *Container) GenerateDockerfileWithPlatform(projectPath, platform string) (string, error) {
-	projects := DetectProject(projectPath)
-
-	var dockerfile strings.Builder
-
-	// Start with base image
-	dockerfile.WriteString("FROM alpine:3.19\n\n")
-
-	// Install essential tools
-	dockerfile.WriteString("RUN apk add --no-cache \\\n")
-	dockerfile.WriteString("    git \\\n")
-	dockerfile.WriteString("    curl \\\n")
-	dockerfile.WriteString("    bash \\\n")
-	dockerfile.WriteString("    unzip \\\n")
-	dockerfile.WriteString("    ca-certificates\n\n")
-
-	// Add toolchain installations
-	for _, project := range projects {
-		template, err := c.loadTemplate(project.Type)
-		if err != nil {
-			return "", fmt.Errorf("loading template for %s: %w", project.Type, err)
-		}
-		dockerfile.WriteString(template)
-		dockerfile.WriteString("\n")
-	}
-
-	// Add platform-specific kiro-cli installation
-	kiroCLIInstall, err := addKiroCLIToDockerfile(platform)
-	if err != nil {
-		return "", fmt.Errorf("generating kiro-cli installation: %w", err)
-	}
-	dockerfile.WriteString(kiroCLIInstall)
-
-	// Add user and workspace setup
-	dockerfile.WriteString("RUN adduser -D -s /bin/bash sandbox\n")
-	dockerfile.WriteString("RUN mkdir -p /workspace && chown sandbox:sandbox /workspace\n")
-	dockerfile.WriteString("WORKDIR /workspace\n")
-	dockerfile.WriteString("USER sandbox\n")
-	dockerfile.WriteString("CMD [\"/bin/bash\"]\n")
-
-	dockerfileContent := dockerfile.String()
-
-	// Save dockerfile in debug mode
-	if c.debugMode {
-		id := c.containerID
-		if id == "" {
-			id = c.imageName
-		}
-		if err := debug.SaveDockerfile(dockerfileContent, id); err != nil {
-			fmt.Printf("⚠️ Warning: Failed to save dockerfile: %v\n", err)
-		}
-	}
-
-	return dockerfileContent, nil
-}
-
-// BuildImageFromDockerfile builds a Docker image from generated Dockerfile content
-func (c *Container) BuildImageFromDockerfile(ctx context.Context, dockerfile string, imageName string, platform string) error {
-	// Use image manager for reuse if available
-	if c.imageManager != nil {
-		reusedImage, err := c.imageManager.BuildForEvaluation(ctx, dockerfile, platform)
-		if err != nil {
-			return fmt.Errorf("image manager build failed: %w", err)
-		}
-		imageName = reusedImage
-		c.imageName = imageName
-		return nil
-	}
-
-	return c.buildImageDirect(ctx, dockerfile, imageName, platform)
-}
-
 // buildImageDirect performs the actual Docker image build without imageManager delegation.
 func (c *Container) buildImageDirect(ctx context.Context, dockerfile string, imageName string, platform string) error {
+	return c.buildImageWithArgs(ctx, dockerfile, imageName, platform, nil)
+}
+
+// buildImageWithArgs builds an image from dockerfile passing Docker build args.
+func (c *Container) buildImageWithArgs(ctx context.Context, dockerfile string, imageName string, platform string, buildArgs map[string]*string) error {
 
 	// Create tar archive with Dockerfile
 	var buf bytes.Buffer
@@ -568,8 +492,9 @@ func (c *Container) buildImageDirect(ctx context.Context, dockerfile string, ima
 
 	// Build the image
 	buildOptions := build.ImageBuildOptions{
-		Tags:     []string{imageName},
-		Platform: platform,
+		Tags:      []string{imageName},
+		Platform:  platform,
+		BuildArgs: buildArgs,
 	}
 
 	if c.debugMode {
@@ -602,63 +527,9 @@ func (c *Container) buildImageDirect(ctx context.Context, dockerfile string, ima
 	return nil
 }
 
-// GetCustomImageName generates a unique image name for the eval session
-func (c *Container) GetCustomImageName(platform string) string {
-	// Replace slashes in platform for image name compatibility
-	safePlatform := strings.ReplaceAll(platform, "/", "-")
-	timestamp := time.Now().UnixNano()
-
-	// Add debug identifier for easy cleanup when in debug mode
-	if c.debugMode {
-		return fmt.Sprintf("kairon-eval-debug:%s-%d", safePlatform, timestamp)
-	}
-	return fmt.Sprintf("kairon-eval:%s-%d", safePlatform, timestamp)
-}
-
 // RemoveImage removes a Docker image by name
 func (c *Container) RemoveImage(ctx context.Context, imageName string) ([]image.DeleteResponse, error) {
 	return c.client.ImageRemove(ctx, imageName, image.RemoveOptions{Force: false, PruneChildren: true})
-}
-
-func (c *Container) loadTemplate(projectType ProjectType) (string, error) {
-	templatePath := fmt.Sprintf("internal/eval/dockerfile/templates/%s.Dockerfile", string(projectType))
-	content, err := os.ReadFile(templatePath)
-	if err != nil {
-		return "", err
-	}
-	return string(content), nil
-}
-
-// getKiroCLIDownloadURL returns the direct download URL for kiro-cli binary
-func getKiroCLIDownloadURL(platform string) (string, error) {
-	baseURL := "https://desktop-release.q.us-east-1.amazonaws.com/latest/"
-	switch platform {
-	case "linux/amd64":
-		return baseURL + "kirocli-x86_64-linux-musl.zip", nil
-	case "linux/arm64":
-		return baseURL + "kirocli-aarch64-linux-musl.zip", nil
-	default:
-		return "", fmt.Errorf("unsupported platform: %s", platform)
-	}
-}
-
-// addKiroCLIToDockerfile generates kiro-cli installation commands for Dockerfile
-func addKiroCLIToDockerfile(platform string) (string, error) {
-	downloadURL, err := getKiroCLIDownloadURL(platform)
-	if err != nil {
-		return "", err
-	}
-
-	var dockerfile strings.Builder
-	dockerfile.WriteString("# Install kiro-cli\n")
-	dockerfile.WriteString("RUN cd /tmp && \\\n")
-	dockerfile.WriteString(fmt.Sprintf("    curl -fsSL %s -o kirocli.zip && \\\n", downloadURL))
-	dockerfile.WriteString("    unzip -q kirocli.zip && \\\n")
-	dockerfile.WriteString("    chmod 755 kirocli/bin/kiro-cli && \\\n")
-	dockerfile.WriteString("    mv kirocli/bin/kiro-cli /usr/local/bin/kiro-cli && \\\n")
-	dockerfile.WriteString("    rm -rf kirocli.zip kirocli\n\n")
-
-	return dockerfile.String(), nil
 }
 
 // ValidateKiroCLI verifies kiro-cli installation at runtime

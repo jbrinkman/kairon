@@ -47,7 +47,7 @@ func TestArchitectureIntegration_ContainerLifecycle(t *testing.T) {
 				Image: "alpine:3.19",
 				Cmd:   []string{"sleep", "30"},
 			}
-			hostConfig := NewHostConfigWithLimits(DefaultLimits())
+			hostConfig := mustHostConfig(t, DefaultLimits())
 
 			// Use detected architecture if platform is empty
 			platform := tt.platform
@@ -120,7 +120,7 @@ func TestArchitectureIntegration_KiroCLIInstallation(t *testing.T) {
 		Memory:   1024 * 1024 * 1024, // 1GB
 		Timeout:  5 * time.Minute,
 	}
-	hostConfig := NewHostConfigWithLimits(limits)
+	hostConfig := mustHostConfig(t, limits)
 
 	err = c.Create(ctx, config, hostConfig)
 	require.NoError(t, err)
@@ -146,12 +146,12 @@ func TestArchitectureIntegration_KiroCLIInstallation(t *testing.T) {
 	}
 
 	// Test URL generation
-	url, err := getKiroCLIDownloadURL(platform)
+	url, err := kiroCLIVersionedURL(platform, DefaultToolSet.KiroCLIVersion)
 	require.NoError(t, err)
 	t.Logf("Download URL for %s: %s", platform, url)
 
 	// Verify URL format
-	assert.Contains(t, url, "https://desktop-release.q.us-east-1.amazonaws.com/latest/")
+	assert.Contains(t, url, "https://desktop-release.q.us-east-1.amazonaws.com/"+DefaultToolSet.KiroCLIVersion+"/")
 	if arch == "x86_64" {
 		assert.Contains(t, url, "kirocli-x86_64-linux-musl.zip")
 	} else {
@@ -179,45 +179,6 @@ func TestArchitectureIntegration_KiroCLIInstallation(t *testing.T) {
 	}
 }
 
-func TestArchitectureIntegration_MultiPlatformDockerfile(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping integration test in short mode")
-	}
-	skipIfNoContainerDaemon(t)
-
-	// Create a temporary project directory
-	tmpDir := t.TempDir()
-
-	// Create Go project files
-	err := os.WriteFile(tmpDir+"/go.mod", []byte("module test\ngo 1.21"), 0644)
-	require.NoError(t, err)
-
-	// Create Node.js project files
-	err = os.WriteFile(tmpDir+"/package.json", []byte(`{"name": "test", "version": "1.0.0"}`), 0644)
-	require.NoError(t, err)
-
-	ctx := context.Background()
-	c, err := NewContainer("alpine:3.19")
-	require.NoError(t, err)
-	defer c.Close()
-
-	// Test Dockerfile generation
-	platform, _ := DetectHostArchitecture()
-	dockerfile, err := c.GenerateDockerfileWithPlatform(tmpDir, platform)
-	if err != nil {
-		// Template loading might fail if not in the right directory
-		t.Logf("Dockerfile generation failed (expected in test environment): %v", err)
-		return
-	}
-
-	// Verify Dockerfile contains architecture-agnostic base
-	assert.Contains(t, dockerfile, "FROM alpine:3.19")
-	assert.Contains(t, dockerfile, "adduser -D -s /bin/bash sandbox")
-	assert.Contains(t, dockerfile, "WORKDIR /workspace")
-
-	t.Logf("Generated Dockerfile:\n%s", dockerfile)
-}
-
 func TestArchitectureIntegration_ResourceLimitsAcrossArchitectures(t *testing.T) {
 	if testing.Short() {
 		t.Skip("Skipping integration test in short mode")
@@ -242,7 +203,7 @@ func TestArchitectureIntegration_ResourceLimitsAcrossArchitectures(t *testing.T)
 		Image: "alpine:3.19",
 		Cmd:   []string{"sleep", "20"},
 	}
-	hostConfig := NewHostConfigWithLimits(limits)
+	hostConfig := mustHostConfig(t, limits)
 
 	err = c.Create(ctx, config, hostConfig)
 	require.NoError(t, err)
@@ -268,56 +229,6 @@ func TestArchitectureIntegration_ResourceLimitsAcrossArchitectures(t *testing.T)
 	assert.Contains(t, output, "Memory test passed")
 }
 
-func TestArchitectureIntegration_CrossPlatformProjectDetection(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping integration test in short mode")
-	}
-
-	// This test doesn't require Docker, but tests project detection
-	// which is used during architecture-specific container setup
-
-	tmpDir := t.TempDir()
-
-	// Create multi-language project
-	testFiles := map[string]string{
-		"go.mod":           "module example\ngo 1.21",
-		"package.json":     `{"name": "example", "version": "1.0.0"}`,
-		"Cargo.toml":       "[package]\nname = \"example\"",
-		"pom.xml":          "<project></project>",
-		"requirements.txt": "flask==2.0.1",
-	}
-
-	for filename, content := range testFiles {
-		err := os.WriteFile(tmpDir+"/"+filename, []byte(content), 0644)
-		require.NoError(t, err)
-	}
-
-	// Test project detection
-	projects := DetectProject(tmpDir)
-	require.GreaterOrEqual(t, len(projects), 5, "Should detect multiple project types")
-
-	// Verify all expected types are detected
-	detectedTypes := make(map[ProjectType]bool)
-	for _, p := range projects {
-		detectedTypes[p.Type] = true
-	}
-
-	expectedTypes := []ProjectType{
-		ProjectTypeGo,
-		ProjectTypeNodeJS,
-		ProjectTypeRust,
-		ProjectTypeJava,
-		ProjectTypePython,
-	}
-
-	for _, expected := range expectedTypes {
-		assert.True(t, detectedTypes[expected],
-			"Should detect %s project type", expected)
-	}
-
-	t.Logf("Detected %d project types for multi-language project", len(projects))
-}
-
 func TestArchitectureIntegration_CurrentArchitectureConsistency(t *testing.T) {
 	// Test that our architecture detection is consistent with runtime
 	platform, err := DetectHostArchitecture()
@@ -333,10 +244,10 @@ func TestArchitectureIntegration_CurrentArchitectureConsistency(t *testing.T) {
 	}
 
 	// Test URL generation for current architecture
-	url, err := getKiroCLIDownloadURL(platform)
+	url, err := kiroCLIVersionedURL(platform, DefaultToolSet.KiroCLIVersion)
 	require.NoError(t, err)
 
-	assert.Contains(t, url, "https://desktop-release.q.us-east-1.amazonaws.com/latest/")
+	assert.Contains(t, url, "https://desktop-release.q.us-east-1.amazonaws.com/"+DefaultToolSet.KiroCLIVersion+"/")
 
 	if runtime.GOARCH == "amd64" {
 		assert.Contains(t, url, "kirocli-x86_64-linux-musl.zip")

@@ -44,6 +44,14 @@ type TestCase struct {
 	// Stub scripts the agent's response for the stub inference backend.
 	// Other backends ignore it.
 	Stub *inference.StubScript `yaml:"stub,omitempty" json:"stub,omitempty"`
+
+	// Workspace names a fixture directory under <evals-dir>/fixtures/workspaces/
+	// that seeds the case's per-case workspace. Empty means an empty workspace.
+	Workspace string `yaml:"workspace,omitempty" json:"workspace,omitempty"`
+
+	// Timeout overrides the agent-call timeout for this case. It is a Go
+	// duration string (e.g. "30s") and must be positive when set.
+	Timeout string `yaml:"timeout,omitempty" json:"timeout,omitempty"`
 }
 
 // CostInfo tracks token usage and estimated cost.
@@ -116,6 +124,9 @@ type CaseResult struct {
 	AgentCost    CostInfo         `json:"agent_cost"`
 	JudgeCost    CostInfo         `json:"judge_cost"`
 	ErrorContext *ErrorContext    `json:"error_context,omitempty"`
+	// WorkspaceDir is the host path of the case's workspace. It is recorded
+	// whether or not the directory is removed after the case.
+	WorkspaceDir string `json:"workspace_dir,omitempty"`
 	// Calls holds one record per agent call and per judge call, in execution order.
 	Calls []inference.CallRecord `json:"calls,omitempty"`
 }
@@ -159,6 +170,10 @@ type RunOptions struct {
 	Backend       string            // Inference backend name (default "kiro-cli")
 	EvalsDir      string            // Evals directory (default ".kairon/evals")
 	Perf          bool              // Run performance investigation
+
+	// KeepWorkspaces keeps per-case workspaces after the run instead of
+	// removing them.
+	KeepWorkspaces bool
 }
 
 // Summary holds aggregate results for an eval run.
@@ -207,14 +222,16 @@ type AgentProvenance struct {
 
 // ContainerConfig configures containerized execution
 type ContainerConfig struct {
-	Platform        string                 `json:"platform"`
-	ResourceLimits  sandbox.ResourceLimits `json:"resource_limits"`
-	Environment     map[string]string      `json:"environment"`
-	WorkspaceDir    string                 `json:"workspace_dir"`
-	MockGitHub      bool                   `json:"mock_github"`
-	Debug           bool                   `json:"debug"`
-	ImageManager    *sandbox.ImageManager  `json:"-"`
-	CachedImageName string                 `json:"-"`
+	Platform       string                 `json:"platform"`
+	ResourceLimits sandbox.ResourceLimits `json:"resource_limits"`
+	Environment    map[string]string      `json:"environment"`
+	WorkspaceDir   string                 `json:"workspace_dir"`
+	// MockGitHub is not consulted: the runner no longer installs a mock gh
+	// into the container. Fake gh behavior is the containment work in #298.
+	MockGitHub      bool                  `json:"mock_github"`
+	Debug           bool                  `json:"debug"`
+	ImageManager    *sandbox.ImageManager `json:"-"`
+	CachedImageName string                `json:"-"`
 }
 
 // ProjectDetection holds results from project type detection

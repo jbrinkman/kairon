@@ -54,7 +54,8 @@ func TestDetectHostArchitecture(t *testing.T) {
 	}
 }
 
-func TestGetKiroCLIDownloadURL(t *testing.T) {
+func TestKiroCLIVersionedURL_PlatformMapping(t *testing.T) {
+	v := DefaultToolSet.KiroCLIVersion
 	tests := []struct {
 		name        string
 		platform    string
@@ -64,12 +65,12 @@ func TestGetKiroCLIDownloadURL(t *testing.T) {
 		{
 			name:     "AMD64 Linux",
 			platform: "linux/amd64",
-			expected: "https://desktop-release.q.us-east-1.amazonaws.com/latest/kirocli-x86_64-linux-musl.zip",
+			expected: "https://desktop-release.q.us-east-1.amazonaws.com/" + v + "/kirocli-x86_64-linux-musl.zip",
 		},
 		{
 			name:     "ARM64 Linux",
 			platform: "linux/arm64",
-			expected: "https://desktop-release.q.us-east-1.amazonaws.com/latest/kirocli-aarch64-linux-musl.zip",
+			expected: "https://desktop-release.q.us-east-1.amazonaws.com/" + v + "/kirocli-aarch64-linux-musl.zip",
 		},
 		{
 			name:        "Unsupported Platform",
@@ -85,7 +86,7 @@ func TestGetKiroCLIDownloadURL(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			url, err := getKiroCLIDownloadURL(tt.platform)
+			url, err := kiroCLIVersionedURL(tt.platform, v)
 
 			if tt.expectError {
 				assert.Error(t, err)
@@ -120,7 +121,7 @@ func TestCreateWithPlatform(t *testing.T) {
 				Image: "alpine:3.19",
 				Cmd:   []string{"sleep", "5"},
 			}
-			hostConfig := NewHostConfigWithLimits(DefaultLimits())
+			hostConfig := mustHostConfig(t, DefaultLimits())
 
 			err = c.CreateWithPlatform(ctx, config, hostConfig, tt.platform)
 
@@ -156,7 +157,7 @@ func TestArchitectureDetectionInContainer(t *testing.T) {
 		Image: "alpine:3.19",
 		Cmd:   []string{"sleep", "30"},
 	}
-	hostConfig := NewHostConfigWithLimits(DefaultLimits())
+	hostConfig := mustHostConfig(t, DefaultLimits())
 
 	err = c.Create(ctx, config, hostConfig)
 	require.NoError(t, err)
@@ -211,7 +212,7 @@ func TestPlatformSpecificImagePulling(t *testing.T) {
 		Image: "alpine:3.19",
 		Cmd:   []string{"sleep", "30"},
 	}
-	hostConfig := NewHostConfigWithLimits(DefaultLimits())
+	hostConfig := mustHostConfig(t, DefaultLimits())
 
 	// This should pull the image for the correct platform
 	err = c.CreateWithPlatform(ctx, config, hostConfig, platform)
@@ -242,7 +243,7 @@ func TestKiroCLIInstallationMocking(t *testing.T) {
 		Image: "alpine:3.19",
 		Cmd:   []string{"sleep", "60"},
 	}
-	hostConfig := NewHostConfigWithLimits(DefaultLimits())
+	hostConfig := mustHostConfig(t, DefaultLimits())
 
 	err = c.Create(ctx, config, hostConfig)
 	require.NoError(t, err)
@@ -281,9 +282,9 @@ func TestKiroCLIInstallationMocking(t *testing.T) {
 	}
 
 	// Test URL generation for detected architecture
-	url, err := getKiroCLIDownloadURL(expectedPlatform)
+	url, err := kiroCLIVersionedURL(expectedPlatform, DefaultToolSet.KiroCLIVersion)
 	require.NoError(t, err)
-	assert.Contains(t, url, "https://desktop-release.q.us-east-1.amazonaws.com/latest/")
+	assert.Contains(t, url, "https://desktop-release.q.us-east-1.amazonaws.com/"+DefaultToolSet.KiroCLIVersion+"/")
 
 	if arch == "x86_64" {
 		assert.Contains(t, url, "kirocli-x86_64-linux-musl.zip")

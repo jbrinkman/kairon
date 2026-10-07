@@ -116,7 +116,7 @@ func assertSelfTestResults(t *testing.T, res AgentResult) {
 	for _, c := range res.Cases {
 		byName[c.CaseName] = c
 	}
-	for _, name := range []string{"stub-basic", "stub-usage", "stub-quoted-input"} {
+	for _, name := range []string{"stub-basic", "stub-usage", "stub-quoted-input", markerCase, seededCase} {
 		if _, ok := byName[name]; !ok {
 			t.Fatalf("case %q missing from results (have %v)", name, byName)
 		}
@@ -134,19 +134,22 @@ func assertSelfTestResults(t *testing.T, res AgentResult) {
 		t.Errorf("stub-usage model = %q, want stub-model", usage.AgentCost.Model)
 	}
 
-	for _, name := range []string{"stub-basic", "stub-quoted-input"} {
+	for _, name := range []string{"stub-basic", "stub-quoted-input", markerCase, seededCase} {
 		if got := byName[name].AgentCost.UsageSource; got != "estimated" {
 			t.Errorf("%s usage_source = %q, want estimated", name, got)
 		}
 	}
-	if len(res.Cases) != 3 {
-		t.Errorf("selftest has %d cases, want 3", len(res.Cases))
+	if len(res.Cases) != 5 {
+		t.Errorf("selftest has %d cases, want 5", len(res.Cases))
 	}
 	if out := byName["stub-quoted-input"].ActualOutput; !strings.Contains(out, "arrived verbatim") {
 		t.Errorf("stub-quoted-input output = %q, want the scripted stub response", out)
 	}
 
 	for _, c := range res.Cases {
+		if c.WorkspaceDir == "" {
+			t.Errorf("case %s has no workspace_dir", c.CaseName)
+		}
 		if c.ErrorContext != nil {
 			t.Errorf("case %s has ErrorContext: %+v", c.CaseName, c.ErrorContext)
 		}

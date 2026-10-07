@@ -1,0 +1,21 @@
+name: stub-timeout
+description: "Self-test: the case timeout (1s) is applied; a stub turn command that sleeps 3s is killed and recorded as a timeout failure"
+agent: selftest-fail
+timeout: 1s
+input: |
+  This case is expected to time out.
+context:
+  - "This case runs against the deterministic stub backend"
+  - "Expected to FAIL: the stub turn command outlives the case timeout"
+expected_output: |
+  No output: the agent call times out.
+stub:
+  turns:
+    - commands:
+        - "sleep 3"
+      response: |
+        ## Never returned
+
+        ### Details
+
+        The timeout fires before this response is produced.

@@ -47,9 +47,10 @@ func captureStdout(t *testing.T, fn func()) string {
 // path it behaves like the real container would: it decodes the JSON request
 // from stdin and runs the real backend through inference.ServeExec.
 type fakeExecer struct {
-	copies []string // "dest<-src"
-	cmds   [][]string
-	stdins []string
+	cmds      [][]string // unwrapped from the open-umask wrapper
+	rawCmds   [][]string // exactly as received
+	stdins    []string
+	deadlines []time.Duration // time left on the exec context when it started
 
 	// kiro-cli scripting.
 	kiroStdout string
@@ -66,18 +67,36 @@ type fakeExecer struct {
 	block bool
 }
 
-func (f *fakeExecer) CopyTo(_ context.Context, dest, src string) error {
-	f.copies = append(f.copies, dest+"<-"+src)
-	return nil
+// unwrapOpenUmask strips the sandbox.WithOpenUmask wrapper, reporting whether
+// cmd was wrapped.
+func unwrapOpenUmask(cmd []string) ([]string, bool) {
+	w := sandbox.WithOpenUmask(nil)
+	if len(cmd) < len(w) {
+		return cmd, false
+	}
+	for i := range w {
+		if cmd[i] != w[i] {
+			return cmd, false
+		}
+	}
+	return cmd[len(w):], true
 }
 
-func (f *fakeExecer) ExecWithStdin(ctx context.Context, cmd []string, stdin io.Reader) (sandbox.ExecResult, error) {
+func (f *fakeExecer) ExecWithStdin(ctx context.Context, wrapped []string, stdin io.Reader) (sandbox.ExecResult, error) {
 	data, err := io.ReadAll(stdin)
 	if err != nil {
 		return sandbox.ExecResult{}, err
 	}
+	f.rawCmds = append(f.rawCmds, wrapped)
+	cmd, ok := unwrapOpenUmask(wrapped)
+	if !ok {
+		return sandbox.ExecResult{}, fmt.Errorf("exec was not wrapped with the open-umask wrapper: %q", wrapped)
+	}
 	f.cmds = append(f.cmds, cmd)
 	f.stdins = append(f.stdins, string(data))
+	if dl, ok := ctx.Deadline(); ok {
+		f.deadlines = append(f.deadlines, time.Until(dl))
+	}
 
 	if f.block {
 		<-ctx.Done()
@@ -130,7 +149,7 @@ func useFakeLinuxBinary(t *testing.T) string {
 func useFakeContainer(t *testing.T, x agentExecer) {
 	t.Helper()
 	orig := invokeInContainer
-	invokeInContainer = func(req inference.Request, c *ContainerConfig) (inference.Response, *ErrorContext, error) {
+	invokeInContainer = func(req inference.Request, c *ContainerConfig, _ *caseWorkspace) (inference.Response, *ErrorContext, error) {
 		return runAgentInContainer(context.Background(), x, req, c)
 	}
 	t.Cleanup(func() { invokeInContainer = orig })
@@ -164,7 +183,7 @@ func TestContainerKiroCLIPromptOnStdinNotArgv(t *testing.T) {
 	x := &fakeExecer{kiroStdout: "\x1b[1mhello\x1b[0m"}
 	useFakeContainer(t, x)
 
-	out, cost, rec, ec, err := invokeAgent("builder", prompt, testContainerConfig(), nil)
+	out, cost, rec, ec, err := invokeAgent("builder", prompt, testContainerConfig(), callOpts{})
 	if err != nil {
 		t.Fatalf("invokeAgent: %v", err)
 	}
@@ -175,9 +194,6 @@ func TestContainerKiroCLIPromptOnStdinNotArgv(t *testing.T) {
 		t.Fatalf("stdin did not carry the exact prompt (got %d bytes)", len(x.stdins[0]))
 	}
 	assertNoPromptInArgv(t, x.cmds)
-	if len(x.copies) != 0 {
-		t.Errorf("kiro-cli path must not copy a helper: %v", x.copies)
-	}
 	if ec != nil {
 		t.Errorf("ec = %+v", ec)
 	}
@@ -192,13 +208,13 @@ func TestContainerKiroCLIPromptOnStdinNotArgv(t *testing.T) {
 func TestContainerHelperPromptOnStdinNotArgv(t *testing.T) {
 	chdirTemp(t)
 	useStubBackend(t)
-	bin := useFakeLinuxBinary(t)
+	useFakeLinuxBinary(t)
 	prompt := nastyPrompt()
 	x := &fakeExecer{}
 	useFakeContainer(t, x)
 
 	stub := &inference.StubScript{Turns: []inference.StubTurn{{Response: "scripted"}}}
-	out, _, _, _, err := invokeAgent("selftest", prompt, testContainerConfig(), stub)
+	out, _, _, _, err := invokeAgent("selftest", prompt, testContainerConfig(), callOpts{Stub: stub})
 	if err != nil {
 		t.Fatalf("invokeAgent: %v", err)
 	}
@@ -209,12 +225,9 @@ func TestContainerHelperPromptOnStdinNotArgv(t *testing.T) {
 	if len(x.stdins) != 1 || !strings.Contains(x.stdins[0], "PROMPT-MARKER") {
 		t.Errorf("the JSON request on stdin must carry the prompt")
 	}
-	wantCmd := "/tmp/kairon inference-exec --backend stub"
+	wantCmd := "/opt/kairon/kairon inference-exec --backend stub"
 	if got := strings.Join(x.cmds[0], " "); got != wantCmd {
 		t.Errorf("cmd = %q, want %q", got, wantCmd)
-	}
-	if len(x.copies) != 1 || x.copies[0] != "/tmp/kairon<-"+bin {
-		t.Errorf("copies = %v", x.copies)
 	}
 }
 
@@ -227,7 +240,7 @@ func TestContainerKiroCLIArgvMatchesNative(t *testing.T) {
 				pinAgentModel("builder", model)
 			}
 
-			if _, _, _, _, err := invokeAgent("builder", "p", nil, nil); err != nil {
+			if _, _, _, _, err := invokeAgent("builder", "p", nil, callOpts{}); err != nil {
 				t.Fatal(err)
 			}
 			native := readCalls(t, calls)
@@ -237,7 +250,7 @@ func TestContainerKiroCLIArgvMatchesNative(t *testing.T) {
 
 			x := &fakeExecer{kiroStdout: "ok"}
 			useFakeContainer(t, x)
-			if _, _, _, _, err := invokeAgent("builder", "p", testContainerConfig(), nil); err != nil {
+			if _, _, _, _, err := invokeAgent("builder", "p", testContainerConfig(), callOpts{}); err != nil {
 				t.Fatal(err)
 			}
 			cmd := x.cmds[0]
@@ -291,13 +304,13 @@ func TestContainerStubMatchesNativeStub(t *testing.T) {
 			stub := loadSelftestStub(t, name)
 			prompt := "prompt for " + name
 
-			nOut, nCost, nRec, nEC, nErr := invokeAgent("selftest", prompt, nil, stub)
+			nOut, nCost, nRec, nEC, nErr := invokeAgent("selftest", prompt, nil, callOpts{Stub: stub})
 			if nErr != nil {
 				t.Fatal(nErr)
 			}
 
 			useFakeContainer(t, &fakeExecer{})
-			cOut, cCost, cRec, cEC, cErr := invokeAgent("selftest", prompt, testContainerConfig(), stub)
+			cOut, cCost, cRec, cEC, cErr := invokeAgent("selftest", prompt, testContainerConfig(), callOpts{Stub: stub})
 			if cErr != nil {
 				t.Fatal(cErr)
 			}
@@ -357,7 +370,7 @@ func TestContainerNoEstimateCostOrGuessedRecord(t *testing.T) {
 	useStubBackend(t)
 	useFakeLinuxBinary(t)
 	useFakeContainer(t, &fakeExecer{})
-	_, _, rec, _, err := invokeAgent("selftest", "p", testContainerConfig(), loadSelftestStub(t, "stub-usage"))
+	_, _, rec, _, err := invokeAgent("selftest", "p", testContainerConfig(), callOpts{Stub: loadSelftestStub(t, "stub-usage")})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -376,7 +389,7 @@ func TestContainerTimeoutMapping(t *testing.T) {
 	x := &fakeExecer{block: true}
 	useFakeContainer(t, x)
 
-	_, _, rec, ec, err := invokeAgent("builder", "p", cc, nil)
+	_, _, rec, ec, err := invokeAgent("builder", "p", cc, callOpts{})
 	if err == nil {
 		t.Fatal("expected a timeout")
 	}
@@ -405,7 +418,7 @@ func TestContainerHelperReportedTimeout(t *testing.T) {
 	x := &fakeExecer{helperStdout: &env}
 	useFakeContainer(t, x)
 
-	_, _, _, _, err := invokeAgent("selftest", "p", testContainerConfig(), nil)
+	_, _, _, _, err := invokeAgent("selftest", "p", testContainerConfig(), callOpts{})
 	if !errors.Is(err, inference.ErrTimeout) {
 		t.Fatalf("err = %v, want ErrTimeout", err)
 	}
@@ -428,7 +441,7 @@ func TestContainerErrorMessages(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			chdirTemp(t)
 			useFakeContainer(t, tt.x)
-			_, _, rec, ec, err := invokeAgent("builder", "p", testContainerConfig(), nil)
+			_, _, rec, ec, err := invokeAgent("builder", "p", testContainerConfig(), callOpts{})
 			if err == nil || !strings.Contains(err.Error(), tt.want) {
 				t.Fatalf("err = %v, want containing %q", err, tt.want)
 			}
@@ -444,7 +457,7 @@ func TestContainerErrorMessages(t *testing.T) {
 	t.Run("exit code and stderr reach the context", func(t *testing.T) {
 		chdirTemp(t)
 		useFakeContainer(t, &fakeExecer{kiroExit: 2, kiroStderr: "bad things"})
-		_, _, _, ec, _ := invokeAgent("builder", "p", testContainerConfig(), nil)
+		_, _, _, ec, _ := invokeAgent("builder", "p", testContainerConfig(), callOpts{})
 		if ec == nil || ec.ExitCode != 2 || !strings.Contains(ec.Stderr, "bad things") || !strings.HasPrefix(ec.Command, "kiro-cli chat") {
 			t.Errorf("ec = %+v", ec)
 		}
@@ -458,7 +471,7 @@ func TestContainerHelperFailures(t *testing.T) {
 
 	t.Run("backend error", func(t *testing.T) {
 		useFakeContainer(t, &fakeExecer{})
-		_, _, rec, _, err := invokeAgent("selftest", "p", testContainerConfig(), nil) // no stub script
+		_, _, rec, _, err := invokeAgent("selftest", "p", testContainerConfig(), callOpts{}) // no stub script
 		if err == nil || !strings.Contains(err.Error(), "no stub.turns[0].response") || errors.Is(err, inference.ErrTimeout) {
 			t.Fatalf("err = %v", err)
 		}
@@ -470,7 +483,7 @@ func TestContainerHelperFailures(t *testing.T) {
 	t.Run("unreadable output", func(t *testing.T) {
 		garbage := "not json"
 		useFakeContainer(t, &fakeExecer{helperStdout: &garbage, helperStderr: "panic: x"})
-		_, _, _, ec, err := invokeAgent("selftest", "p", testContainerConfig(), nil)
+		_, _, _, ec, err := invokeAgent("selftest", "p", testContainerConfig(), callOpts{})
 		if err == nil || !strings.Contains(err.Error(), "unreadable result") {
 			t.Fatalf("err = %v", err)
 		}
@@ -482,24 +495,9 @@ func TestContainerHelperFailures(t *testing.T) {
 	t.Run("helper exit", func(t *testing.T) {
 		empty := ""
 		useFakeContainer(t, &fakeExecer{helperStdout: &empty, helperExit: 1, helperStderr: "unknown backend"})
-		_, _, _, _, err := invokeAgent("selftest", "p", testContainerConfig(), nil)
+		_, _, _, _, err := invokeAgent("selftest", "p", testContainerConfig(), callOpts{})
 		if err == nil || !strings.Contains(err.Error(), "stub helper failed: exit status 1: unknown backend") {
 			t.Fatalf("err = %v", err)
-		}
-	})
-
-	t.Run("no linux binary", func(t *testing.T) {
-		orig := resolveLinuxBinary
-		resolveLinuxBinary = func(string) (string, error) { return "", fmt.Errorf("set KAIRON_SANDBOX_BINARY") }
-		t.Cleanup(func() { resolveLinuxBinary = orig })
-		x := &fakeExecer{}
-		useFakeContainer(t, x)
-		_, _, _, _, err := invokeAgent("selftest", "p", testContainerConfig(), nil)
-		if err == nil || !strings.Contains(err.Error(), "KAIRON_SANDBOX_BINARY") {
-			t.Fatalf("err = %v", err)
-		}
-		if len(x.cmds) != 0 {
-			t.Error("exec ran without a helper binary")
 		}
 	})
 }
@@ -523,7 +521,7 @@ func TestSharedRequestBuilder(t *testing.T) {
 	useFakeContainer(t, x)
 	cc := testContainerConfig()
 	cc.ResourceLimits.Timeout = 3 * time.Minute
-	if _, _, _, _, err := invokeAgent("builder", "p", cc, stub); err != nil {
+	if _, _, _, _, err := invokeAgent("builder", "p", cc, callOpts{Stub: stub}); err != nil {
 		t.Fatal(err)
 	}
 	var sent inference.Request
