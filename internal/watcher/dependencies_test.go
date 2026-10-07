@@ -1,9 +1,12 @@
 package watcher
 
 import (
+	"errors"
 	"reflect"
 	"sort"
 	"testing"
+
+	"github.com/jbrinkman/kairon/internal/github"
 )
 
 func TestParseDependencies(t *testing.T) {
@@ -150,6 +153,207 @@ func TestBackoffTracker(t *testing.T) {
 		bt.RecordFailure(1)
 		if got := bt.GetRoundsUntilCheck(1); got != 16 {
 			t.Errorf("expected 16 rounds (cap), got %d", got)
+		}
+	})
+}
+
+// fakeIssueLookup returns a lookup function that records every requested issue
+// number in *calls and answers from the scripted details/errs maps. An issue
+// found in errs returns that error; otherwise it returns the entry in details.
+// It never invokes the real gh CLI.
+func fakeIssueLookup(calls *[]int, details map[int]*github.IssueDetails, errs map[int]error) issueLookupFunc {
+	return func(_ string, number int) (*github.IssueDetails, error) {
+		*calls = append(*calls, number)
+		if err, ok := errs[number]; ok {
+			return nil, err
+		}
+		if d, ok := details[number]; ok {
+			return d, nil
+		}
+		return nil, errors.New("unexpected lookup of issue")
+	}
+}
+
+func TestValidateIssue(t *testing.T) {
+	lookupErr := errors.New("gh: network unreachable")
+	const body = "Dependencies: #10, #11, #12"
+
+	tests := []struct {
+		name           string
+		body           string
+		details        map[int]*github.IssueDetails
+		errs           map[int]error
+		wantLookups    []int
+		wantValid      bool
+		wantUnresolved []int
+	}{
+		{
+			name: "first dependency open stops after one lookup",
+			body: body,
+			details: map[int]*github.IssueDetails{
+				10: {State: "open"},
+				11: {State: "closed"},
+				12: {State: "closed"},
+			},
+			wantLookups:    []int{10},
+			wantValid:      false,
+			wantUnresolved: []int{10},
+		},
+		{
+			name: "later dependency open stops at that dependency",
+			body: body,
+			details: map[int]*github.IssueDetails{
+				10: {State: "closed"},
+				11: {State: "open"},
+				12: {State: "open"},
+			},
+			wantLookups:    []int{10, 11},
+			wantValid:      false,
+			wantUnresolved: []int{11},
+		},
+		{
+			name: "last dependency open is reported after all prior lookups",
+			body: body,
+			details: map[int]*github.IssueDetails{
+				10: {State: "closed"},
+				11: {State: "closed"},
+				12: {State: "open"},
+			},
+			wantLookups:    []int{10, 11, 12},
+			wantValid:      false,
+			wantUnresolved: []int{12},
+		},
+		{
+			name: "all dependencies closed",
+			body: body,
+			details: map[int]*github.IssueDetails{
+				10: {State: "closed"},
+				11: {State: "closed"},
+				12: {State: "closed"},
+			},
+			wantLookups: []int{10, 11, 12},
+			wantValid:   true,
+		},
+		{
+			name: "closed state is case insensitive",
+			body: body,
+			details: map[int]*github.IssueDetails{
+				10: {State: "Closed"},
+				11: {State: "CLOSED"},
+				12: {State: "closed"},
+			},
+			wantLookups: []int{10, 11, 12},
+			wantValid:   true,
+		},
+		{
+			name:           "first dependency lookup error stops the loop",
+			body:           body,
+			errs:           map[int]error{10: lookupErr},
+			wantLookups:    []int{10},
+			wantValid:      false,
+			wantUnresolved: []int{10},
+		},
+		{
+			name: "later dependency lookup error stops the loop",
+			body: body,
+			details: map[int]*github.IssueDetails{
+				10: {State: "closed"},
+			},
+			errs:           map[int]error{11: lookupErr},
+			wantLookups:    []int{10, 11},
+			wantValid:      false,
+			wantUnresolved: []int{11},
+		},
+		{
+			name:        "no dependencies performs no lookups",
+			body:        "This is a regular issue with no dependencies",
+			wantLookups: nil,
+			wantValid:   true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var calls []int
+			dv := NewDependencyValidator()
+			dv.getIssueDetails = fakeIssueLookup(&calls, tt.details, tt.errs)
+
+			result, err := dv.ValidateIssue("owner/repo", 1, tt.body)
+			if err != nil {
+				t.Fatalf("ValidateIssue() returned unexpected error: %v", err)
+			}
+			if result == nil {
+				t.Fatal("ValidateIssue() returned nil result")
+			}
+
+			if len(calls) != len(tt.wantLookups) || (len(calls) > 0 && !reflect.DeepEqual(calls, tt.wantLookups)) {
+				t.Errorf("lookups = %v, expected %v", calls, tt.wantLookups)
+			}
+			if result.IsValid != tt.wantValid {
+				t.Errorf("IsValid = %v, expected %v", result.IsValid, tt.wantValid)
+			}
+			if len(result.UnresolvedDependencies) != len(tt.wantUnresolved) ||
+				(len(tt.wantUnresolved) > 0 && !reflect.DeepEqual(result.UnresolvedDependencies, tt.wantUnresolved)) {
+				t.Errorf("UnresolvedDependencies = %v, expected %v", result.UnresolvedDependencies, tt.wantUnresolved)
+			}
+			if len(result.CircularDependencies) != 0 {
+				t.Errorf("CircularDependencies = %v, expected empty", result.CircularDependencies)
+			}
+		})
+	}
+}
+
+func TestValidateIssueCyclicDependencyDoesNotFetchChain(t *testing.T) {
+	t.Run("two issue cycle only looks up the direct dependency", func(t *testing.T) {
+		// Issue 10 depends on #11, whose body points back at #10.
+		var calls []int
+		details := map[int]*github.IssueDetails{
+			11: {State: "closed", Body: "Dependencies: #10"},
+		}
+		dv := NewDependencyValidator()
+		dv.getIssueDetails = fakeIssueLookup(&calls, details, nil)
+
+		result, err := dv.ValidateIssue("owner/repo", 10, "Dependencies: #11")
+		if err != nil {
+			t.Fatalf("ValidateIssue() returned unexpected error: %v", err)
+		}
+
+		if !reflect.DeepEqual(calls, []int{11}) {
+			t.Errorf("lookups = %v, expected [11] (no recursive chain fetch)", calls)
+		}
+		if !result.IsValid {
+			t.Errorf("IsValid = false, expected true (dependency is closed)")
+		}
+		if len(result.CircularDependencies) != 0 {
+			t.Errorf("CircularDependencies = %v, expected empty", result.CircularDependencies)
+		}
+	})
+
+	t.Run("self referencing issue is looked up once", func(t *testing.T) {
+		// Issue 10 depends on itself; the dependency body repeats the cycle.
+		var calls []int
+		details := map[int]*github.IssueDetails{
+			10: {State: "open", Body: "Dependencies: #10"},
+		}
+		dv := NewDependencyValidator()
+		dv.getIssueDetails = fakeIssueLookup(&calls, details, nil)
+
+		result, err := dv.ValidateIssue("owner/repo", 10, "Dependencies: #10")
+		if err != nil {
+			t.Fatalf("ValidateIssue() returned unexpected error: %v", err)
+		}
+
+		if !reflect.DeepEqual(calls, []int{10}) {
+			t.Errorf("lookups = %v, expected [10] (no recursive chain fetch)", calls)
+		}
+		if result.IsValid {
+			t.Errorf("IsValid = true, expected false (dependency is open)")
+		}
+		if !reflect.DeepEqual(result.UnresolvedDependencies, []int{10}) {
+			t.Errorf("UnresolvedDependencies = %v, expected [10]", result.UnresolvedDependencies)
+		}
+		if len(result.CircularDependencies) != 0 {
+			t.Errorf("CircularDependencies = %v, expected empty", result.CircularDependencies)
 		}
 	})
 }

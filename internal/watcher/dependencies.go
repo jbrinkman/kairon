@@ -156,15 +156,20 @@ type ValidationResult struct {
 	CircularDependencies   []int
 }
 
+// issueLookupFunc fetches issue details; defaults to github.GetIssueDetails.
+type issueLookupFunc func(repo string, number int) (*github.IssueDetails, error)
+
 // DependencyValidator validates issue dependencies
 type DependencyValidator struct {
-	parser *DependencyParser
+	parser          *DependencyParser
+	getIssueDetails issueLookupFunc // unexported; tests may replace it
 }
 
 // NewDependencyValidator creates a new dependency validator
 func NewDependencyValidator() *DependencyValidator {
 	return &DependencyValidator{
-		parser: &DependencyParser{},
+		parser:          &DependencyParser{},
+		getIssueDetails: github.GetIssueDetails,
 	}
 }
 
@@ -181,31 +186,22 @@ func (dv *DependencyValidator) ValidateIssue(repo string, issueNumber int, issue
 		return &ValidationResult{IsValid: true}, nil
 	}
 
-	// Check for circular dependencies using already-fetched body
-	visited := make(map[int]bool)
-	circular := dv.checkCircularDependencies(repo, issueNumber, issueBody, visited)
-
-	// Check dependency states
-	var unresolved []int
+	// Fail fast: the watcher skips an issue on the first unresolved dependency,
+	// so stop at the first one. Order is the order ParseDependencies returns.
 	for _, dep := range dependencies {
-		depDetails, err := github.GetIssueDetails(repo, dep)
+		depDetails, err := dv.getIssueDetails(repo, dep)
 		if err != nil {
 			log.Printf("[watcher] error checking dependency #%d for issue #%d: %v", dep, issueNumber, err)
-			unresolved = append(unresolved, dep)
-			continue
+			return &ValidationResult{UnresolvedDependencies: []int{dep}}, nil
 		}
 
 		if !strings.EqualFold(depDetails.State, "closed") {
 			log.Printf("[watcher] dependency #%d for issue #%d is in state '%s' (not closed)", dep, issueNumber, depDetails.State)
-			unresolved = append(unresolved, dep)
+			return &ValidationResult{UnresolvedDependencies: []int{dep}}, nil
 		}
 	}
 
-	return &ValidationResult{
-		IsValid:                len(unresolved) == 0,
-		UnresolvedDependencies: unresolved,
-		CircularDependencies:   circular,
-	}, nil
+	return &ValidationResult{IsValid: true}, nil
 }
 
 // checkCircularDependencies detects circular dependencies.
