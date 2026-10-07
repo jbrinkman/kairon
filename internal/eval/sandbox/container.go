@@ -341,7 +341,10 @@ func (c *Container) ExecWithStdin(ctx context.Context, cmd []string, stdin io.Re
 	select {
 	case out = <-demuxCh:
 	case <-ctx.Done():
-		hijacked.Close() // unblocks the demux and stdin goroutines
+		// Closing the hijacked connection unblocks both detached goroutines:
+		// the demux (writing to a cap-1 channel, so it never blocks) and the
+		// stdin copier (which then closes stdinDone). Neither leaks.
+		hijacked.Close()
 		return ExecResult{}, ctx.Err()
 	}
 	if out.err != nil {
