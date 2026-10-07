@@ -156,8 +156,8 @@ kairon eval --backend stub --evals-dir internal/eval/testdata/evals selftest
 
 Notes:
 - The `kiro-cli` startup probe (`kiro-cli --version`) and the PATH availability check are performed by the selected backend; the stub reports zero startup overhead and is always available.
-- `--backend stub` cannot be combined with `--sandbox` (the sandbox runs `kiro-cli` inside a container); the run fails with an error.
-- The Docker sandbox path still runs `kiro-cli` directly in the container, always reports estimated usage, and does **not** honor `evals.agent_model` (see [`--sandbox` and `evals.agent_model`](#--sandbox-and-evalsagent_model)).
+- Every backend can run under `--sandbox`, including `--backend stub`. The container is only a transport: the backend chosen with `--backend` runs inside it, the prompt is delivered on stdin, and the request, cost accounting and call record are the same as a native run. See [Backends in the Container](#backends-in-the-container).
+- Under `--sandbox` the agent model is pinned and passed exactly as in a native run: `evals.agent_model` is honoured and reaches `kiro-cli` as `--model` (see [`--sandbox` and `evals.agent_model`](#--sandbox-and-evalsagent_model)).
 
 ### Stub Case Fields
 
@@ -241,7 +241,7 @@ Notes:
 - A user-supplied `allowed_models` list **replaces** the default list; it is not appended to it. Omit the key to keep the defaults.
 - All values are whitespace-trimmed, and empty `allowed_models` entries are dropped.
 - Use `agent_model` to run on a model that is available on your machine without editing agent configs (for example `agent_model: claude-sonnet-4.5` when `claude-sonnet-5.5` is not available). The override must itself be in `allowed_models`.
-- Agent configs are never modified; the model is passed to `kiro-cli` with `--model`.
+- Agent configs are never modified; the model is passed to `kiro-cli` with `--model`, both natively and under `--sandbox`.
 
 ### Allowlist refusal
 
@@ -278,9 +278,11 @@ When the pre-flight passes, one line summarises what the run is pinned to:
 
 ### `--sandbox` and `evals.agent_model`
 
-**`--sandbox` runs do not honor `evals.agent_model`.** In a sandboxed run the agent is executed inside the container with its own `kiro-cli chat --agent <agent> --no-interactive --trust-all-tools` command, which does not pass `--model`, so the agent runs on the `model` in its agent config. The run prints a warning that `evals.agent_model` is ignored, validates the agent config's model against `allowed_models`, and records that config model as `agent_model`. The container also ignores the `<evals-dir>/agents/` overlay, so provenance is computed from `.kiro/agents/<agent>.json`.
+**`--sandbox` honours `evals.agent_model`.** A sandboxed run builds the same agent request as a native run, so the pinned model is sent with the call. With the `kiro-cli` backend the container runs `kiro-cli chat --agent <agent> --no-interactive --trust-all-tools --model <model>`, with the same arguments as the native backend. The effective model is the same as without `--sandbox`: `evals.agent_model` when set, otherwise the `model` in the agent config. It is validated against `allowed_models` in the pre-flight, recorded as `agent_model`, and recorded on the agent call. No warning is printed.
 
-`evals.judge_model` **is still honored** in a sandboxed run: judge calls execute on the host through the inference backend, pinned with `--model <judge_model>`, and are subject to the same allowlist check.
+`evals.judge_model` is honoured in the same way: judge calls execute on the host through the inference backend, pinned with `--model <judge_model>`, and are subject to the same allowlist check.
+
+The one thing a `kiro-cli` container cannot see is the `<evals-dir>/agents/` overlay (the evals directory is not copied into the container). For `--backend kiro-cli --sandbox`, provenance (`prompt_sha256`, `resources_present`, and the config model used when `evals.agent_model` is unset) is therefore computed from `.kiro/agents/<agent>.json` only. With `--backend stub --sandbox` no agent config is read inside the container, so the overlay applies exactly as in a native run; this is what lets the self-test, whose agent config lives only in `internal/eval/testdata/evals/agents/`, pass the pre-flight under `--sandbox`.
 
 ### Recorded provenance
 
@@ -305,7 +307,7 @@ Details:
 - `agent_cost` and `judge_cost` are unchanged; `calls` is the per-call breakdown behind them.
 - No agent record is written when prompt assembly failed, because no call was made.
 - A judge call is recorded even when its output could not be parsed (the tokens were spent). Its cost appears in that call's `calls[]` record but **not** in the case's `judge_cost`, which keeps a zero cost for a failed or unparseable judge call — so for such a case the sum of `calls[].cost_usd` can exceed `judge_cost`.
-- In a `--sandbox` run the agent record is built from wall-clock time and the estimated cost, with `estimated: true` and the agent config's model.
+- A `--sandbox` run builds its agent record exactly like a native one, from the same request and the same completion logic: the cost comes from the backend's reported or estimated usage, `model` is the served model when the backend reports one (the stub) or the pinned model (`kiro-cli`), and `estimated` is `true` unless the usage was `reported`. For the same case the sandboxed and native `output`, `agent_cost` and call record match.
 
 The per-call records (field values below are illustrative):
 
@@ -344,7 +346,7 @@ The per-agent result file always carries:
 
 | Field | Description |
 |-------|-------------|
-| `agent_model` | The effective model the agent ran on (`evals.agent_model`, else the agent config's `model`; in a sandbox run always the config's `model`). |
+| `agent_model` | The effective model the agent ran on (`evals.agent_model`, else the agent config's `model`), the same with and without `--sandbox`. |
 | `judge_model` | The model used for judge calls. |
 | `prompt_sha256` | Hash of everything that shapes the agent's prompt (see below). |
 | `resources_present` | The agent-config `resources` entries that existed when the hash was computed. Always written; an empty list serialises as `[]`. |
@@ -384,7 +386,7 @@ The per-agent result file always carries:
 
 `prompt_sha256` is a lowercase hex SHA-256 (64 characters). It is a hash only; the prompt text itself is not stored. It is computed over an ordered sequence of parts:
 
-1. **config** — the raw bytes of the agent config file. The config is `<evals-dir>/agents/<agent>.json` when it exists, else `.kiro/agents/<agent>.json` relative to the working directory (in a sandbox run only the latter).
+1. **config** — the raw bytes of the agent config file. The config is `<evals-dir>/agents/<agent>.json` when it exists, else `.kiro/agents/<agent>.json` relative to the working directory (in a `kiro-cli` sandbox run only the latter, because the container cannot see the overlay).
 2. **prompt** — if the config's `prompt` starts with `file://`, the bytes of that file. A relative path resolves against the config file's directory; absolute paths are allowed. A missing or unreadable prompt file is an error. An inline prompt is already covered by the config bytes.
 3. **resource** — for each entry of the config's `resources` array, in config order, the bytes of every existing matching file.
 
@@ -439,7 +441,7 @@ If `<evals-dir>/agents/<agent>.json` exists, the agent under test is run with th
 - The agent's working directory is a temp directory, **not** the repository, whenever an `agents/` override applies. Tools that read files or run shell commands relative to the cwd will not see the repo.
 - Only the agent-under-test call is affected; judge calls always run in the normal working directory.
 - Without an override no working directory is set and behaviour is identical to earlier versions.
-- The `stub` backend ignores `agents/` because it does not run an agent.
+- The `stub` backend ignores `agents/` because it does not run an agent. A `kiro-cli` sandbox container cannot see the overlay at all (see [`--sandbox` and `evals.agent_model`](#--sandbox-and-evalsagent_model)).
 
 ## Self-Test
 
@@ -461,6 +463,7 @@ internal/eval/testdata/evals/
   rubrics/selftest.yaml             # structural_completeness (deterministic), clarity (LLM-judged), cost_efficiency (cost)
   cases/selftest/stub-basic.yaml    # no stub usage -> estimated; setup file exercises path rebasing
   cases/selftest/stub-usage.yaml    # stub model + usage 123/45 -> reported
+  cases/selftest/stub-quoted-input.yaml  # input with quotes, newlines, $(...) and backticks; must reach the backend verbatim
   fixtures/selftest-input.md        # referenced as .kairon/evals/fixtures/selftest-input.md
 ```
 
@@ -471,6 +474,28 @@ The self-test runs with the stub backend, so its per-call `model` values are `st
 To list the self-test cases: `kairon eval --evals-dir internal/eval/testdata/evals --list selftest`.
 
 Results go to `internal/eval/testdata/evals/results/`, which is git-ignored (`.gitignore` entry `internal/eval/testdata/evals/results/`), so running the self-test leaves the working tree clean. These fixtures live under `testdata`, outside the template-synced `.kairon/evals/`, so they do not affect `task sync:check`.
+
+### Self-Test in the Container Sandbox
+
+The same self-test can run hermetically inside a container sandbox. It needs a Podman or Docker daemon and network access for the image build (see [Backends in the Container](#backends-in-the-container)):
+
+```bash
+task eval:selftest:sandbox
+# runs TestSelftestSandbox with KAIRON_EVAL_SANDBOX_SELFTEST=1:
+# KAIRON_EVAL_SANDBOX_SELFTEST=1 go test ./internal/eval -run '^TestSelftestSandbox$' -count=1 -v
+
+# or run the sandboxed self-test directly:
+go run ./cmd/kairon eval --backend stub --sandbox --evals-dir internal/eval/testdata/evals selftest
+```
+
+`TestSelftestSandbox` runs `selftest` natively and then again with `--sandbox --backend stub`, and requires the sandboxed run to match the native one for every case: non-empty and identical `actual_output`, identical `agent_cost`, and the same model on the recorded agent call. It also applies the same self-test expectations to the sandboxed results. The `stub-quoted-input` case checks that shell metacharacters in the input arrive intact.
+
+Skip behaviour (the test never builds an image by accident, so `task test` and `go test ./...` are unaffected):
+
+- **No container daemon.** When neither Podman nor Docker is reachable the test is skipped, not failed, with a message such as `no container daemon reachable (tried Podman and Docker); start Podman or Docker to run the sandbox self-test`. `task eval:selftest:sandbox` then exits 0.
+- **Gate not set.** Without `KAIRON_EVAL_SANDBOX_SELFTEST=1` (for example a plain `go test ./internal/eval`) the test is skipped with `sandbox self-test is opt-in: set KAIRON_EVAL_SANDBOX_SELFTEST=1 or run task eval:selftest:sandbox (needs Podman or Docker)` and no container is started.
+
+The direct `go run ... --sandbox` command has no skip: without a reachable daemon it fails up front with the daemon-unavailable error.
 
 ## Adding a New Backend
 
@@ -588,7 +613,30 @@ The `--sandbox` flag automatically:
 - Mocks GitHub CLI operations
 - Copies project files and runs evaluations safely
 
-> **Model pinning in sandbox runs:** `--sandbox` does **not** honor `evals.agent_model`; sandboxed agent calls run on the `model` in the agent config. `evals.judge_model` is still honored for judge calls. See [`--sandbox` and `evals.agent_model`](#--sandbox-and-evalsagent_model).
+> **Model pinning in sandbox runs:** `--sandbox` honours `evals.agent_model` (it is passed to `kiro-cli` as `--model`, exactly as in a native run) and `evals.judge_model` for judge calls. See [`--sandbox` and `evals.agent_model`](#--sandbox-and-evalsagent_model).
+
+### Backends in the Container
+
+The container is a transport: whichever backend `--backend` selects runs inside it, using the same request and the same cost and call-record logic as a native run. The prompt is always delivered on **stdin**; it is never placed on the command line, so argument-length limits and shell quoting cannot affect it (quotes, newlines, `$(...)` and backticks in a case input arrive verbatim, and large prompts do not deadlock against output).
+
+| Backend | What runs in the container | Needs |
+|---------|----------------------------|-------|
+| `kiro-cli` | `kiro-cli` directly: `kiro-cli chat --agent <agent> --no-interactive --trust-all-tools [--model <model>]`, prompt on stdin. The argument list and the output handling (ANSI stripped, usage estimated, model = the pinned `--model`) are the same code the native backend uses. | `kiro-cli` in the image (installed at image build). `kiro-cli` is validated and the mocked GitHub CLI is set up in the container. |
+| `stub` (and any other non-`kiro-cli` backend) | The backend runs in-process in the container through a hidden helper command, `kairon inference-exec --backend <name>`. The host copies a linux `kairon` binary to `/tmp/kairon`, sends the request as one JSON document on stdin, and reads one JSON result on stdout. The stub reads its script (`stub.turns`) from that request. | A static linux `kairon` binary for the container's platform (see below). `kiro-cli` is not validated and GitHub mocking is skipped. |
+
+`kairon inference-exec` is an internal protocol between the harness and its own binary; it is hidden from `kairon --help` and is not meant to be run by hand.
+
+**The helper binary.** The container image has no `kairon`, so for the stub backend the harness needs a static linux binary matching the container's platform (`linux/amd64` or `linux/arm64`, the host's architecture). It is resolved in this order:
+
+1. `KAIRON_SANDBOX_BINARY` — path to a prebuilt static linux `kairon` binary. Use this when Go or the source tree is not available, for example `KAIRON_SANDBOX_BINARY=dist/release/kairon-linux-arm64` (see `task build:linux:arm64` / `task build:linux:amd64`).
+2. The running executable, when it is itself a linux binary of the container's architecture.
+3. Cross-compilation: `CGO_ENABLED=0 GOOS=linux GOARCH=<arch> go build -trimpath ./cmd/kairon`, run from the kairon module root (found by walking up from the working directory to a `go.mod` for `github.com/jbrinkman/kairon`). The result is cached under the user cache directory in `kairon/sandbox/`.
+
+Case 3 requires `go` on `PATH` and a kairon source checkout, which is the case for `task eval:selftest:sandbox`. If none of these is available the run fails with an error that names `KAIRON_SANDBOX_BINARY`. The `kiro-cli` backend never needs the helper binary.
+
+**Network.** Container *execution* has no network by default, but building the sandbox image does: the image installs its toolchains and `kiro-cli`, so the first build needs network access (and a container daemon) even for `--backend stub`.
+
+**Debugging.** With `--debug` the harness prints `🔧 Debug: container invoke backend=<backend> agent=<agent> model=<model>` before each in-container call, showing which backend and model were sent. The in-container call is bounded by the sandbox timeout (`--resource-limit timeout=`, or the sandbox config), which is also passed to the backend as the request timeout.
 
 ### Project Detection
 
@@ -686,8 +734,8 @@ Each evaluation follows this container lifecycle:
 2. **Generation** - Create Dockerfile with appropriate base image and tools
 3. **Build** - Build Docker image with generated Dockerfile
 4. **Create** - Create container with resource limits and security settings
-5. **Copy** - Copy project files and mock GitHub CLI into container
-6. **Execute** - Run agent evaluation inside container
+5. **Copy** - Copy project files and mock GitHub CLI into container (`kiro-cli` backend), or the helper `kairon` binary (other backends)
+6. **Execute** - Run the selected backend inside the container with the prompt on stdin (see [Backends in the Container](#backends-in-the-container))
 7. **Cleanup** - Stop and remove container, clean up temporary files
 
 ### Troubleshooting Container Issues

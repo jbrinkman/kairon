@@ -1,0 +1,24 @@
+name: stub-quoted-input
+description: "Self-test: input full of shell metacharacters must reach the backend verbatim (stdin delivery, no quoting hazards)"
+agent: selftest
+input: |
+  Summarize this text exactly as given: it's "quoted", it has 'single' and "double" quotes,
+  a $(echo injected) command substitution, `backtick injection`, a ${HOME} expansion,
+  a trailing backslash \
+  and a; semicolon && ampersands || pipes | redirects > /tmp/kairon-selftest-pwned < /dev/null
+  across multiple lines.
+context:
+  - "This case runs against the deterministic stub backend"
+  - "The input contains shell metacharacters ($(...), backticks, quotes, newlines) that stay literal"
+expected_output: |
+  A short summary with a top-level section and at least one subsection.
+stub:
+  turns:
+    - response: |
+        ## Summary
+
+        The input contained quotes, a command substitution, backticks and shell operators.
+
+        ### Details
+
+        None of the metacharacters were interpreted; the prompt arrived verbatim.

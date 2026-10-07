@@ -58,12 +58,7 @@ func (*kiroCLIBackend) invokeAgent(parent context.Context, req Request) (Respons
 	ctx, cancel := context.WithTimeout(parent, timeout)
 	defer cancel()
 
-	args := []string{"chat", "--agent", req.Agent, "--no-interactive", "--trust-all-tools"}
-	command := fmt.Sprintf("kiro-cli chat --agent %s --no-interactive --trust-all-tools", req.Agent)
-	if req.Model != "" {
-		args = append(args, "--model", req.Model)
-		command += " --model " + req.Model
-	}
+	args, command := KiroCLIAgentCommand(req)
 
 	cmd := exec.CommandContext(ctx, "kiro-cli", args...)
 	cmd.Stdin = strings.NewReader(req.Prompt)
@@ -103,9 +98,7 @@ func (*kiroCLIBackend) invokeAgent(parent context.Context, req Request) (Respons
 		return resp, fmt.Errorf("kiro-cli invocation failed: %w", runErr)
 	}
 
-	resp.Text = stripANSI(output.String())
-	resp.Usage = EstimateUsage(req.Prompt, resp.Text)
-	return resp, nil
+	return KiroCLIAgentResponse(req, output.String(), resp.Stderr, resp.ExitCode, resp.Duration), nil
 }
 
 // invokeJudge runs `kiro-cli chat --no-interactive [--model <m>]` with the prompt on stdin

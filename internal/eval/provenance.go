@@ -42,15 +42,15 @@ type agentConfigFile struct {
 // resolveAgentProvenance locates the agent config and computes its provenance.
 //
 // The config is <evals-dir>/agents/<agent>.json when that exists, else
-// .kiro/agents/<agent>.json relative to the working directory. When container
-// is true only the latter is considered, because the container ignores the
-// evals-dir overlay.
-func resolveAgentProvenance(agent string, container bool) (agentProvenance, error) {
+// .kiro/agents/<agent>.json relative to the working directory. When
+// ignoreOverlay is true only the latter is considered: a kiro-cli container
+// cannot see the evals-dir overlay.
+func resolveAgentProvenance(agent string, ignoreOverlay bool) (agentProvenance, error) {
 	repoPath := filepath.Join(".kiro", "agents", agent+".json")
 	overlayPath := filepath.Join(evalsPath("agents"), agent+".json")
 
 	path := repoPath
-	if !container && fileExists(overlayPath) {
+	if !ignoreOverlay && fileExists(overlayPath) {
 		path = overlayPath
 	} else if !fileExists(repoPath) {
 		return agentProvenance{}, fmt.Errorf("agent config for %q not found: tried %s and %s", agent, overlayPath, repoPath)
@@ -185,8 +185,7 @@ func fileExists(path string) bool {
 
 // agentPin is the pinned identity of one agent for the run.
 type agentPin struct {
-	// Model is the effective model: evals.agent_model when set (and not a
-	// container run), else the agent config's model.
+	// Model is the effective model: evals.agent_model when set, else the agent config's model.
 	Model string
 	// Provenance is the resolved agent config identity.
 	Provenance agentProvenance
@@ -274,10 +273,11 @@ func agentsInScope(agent string, opts RunOptions) []string {
 // evals.allowed_models, and computes each agent's prompt provenance. All
 // violations are reported together. On success it sets cfg.pins.
 //
-// container is true when agent calls will run in a sandbox container; the
-// container builds its own kiro-cli command, so evals.agent_model is ignored
-// there (a warning is printed) and the agent config's model is validated.
-func pinRun(agent string, opts RunOptions, container bool) error {
+// evals.agent_model is honoured on every path, including --sandbox (the model
+// reaches the agent as --model). ignoreOverlay is true when agent calls run in
+// a kiro-cli sandbox container, which cannot see the <evals-dir>/agents
+// overlay, so provenance is taken from .kiro/agents only.
+func pinRun(agent string, opts RunOptions, ignoreOverlay bool) error {
 	ev, err := config.LoadEvals()
 	if err != nil {
 		return fmt.Errorf("❌ cannot pin eval models: %w", err)
@@ -288,19 +288,15 @@ func pinRun(agent string, opts RunOptions, container bool) error {
 		violations = append(violations, fmt.Sprintf("evals.judge_model: %v", err))
 	}
 
-	if container && ev.AgentModel != "" {
-		fmt.Printf("⚠️  evals.agent_model (%s) is ignored for --sandbox runs: the container uses the model in the agent config\n", ev.AgentModel)
-	}
-
 	pins := &runPins{Judge: ev.JudgeModel, Agents: map[string]agentPin{}}
 	for _, name := range agentsInScope(agent, opts) {
-		prov, err := resolveAgentProvenance(name, container)
+		prov, err := resolveAgentProvenance(name, ignoreOverlay)
 		if err != nil {
 			violations = append(violations, fmt.Sprintf("agent %q: %v", name, err))
 			continue
 		}
 		model, source := prov.Model, prov.ConfigPath+` "model"`
-		if ev.AgentModel != "" && !container {
+		if ev.AgentModel != "" {
 			model, source = ev.AgentModel, "evals.agent_model"
 		}
 		if err := ev.CheckModel(model); err != nil {

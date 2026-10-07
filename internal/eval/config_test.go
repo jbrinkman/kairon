@@ -326,15 +326,6 @@ func TestCostFromUsage(t *testing.T) {
 	if c.EstimatedUSD != 18.0 {
 		t.Errorf("EstimatedUSD = %v, want 18", c.EstimatedUSD)
 	}
-
-	// estimateCost keeps producing the same numbers as before.
-	e := estimateCost(strings.Repeat("a", 400), strings.Repeat("b", 80))
-	if e.TokensIn != 100 || e.TokensOut != 20 {
-		t.Errorf("estimateCost tokens: %+v", e)
-	}
-	if e.UsageSource != "estimated" {
-		t.Errorf("estimateCost source = %q", e.UsageSource)
-	}
 }
 
 func TestCostInfoJSONOmitsEmptyNewFields(t *testing.T) {

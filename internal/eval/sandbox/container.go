@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/docker/docker/api/types/build"
@@ -269,44 +270,141 @@ func (c *Container) Exec(ctx context.Context, cmd []string) error {
 	return c.client.ContainerExecStart(ctx, resp.ID, container.ExecStartOptions{})
 }
 
-// ExecWithOutput executes a command and returns output
-func (c *Container) ExecWithOutput(ctx context.Context, cmd []string) (string, error) {
+// ExecResult is the outcome of a command run inside the container. Stdout and
+// Stderr are returned exactly as produced (untrimmed).
+type ExecResult struct {
+	Stdout   string
+	Stderr   string
+	ExitCode int
+}
+
+// ExecWithStdin executes a command in the container with stdin attached.
+//
+// When stdin is non-nil it is copied to the process concurrently with the
+// output demultiplexing (so a large input cannot deadlock against output) and
+// the write side is then half-closed so the process sees EOF. A nil stdin
+// leaves stdin unattached.
+//
+// A non-zero exit status is reported via ExecResult.ExitCode, not as an error.
+// The returned error is reserved for transport failures, stdin read failures
+// and context cancellation; on cancellation the hijacked stream is closed and
+// ctx.Err() is returned promptly.
+func (c *Container) ExecWithStdin(ctx context.Context, cmd []string, stdin io.Reader) (ExecResult, error) {
 	execConfig := container.ExecOptions{
 		Cmd:          cmd,
+		AttachStdin:  stdin != nil,
 		AttachStdout: true,
 		AttachStderr: true,
 	}
 
 	resp, err := c.client.ContainerExecCreate(ctx, c.containerID, execConfig)
 	if err != nil {
-		return "", err
+		return ExecResult{}, err
 	}
 
 	hijacked, err := c.client.ContainerExecAttach(ctx, resp.ID, container.ExecStartOptions{})
 	if err != nil {
-		return "", err
+		return ExecResult{}, err
 	}
 	defer hijacked.Close()
 
-	// Use stdcopy to properly demultiplex Docker streams
-	stdout := &bytes.Buffer{}
-	stderr := &bytes.Buffer{}
-
-	_, err = stdcopy.StdCopy(stdout, stderr, hijacked.Reader)
-	if err != nil {
-		return "", err
+	// Feed stdin concurrently, then half-close the write side.
+	var (
+		stdinDone = make(chan struct{})
+		readErrMu sync.Mutex
+		readErr   error
+	)
+	if stdin != nil {
+		go func() {
+			defer close(stdinDone)
+			_, copyErr := io.Copy(hijacked.Conn, &errRecordingReader{r: stdin, mu: &readErrMu, err: &readErr})
+			_ = copyErr // write errors (e.g. process exited without reading) are not failures
+			_ = hijacked.CloseWrite()
+		}()
+	} else {
+		close(stdinDone)
 	}
 
-	// Check execution result for exit code
+	// Demultiplex output concurrently so ctx cancellation can interrupt it.
+	type demuxResult struct {
+		stdout, stderr string
+		err            error
+	}
+	demuxCh := make(chan demuxResult, 1)
+	go func() {
+		var stdout, stderr bytes.Buffer
+		_, copyErr := stdcopy.StdCopy(&stdout, &stderr, hijacked.Reader)
+		demuxCh <- demuxResult{stdout: stdout.String(), stderr: stderr.String(), err: copyErr}
+	}()
+
+	var out demuxResult
+	select {
+	case out = <-demuxCh:
+	case <-ctx.Done():
+		hijacked.Close() // unblocks the demux and stdin goroutines
+		return ExecResult{}, ctx.Err()
+	}
+	if out.err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return ExecResult{}, ctxErr
+		}
+		return ExecResult{}, out.err
+	}
+
+	// Surface a failure reading the caller's stdin, if the copier has finished.
+	hijacked.Close()
+	select {
+	case <-stdinDone:
+		readErrMu.Lock()
+		rerr := readErr
+		readErrMu.Unlock()
+		if rerr != nil {
+			return ExecResult{}, fmt.Errorf("reading stdin: %w", rerr)
+		}
+	default:
+	}
+
 	inspect, err := c.client.ContainerExecInspect(ctx, resp.ID)
 	if err != nil {
+		return ExecResult{}, err
+	}
+
+	return ExecResult{Stdout: out.stdout, Stderr: out.stderr, ExitCode: inspect.ExitCode}, nil
+}
+
+// errRecordingReader records the first non-EOF error from the wrapped reader so
+// read failures can be told apart from connection write failures.
+type errRecordingReader struct {
+	r   io.Reader
+	mu  *sync.Mutex
+	err *error
+}
+
+func (e *errRecordingReader) Read(p []byte) (int, error) {
+	n, err := e.r.Read(p)
+	if err != nil && err != io.EOF {
+		e.mu.Lock()
+		if *e.err == nil {
+			*e.err = err
+		}
+		e.mu.Unlock()
+	}
+	return n, err
+}
+
+// ExecWithOutput executes a command and returns its trimmed stdout. A non-zero
+// exit status is returned as an error of the form
+// "command failed with exit code N: <stderr>" together with the stdout.
+func (c *Container) ExecWithOutput(ctx context.Context, cmd []string) (string, error) {
+	res, err := c.ExecWithStdin(ctx, cmd, nil)
+	if err != nil {
 		return "", err
 	}
 
-	output := strings.TrimSpace(stdout.String())
-	if inspect.ExitCode != 0 {
-		errOutput := strings.TrimSpace(stderr.String())
-		return output, fmt.Errorf("command failed with exit code %d: %s", inspect.ExitCode, errOutput)
+	output := strings.TrimSpace(res.Stdout)
+	if res.ExitCode != 0 {
+		errOutput := strings.TrimSpace(res.Stderr)
+		return output, fmt.Errorf("command failed with exit code %d: %s", res.ExitCode, errOutput)
 	}
 
 	return output, nil

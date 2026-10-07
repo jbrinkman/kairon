@@ -256,16 +256,28 @@ func TestRunStubBackendSkipsPathCheck(t *testing.T) {
 	}
 }
 
-func TestRunWithOptionsRejectsStubWithSandbox(t *testing.T) {
+// --backend stub --sandbox is accepted: the pre-flight passes for a pinned
+// agent whose config lives only in the evals-dir overlay (the stub reads no
+// agent config in the container), and the run proceeds past the guard to the
+// container-daemon check (or, with a daemon, to the missing rubrics).
+func TestRunWithOptionsAcceptsStubWithSandbox(t *testing.T) {
 	chdirTemp(t)
 	_, calls := installFakeKiroCLI(t, "")
+	writeProjectFile(t, "ev/agents/x.json", `{"name":"x","model":"claude-sonnet-5.5","prompt":"inline"}`)
 
-	err := RunWithOptions("x", "", RunOptions{Backend: "stub", Sandbox: true})
-	if err == nil || !strings.Contains(err.Error(), "sandbox") {
-		t.Fatalf("err = %v, want sandbox rejection", err)
+	err := RunWithOptions("x", "", RunOptions{Backend: "stub", Sandbox: true, EvalsDir: "ev"})
+	if err != nil && strings.Contains(err.Error(), "cannot be combined") {
+		t.Fatalf("stub + sandbox rejected: %v", err)
+	}
+	if err != nil && strings.Contains(err.Error(), "pinning refused") {
+		t.Fatalf("pre-flight failed: %v", err)
+	}
+	pin, ok := cfg.pins.pinOf("x")
+	if !ok || pin.Provenance.ConfigPath != filepath.Join("ev", "agents", "x.json") {
+		t.Errorf("pin = %+v ok=%v, want evals-dir agent config", pin, ok)
 	}
 	if got := readCalls(t, calls); len(got) != 0 {
-		t.Errorf("work was done before rejection: %q", got)
+		t.Errorf("kiro-cli ran: %q", got)
 	}
 }
 

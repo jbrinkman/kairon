@@ -1,6 +1,7 @@
 package sandbox
 
 import (
+	"bytes"
 	"context"
 	"os"
 	"path/filepath"
@@ -600,4 +601,59 @@ func TestWorkspacePermissions(t *testing.T) {
 
 	_, err = c.ExecWithOutput(ctx, []string{"mkdir", "-p", "/workspace/subdir/nested"})
 	assert.NoError(t, err, "Sandbox user should be able to create nested directories")
+}
+
+// TestContainer_ExecWithStdin round-trips a >1 MiB payload containing quotes and
+// newlines through `cat` byte-identically, and checks exit-code reporting,
+// stderr separation, ExecWithOutput compatibility and ctx cancellation.
+func TestContainer_ExecWithStdin(t *testing.T) {
+	skipIfNoContainerDaemon(t)
+
+	ctx := context.Background()
+	c, err := NewContainer("alpine:3.19")
+	require.NoError(t, err)
+	defer c.Close()
+
+	err = c.Create(ctx, &container.Config{Image: "alpine:3.19", Cmd: []string{"sleep", "60"}}, &container.HostConfig{})
+	require.NoError(t, err)
+	require.NoError(t, c.Start(ctx))
+	defer c.Cleanup(ctx)
+
+	t.Run("large payload round-trips byte-identically", func(t *testing.T) {
+		unit := []byte("line \"double\" 'single' $(echo hi) `tick` \\ back\n\n  trailing space \n")
+		payload := bytes.Repeat(unit, (1<<20)/len(unit)+64)
+		require.Greater(t, len(payload), 1<<20)
+
+		res, err := c.ExecWithStdin(ctx, []string{"cat"}, bytes.NewReader(payload))
+		require.NoError(t, err)
+		assert.Equal(t, 0, res.ExitCode)
+		assert.Empty(t, res.Stderr)
+		assert.True(t, bytes.Equal(payload, []byte(res.Stdout)), "stdout differs from stdin payload (got %d bytes, want %d)", len(res.Stdout), len(payload))
+	})
+
+	t.Run("non-zero exit is reported via ExitCode with separate untrimmed streams", func(t *testing.T) {
+		res, err := c.ExecWithStdin(ctx, []string{"sh", "-c", "cat; printf ' out \\n'; printf ' err \\n' >&2; exit 3"}, bytes.NewReader([]byte("in\n")))
+		require.NoError(t, err)
+		assert.Equal(t, 3, res.ExitCode)
+		assert.Equal(t, "in\n out \n", res.Stdout)
+		assert.Equal(t, " err \n", res.Stderr)
+	})
+
+	t.Run("ExecWithOutput semantics unchanged", func(t *testing.T) {
+		out, err := c.ExecWithOutput(ctx, []string{"sh", "-c", "echo ' hi '; echo boom >&2; exit 2"})
+		require.Error(t, err)
+		assert.Equal(t, "hi", out)
+		assert.Equal(t, "command failed with exit code 2: boom", err.Error())
+	})
+
+	t.Run("context cancellation returns promptly with the context error", func(t *testing.T) {
+		cctx, cancel := context.WithTimeout(ctx, 500*time.Millisecond)
+		defer cancel()
+
+		start := time.Now()
+		_, err := c.ExecWithStdin(cctx, []string{"sleep", "30"}, bytes.NewReader([]byte("x")))
+		require.Error(t, err)
+		assert.ErrorIs(t, err, context.DeadlineExceeded)
+		assert.Less(t, time.Since(start), 10*time.Second)
+	})
 }

@@ -6,6 +6,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/jbrinkman/kairon/internal/eval/sandbox"
+	"github.com/jbrinkman/kairon/internal/inference"
 )
 
 // selftestEvalsDir is the checked-in self-test fixture set, relative to this
@@ -113,7 +116,7 @@ func assertSelfTestResults(t *testing.T, res AgentResult) {
 	for _, c := range res.Cases {
 		byName[c.CaseName] = c
 	}
-	for _, name := range []string{"stub-basic", "stub-usage"} {
+	for _, name := range []string{"stub-basic", "stub-usage", "stub-quoted-input"} {
 		if _, ok := byName[name]; !ok {
 			t.Fatalf("case %q missing from results (have %v)", name, byName)
 		}
@@ -131,9 +134,16 @@ func assertSelfTestResults(t *testing.T, res AgentResult) {
 		t.Errorf("stub-usage model = %q, want stub-model", usage.AgentCost.Model)
 	}
 
-	basic := byName["stub-basic"]
-	if basic.AgentCost.UsageSource != "estimated" {
-		t.Errorf("stub-basic usage_source = %q, want estimated", basic.AgentCost.UsageSource)
+	for _, name := range []string{"stub-basic", "stub-quoted-input"} {
+		if got := byName[name].AgentCost.UsageSource; got != "estimated" {
+			t.Errorf("%s usage_source = %q, want estimated", name, got)
+		}
+	}
+	if len(res.Cases) != 3 {
+		t.Errorf("selftest has %d cases, want 3", len(res.Cases))
+	}
+	if out := byName["stub-quoted-input"].ActualOutput; !strings.Contains(out, "arrived verbatim") {
+		t.Errorf("stub-quoted-input output = %q, want the scripted stub response", out)
 	}
 
 	for _, c := range res.Cases {
@@ -243,23 +253,44 @@ func TestSelfTestRejectsUnknownBackend(t *testing.T) {
 	}
 }
 
-func TestSelfTestRejectsStubWithSandbox(t *testing.T) {
+// --backend stub --sandbox is no longer rejected: the pinned selftest agent
+// passes the pre-flight using the evals-dir agent config (the stub reads no
+// agent config in the container).
+func TestSelfTestStubWithSandboxPassesPreflight(t *testing.T) {
 	t.Cleanup(resetConfig)
 	_, calls := installFakeKiroCLI(t, "")
 
+	opts := RunOptions{Backend: "stub", Sandbox: true, EvalsDir: selftestEvalsDir}
+	if err := configure(opts); err != nil {
+		t.Fatal(err)
+	}
+	ignoreOverlay := willContainerize("", opts) && cfg.backend.Name() == inference.NameKiroCLI
+	if ignoreOverlay {
+		t.Fatal("the overlay must stay visible for the stub backend")
+	}
+	if err := pinRun("selftest", opts, ignoreOverlay); err != nil {
+		t.Fatalf("pre-flight under --sandbox --backend stub: %v", err)
+	}
+	pin, ok := cfg.pins.pinOf("selftest")
+	if !ok || pin.Provenance.ConfigPath != filepath.Join(selftestEvalsDir, "agents", "selftest.json") {
+		t.Errorf("pin = %+v ok=%v, want the evals-dir agent config", pin, ok)
+	}
+
+	// Without a container daemon the run fails at the daemon check, not at a
+	// backend guard. (With a daemon it would start a container; that is
+	// covered by the gated sandbox self-test instead.)
+	if sandbox.EnsureContainerDaemon() == nil {
+		t.Skip("container daemon reachable; end-to-end run is covered by the gated sandbox self-test")
+	}
 	resultsDir := filepath.Join(selftestEvalsDir, "results")
 	registerResultsCleanup(t, resultsDir)
 	before := snapshotDirs(t, resultsDir)
-
-	err := RunWithOptions("selftest", "", RunOptions{Backend: "stub", Sandbox: true, EvalsDir: selftestEvalsDir})
-	if err == nil {
-		t.Fatal("expected stub+sandbox to be rejected")
-	}
-	if !strings.Contains(err.Error(), "sandbox") || !strings.Contains(err.Error(), "stub") {
-		t.Errorf("error %q should mention stub and sandbox", err)
+	err := RunWithOptions("selftest", "", opts)
+	if err == nil || strings.Contains(err.Error(), "cannot be combined") || !strings.Contains(err.Error(), "daemon") {
+		t.Errorf("err = %v, want the container-daemon error", err)
 	}
 	if added := newRunDirs(t, resultsDir, before); len(added) != 0 {
-		t.Errorf("rejected run still created result dirs: %v", added)
+		t.Errorf("run still created result dirs: %v", added)
 	}
 	if got := readCalls(t, calls); len(got) != 0 {
 		t.Errorf("kiro-cli invoked: %q", got)
