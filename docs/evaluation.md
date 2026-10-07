@@ -304,7 +304,7 @@ Each case in `<agent>.json` carries a `calls` array with one record per agent ca
 Details:
 - `agent_cost` and `judge_cost` are unchanged; `calls` is the per-call breakdown behind them.
 - No agent record is written when prompt assembly failed, because no call was made.
-- A judge call is recorded even when its output could not be parsed (the tokens were spent).
+- A judge call is recorded even when its output could not be parsed (the tokens were spent). Its cost appears in that call's `calls[]` record but **not** in the case's `judge_cost`, which keeps a zero cost for a failed or unparseable judge call — so for such a case the sum of `calls[].cost_usd` can exceed `judge_cost`.
 - In a `--sandbox` run the agent record is built from wall-clock time and the estimated cost, with `estimated: true` and the agent config's model.
 
 The per-call records (field values below are illustrative):

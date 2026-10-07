@@ -1075,6 +1075,11 @@ ACTUAL OUTPUT TO EVALUATE:
 	resp, err := cfg.backend.Invoke(context.Background(), req)
 	rec := newCallRecord(req, resp, err, time.Since(wallStart), costFromUsage(resp.Model, resp.Usage))
 	rec.Criterion = criterion.Name
+	// On a failed or unparseable call this returns CostInfo{} (zero), so the
+	// case's judge_cost deliberately keeps its historical zero-on-failure
+	// behaviour. The tokens that were actually spent are not lost: rec already
+	// carries the real cost and is appended to the case's calls[]. Do not add
+	// rec's cost back into judge_cost — that would double-count against calls[].
 	if err != nil {
 		// The backend's error already carries the historical wording
 		// (e.g. "kiro-cli chat failed: ...").
