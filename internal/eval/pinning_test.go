@@ -543,9 +543,11 @@ func TestCheckResumeIntegrityRefusesLegacyWithCases(t *testing.T) {
 		Agents: map[string]agentPin{"architect": {Model: "claude-sonnet-5.5", Provenance: agentProvenance{PromptSHA256: "newhash"}}},
 	}
 
-	// Legacy file with a saved case and no prompt_sha256: refused.
+	// Legacy file (no prompt_sha256) with a saved case: refused by the
+	// provenance check. sandbox:false is set so this isolates the provenance
+	// path rather than tripping the separate sandbox-mode guard.
 	writeProjectFile(t, filepath.Join(resultsDir, "architect.json"),
-		`{"agent":"architect","git_hash":"old","cases":[{"case_name":"c1"}]}`)
+		`{"agent":"architect","git_hash":"old","sandbox":false,"cases":[{"case_name":"c1"}]}`)
 	err := checkResumeIntegrity(resultsDir, "architect", false)
 	if err == nil || !strings.Contains(err.Error(), "predates run provenance") {
 		t.Fatalf("err = %v, want legacy-with-cases refusal", err)
@@ -553,7 +555,7 @@ func TestCheckResumeIntegrityRefusesLegacyWithCases(t *testing.T) {
 
 	// Legacy file with no saved cases: allowed (nothing to mis-attribute).
 	writeProjectFile(t, filepath.Join(resultsDir, "architect.json"),
-		`{"agent":"architect","git_hash":"old","cases":[]}`)
+		`{"agent":"architect","git_hash":"old","sandbox":false,"cases":[]}`)
 	if err := checkResumeIntegrity(resultsDir, "architect", false); err != nil {
 		t.Fatalf("empty legacy file should be allowed: %v", err)
 	}
@@ -589,5 +591,16 @@ func TestCheckResumeIntegrityRefusesSandboxModeChange(t *testing.T) {
 		`{"agent":"architect","git_hash":"g","agent_model":"claude-sonnet-5.5","judge_model":"claude-sonnet-5.5","prompt_sha256":"h","sandbox":true,"cases":[]}`)
 	if err := checkResumeIntegrity(resultsDir, "architect", false); err != nil {
 		t.Fatalf("empty file should not be sandbox-checked: %v", err)
+	}
+
+	// A legacy file with cases but no recorded sandbox field: mode is unknown,
+	// so resuming it in EITHER mode is refused (not silently treated as native).
+	writeProjectFile(t, filepath.Join(resultsDir, "architect.json"),
+		`{"agent":"architect","git_hash":"g","agent_model":"claude-sonnet-5.5","judge_model":"claude-sonnet-5.5","prompt_sha256":"h","cases":[{"case_name":"c1"}]}`)
+	for _, mode := range []bool{false, true} {
+		err := checkResumeIntegrity(resultsDir, "architect", mode)
+		if err == nil || !strings.Contains(err.Error(), "predates sandbox-mode tracking") {
+			t.Fatalf("legacy file (mode=%t) err = %v, want predates-tracking refusal", mode, err)
+		}
 	}
 }

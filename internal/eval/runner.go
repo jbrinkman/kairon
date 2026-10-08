@@ -1700,10 +1700,18 @@ func checkResumeIntegrity(resultsDir, agent string, sandbox bool) error {
 	// results regardless of whether the run is pinned.
 	if data, err := os.ReadFile(filepath.Join(resultsDir, agent+".json")); err == nil {
 		var existing AgentResult
-		if json.Unmarshal(data, &existing) == nil &&
-			len(existing.Cases) > 0 && existing.Sandbox != sandbox {
-			return fmt.Errorf("❌ cannot resume: sandbox mode changed since the interrupted run of %s (recorded sandbox=%t; now %t) — resume with the same mode or start a fresh run",
-				agent, existing.Sandbox, sandbox)
+		if json.Unmarshal(data, &existing) == nil && len(existing.Cases) > 0 {
+			switch {
+			case existing.Sandbox == nil:
+				// Legacy file predating sandbox-mode tracking: its mode is
+				// unknown, so neither a native nor a sandbox resume can be
+				// verified safe. Refuse rather than risk mixing modes.
+				return fmt.Errorf("❌ cannot resume: %s.json predates sandbox-mode tracking and has %d saved case(s); its execution mode cannot be verified — start a fresh run (without --resume)",
+					agent, len(existing.Cases))
+			case *existing.Sandbox != sandbox:
+				return fmt.Errorf("❌ cannot resume: sandbox mode changed since the interrupted run of %s (recorded sandbox=%t; now %t) — resume with the same mode or start a fresh run",
+					agent, *existing.Sandbox, sandbox)
+			}
 		}
 	}
 
@@ -1759,10 +1767,11 @@ func checkResumeIntegrity(resultsDir, agent string, sandbox bool) error {
 
 // evaluateProgressive runs evaluation with progressive result saving after each test case.
 func evaluateProgressive(rubric Rubric, cases []TestCase, gitHash string, out io.Writer, resultsDir string, isResume bool, cConfig *ContainerConfig) AgentResult {
+	sandboxMode := cConfig != nil
 	result := AgentResult{
 		Agent:   rubric.Agent,
 		GitHash: gitHash,
-		Sandbox: cConfig != nil,
+		Sandbox: &sandboxMode,
 	}
 	cfg.pins.applyTo(&result)
 
@@ -1775,9 +1784,10 @@ func evaluateProgressive(rubric Rubric, cases []TestCase, gitHash string, out io
 				// Provenance is verified equal by checkResumeIntegrity (or the
 				// file predates provenance); stamp it from the current pins.
 				cfg.pins.applyTo(&result)
-				// Sandbox mode is verified equal by checkResumeIntegrity; keep
-				// the interrupted run's recorded value rather than the current.
-				result.Sandbox = existing.Sandbox
+				// Sandbox mode is verified compatible by checkResumeIntegrity.
+				// Record the current mode so a resumed legacy file (nil) gains a
+				// definite mode going forward.
+				result.Sandbox = &sandboxMode
 			}
 		}
 	}
