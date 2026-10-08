@@ -1023,22 +1023,31 @@ func agentConfigDir(agent string) string {
 // path to stat. Resolution, in order:
 //   - no host workspace: the reference is used as-is (legacy cwd-relative).
 //   - an absolute reference under the container workspace (e.g.
-//     /workspace/docs/x.md): rewritten onto the host workspace.
+//     /workspace/docs/x.md): rewritten onto the host workspace. The container
+//     path is always POSIX ("/"-rooted) because the sandbox is Linux, so it is
+//     parsed with path, not filepath (filepath.IsAbs would misread it on a
+//     Windows host).
 //   - any other relative reference: joined onto the host workspace.
 //   - any other absolute reference (a real host path): used as-is.
 func resolveReferencePath(ref, workspaceDir, containerWorkspaceDir string) string {
 	if workspaceDir == "" {
 		return ref
 	}
-	if containerWorkspaceDir != "" && filepath.IsAbs(ref) {
-		cws := filepath.Clean(containerWorkspaceDir)
-		clean := filepath.Clean(ref)
+	// A leading "/" marks a container (Linux) absolute path on any host OS.
+	if containerWorkspaceDir != "" && strings.HasPrefix(ref, "/") {
+		cws := path.Clean(filepath.ToSlash(containerWorkspaceDir))
+		clean := path.Clean(filepath.ToSlash(ref))
 		if clean == cws {
 			return workspaceDir
 		}
-		if rel, err := filepath.Rel(cws, clean); err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-			return filepath.Join(workspaceDir, rel)
+		prefix := cws
+		if prefix != "/" {
+			prefix += "/"
 		}
+		if rel := strings.TrimPrefix(clean, prefix); rel != clean {
+			return filepath.Join(workspaceDir, filepath.FromSlash(rel))
+		}
+		// Absolute, but not under the container workspace: a real path.
 		return ref
 	}
 	if !filepath.IsAbs(ref) {
