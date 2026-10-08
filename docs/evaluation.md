@@ -119,6 +119,9 @@ kairon eval --backend stub --evals-dir internal/eval/testdata/evals selftest
 
 # Use a different evals directory
 kairon eval --evals-dir path/to/evals architect
+
+# Evaluate a candidate prompt without touching the live agent
+kairon eval architect --prompt-file .kairon/iterations/architect/v2.md
 ```
 
 | Flag | Default | Description |
@@ -126,6 +129,49 @@ kairon eval --evals-dir path/to/evals architect
 | `--backend` | `kiro-cli` | Inference backend for agent and judge calls. Valid values: `kiro-cli`, `stub`. An unknown value fails immediately and lists the valid backends. |
 | `--evals-dir` | `.kairon/evals` | Directory holding `rubrics/`, `cases/`, `fixtures/`, optional `agents/`, and `results/`. Persistent flag, so `kairon eval diff` honours it too. |
 | `--keep-workspaces` | off | Keep each case's workspace after the run instead of deleting it. The path is printed on the case line and recorded as `workspace_dir` in the results (see [Case Workspaces](#case-workspaces)). Combine with `--debug` to inspect both the preserved container and its workspace. |
+| `--prompt-file` | none | Evaluate this candidate prompt file instead of the agent's live prompt. Requires an agent argument (`kairon eval <agent> --prompt-file <path>`). The candidate is staged only into the per-case workspaces; the repository's `.kiro/agents/` is never modified. See [Evaluating a Candidate Prompt](#evaluating-a-candidate-prompt---prompt-file). |
+
+### Evaluating a Candidate Prompt (`--prompt-file`)
+
+Iterating on a prompt by editing `.kiro/agents/<agent>-prompt.md` changes the agent the pipeline itself is running on. `--prompt-file` scores a candidate instead, leaving the live agent untouched:
+
+```bash
+# Baseline: the live prompt
+kairon eval architect
+
+# Candidate: same agent, same cases, the candidate's prompt text
+kairon eval architect --prompt-file .kairon/iterations/architect/v2.md
+
+# Compare the two runs (directories under results/)
+kairon eval diff <baseline-run> <candidate-run>
+```
+
+**Convention.** Keep candidates under `.kairon/iterations/<agent>/` (for example `.kairon/iterations/architect/v2.md`). The flag does not enforce a location; any readable path works. The convention keeps candidates out of `.kiro/agents/` and easy to find.
+
+**An agent argument is required.** The candidate replaces *that agent's* prompt, so `kairon eval --prompt-file x.md` (no agent) is refused. Use `--prompt-file` with a single agent, and optionally a single case (`kairon eval architect <case> --prompt-file …` or `--case`).
+
+**What is replaced.** The agent config's `prompt` must be a **relative `file://` reference** (for example `"prompt": "file://./architect-prompt.md"`). The candidate's bytes are written to that file inside each case workspace's staged `.kiro/agents/` directory, so the agent reads the candidate on native and `--sandbox` runs alike. Nothing outside the workspaces is written. Only the agent under test sees the candidate; the judge is unaffected. The agent config itself (model, tools, resources) is unchanged, so a candidate changes the prompt text only.
+
+**Refusals.** The checks run before any result directory is created or any model is called, so a refused invocation runs nothing and leaves no `results/` directory behind. `kairon eval` exits non-zero in each of these cases:
+
+| Condition | Message (abridged) |
+|-----------|--------------------|
+| No agent argument | `--prompt-file: an agent is required (usage: kairon eval <agent> --prompt-file <path>)` |
+| Combined with `--list`, `--perf` or `--cleanup` | `--prompt-file cannot be combined with --list` (or `--perf`, `--cleanup`). Those modes run no cases through workspaces, so the candidate would be silently ignored. |
+| Candidate path does not exist or cannot be read | `--prompt-file: …` with the underlying OS error |
+| Candidate is not a regular file (for example a directory) | `--prompt-file: <path> is not a regular file` |
+| Candidate is empty or whitespace-only | `--prompt-file: <path> is empty` |
+| Agent config cannot be found or parsed | `--prompt-file: …` naming the config that was tried |
+| The agent's `prompt` is inline or missing (not `file://`) | `prompt must be a relative file:// reference … to use --prompt-file` |
+| The agent's `prompt` is an absolute `file://` path | `prompt reference … must be a relative file:// path to use --prompt-file` |
+| The agent's `prompt` reference escapes the `.kiro` tree (for example `file://../../x.md`) | `prompt reference … escapes the .kiro tree` |
+| `--resume` of a candidate run without the same `--prompt-file`, or `--resume --prompt-file` onto a run recorded without it | The standard [resume refusal](#resume-refusal): `cannot resume: prompt or models changed …` |
+
+The model pre-flight ([Allowlist refusal](#allowlist-refusal)) still applies to a candidate run, since the candidate only replaces the prompt.
+
+**Resume.** Because the candidate's bytes are part of `prompt_sha256`, `--resume` of a candidate run must repeat the same `--prompt-file` with the same content. Resuming without it, with a different candidate, or after editing the candidate file is refused, as is resuming a run recorded without a candidate while passing one. Start a fresh run instead.
+
+**Recorded.** A candidate run records the path in `prompt_file` and a `prompt_sha256` computed from the candidate's bytes (see [Recorded provenance](#recorded-provenance) and [How `prompt_sha256` is computed](#how-prompt_sha256-is-computed)).
 
 ## Adding Test Cases
 
@@ -384,6 +430,7 @@ The per-agent result file always carries:
 | `agent_model` | The effective model the agent ran on (`evals.agent_model`, else the agent config's `model`), the same with and without `--sandbox`. |
 | `judge_model` | The model used for judge calls. |
 | `prompt_sha256` | Hash of everything that shapes the agent's prompt (see below). |
+| `prompt_file` | The `--prompt-file` path, exactly as given on the command line (slash-normalised, not made absolute, so results stay machine-independent). **Omitted** when the run used no candidate. When present, `prompt_sha256` was computed from the candidate's bytes. |
 | `resources_present` | The agent-config `resources` entries that existed when the hash was computed. Always written; an empty list serialises as `[]`. |
 | `sandbox` | Execution mode as a **boolean**: `true` for a `--sandbox` (container) run, `false` for a native run. Written by every run, including single-case (`--testcase`) runs. Absent in files written before mode tracking. Note that `summary.json` spells the same fact as a string (`"native"` / `"container"`); see below. |
 | `containment` | What contained this agent's cases (see [Execution mode and containment](#execution-mode-and-containment)). Present for container runs only; absent for native runs. |
@@ -401,9 +448,20 @@ The per-agent result file always carries:
 }
 ```
 
+A candidate run (`--prompt-file`) additionally carries `prompt_file` next to `prompt_sha256`:
+
+```json
+{
+  "agent": "architect",
+  "prompt_sha256": "4be1…",
+  "prompt_file": ".kairon/iterations/architect/v2.md",
+  …
+}
+```
+
 #### Run summary (`summary.json`)
 
-`summary.json` always carries `judge_model` and an `agents` map with `agent_model`, `prompt_sha256` and `resources_present` per agent. It also records the run's execution mode in `sandbox` and, for container runs, a per-agent `containment` map. The example below is a `--sandbox` (container) run (the `tool_trust` values are illustrative; they follow each agent's trust set, see [Tool trust](#tool-trust)):
+`summary.json` always carries `judge_model` and an `agents` map with `agent_model`, `prompt_sha256` and `resources_present` per agent (plus `prompt_file` for an agent run with a `--prompt-file` candidate). It also records the run's execution mode in `sandbox` and, for container runs, a per-agent `containment` map. The example below is a `--sandbox` (container) run (the `tool_trust` values are illustrative; they follow each agent's trust set, see [Tool trust](#tool-trust)):
 
 ```json
 {
@@ -432,7 +490,28 @@ The per-agent result file always carries:
 
 **Two spellings of one fact.** `summary.json` records the mode as a string (`"native"` / `"container"`), while each `<agent>.json` keeps `sandbox` as a boolean (`true` = container, `false` = native). Both come from the same run, and `eval diff` and `--resume` read both. A summary never mixes modes: one run is entirely native or entirely container.
 
-**Single-agent rule.** A run can cover several agents (`kairon eval` with no agent), each with its own model and prompt hash, so one top-level value would be ambiguous. The top-level `agent_model`, `prompt_sha256` and `resources_present` are therefore written **only when the run covers exactly one agent** (`kairon eval <agent>`, a single-case run, or the self-test) and are omitted otherwise. Use the `agents` map, or the per-agent `<agent>.json`, for multi-agent runs. Single-case runs also write a `summary.json`, with the same provenance fields.
+**Single-agent rule.** A run can cover several agents (`kairon eval` with no agent), each with its own model and prompt hash, so one top-level value would be ambiguous. The top-level `agent_model`, `prompt_sha256`, `prompt_file` and `resources_present` are therefore written **only when the run covers exactly one agent** (`kairon eval <agent>`, a single-case run, or the self-test) and are omitted otherwise. Use the `agents` map, or the per-agent `<agent>.json`, for multi-agent runs. Single-case runs also write a `summary.json`, with the same provenance fields.
+
+**`prompt_file` is omitted without a candidate.** `prompt_file` appears in `<agent>.json`, in `summary.json` under `agents.<agent>`, and (single-agent runs) at the top level of `summary.json`, only when the run used `--prompt-file`. Without a candidate the field is absent everywhere, so result files from ordinary runs are unchanged. Full, single-case and `--resume` runs all record it. For example, a candidate run of one agent:
+
+```json
+{
+  "agents": {
+    "architect": {
+      "agent_model": "claude-sonnet-5.5",
+      "prompt_sha256": "4be1…",
+      "prompt_file": ".kairon/iterations/architect/v2.md",
+      "resources_present": []
+    }
+  },
+  "agent_model": "claude-sonnet-5.5",
+  "prompt_sha256": "4be1…",
+  "prompt_file": ".kairon/iterations/architect/v2.md",
+  …
+}
+```
+
+The pre-flight line also names the candidate: `🔒 Models: judge=…, architect=… (prompt sha256 4be1…, prompt file .kairon/iterations/architect/v2.md)`.
 
 #### Execution mode and containment
 
@@ -471,12 +550,14 @@ The daemon-gated test `TestProvenanceParitySandbox` (run by `task eval:selftest:
 `prompt_sha256` is a lowercase hex SHA-256 (64 characters). It is a hash only; the prompt text itself is not stored. It is computed over an ordered sequence of parts:
 
 1. **config** — the raw bytes of the agent config file. The config is `<evals-dir>/agents/<agent>.json` when it exists, else `.kiro/agents/<agent>.json` relative to the working directory (in a `kiro-cli` sandbox run only the latter).
-2. **prompt** — if the config's `prompt` starts with `file://`, the bytes of that file. A relative path resolves against the config file's directory; absolute paths are allowed. A missing or unreadable prompt file is an error. An inline prompt is already covered by the config bytes.
+2. **prompt** — if the config's `prompt` starts with `file://`, the bytes of that file. A relative path resolves against the config file's directory; absolute paths are allowed. A missing or unreadable prompt file is an error. An inline prompt is already covered by the config bytes. **With `--prompt-file`, the candidate's bytes replace the live prompt file's bytes in this part**; the live prompt file is not read (it need not even exist). Everything else is hashed as usual.
 3. **resource** — for each entry of the config's `resources` array, in config order, the bytes of every existing matching file.
 
 Each part is framed as `<kind>\x00<decimal length>\x00<bytes>` (`kind` is `config`, `prompt` or `resource`), so parts cannot run together ambiguously. File paths are not hashed, so the same contents give the same hash on any machine.
 
 Consequently, editing the prompt file, the config, or any present resource changes the hash, and so does reordering resources. Running the same inputs twice gives an identical hash, which makes a before/after comparison of two runs a check that only the intended thing changed.
+
+With a `--prompt-file` candidate the hash reflects the candidate's content, not its path or name: a candidate whose content differs from the live prompt gives a different `prompt_sha256`, and a candidate whose bytes are identical to the live prompt gives the **identical** hash (so a candidate copy of the live prompt is a valid control run). The path is recorded separately as `prompt_file`.
 
 Resource handling:
 - Only string entries of `resources` are considered; object entries are ignored.
@@ -496,7 +577,7 @@ When an `<evals-dir>/agents/` overlay is used, the agent runs in its case worksp
 ❌ cannot resume: prompt or models changed since the interrupted run of architect (recorded agent_model=… judge_model=… prompt_sha256=…; now agent_model=… judge_model=… prompt_sha256=…)
 ```
 
-Start a fresh run (without `--resume`) after changing a prompt, a resource or `evals`. A result file written before provenance existed (no `prompt_sha256`) is **refused when it already holds saved cases** — resuming would attribute those scores to the current prompt and models, which were unknown when they were produced; an empty legacy file is allowed. An unchanged resume continues as before.
+Start a fresh run (without `--resume`) after changing a prompt, a resource or `evals`. **`--resume` needs the same `--prompt-file`:** a candidate's content is part of `prompt_sha256`, so resuming a candidate run without `--prompt-file`, with a different or edited candidate, or resuming a run recorded without a candidate while passing one, changes the hash and is refused with the error above. A result file written before provenance existed (no `prompt_sha256`) is **refused when it already holds saved cases** — resuming would attribute those scores to the current prompt and models, which were unknown when they were produced; an empty legacy file is allowed. An unchanged resume continues as before.
 
 **Execution mode.** Resume also refuses to switch between native and `--sandbox`, because scoring `requires_sandbox` cases under the other mode would mark them completed under the wrong execution model. The check is made at two levels:
 
@@ -574,6 +655,8 @@ The workspace's `.kiro/` is assembled on the host, never copied into a running c
 3. the project's own `.kiro/` (agents, skills, MCP config, as set up by `kairon init`).
 
 The project's `.kiro/` is only read. The live repository's `.kiro/` is never exposed to the agent, and a fixture can override any file (for example a `*-conventions` skill).
+
+**`--prompt-file` is applied last.** After the three layers above are staged, and before the workspace is made read-only, a [`--prompt-file`](#evaluating-a-candidate-prompt---prompt-file) candidate replaces the agent's prompt file (the relative `file://` target of its config's `prompt`, for example `.kiro/agents/architect-prompt.md`) in that workspace. The existing entry is removed first, so the candidate wins over a fixture-provided or overlay-provided file at the same path. This happens in each case workspace only; the project's `.kiro/` and the `<evals-dir>/agents/` overlay are not modified.
 
 ### Workspace fixtures
 
@@ -766,30 +849,51 @@ All six shipped agents have rubrics and test cases:
 
 ## Evaluation Workflow
 
-The evaluation framework serves as unit testing for prompt engineering. Follow this workflow when modifying agent prompts or configurations:
+The evaluation framework serves as unit testing for prompt engineering. Iterate on a **candidate** prompt with `--prompt-file`; do not edit the live prompt (`.kiro/agents/<agent>-prompt.md`) while you iterate. The live prompt is what the running pipeline and your day-to-day agents use, and a mid-iteration edit changes them. A candidate is staged only into the per-case evaluation workspaces (see [Evaluating a Candidate Prompt](#evaluating-a-candidate-prompt---prompt-file)).
 
 ### Before Making Changes (Baseline)
 
-**Required**: Run `kairon eval` before making any prompt changes to establish a baseline:
+**Required**: Run `kairon eval` for the agent before you start, to establish a baseline of the live prompt:
 
 ```bash
-# Capture current performance
-kairon eval
+# Capture current performance of the live prompt
+kairon eval architect
 ```
 
 This creates a results snapshot at `.kairon/evals/results/<timestamp>-<git-hash>/` for comparison.
 
-### After Making Changes (Verification)
+### Iterating on a Candidate
 
-**Required**: Run `kairon eval` after prompt changes to verify improvements:
+Copy the live prompt to a candidate under `.kairon/iterations/<agent>/`, edit the copy, and evaluate it:
 
 ```bash
-# Test modified behavior
-kairon eval
+mkdir -p .kairon/iterations/architect
+cp .kiro/agents/architect-prompt.md .kairon/iterations/architect/v2.md
+# edit .kairon/iterations/architect/v2.md
 
-# Compare with baseline
-kairon eval diff <baseline-hash> <current-hash>
+kairon eval architect --prompt-file .kairon/iterations/architect/v2.md
 ```
+
+Each iteration (`v3.md`, `v4.md`, …) is a new file and a new run. `git status --porcelain .kiro/agents` stays empty throughout. The run records `prompt_file` and a `prompt_sha256` of the candidate's content, so every result states which candidate produced it (see [Recorded provenance](#recorded-provenance)). A candidate is evaluated against the agent's existing config, so the model, tools and resources are those of the live agent. To resume an interrupted candidate run, repeat the same `--prompt-file` (see [Resume refusal](#resume-refusal)).
+
+### After Making Changes (Verification)
+
+**Required**: Compare the candidate's results with the baseline before adopting it:
+
+```bash
+# Compare with baseline (names of directories under results/)
+kairon eval diff <baseline-run> <candidate-run>
+```
+
+`eval diff` reports a `prompt_sha256` change between the two runs, confirming the candidate's text was what was scored.
+
+### Adopting a Candidate
+
+Adopting a winning candidate is a separate, deliberate step, done only after the comparison is favourable:
+
+1. Copy the candidate over the live prompt: `cp .kairon/iterations/architect/v2.md .kiro/agents/architect-prompt.md`.
+2. Re-sync the embedded templates and verify (`cp .kiro/agents/*.md cmd/kairon/templates/kiro/agents/`, then `task sync:check`), because `.kiro/agents/` is template-synchronized.
+3. Run `kairon eval architect` once more on the now-live prompt. Its `prompt_sha256` equals the candidate run's, since identical content gives an identical hash, and it records no `prompt_file`.
 
 ### Creating Test Cases for Behavioral Changes
 
@@ -798,22 +902,24 @@ When making specific behavioral changes, create targeted test cases:
 1. **Identify the behavior** — What specific agent behavior are you changing?
 2. **Create test case** — Add a case in `.kairon/evals/cases/<agent>/` that exercises this behavior
 3. **Verify coverage** — Ensure existing rubric criteria measure the desired change
-4. **Test iteratively** — Run evaluations as you refine the prompt
+4. **Test iteratively** — Run evaluations against each candidate as you refine the prompt
 
 Example workflow for improving architect task decomposition:
 ```bash
-# 1. Baseline
+# 1. Baseline (live prompt)
 kairon eval architect
 
 # 2. Add test case for complex decomposition scenario
 # Edit .kairon/evals/cases/architect/complex-decomposition.yaml
 
-# 3. Modify architect prompt
-# Edit .kairon/agents/architect-prompt.md
+# 3. Create a candidate; the live prompt is not edited
+mkdir -p .kairon/iterations/architect
+cp .kiro/agents/architect-prompt.md .kairon/iterations/architect/v2.md
+# Edit .kairon/iterations/architect/v2.md
 
 # 4. Verify improvement
-kairon eval architect
-kairon eval diff <baseline> <current>
+kairon eval architect --prompt-file .kairon/iterations/architect/v2.md
+kairon eval diff <baseline> <candidate>
 ```
 
 ### Evaluation as Unit Testing

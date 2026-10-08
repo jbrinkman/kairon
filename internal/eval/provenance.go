@@ -27,6 +27,9 @@ type agentProvenance struct {
 	ConfigPath string
 	// PromptSHA256 is the lowercase hex SHA-256 described on hashParts.
 	PromptSHA256 string
+	// PromptFile is the --prompt-file path (as given) when a candidate
+	// replaced the live prompt in the hash; empty otherwise.
+	PromptFile string
 	// ResourcesPresent lists existing resource entries exactly as written in
 	// the config, in config order. Never nil.
 	ResourcesPresent []string
@@ -58,6 +61,20 @@ func locateAgentConfig(agent string, ignoreOverlay bool) (string, error) {
 	return repoPath, nil
 }
 
+// readAgentConfig reads and parses an agent config, returning the parsed
+// subset and the raw bytes (which are hashed as the "config" part).
+func readAgentConfig(path string) (agentConfigFile, []byte, error) {
+	configBytes, err := os.ReadFile(path)
+	if err != nil {
+		return agentConfigFile{}, nil, fmt.Errorf("reading agent config %s: %w", path, err)
+	}
+	var conf agentConfigFile
+	if err := json.Unmarshal(configBytes, &conf); err != nil {
+		return agentConfigFile{}, nil, fmt.Errorf("parsing agent config %s: %w", path, err)
+	}
+	return conf, configBytes, nil
+}
+
 // resolveAgentProvenance locates the agent config and computes its provenance.
 //
 // The config is <evals-dir>/agents/<agent>.json when that exists, else
@@ -65,18 +82,24 @@ func locateAgentConfig(agent string, ignoreOverlay bool) (string, error) {
 // ignoreOverlay is true only the latter is considered: a kiro-cli container
 // cannot see the evals-dir overlay.
 func resolveAgentProvenance(agent string, ignoreOverlay bool) (agentProvenance, error) {
+	return resolveAgentProvenanceWith(agent, ignoreOverlay, nil)
+}
+
+// resolveAgentProvenanceWith is resolveAgentProvenance with an optional
+// candidate prompt. With a candidate, its bytes are hashed as the "prompt"
+// part in place of the live prompt file, which is not read (it need not
+// exist), and PromptFile records the candidate path. A candidate
+// byte-identical to the live prompt therefore hashes identically. A nil
+// override behaves exactly as resolveAgentProvenance.
+func resolveAgentProvenanceWith(agent string, ignoreOverlay bool, override *candidatePrompt) (agentProvenance, error) {
 	path, err := locateAgentConfig(agent, ignoreOverlay)
 	if err != nil {
 		return agentProvenance{}, err
 	}
 
-	configBytes, err := os.ReadFile(path)
+	conf, configBytes, err := readAgentConfig(path)
 	if err != nil {
-		return agentProvenance{}, fmt.Errorf("reading agent config %s: %w", path, err)
-	}
-	var conf agentConfigFile
-	if err := json.Unmarshal(configBytes, &conf); err != nil {
-		return agentProvenance{}, fmt.Errorf("parsing agent config %s: %w", path, err)
+		return agentProvenance{}, err
 	}
 
 	h := sha256.New()
@@ -84,16 +107,24 @@ func resolveAgentProvenance(agent string, ignoreOverlay bool) (agentProvenance, 
 
 	// Prompt: a file:// reference is read (and required); an inline prompt is
 	// already covered by the config bytes.
+	promptFile := ""
 	if ref, ok := strings.CutPrefix(conf.Prompt, "file://"); ok {
-		promptPath := ref
-		if !filepath.IsAbs(promptPath) {
-			promptPath = filepath.Join(filepath.Dir(path), promptPath)
+		if override != nil {
+			writeHashPart(h, "prompt", override.Content)
+			promptFile = override.Path
+		} else {
+			promptPath := ref
+			if !filepath.IsAbs(promptPath) {
+				promptPath = filepath.Join(filepath.Dir(path), promptPath)
+			}
+			promptBytes, err := os.ReadFile(promptPath)
+			if err != nil {
+				return agentProvenance{}, fmt.Errorf("reading prompt file %s referenced by %s: %w", promptPath, path, err)
+			}
+			writeHashPart(h, "prompt", promptBytes)
 		}
-		promptBytes, err := os.ReadFile(promptPath)
-		if err != nil {
-			return agentProvenance{}, fmt.Errorf("reading prompt file %s referenced by %s: %w", promptPath, path, err)
-		}
-		writeHashPart(h, "prompt", promptBytes)
+	} else if override != nil {
+		return agentProvenance{}, fmt.Errorf("agent config %s: a candidate prompt requires a file:// prompt reference", path)
 	}
 
 	present := []string{}
@@ -123,6 +154,7 @@ func resolveAgentProvenance(agent string, ignoreOverlay bool) (agentProvenance, 
 		Model:            strings.TrimSpace(conf.Model),
 		ConfigPath:       path,
 		PromptSHA256:     hex.EncodeToString(h.Sum(nil)),
+		PromptFile:       promptFile,
 		ResourcesPresent: present,
 	}, nil
 }
@@ -266,6 +298,7 @@ func (p *runPins) applyTo(r *AgentResult) {
 	r.AgentModel = pin.Model
 	r.JudgeModel = p.Judge
 	r.PromptSHA256 = pin.Provenance.PromptSHA256
+	r.PromptFile = pin.Provenance.PromptFile
 	r.ResourcesPresent = append([]string{}, pin.Provenance.ResourcesPresent...)
 }
 
@@ -318,7 +351,13 @@ func pinRun(agent string, opts RunOptions, ignoreOverlay bool) error {
 
 	pins := &runPins{Judge: ev.JudgeModel, Agents: map[string]agentPin{}, TrustOverrides: ev.TrustTools}
 	for _, name := range agentsInScope(agent, opts) {
-		prov, err := resolveAgentProvenance(name, ignoreOverlay)
+		// The candidate (--prompt-file) applies to the one named agent; a
+		// candidate run always has an explicit agent.
+		var override *candidatePrompt
+		if name == agent {
+			override = cfg.candidate
+		}
+		prov, err := resolveAgentProvenanceWith(name, ignoreOverlay, override)
 		if err != nil {
 			violations = append(violations, fmt.Sprintf("agent %q: %v", name, err))
 			continue
@@ -348,6 +387,10 @@ func pinRun(agent string, opts RunOptions, ignoreOverlay bool) error {
 	parts := []string{"judge=" + pins.Judge}
 	for _, n := range names {
 		sha := pins.Agents[n].Provenance.PromptSHA256
+		if pf := pins.Agents[n].Provenance.PromptFile; pf != "" {
+			parts = append(parts, fmt.Sprintf("%s=%s (prompt sha256 %s…, prompt file %s)", n, pins.Agents[n].Model, sha[:8], pf))
+			continue
+		}
 		parts = append(parts, fmt.Sprintf("%s=%s (prompt sha256 %s…)", n, pins.Agents[n].Model, sha[:8]))
 	}
 	fmt.Printf("🔒 Models: %s\n", strings.Join(parts, ", "))

@@ -29,6 +29,10 @@ type runConfig struct {
 	pins *runPins
 	// keepWorkspaces keeps per-case workspaces after the run (--keep-workspaces).
 	keepWorkspaces bool
+	// candidate is the --prompt-file candidate prompt, loaded and validated by
+	// RunWithOptions after configure and only read during the run. nil means
+	// the live prompt is used.
+	candidate *candidatePrompt
 }
 
 // cfg is the active run configuration. Call configure before use; tests

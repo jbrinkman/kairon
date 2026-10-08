@@ -350,6 +350,12 @@ func newCaseWorkspace(tc TestCase) (ws *caseWorkspace, err error) {
 	if err = w.stageKiro(fixtureFiles); err != nil {
 		return nil, err
 	}
+	// --prompt-file: the candidate replaces the agent's staged prompt file,
+	// inside this workspace only. It must follow stageKiro (it wins over
+	// fixture, overlay and project files) and precede setPermissions.
+	if err = cfg.candidate.stage(w.KiroDir); err != nil {
+		return nil, err
+	}
 	if err = os.MkdirAll(w.EvalDir, 0o755); err != nil {
 		return nil, err
 	}

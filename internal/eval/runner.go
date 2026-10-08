@@ -40,10 +40,26 @@ func checkDockerAvailability() error {
 
 // RunWithOptions executes evaluation with extended CLI options.
 func RunWithOptions(agent string, testcase string, options RunOptions) error {
+	// Reject impossible --prompt-file combinations before anything else.
+	if err := validateCandidateOptions(agent, options); err != nil {
+		return err
+	}
+
 	// Apply backend / evals-dir configuration before doing any work so that
 	// an unknown backend is rejected up front.
 	if err := configure(options); err != nil {
 		return err
+	}
+
+	// Load and validate the candidate prompt after configure (it needs the
+	// evals dir to find an overlay agent config) and before pinRun, any
+	// results directory, or any model call: a refused candidate runs nothing.
+	if options.PromptFile != "" {
+		candidate, err := loadCandidatePrompt(agent, options.PromptFile)
+		if err != nil {
+			return err
+		}
+		cfg.candidate = candidate
 	}
 
 	// Handle cleanup operation early
@@ -2025,14 +2041,16 @@ func updateIncrementalSummary(summaryFile string, agentResult AgentResult, gitHa
 		summary.Agents[agentResult.Agent] = AgentProvenance{
 			AgentModel:       agentResult.AgentModel,
 			PromptSHA256:     agentResult.PromptSHA256,
+			PromptFile:       agentResult.PromptFile,
 			ResourcesPresent: append([]string{}, agentResult.ResourcesPresent...),
 		}
 	}
-	summary.AgentModel, summary.PromptSHA256, summary.ResourcesPresent = "", "", nil
+	summary.AgentModel, summary.PromptSHA256, summary.PromptFile, summary.ResourcesPresent = "", "", "", nil
 	if len(summary.Agents) == 1 {
 		for _, p := range summary.Agents {
 			summary.AgentModel = p.AgentModel
 			summary.PromptSHA256 = p.PromptSHA256
+			summary.PromptFile = p.PromptFile
 			summary.ResourcesPresent = p.ResourcesPresent
 		}
 	}
