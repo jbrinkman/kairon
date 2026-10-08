@@ -8,7 +8,6 @@ import (
 	"testing"
 
 	"github.com/jbrinkman/kairon/internal/eval/sandbox"
-	"github.com/jbrinkman/kairon/internal/inference"
 )
 
 // selftestEvalsDir is the checked-in self-test fixture set, relative to this
@@ -267,11 +266,9 @@ func TestSelfTestStubWithSandboxPassesPreflight(t *testing.T) {
 	if err := configure(opts); err != nil {
 		t.Fatal(err)
 	}
-	ignoreOverlay := willContainerize("", opts) && cfg.backend.Name() == inference.NameKiroCLI
-	if ignoreOverlay {
-		t.Fatal("the overlay must stay visible for the stub backend")
-	}
-	if err := pinRun("selftest", opts, ignoreOverlay); err != nil {
+	// The overlay is visible on every path now (native and --sandbox),
+	// including the stub backend, so provenance pins the evals-dir config.
+	if err := pinRun("selftest", opts, false); err != nil {
 		t.Fatalf("pre-flight under --sandbox --backend stub: %v", err)
 	}
 	pin, ok := cfg.pins.pinOf("selftest")

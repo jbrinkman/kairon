@@ -274,9 +274,10 @@ func agentsInScope(agent string, opts RunOptions) []string {
 // violations are reported together. On success it sets cfg.pins.
 //
 // evals.agent_model is honoured on every path, including --sandbox (the model
-// reaches the agent as --model). ignoreOverlay is true when agent calls run in
-// a kiro-cli sandbox container, which cannot see the <evals-dir>/agents
-// overlay, so provenance is taken from .kiro/agents only.
+// reaches the agent as --model). ignoreOverlay, when true, considers only
+// .kiro/agents and skips the <evals-dir>/agents overlay; the runner passes
+// false because the overlay is always visible to the agent (staged into the
+// per-case workspace .kiro, which the sandbox bind-mounts).
 func pinRun(agent string, opts RunOptions, ignoreOverlay bool) error {
 	ev, err := config.LoadEvals()
 	if err != nil {

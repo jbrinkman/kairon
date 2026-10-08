@@ -39,16 +39,6 @@ func checkDockerAvailability() error {
 }
 
 // RunWithOptions executes evaluation with extended CLI options.
-// willContainerize reports whether a non-nil ContainerConfig actually reaches
-// Run for these options: a sandbox run that is not opted out and not diverted
-// to the perf, single-case, or resume paths (which never containerise). It is
-// the single source of truth the model pre-flight uses to decide whether the
-// evals-dir agent overlay is visible to the agent (it is not inside a kiro-cli
-// container).
-func willContainerize(testcase string, options RunOptions) bool {
-	return options.Sandbox && !options.NoSandbox && !options.Perf && testcase == "" && !options.Resume
-}
-
 func RunWithOptions(agent string, testcase string, options RunOptions) error {
 	// Apply backend / evals-dir configuration before doing any work so that
 	// an unknown backend is rejected up front.
@@ -62,11 +52,14 @@ func RunWithOptions(agent string, testcase string, options RunOptions) error {
 	}
 
 	// Pre-flight: pin and validate the judge and agent models before any
-	// case (or kiro-cli call) starts. willContainerize is the single source of
-	// truth for whether a non-nil ContainerConfig reaches Run.
+	// case (or kiro-cli call) starts.
 	if !options.List {
-		ignoreOverlay := willContainerize(testcase, options) && cfg.backend.Name() == inference.NameKiroCLI
-		if err := pinRun(agent, options, ignoreOverlay); err != nil {
+		// The overlay is always visible to the agent: a native run uses the
+		// staged <evals-dir>/agents directly, and a --sandbox run now stages
+		// it into the per-case workspace's .kiro, which is bind-mounted into
+		// the container. So provenance must consider the overlay on every
+		// path (there is no longer a kiro-cli container that cannot see it).
+		if err := pinRun(agent, options, false); err != nil {
 			return err
 		}
 	}
@@ -76,10 +69,9 @@ func RunWithOptions(agent string, testcase string, options RunOptions) error {
 		return RunPerformanceInvestigation(agent)
 	}
 
-	// Configure container sandboxing. (The guard is broader than
-	// willContainerize because the single-case/resume paths below build and
-	// then ignore cConfig; willContainerize captures when it actually reaches
-	// Run, which is what the pre-flight above must mirror.)
+	// Configure container sandboxing. The single-case/resume paths below
+	// build and then ignore cConfig, so this guard is broader than the set of
+	// runs that actually containerise.
 	var cConfig *ContainerConfig
 	if options.Sandbox && !options.NoSandbox {
 		// Early Docker availability check before any configuration work
