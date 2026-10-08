@@ -16,6 +16,10 @@ import (
 //
 //	chat --agent <agent> --no-interactive --trust-all-tools [--model <m>]
 //
+// When req.ToolTrust is non-nil, --trust-all-tools is replaced by the single
+// argument --trust-tools=<csv> (--trust-tools= when the set is empty). A nil
+// ToolTrust keeps the historical --trust-all-tools form byte-identical.
+//
 // --model is appended only when req.Model is non-empty. The prompt is never
 // part of the arguments; callers deliver it on stdin.
 //
@@ -23,8 +27,12 @@ import (
 // the eval container sandbox) that executes kiro-cli elsewhere, so there is a
 // single definition of the command.
 func KiroCLIAgentCommand(req Request) (args []string, command string) {
-	args = []string{"chat", "--agent", req.Agent, "--no-interactive", "--trust-all-tools"}
-	command = fmt.Sprintf("kiro-cli chat --agent %s --no-interactive --trust-all-tools", req.Agent)
+	trustArg := "--trust-all-tools"
+	if req.ToolTrust != nil {
+		trustArg = "--trust-tools=" + req.ToolTrust.CSV()
+	}
+	args = []string{"chat", "--agent", req.Agent, "--no-interactive", trustArg}
+	command = fmt.Sprintf("kiro-cli chat --agent %s --no-interactive %s", req.Agent, trustArg)
 	if req.Model != "" {
 		args = append(args, "--model", req.Model)
 		command += " --model " + req.Model

@@ -1,0 +1,8 @@
+{
+  "name": "selftest-sandbox",
+  "description": "Minimal agent used only by the sandbox containment self-test fixtures (fake gh, workspace writes, tool trust). Its cases require --sandbox.",
+  "prompt": "file://./selftest-sandbox-prompt.md",
+  "model": "claude-sonnet-5.5",
+  "tools": ["read", "write"],
+  "allowedTools": ["read", "write"]
+}

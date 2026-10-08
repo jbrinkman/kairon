@@ -37,6 +37,25 @@ type agentConfigFile struct {
 	Model     string            `json:"model"`
 	Prompt    string            `json:"prompt"`
 	Resources []json.RawMessage `json:"resources"`
+	// AllowedTools is the agent's own tool allowlist; it is the default
+	// tool-trust set for container runs (see resolveTrustSet).
+	AllowedTools []string `json:"allowedTools"`
+}
+
+// locateAgentConfig returns the path of the agent config: <evals-dir>/agents/
+// <agent>.json when it exists (and ignoreOverlay is false), else
+// .kiro/agents/<agent>.json. A missing config is an error listing both paths.
+func locateAgentConfig(agent string, ignoreOverlay bool) (string, error) {
+	repoPath := filepath.Join(".kiro", "agents", agent+".json")
+	overlayPath := filepath.Join(evalsPath("agents"), agent+".json")
+
+	if !ignoreOverlay && fileExists(overlayPath) {
+		return overlayPath, nil
+	}
+	if !fileExists(repoPath) {
+		return "", fmt.Errorf("agent config for %q not found: tried %s and %s", agent, overlayPath, repoPath)
+	}
+	return repoPath, nil
 }
 
 // resolveAgentProvenance locates the agent config and computes its provenance.
@@ -46,14 +65,9 @@ type agentConfigFile struct {
 // ignoreOverlay is true only the latter is considered: a kiro-cli container
 // cannot see the evals-dir overlay.
 func resolveAgentProvenance(agent string, ignoreOverlay bool) (agentProvenance, error) {
-	repoPath := filepath.Join(".kiro", "agents", agent+".json")
-	overlayPath := filepath.Join(evalsPath("agents"), agent+".json")
-
-	path := repoPath
-	if !ignoreOverlay && fileExists(overlayPath) {
-		path = overlayPath
-	} else if !fileExists(repoPath) {
-		return agentProvenance{}, fmt.Errorf("agent config for %q not found: tried %s and %s", agent, overlayPath, repoPath)
+	path, err := locateAgentConfig(agent, ignoreOverlay)
+	if err != nil {
+		return agentProvenance{}, err
 	}
 
 	configBytes, err := os.ReadFile(path)
@@ -197,6 +211,19 @@ type agentPin struct {
 type runPins struct {
 	Judge  string
 	Agents map[string]agentPin
+	// TrustOverrides is evals.trust_tools: agent name -> tool names trusted
+	// in container runs, taking precedence over the agent's allowedTools.
+	TrustOverrides map[string][]string
+}
+
+// trustOverride returns the evals.trust_tools entry for agent, if any. An
+// entry present with no tools (trust nothing) reports ok.
+func (p *runPins) trustOverride(agent string) ([]string, bool) {
+	if p == nil {
+		return nil, false
+	}
+	tools, ok := p.TrustOverrides[agent]
+	return tools, ok
 }
 
 func (p *runPins) judgeModel() string {
@@ -289,7 +316,7 @@ func pinRun(agent string, opts RunOptions, ignoreOverlay bool) error {
 		violations = append(violations, fmt.Sprintf("evals.judge_model: %v", err))
 	}
 
-	pins := &runPins{Judge: ev.JudgeModel, Agents: map[string]agentPin{}}
+	pins := &runPins{Judge: ev.JudgeModel, Agents: map[string]agentPin{}, TrustOverrides: ev.TrustTools}
 	for _, name := range agentsInScope(agent, opts) {
 		prov, err := resolveAgentProvenance(name, ignoreOverlay)
 		if err != nil {

@@ -1,0 +1,24 @@
+name: stub-tool-denied
+description: "Sandbox self-test: an fs_write tool call by an agent whose trust set is only fs_read (allowedTools read) is denied, recorded and does not run"
+agent: selftest-sandbox-ro
+requires_sandbox: true
+input: |
+  Use the write tool to create tool-marker.txt and report what happened.
+context:
+  - "This case runs against the deterministic stub backend and only under --sandbox"
+  - "The trust set is derived from allowedTools [read], i.e. fs_read only"
+expected_output: |
+  A short report with a top-level section and at least one subsection.
+stub:
+  turns:
+    - tool_calls:
+        - tool: fs_write
+          command: "echo x > tool-marker.txt"
+      response: |
+        ## Tool denied
+
+        The fs_write tool call was refused.
+
+        ### Details
+
+        tool-marker.txt does not exist and the denial is recorded in the call.

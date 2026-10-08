@@ -1,0 +1,24 @@
+name: stub-tool-allowed
+description: "Sandbox self-test: an fs_write tool call by an agent whose trust set includes fs_write (allowedTools read, write) runs and is not denied"
+agent: selftest-sandbox
+requires_sandbox: true
+input: |
+  Use the write tool to create tool-marker.txt and report that you did.
+context:
+  - "This case runs against the deterministic stub backend and only under --sandbox"
+  - "The trust set is derived from allowedTools [read, write], i.e. fs_read and fs_write"
+expected_output: |
+  A short report with a top-level section and at least one subsection.
+stub:
+  turns:
+    - tool_calls:
+        - tool: fs_write
+          command: "echo x > tool-marker.txt"
+      response: |
+        ## Tool allowed
+
+        The fs_write tool call ran.
+
+        ### Details
+
+        tool-marker.txt exists in the workspace and no denial was recorded.

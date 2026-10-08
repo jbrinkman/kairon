@@ -155,22 +155,6 @@ func TestResourceLimitsEnforcement(t *testing.T) {
 	assert.Contains(t, output, "16777216") // 16MB in bytes
 }
 
-func TestGitHubCLIMocking(t *testing.T) {
-	skipIfNoContainerDaemon(t)
-	testdataDir := "testdata/github-cli-mock"
-
-	// Check mock script exists locally
-	mockScript := filepath.Join(testdataDir, "gh")
-	_, err := os.Stat(mockScript)
-	require.NoError(t, err, "GitHub CLI mock script should exist")
-
-	// Verify mock script content
-	content, err := os.ReadFile(mockScript)
-	require.NoError(t, err)
-	assert.Contains(t, string(content), "[MOCK]")
-	assert.Contains(t, string(content), "#!/bin/bash")
-}
-
 func TestContainerTimeout(t *testing.T) {
 	skipIfNoContainerDaemon(t)
 

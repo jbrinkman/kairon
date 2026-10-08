@@ -53,6 +53,17 @@ func caseTimeout(tc TestCase) time.Duration {
 func executeCase(rubric Rubric, tc TestCase, cConfig *ContainerConfig, out io.Writer, keep bool) CaseResult {
 	cr := CaseResult{CaseName: tc.Name}
 
+	// Fail fast, before any workspace or agent call, for cases that are only
+	// safe inside the sandbox.
+	if tc.RequiresSandbox && cConfig == nil {
+		fmt.Fprintf(out, " ❌ (requires --sandbox)\n")
+		fmt.Fprintf(out, "      Error: case %q requires --sandbox\n", tc.Name)
+		cr.ActualOutput = ""
+		cr.ErrorContext = &ErrorContext{Stderr: fmt.Sprintf("case %q requires --sandbox", tc.Name)}
+		scoreCaseFn(rubric, tc, &cr)
+		return cr
+	}
+
 	prompt, err := assemblePrompt(tc.Setup, tc.Input)
 	if err != nil {
 		fmt.Fprintf(out, " ❌ (prompt error)\n")

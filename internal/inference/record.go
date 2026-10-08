@@ -14,4 +14,9 @@ type CallRecord struct {
 	DurationMS   int64   `json:"duration_ms"`
 	PromptSHA256 string  `json:"prompt_sha256,omitempty"` // agent calls only
 	Error        string  `json:"error,omitempty"`         // call failed; the record is still written
+	// TrustedTools is the whole-tool trust set the call ran with. A pointer so
+	// a restricted-to-nothing set ([]) is distinct from unrestricted (absent).
+	TrustedTools *[]string `json:"trusted_tools,omitempty"`
+	// ToolDenials lists tool calls refused by the trust gate (stub backend only).
+	ToolDenials []ToolDenial `json:"tool_denials,omitempty"`
 }

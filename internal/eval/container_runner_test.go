@@ -24,8 +24,8 @@ func testWorkspaceDirs(t *testing.T) *caseWorkspace {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ws := &caseWorkspace{Dir: root, EvalDir: filepath.Join(root, ".eval"), KiroDir: filepath.Join(root, ".kiro")}
-	for _, d := range []string{ws.EvalDir, ws.KiroDir} {
+	ws := &caseWorkspace{Dir: root, EvalDir: filepath.Join(root, ".eval"), KiroDir: filepath.Join(root, ".kiro"), BinDir: filepath.Join(root, ".bin")}
+	for _, d := range []string{ws.EvalDir, ws.KiroDir, ws.BinDir} {
 		if err := os.MkdirAll(d, 0o755); err != nil {
 			t.Fatal(err)
 		}
@@ -75,13 +75,14 @@ func TestBuildContainerMountsKiroCLI(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(ms) != 3 {
-		t.Fatalf("mounts = %+v, want exactly 3 (no helper for kiro-cli)", ms)
+	if len(ms) != 4 {
+		t.Fatalf("mounts = %+v, want exactly 4 (no helper for kiro-cli)", ms)
 	}
 	want := []sandbox.Mount{
 		{HostPath: ws.KiroDir, ContainerPath: "/workspace/.kiro", ReadOnly: true},
 		{HostPath: ws.Dir, ContainerPath: "/workspace"},
 		{HostPath: ws.EvalDir, ContainerPath: "/workspace/.eval"},
+		{HostPath: ws.BinDir, ContainerPath: "/opt/kairon/bin", ReadOnly: true},
 	}
 	if !reflect.DeepEqual(ms, want) {
 		t.Errorf("mounts = %+v\nwant     %+v", ms, want)
@@ -90,13 +91,25 @@ func TestBuildContainerMountsKiroCLI(t *testing.T) {
 		t.Error("kiro-cli backend must not mount the helper")
 	}
 
-	// Through the real host-config constructor: bind mounts only, no tmpfs.
+	// Through the real host-config constructor: bind mounts only, plus the
+	// read-only-rootfs tmpfs mounts for temp and $HOME (never the workspace).
 	hc, err := sandbox.NewHostConfigWithMounts(cc.ResourceLimits, ms)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(hc.Tmpfs) != 0 {
+	if !hc.ReadonlyRootfs {
+		t.Error("root filesystem must be read-only")
+	}
+	for _, p := range []string{"/tmp", "/var/tmp", "/home/sandbox"} {
+		if _, ok := hc.Tmpfs[p]; !ok {
+			t.Errorf("missing tmpfs %s: %v", p, hc.Tmpfs)
+		}
+	}
+	if len(hc.Tmpfs) != 3 {
 		t.Errorf("unexpected tmpfs: %v", hc.Tmpfs)
+	}
+	if _, ok := hc.Tmpfs[cc.WorkspaceDir]; ok {
+		t.Errorf("workspace %s must not be a tmpfs", cc.WorkspaceDir)
 	}
 	for _, m := range hc.Mounts {
 		if m.Type != mount.TypeBind {
@@ -115,8 +128,8 @@ func TestBuildContainerMountsHelper(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(ms) != 4 {
-		t.Fatalf("mounts = %+v, want 4", ms)
+	if len(ms) != 5 {
+		t.Fatalf("mounts = %+v, want 5", ms)
 	}
 	by := mountSummary(ms)
 	if m := by["/work/space/.kiro"]; m.HostPath != ws.KiroDir || !m.ReadOnly {
@@ -127,6 +140,9 @@ func TestBuildContainerMountsHelper(t *testing.T) {
 	}
 	if m := by["/work/space/.eval"]; m.HostPath != ws.EvalDir || m.ReadOnly {
 		t.Errorf(".eval mount = %+v", m)
+	}
+	if m := by["/opt/kairon/bin"]; m.HostPath != ws.BinDir || !m.ReadOnly {
+		t.Errorf("bin mount = %+v", m)
 	}
 	if m := by["/opt/kairon/kairon"]; m.HostPath != bin || !m.ReadOnly {
 		t.Errorf("helper mount = %+v", m)
@@ -205,6 +221,7 @@ func TestContainerConfigUserEnvAndWorkdir(t *testing.T) {
 
 func TestContainerExecsAreWrappedAndPromptStaysOnStdin(t *testing.T) {
 	chdirTemp(t)
+	useAgentConfigs(t)
 	pinAgentModel("builder", "m1")
 	x := &fakeExecer{kiroStdout: "ok"}
 	useFakeContainer(t, x)
@@ -230,6 +247,7 @@ func TestContainerExecsAreWrappedAndPromptStaysOnStdin(t *testing.T) {
 	// The helper exec is wrapped too.
 	chdirTemp(t)
 	useStubBackend(t)
+	useAgentConfigs(t)
 	useFakeLinuxBinary(t)
 	h := &fakeExecer{}
 	useFakeContainer(t, h)
@@ -252,6 +270,7 @@ func TestContainerHostExecDeadline(t *testing.T) {
 
 	t.Run("kiro-cli deadline equals the timeout", func(t *testing.T) {
 		chdirTemp(t)
+		useAgentConfigs(t)
 		x := &fakeExecer{kiroStdout: "ok"}
 		useFakeContainer(t, x)
 		cc := testContainerConfig()
@@ -264,6 +283,7 @@ func TestContainerHostExecDeadline(t *testing.T) {
 
 	t.Run("kiro-cli without a case timeout uses the sandbox limit", func(t *testing.T) {
 		chdirTemp(t)
+		useAgentConfigs(t)
 		x := &fakeExecer{kiroStdout: "ok"}
 		useFakeContainer(t, x)
 		cc := testContainerConfig()
@@ -277,6 +297,7 @@ func TestContainerHostExecDeadline(t *testing.T) {
 	t.Run("helper deadline is the timeout plus 10s and the request carries the timeout", func(t *testing.T) {
 		chdirTemp(t)
 		useStubBackend(t)
+		useAgentConfigs(t)
 		useFakeLinuxBinary(t)
 		x := &fakeExecer{}
 		useFakeContainer(t, x)
@@ -299,6 +320,7 @@ func TestContainerHostExecDeadline(t *testing.T) {
 func TestContainerTimeoutNamesEffectiveTimeout(t *testing.T) {
 	t.Run("kiro-cli host deadline", func(t *testing.T) {
 		chdirTemp(t)
+		useAgentConfigs(t)
 		cc := testContainerConfig()
 		cc.ResourceLimits.Timeout = 5 * time.Minute // the sandbox default must not be named
 		useFakeContainer(t, &fakeExecer{block: true})
@@ -325,6 +347,7 @@ func TestContainerTimeoutNamesEffectiveTimeout(t *testing.T) {
 	t.Run("helper-reported timeout", func(t *testing.T) {
 		chdirTemp(t)
 		useStubBackend(t)
+		useAgentConfigs(t)
 		useFakeLinuxBinary(t)
 		cc := testContainerConfig()
 		cc.ResourceLimits.Timeout = 5 * time.Minute
@@ -359,6 +382,7 @@ func TestMapContainerErrorNamesGivenTimeout(t *testing.T) {
 func TestContainerRequestWorkDirIsContainerPath(t *testing.T) {
 	chdirTemp(t)
 	useStubBackend(t)
+	useAgentConfigs(t)
 	useFakeLinuxBinary(t)
 	x := &fakeExecer{}
 	useFakeContainer(t, x)
@@ -384,3 +408,64 @@ func (*fakeDoneCtx) Deadline() (time.Time, bool) { return time.Time{}, false }
 func (*fakeDoneCtx) Done() <-chan struct{}       { c := make(chan struct{}); close(c); return c }
 func (*fakeDoneCtx) Err() error                  { return context.DeadlineExceeded }
 func (*fakeDoneCtx) Value(key any) any           { return nil }
+
+func envValue(env []string, key string) (string, bool) {
+	for _, kv := range env {
+		if v, ok := strings.CutPrefix(kv, key+"="); ok {
+			return v, true
+		}
+	}
+	return "", false
+}
+
+func TestContainerEnvPathAndEvalDir(t *testing.T) {
+	cc := testContainerConfig()
+	env := containerEnv(cc)
+	p, ok := envValue(env, "PATH")
+	if !ok || !strings.HasPrefix(p, "/opt/kairon/bin:") {
+		t.Errorf("PATH = %q, want it to start with /opt/kairon/bin:", p)
+	}
+	if v, _ := envValue(env, "KAIRON_EVAL_DIR"); v != "/workspace/.eval" {
+		t.Errorf("KAIRON_EVAL_DIR = %q", v)
+	}
+	for _, want := range []string{"GH_PROMPT_DISABLED=1", "GH_NO_UPDATE_NOTIFIER=1"} {
+		if !strings.Contains("\n"+strings.Join(env, "\n")+"\n", "\n"+want+"\n") {
+			t.Errorf("env missing %q: %v", want, env)
+		}
+	}
+
+	cc.WorkspaceDir = "/work/space"
+	if v, _ := envValue(containerEnv(cc), "KAIRON_EVAL_DIR"); v != "/work/space/.eval" {
+		t.Errorf("KAIRON_EVAL_DIR with custom workspace = %q", v)
+	}
+}
+
+func TestContainerEnvDropsGitHubCredentialsAndHarnessVars(t *testing.T) {
+	cc := testContainerConfig()
+	cc.Environment = map[string]string{
+		"GH_TOKEN": "a", "GITHUB_TOKEN": "b", "GH_ENTERPRISE_TOKEN": "c",
+		"GITHUB_ENTERPRISE_TOKEN": "d", "GH_HOST": "e",
+		"PATH": "/evil", "KAIRON_EVAL_DIR": "/evil", "KEEP": "1",
+	}
+	env := containerEnv(cc)
+	for _, k := range []string{"GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN", "GH_HOST"} {
+		if v, ok := envValue(env, k); ok {
+			t.Errorf("%s=%s reached the container env", k, v)
+		}
+	}
+	if v, _ := envValue(env, "KEEP"); v != "1" {
+		t.Errorf("unrelated variable dropped: %v", env)
+	}
+	n := 0
+	for _, kv := range env {
+		if strings.HasPrefix(kv, "PATH=") || strings.HasPrefix(kv, "KAIRON_EVAL_DIR=") {
+			n++
+			if strings.Contains(kv, "/evil") {
+				t.Errorf("caller override leaked: %s", kv)
+			}
+		}
+	}
+	if n != 2 {
+		t.Errorf("PATH/KAIRON_EVAL_DIR appear %d times, want once each: %v", n, env)
+	}
+}

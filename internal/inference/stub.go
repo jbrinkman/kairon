@@ -53,9 +53,26 @@ func (*stubBackend) Invoke(ctx context.Context, req Request) (Response, error) {
 			Model:   turn.Model,
 			Command: "stub agent",
 		}
-		if len(turn.Commands) > 0 {
-			if cmdResp, err := runStubCommands(ctx, req, turn.Commands); err != nil {
+		// Commands are ungated scripted environment actions. Tool calls run
+		// after them, and only when the trust gate allows the tool; denied
+		// calls are skipped and recorded.
+		commands := append([]string(nil), turn.Commands...)
+		for _, call := range turn.ToolCalls {
+			tool := NormalizeToolName(call.Tool)
+			if !req.ToolTrust.Allows(tool) {
+				resp.ToolDenials = append(resp.ToolDenials, ToolDenial{
+					Tool:    tool,
+					Command: call.Command,
+					Reason:  ReasonToolNotTrusted,
+				})
+				continue
+			}
+			commands = append(commands, call.Command)
+		}
+		if len(commands) > 0 {
+			if cmdResp, err := runStubCommands(ctx, req, commands); err != nil {
 				cmdResp.Command = resp.Command
+				cmdResp.ToolDenials = resp.ToolDenials
 				return cmdResp, err
 			}
 		}

@@ -52,6 +52,13 @@ type TestCase struct {
 	// Timeout overrides the agent-call timeout for this case. It is a Go
 	// duration string (e.g. "30s") and must be positive when set.
 	Timeout string `yaml:"timeout,omitempty" json:"timeout,omitempty"`
+
+	// GHIssue is the data the sandbox's fake gh answers `gh issue view` with.
+	// It requires RequiresSandbox. number defaults to 1; title is required.
+	GHIssue *sandbox.GHIssue `yaml:"gh_issue,omitempty" json:"gh_issue,omitempty"`
+
+	// RequiresSandbox refuses to run the case natively (without --sandbox).
+	RequiresSandbox bool `yaml:"requires_sandbox,omitempty" json:"requires_sandbox,omitempty"`
 }
 
 // CostInfo tracks token usage and estimated cost.
@@ -227,16 +234,13 @@ type AgentProvenance struct {
 
 // ContainerConfig configures containerized execution
 type ContainerConfig struct {
-	Platform       string                 `json:"platform"`
-	ResourceLimits sandbox.ResourceLimits `json:"resource_limits"`
-	Environment    map[string]string      `json:"environment"`
-	WorkspaceDir   string                 `json:"workspace_dir"`
-	// MockGitHub is not consulted: the runner no longer installs a mock gh
-	// into the container. Fake gh behavior is the containment work in #298.
-	MockGitHub      bool                  `json:"mock_github"`
-	Debug           bool                  `json:"debug"`
-	ImageManager    *sandbox.ImageManager `json:"-"`
-	CachedImageName string                `json:"-"`
+	Platform        string                 `json:"platform"`
+	ResourceLimits  sandbox.ResourceLimits `json:"resource_limits"`
+	Environment     map[string]string      `json:"environment"`
+	WorkspaceDir    string                 `json:"workspace_dir"`
+	Debug           bool                   `json:"debug"`
+	ImageManager    *sandbox.ImageManager  `json:"-"`
+	CachedImageName string                 `json:"-"`
 }
 
 // ProjectDetection holds results from project type detection

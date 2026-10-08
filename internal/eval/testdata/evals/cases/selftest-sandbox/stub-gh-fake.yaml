@@ -1,0 +1,29 @@
+name: stub-gh-fake
+description: "Sandbox self-test: gh resolves to the fake first on PATH; the call is logged, the --body-file body is copied, and 'gh issue view' is answered from gh_issue"
+agent: selftest-sandbox
+requires_sandbox: true
+input: |
+  File an issue with gh and read the configured issue back.
+context:
+  - "This case runs against the deterministic stub backend and only under --sandbox"
+  - "The fake gh logs to .eval/gh.log and copies the body file to .eval/gh-body-1.md"
+expected_output: |
+  A short report with a top-level section and at least one subsection.
+gh_issue:
+  number: 1
+  title: "Fake issue title"
+  body: "Fake issue body"
+stub:
+  turns:
+    - commands:
+        - "printf 'issue body from the stub\\n' > b.md"
+        - "gh issue create --title t --body-file b.md"
+        - "gh issue view --json title,body > view.json"
+      response: |
+        ## Fake gh
+
+        The issue was filed and read back through the fake gh.
+
+        ### Details
+
+        The call is in .eval/gh.log and view.json holds the configured issue.

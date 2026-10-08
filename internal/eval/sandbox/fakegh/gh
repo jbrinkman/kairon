@@ -1,0 +1,300 @@
+#!/bin/sh
+# kairon fake gh -- a deterministic stand-in for the GitHub CLI used by
+# `kairon eval --sandbox`. It is mounted read-only and put first on PATH.
+#
+# It never contacts GitHub and never invokes another gh. Every call is
+# appended, as one line, to $KAIRON_EVAL_DIR/gh.log. Only commands listed in
+# the dispatch table at the bottom are simulated; everything else exits 1.
+#
+# Data files (written by the host before the container starts):
+#   $KAIRON_EVAL_DIR/gh-issue.json  one top-level JSON field per line
+#   $KAIRON_EVAL_DIR/gh-issue.txt   human `gh issue view` rendering
+#
+# POSIX sh only (the sandbox image uses busybox ash); no jq, no bashisms.
+
+LC_ALL=C
+export LC_ALL
+
+prog='kairon fake gh'
+NL='
+'
+
+# fail prints a gh-style message to stderr and exits 1.
+fail() {
+	printf '%s\n' "$*" >&2
+	exit 1
+}
+
+# die prints a message attributed to the fake and exits 1.
+die() {
+	printf '%s: %s\n' "$prog" "$*" >&2
+	exit 1
+}
+
+if [ -z "$KAIRON_EVAL_DIR" ]; then
+	die 'KAIRON_EVAL_DIR is not set'
+fi
+if [ ! -d "$KAIRON_EVAL_DIR" ]; then
+	die "KAIRON_EVAL_DIR is not a directory: $KAIRON_EVAL_DIR"
+fi
+EVALDIR=$KAIRON_EVAL_DIR
+LOG=$EVALDIR/gh.log
+
+# quote_arg sets QUOTED to a log-safe rendering of $1: newlines are folded to
+# spaces (a call is always one line) and anything outside a conservative safe
+# set is single-quoted with embedded quotes written as '\''.
+quote_arg() {
+	_qa=$1
+	case $_qa in
+	*"$NL"*) _qa=$(printf '%s' "$_qa" | tr '\n' ' ') ;;
+	esac
+	case $_qa in
+	'')
+		QUOTED="''"
+		;;
+	*[!A-Za-z0-9_./:=@%+,-]*)
+		_qa=$(printf '%s' "$_qa" | sed "s/'/'\\\\''/g")
+		QUOTED="'$_qa'"
+		;;
+	*)
+		QUOTED=$_qa
+		;;
+	esac
+}
+
+ARGLINE=''
+for _arg in "$@"; do
+	quote_arg "$_arg"
+	if [ -z "$ARGLINE" ]; then
+		ARGLINE=$QUOTED
+	else
+		ARGLINE="$ARGLINE $QUOTED"
+	fi
+done
+if [ -n "$ARGLINE" ]; then
+	printf '%s\n' "gh $ARGLINE" >>"$LOG" || die "cannot write $LOG"
+else
+	printf '%s\n' 'gh' >>"$LOG" || die "cannot write $LOG"
+fi
+
+# SEQ is the 1-based line number of this call in gh.log; it makes the fake
+# issue/PR numbers unique and deterministic.
+SEQ=$(wc -l <"$LOG" | tr -d ' ')
+
+# claim_body atomically creates the next free gh-body-<n>.md and prints n.
+claim_body() {
+	_n=1
+	while :; do
+		if (
+			set -C
+			: >"$EVALDIR/gh-body-$_n.md"
+		) 2>/dev/null; then
+			printf '%s\n' "$_n"
+			return 0
+		fi
+		_n=$((_n + 1))
+	done
+}
+
+# copy_body copies the body source $1 (a path, or - for stdin) to the next
+# gh-body-<n>.md. Failures mimic real gh's open errors.
+copy_body() {
+	_src=$1
+	if [ "$_src" = - ]; then
+		_n=$(claim_body)
+		cat >"$EVALDIR/gh-body-$_n.md"
+		return 0
+	fi
+	if [ ! -e "$_src" ]; then
+		fail "open $_src: no such file or directory"
+	fi
+	if [ -d "$_src" ]; then
+		fail "read $_src: is a directory"
+	fi
+	if [ ! -r "$_src" ]; then
+		fail "open $_src: permission denied"
+	fi
+	_n=$(claim_body)
+	cat <"$_src" >"$EVALDIR/gh-body-$_n.md"
+}
+
+# copy_bodies finds --body-file/-F/--body-file=<path> in the arguments (values
+# of other value-taking flags are skipped) and copies each body.
+copy_bodies() {
+	_expect=0
+	_skip=0
+	for _a in "$@"; do
+		if [ "$_expect" = 1 ]; then
+			_expect=0
+			copy_body "$_a"
+			continue
+		fi
+		if [ "$_skip" = 1 ]; then
+			_skip=0
+			continue
+		fi
+		case $_a in
+		--body-file | -F) _expect=1 ;;
+		--body-file=*) copy_body "${_a#--body-file=}" ;;
+		--title | -t | --body | -b | --label | -l | --assignee | -a | --repo | -R | --base | -B | --head | -H | --milestone | -m | --json | --jq | -q | --template | --project | -p | --reviewer | -r)
+			_skip=1
+			;;
+		esac
+	done
+	if [ "$_expect" = 1 ]; then
+		fail 'flag needs an argument: --body-file'
+	fi
+}
+
+# available_fields lists the JSON fields configured for the case.
+available_fields() {
+	sed -n 's/^  "\([A-Za-z0-9_]*\)":.*/  \1/p' "$EVALDIR/gh-issue.json"
+}
+
+# issue_view answers `gh issue view` from the case's gh_issue data.
+issue_view() {
+	_num=''
+	_fields=''
+	_have_json=0
+	_expect=''
+	for _a in "$@"; do
+		if [ -n "$_expect" ]; then
+			if [ "$_expect" = json ]; then
+				_fields=$_a
+				_have_json=1
+			fi
+			_expect=''
+			continue
+		fi
+		case $_a in
+		--jq | -q | --jq=* | -q?*)
+			die 'gh issue view --jq is not supported (the sandbox image has no jq); use --json and parse the output yourself'
+			;;
+		--template | -t | --template=* | -t?*)
+			die 'gh issue view --template is not supported; use --json and parse the output yourself'
+			;;
+		--json) _expect=json ;;
+		--json=*)
+			_fields=${_a#--json=}
+			_have_json=1
+			;;
+		-R | --repo) _expect=skip ;;
+		-*) ;;
+		*)
+			if [ -z "$_num" ]; then
+				_num=$_a
+			fi
+			;;
+		esac
+	done
+	if [ "$_expect" = json ]; then
+		fail 'flag needs an argument: --json'
+	fi
+
+	_json=$EVALDIR/gh-issue.json
+	_txt=$EVALDIR/gh-issue.txt
+	if [ ! -f "$_json" ]; then
+		die 'no issue configured for this case (gh_issue)'
+	fi
+
+	if [ -n "$_num" ]; then
+		_want=${_num#\#}
+		_want=${_want%%[?#]*}
+		_want=${_want##*/}
+		case $_want in
+		'' | *[!0-9]*) die "invalid issue number or URL: $_num" ;;
+		esac
+		_cfg=$(sed -n 's/^ *"number": *\([0-9][0-9]*\).*/\1/p' "$_json" | head -n 1)
+		if [ "$_want" != "$_cfg" ]; then
+			die "could not resolve to an issue with the number $_want (this case configures issue #$_cfg)"
+		fi
+	fi
+
+	if [ "$_have_json" = 0 ]; then
+		if [ ! -f "$_txt" ]; then
+			die "missing $_txt"
+		fi
+		cat "$_txt"
+		return 0
+	fi
+
+	if [ -z "$_fields" ]; then
+		printf '%s\n' 'Specify one or more comma-separated fields for `--json`:' >&2
+		available_fields >&2
+		exit 1
+	fi
+
+	_oldifs=$IFS
+	set -f
+	IFS=,
+	set -- $_fields
+	IFS=$_oldifs
+	set +f
+
+	_out=''
+	_sep=''
+	for _f in "$@"; do
+		case $_f in
+		'' | *[!A-Za-z0-9_]*)
+			printf 'Unknown JSON field: "%s"\nAvailable fields:\n' "$_f" >&2
+			available_fields >&2
+			exit 1
+			;;
+		esac
+		_line=$(grep "^  \"$_f\": " "$_json")
+		if [ -z "$_line" ]; then
+			printf 'Unknown JSON field: "%s"\nAvailable fields:\n' "$_f" >&2
+			available_fields >&2
+			exit 1
+		fi
+		_out="$_out$_sep${_line%,}"
+		_sep=",$NL"
+	done
+	printf '{\n%s\n}\n' "$_out"
+}
+
+# Bodies are copied for every call (even unsimulated ones) so case authors can
+# always inspect what the agent tried to send.
+copy_bodies "$@"
+
+# Dispatch table: the complete set of simulated commands.
+case $1 in
+--version)
+	printf 'gh version 2.0.0 (kairon fake gh)\n'
+	exit 0
+	;;
+issue)
+	case $2 in
+	create)
+		printf 'https://github.com/fake-owner/fake-repo/issues/%s\n' "$SEQ"
+		exit 0
+		;;
+	view)
+		shift 2
+		issue_view "$@"
+		exit 0
+		;;
+	list | edit | comment | close | reopen) exit 0 ;;
+	esac
+	;;
+pr)
+	case $2 in
+	create)
+		printf 'https://github.com/fake-owner/fake-repo/pull/%s\n' "$SEQ"
+		exit 0
+		;;
+	list | view | comment | edit) exit 0 ;;
+	esac
+	;;
+auth)
+	case $2 in
+	status)
+		printf 'github.com\n  Logged in to github.com account fake-user (kairon fake gh)\n  Active account: true\n'
+		exit 0
+		;;
+	esac
+	;;
+esac
+
+printf '%s: "%s" is not simulated (call logged only)\n' "$prog" "$ARGLINE" >&2
+exit 1

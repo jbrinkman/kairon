@@ -61,6 +61,17 @@ type StubTurn struct {
 	// the stub executes before returning Response, simulating an agent that
 	// changes files in its workspace. They require a non-empty WorkDir.
 	Commands []string `yaml:"commands,omitempty" json:"commands,omitempty"`
+	// ToolCalls model the agent invoking a tool. After Commands, each call runs
+	// its Command (`sh -c`, in Request.WorkDir) only if Request.ToolTrust is nil
+	// or trusts the (alias-normalized) Tool; otherwise the call is skipped and
+	// recorded in Response.ToolDenials. Commands themselves are never gated.
+	ToolCalls []StubToolCall `yaml:"tool_calls,omitempty" json:"tool_calls,omitempty"`
+}
+
+// StubToolCall is one scripted tool invocation subject to the trust gate.
+type StubToolCall struct {
+	Tool    string `yaml:"tool" json:"tool"`
+	Command string `yaml:"command" json:"command"`
 }
 
 // StubUsage is scripted, "reported" token usage for a StubTurn.
@@ -96,6 +107,11 @@ type Request struct {
 	Stub *StubScript `json:"Stub"`
 	// Turn is the stub turn index to answer with (0 for now).
 	Turn int `json:"Turn"`
+	// ToolTrust restricts which tools the agent may use without prompting. nil
+	// means unrestricted (kiro-cli --trust-all-tools, the historical behaviour);
+	// non-nil, even with zero tools, means restricted to exactly that set
+	// (--trust-tools=<csv>). Only RoleAgent requests use it.
+	ToolTrust *ToolTrust `json:"ToolTrust,omitempty"`
 }
 
 // Response is the result of an invocation. Invoke populates it (Command,
@@ -110,6 +126,9 @@ type Response struct {
 	Stderr   string        `json:"Stderr"`
 	ExitCode int           `json:"ExitCode"`
 	Duration time.Duration `json:"Duration"`
+	// ToolDenials lists tool calls refused by the trust gate. Only the stub
+	// backend populates it; kiro-cli denials are not reliably detectable.
+	ToolDenials []ToolDenial `json:"ToolDenials,omitempty"`
 }
 
 // Backend performs inference.

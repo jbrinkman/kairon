@@ -481,6 +481,16 @@ func invokeAgent(agent, prompt string, cConfig *ContainerConfig, opts callOpts) 
 		// mount of the host workspace), not a host path.
 		req.WorkDir = cConfig.WorkspaceDir
 
+		// Whole-tool trust replaces --trust-all-tools in the container.
+		// Resolution failure fails the call (fail closed).
+		trust, err := resolveTrustSet(agent)
+		if err != nil {
+			err = fmt.Errorf("tool trust: %w", err)
+			start := time.Now()
+			return completeAgentCall(req, inference.Response{}, err, time.Since(start), nil)
+		}
+		req.ToolTrust = trust
+
 		start := time.Now()
 		resp, baseEC, err := invokeInContainer(req, cConfig, opts.Workspace)
 		return completeAgentCall(req, resp, err, time.Since(start), baseEC)
@@ -614,7 +624,6 @@ func createContainerConfig(sandboxCfg *config.SandboxConfig, resourceLimits map[
 
 	config := &ContainerConfig{
 		WorkspaceDir: workspaceDir,
-		MockGitHub:   true,
 		Platform:     platform,
 		Debug:        debug,
 		ImageManager: nil,
@@ -655,6 +664,25 @@ func createContainerConfig(sandboxCfg *config.SandboxConfig, resourceLimits map[
 // into the running container.
 const containerHelperPath = "/opt/kairon/kairon"
 
+// containerBinDir is where the per-case bin directory (holding the fake gh) is
+// bind-mounted read-only. It is first on the container PATH.
+const containerBinDir = "/opt/kairon/bin"
+
+// containerPath is the container PATH: the fake-gh directory first, then the
+// base image's default PATH (where the real, unauthenticated gh lives).
+const containerPath = containerBinDir + ":/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+
+// blockedContainerEnv are GitHub credential/host variables that never reach
+// the container, even if a caller puts them in ContainerConfig.Environment, so
+// the real gh stays unauthenticated.
+var blockedContainerEnv = map[string]bool{
+	"GH_TOKEN":                true,
+	"GITHUB_TOKEN":            true,
+	"GH_ENTERPRISE_TOKEN":     true,
+	"GITHUB_ENTERPRISE_TOKEN": true,
+	"GH_HOST":                 true,
+}
+
 // containerUser is the unprivileged user every container runs as.
 const containerUser = "sandbox"
 
@@ -667,8 +695,9 @@ const containerHome = "/home/sandbox"
 const helperExecGrace = 10 * time.Second
 
 // buildContainerMounts returns the bind mounts for one case: the staged
-// .kiro read-only, the workspace and its .eval/ read-write, and, for
-// non-kiro-cli backends, the kairon helper read-only. There is deliberately
+// .kiro read-only, the workspace and its .eval/ read-write, the fake-gh bin
+// directory read-only, and, for non-kiro-cli backends, the kairon helper
+// read-only. There is deliberately
 // no tmpfs at the workspace path.
 func buildContainerMounts(ws *caseWorkspace, cConfig *ContainerConfig, backendName string) ([]sandbox.Mount, error) {
 	if ws == nil {
@@ -679,6 +708,7 @@ func buildContainerMounts(ws *caseWorkspace, cConfig *ContainerConfig, backendNa
 		{HostPath: ws.KiroDir, ContainerPath: path.Join(dir, ".kiro"), ReadOnly: true},
 		{HostPath: ws.Dir, ContainerPath: dir},
 		{HostPath: ws.EvalDir, ContainerPath: path.Join(dir, ".eval")},
+		{HostPath: ws.BinDir, ContainerPath: containerBinDir, ReadOnly: true},
 	}
 	if backendName != inference.NameKiroCLI {
 		bin, err := resolveLinuxBinary(cConfig.Platform)
@@ -699,7 +729,9 @@ func buildContainerMounts(ws *caseWorkspace, cConfig *ContainerConfig, backendNa
 }
 
 // containerEnv returns the container environment: the configured variables
-// (sorted for determinism), then HOME and the git safe.directory setting. The
+// (sorted for determinism, GitHub credential variables dropped), then PATH
+// with the fake gh first, KAIRON_EVAL_DIR, gh prompt/update suppression, HOME
+// and the git safe.directory setting. The
 // latter is required because the mounted repository is owned by a different
 // uid than the sandbox user, and git refuses it ("dubious ownership")
 // otherwise. It is environment, not a file operation.
@@ -711,9 +743,20 @@ func containerEnv(cConfig *ContainerConfig) []string {
 	}
 	sort.Strings(keys)
 	for _, k := range keys {
+		switch k {
+		case "PATH", "KAIRON_EVAL_DIR", "HOME":
+			continue // harness-owned; set below
+		}
+		if blockedContainerEnv[k] {
+			continue
+		}
 		env = append(env, fmt.Sprintf("%s=%s", k, cConfig.Environment[k]))
 	}
 	return append(env,
+		"PATH="+containerPath,
+		"KAIRON_EVAL_DIR="+path.Join(cConfig.WorkspaceDir, ".eval"),
+		"GH_PROMPT_DISABLED=1",
+		"GH_NO_UPDATE_NOTIFIER=1",
 		"HOME="+containerHome,
 		"GIT_CONFIG_COUNT=1",
 		"GIT_CONFIG_KEY_0=safe.directory",
@@ -1355,6 +1398,13 @@ func newCallRecord(req inference.Request, resp inference.Response, err error, wa
 		Estimated:    resp.Usage.Source != inference.UsageReported,
 		DurationMS:   resp.Duration.Milliseconds(),
 	}
+	if req.ToolTrust != nil {
+		names := req.ToolTrust.Names()
+		rec.TrustedTools = &names
+	}
+	if len(resp.ToolDenials) > 0 {
+		rec.ToolDenials = append([]inference.ToolDenial(nil), resp.ToolDenials...)
+	}
 	if rec.Model == "" {
 		rec.Model = req.Model
 	}
@@ -1463,6 +1513,9 @@ func loadCases(agent string) ([]TestCase, error) {
 		}
 
 		tc.Agent = agent
+		if tc.GHIssue != nil && tc.GHIssue.Number == 0 {
+			tc.GHIssue.Number = sandbox.DefaultGHIssueNumber
+		}
 		if err := validateCaseFields(tc, e.Name()); err != nil {
 			return nil, err
 		}

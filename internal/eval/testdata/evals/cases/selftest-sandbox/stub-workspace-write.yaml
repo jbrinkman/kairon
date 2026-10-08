@@ -1,0 +1,23 @@
+name: stub-workspace-write
+description: "Sandbox self-test: the read-only root filesystem still lets the agent write in the mounted workspace; marker.txt appears on the host"
+agent: selftest-sandbox
+requires_sandbox: true
+input: |
+  Create the marker file in the workspace and report that you did.
+context:
+  - "This case runs against the deterministic stub backend and only under --sandbox"
+  - "The stub turn runs 'echo x > ./marker.txt' in the mounted workspace"
+expected_output: |
+  A short report with a top-level section and at least one subsection.
+stub:
+  turns:
+    - commands:
+        - "echo x > ./marker.txt"
+      response: |
+        ## Workspace write
+
+        The marker file was written to the mounted workspace.
+
+        ### Details
+
+        marker.txt exists on the host after the case.

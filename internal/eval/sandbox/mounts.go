@@ -19,6 +19,40 @@ type Mount struct {
 	ReadOnly      bool
 }
 
+// Writable tmpfs mounts layered over the read-only root filesystem. Tmpfs
+// memory counts against the container memory limit, so each size is capped.
+const (
+	// TmpfsTmpPath is the container's scratch directory.
+	TmpfsTmpPath = "/tmp"
+	// TmpfsVarTmpPath is the container's persistent-scratch directory.
+	TmpfsVarTmpPath = "/var/tmp"
+	// TmpfsHomePath is the sandbox user's $HOME. kiro-cli keeps state there,
+	// so it must be writable; it is ephemeral per container.
+	TmpfsHomePath = "/home/sandbox"
+
+	// TmpfsTmpSize is the size cap for /tmp.
+	TmpfsTmpSize = "256m"
+	// TmpfsVarTmpSize is the size cap for /var/tmp.
+	TmpfsVarTmpSize = "64m"
+	// TmpfsHomeSize is the size cap for /home/sandbox.
+	TmpfsHomeSize = "256m"
+
+	// SandboxUID and SandboxGID own /home/sandbox inside the container.
+	SandboxUID = 1000
+	SandboxGID = 1000
+)
+
+// tmpfsMounts returns the tmpfs map for the read-only root filesystem. noexec
+// is deliberately not set: kiro-cli and tools may exec from temp locations.
+func tmpfsMounts() map[string]string {
+	return map[string]string{
+		TmpfsTmpPath:    "rw,nosuid,nodev,mode=1777,size=" + TmpfsTmpSize,
+		TmpfsVarTmpPath: "rw,nosuid,nodev,mode=1777,size=" + TmpfsVarTmpSize,
+		TmpfsHomePath: fmt.Sprintf("rw,nosuid,nodev,uid=%d,gid=%d,mode=0755,size=%s",
+			SandboxUID, SandboxGID, TmpfsHomeSize),
+	}
+}
+
 // selinuxEnforcePath is the kernel interface reporting SELinux enforcing mode.
 const selinuxEnforcePath = "/sys/fs/selinux/enforce"
 
@@ -39,8 +73,9 @@ func hostSELinuxEnforcing() bool {
 }
 
 // NewHostConfigWithMounts creates a host config with resource limits applied
-// and the given bind mounts. It sets no tmpfs at the workspace path: the
-// workspace is a host-built directory.
+// and the given bind mounts. The root filesystem is read-only; small tmpfs
+// mounts cover /tmp, /var/tmp and /home/sandbox. It sets no tmpfs at the
+// workspace path: the workspace is a host-built directory.
 //
 // Structured mounts (not Binds strings) are used with CreateMountpoint=false
 // so a missing host source fails fast instead of being silently created as a
@@ -64,6 +99,9 @@ func newHostConfigWithMounts(limits ResourceLimits, mounts []Mount, selinuxEnfor
 			Memory:    limits.Memory,
 		},
 		NetworkMode: "none", // Disable network access for security
+		// Only the bind mounts below and the tmpfs entries are writable.
+		ReadonlyRootfs: true,
+		Tmpfs:          tmpfsMounts(),
 	}
 
 	for _, m := range mounts {
