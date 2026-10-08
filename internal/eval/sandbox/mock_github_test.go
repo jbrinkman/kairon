@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -553,36 +554,35 @@ func TestFakeGH_ConcurrentCreatesGetUniqueNumbers(t *testing.T) {
 	}
 	wg.Wait()
 
-	seen := make(map[string]int, n)
+	// Compare the NUMERIC suffix, not the full URL: issue and pr share one
+	// counter, so /issues/1 and /pull/1 would be a collision (same number) even
+	// though the URLs differ. A regression that reused a number across an issue
+	// and a pr must be caught here.
+	seen := make(map[int]int, n)
+	var nums []int
 	for i, url := range results {
 		if url == "" {
 			t.Fatalf("call %d produced no URL (exit/err?)", i)
 		}
-		if prev, dup := seen[url]; dup {
-			t.Fatalf("duplicate create URL %q from calls %d and %d (number not unique under concurrency)", url, prev, i)
+		idx := strings.LastIndex(url, "/")
+		num, err := strconv.Atoi(url[idx+1:])
+		if err != nil {
+			t.Fatalf("call %d URL %q has no numeric suffix: %v", i, url, err)
 		}
-		seen[url] = i
+		if prev, dup := seen[num]; dup {
+			t.Fatalf("duplicate create number %d from calls %d (%s) and %d (%s): the shared counter reused a number under concurrency",
+				num, prev, results[prev], i, url)
+		}
+		seen[num] = i
+		nums = append(nums, num)
 	}
-	// Every call was logged, and the shared number space yields 1..n.
+	// Every call was logged, and the shared counter yields exactly 1..n.
 	assert.Len(t, e.logLines(), n)
-	nums := make(map[string]bool, n)
-	for i := 1; i <= n; i++ {
-		nums["/issues/"+itoa(i)] = true
-		nums["/pull/"+itoa(i)] = true
-	}
-	for url := range seen {
-		matched := false
-		for suffix := range nums {
-			if strings.HasSuffix(url, suffix) {
-				matched = true
-				break
-			}
-		}
-		assert.True(t, matched, "URL %q should carry a number in 1..%d", url, n)
+	sort.Ints(nums)
+	for i := 0; i < n; i++ {
+		assert.Equal(t, i+1, nums[i], "create numbers should be exactly 1..%d, got %v", n, nums)
 	}
 }
-
-func itoa(i int) string { return strconv.Itoa(i) }
 
 // TestFakeGH_BodyFileUnwritableEvalDirFailsFast verifies that when $EVALDIR
 // cannot be written (here: made read-only), a `gh ... --body-file` call fails
