@@ -312,3 +312,37 @@ sandbox:
 func containsError(actual, expected string) bool {
 	return strings.Contains(actual, expected)
 }
+
+func TestValidateSandboxWorkspaceDir(t *testing.T) {
+	cases := []struct {
+		name    string
+		dir     string
+		wantErr string // substring; "" means no error
+	}{
+		{"valid default", "/workspace", ""},
+		{"valid nested", "/srv/kairon/ws", ""},
+		{"collides with tmp", "/tmp", "collides with the container's tmpfs mount at /tmp"},
+		{"nested under tmp", "/tmp/ws", "collides with the container's tmpfs mount at /tmp"},
+		{"collides with var tmp", "/var/tmp", "collides with the container's tmpfs mount at /var/tmp"},
+		{"collides with home", "/home/sandbox", "collides with the container's tmpfs mount at /home/sandbox"},
+		{"nested under home", "/home/sandbox/work", "collides with the container's tmpfs mount at /home/sandbox"},
+		{"trailing slash normalized", "/tmp/", "collides with the container's tmpfs mount at /tmp"},
+		{"relative rejected", "workspace", "must be an absolute path"},
+		{"root rejected", "/", "must not be the container root"},
+		{"tmp-prefixed sibling is fine", "/tmpfs-data", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := validateSandboxWorkspaceDir(tc.dir)
+			if tc.wantErr == "" {
+				if err != nil {
+					t.Fatalf("validateSandboxWorkspaceDir(%q) = %v, want nil", tc.dir, err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("validateSandboxWorkspaceDir(%q) = %v, want error containing %q", tc.dir, err, tc.wantErr)
+			}
+		})
+	}
+}
