@@ -209,6 +209,47 @@ func TestStub_FailedToolCallReturnsError(t *testing.T) {
 	}
 }
 
+// TestStub_UnreachedDenialsAfterFailureAreNotRecorded verifies that a denied
+// tool call positioned AFTER a failing (allowed) call is not reported: the turn
+// halts at the failure, so execution never reaches the later call and its
+// denial must not pad the failed-call record. The inverse (a denial BEFORE the
+// failure is kept) is covered by TestStub_FailedToolCallReturnsError.
+func TestStub_UnreachedDenialsAfterFailureAreNotRecorded(t *testing.T) {
+	dir := t.TempDir()
+	resp, err := newTestStub(t).Invoke(context.Background(), toolCallReq(dir, NewToolTrust([]string{"write"}), nil,
+		StubToolCall{Tool: "fs_write", Command: "echo boom >&2; exit 7"}, // allowed, fails -> halts
+		StubToolCall{Tool: "fs_read", Command: "touch unreached"},        // denied, but never reached
+	))
+	if err == nil {
+		t.Fatal("expected error from failing trusted tool call")
+	}
+	if resp.ExitCode != 7 {
+		t.Errorf("ExitCode = %d, want 7; resp = %+v", resp.ExitCode, resp)
+	}
+	if len(resp.ToolDenials) != 0 {
+		t.Errorf("ToolDenials = %+v, want none: the fs_read denial is after the failure and was never reached", resp.ToolDenials)
+	}
+}
+
+// TestStub_EnvCommandFailureRecordsNoDenials verifies that when an environment
+// command fails (before any tool call), no tool-call denials are recorded —
+// execution never reached the gating stage.
+func TestStub_EnvCommandFailureRecordsNoDenials(t *testing.T) {
+	dir := t.TempDir()
+	resp, err := newTestStub(t).Invoke(context.Background(), toolCallReq(dir, NewToolTrust(nil),
+		[]string{"exit 5"},
+		StubToolCall{Tool: "fs_write", Command: "touch nope"}))
+	if err == nil {
+		t.Fatal("expected error from failing environment command")
+	}
+	if resp.ExitCode != 5 {
+		t.Errorf("ExitCode = %d, want 5", resp.ExitCode)
+	}
+	if len(resp.ToolDenials) != 0 {
+		t.Errorf("ToolDenials = %+v, want none: no tool call was reached", resp.ToolDenials)
+	}
+}
+
 func TestStubTurn_ToolCallsOmittedWhenEmpty(t *testing.T) {
 	if got := marshalString(t, StubTurn{Response: "r"}); strings.Contains(got, "tool_calls") {
 		t.Errorf("empty ToolCalls should be omitted: %s", got)

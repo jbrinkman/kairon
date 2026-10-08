@@ -53,29 +53,20 @@ func (*stubBackend) Invoke(ctx context.Context, req Request) (Response, error) {
 			Model:   turn.Model,
 			Command: "stub agent",
 		}
-		// Commands are ungated scripted environment actions. Tool calls run
-		// after them, and only when the trust gate allows the tool; denied
-		// calls are skipped and recorded.
-		commands := append([]string(nil), turn.Commands...)
-		for _, call := range turn.ToolCalls {
-			tool := NormalizeToolName(call.Tool)
-			if !req.ToolTrust.Allows(tool) {
-				resp.ToolDenials = append(resp.ToolDenials, ToolDenial{
-					Tool:    tool,
-					Command: call.Command,
-					Reason:  ReasonToolNotTrusted,
-				})
-				continue
-			}
-			commands = append(commands, call.Command)
+		// Commands are ungated scripted environment actions and run first.
+		// Tool calls run after them, in order, each gated by the trust set: a
+		// denied call is recorded and skipped, an allowed call runs. Denials
+		// are recorded only for calls execution actually reaches — if an
+		// earlier command or allowed call fails and halts the turn, calls after
+		// it (and their denials) are never recorded, so the failed-call record
+		// is not padded with denials that never occurred.
+		denials, cmdResp, runErr := runStubAgentTurn(ctx, req, turn)
+		if runErr != nil {
+			cmdResp.Command = resp.Command
+			cmdResp.ToolDenials = denials
+			return cmdResp, runErr
 		}
-		if len(commands) > 0 {
-			if cmdResp, err := runStubCommands(ctx, req, commands); err != nil {
-				cmdResp.Command = resp.Command
-				cmdResp.ToolDenials = resp.ToolDenials
-				return cmdResp, err
-			}
-		}
+		resp.ToolDenials = denials
 		if turn.Usage != nil {
 			resp.Usage = Usage{
 				InputTokens:  turn.Usage.InputTokens,
@@ -96,48 +87,97 @@ func (*stubBackend) Invoke(ctx context.Context, req Request) (Response, error) {
 // after a command was killed.
 const stubCommandWaitDelay = time.Second
 
-// runStubCommands runs each command with `sh -c` in req.WorkDir, in order, under
-// one deadline of req.Timeout (DefaultTimeout when zero). It stops at the first
-// failure. On failure the returned Response carries Stderr/ExitCode/Duration and
-// no Text.
-func runStubCommands(parent context.Context, req Request, commands []string) (Response, error) {
-	if req.WorkDir == "" {
-		return Response{}, errors.New("stub turn has commands but the request has no WorkDir; refusing to run them in the process working directory")
+// runStubAgentTurn executes one stub agent turn: the ungated environment
+// Commands first, then each ToolCall in order, gated by the trust set. An
+// allowed call's command runs; a denied call is recorded and skipped. All run
+// under one shared deadline (req.Timeout, DefaultTimeout when zero) and stop at
+// the first failure. Denials are recorded only for tool calls execution
+// actually reaches, so a turn that fails partway is not reported as having
+// denied calls it never got to. On success it returns the full denial list, a
+// zero Response and nil error; on failure it returns the denials reached so
+// far, a Response carrying Stderr/ExitCode/Duration, and the error.
+func runStubAgentTurn(parent context.Context, req Request, turn StubTurn) ([]ToolDenial, Response, error) {
+	// WorkDir is only required when a command actually runs; a turn whose tool
+	// calls are all denied (and that has no environment commands) records its
+	// denials without ever touching the filesystem.
+	needsRun := len(turn.Commands) > 0
+	for _, call := range turn.ToolCalls {
+		if req.ToolTrust.Allows(NormalizeToolName(call.Tool)) {
+			needsRun = true
+			break
+		}
+	}
+	if needsRun && req.WorkDir == "" {
+		return nil, Response{}, errors.New("stub turn has commands but the request has no WorkDir; refusing to run them in the process working directory")
+	}
+	if len(turn.Commands) == 0 && len(turn.ToolCalls) == 0 {
+		return nil, Response{}, nil
 	}
 
 	timeout := timeoutOrDefault(req.Timeout)
 	ctx, cancel := context.WithTimeout(parent, timeout)
 	defer cancel()
-
 	start := time.Now()
-	for _, command := range commands {
-		cmd := exec.CommandContext(ctx, "sh", "-c", command)
-		cmd.Dir = req.WorkDir
-		cmd.WaitDelay = stubCommandWaitDelay
-		setProcessGroup(cmd)
-		var stderr bytes.Buffer
-		cmd.Stderr = &stderr
 
-		runErr := cmd.Run()
-		if runErr == nil {
+	// Environment commands run before any tool call. If one fails, no tool
+	// call is reached, so no denials are recorded.
+	for _, command := range turn.Commands {
+		if resp, err := runOneStubCommand(ctx, parent, req, command, timeout, start); err != nil {
+			return nil, resp, err
+		}
+	}
+
+	var denials []ToolDenial
+	for _, call := range turn.ToolCalls {
+		tool := NormalizeToolName(call.Tool)
+		if !req.ToolTrust.Allows(tool) {
+			denials = append(denials, ToolDenial{
+				Tool:    tool,
+				Command: call.Command,
+				Reason:  ReasonToolNotTrusted,
+			})
 			continue
 		}
-
-		resp := Response{Stderr: stderr.String(), Duration: time.Since(start)}
-		var exitErr *exec.ExitError
-		if errors.As(runErr, &exitErr) {
-			resp.ExitCode = exitErr.ExitCode()
+		if resp, err := runOneStubCommand(ctx, parent, req, call.Command, timeout, start); err != nil {
+			// Reached this allowed call and it failed; denials recorded so far
+			// are exactly those for calls before this point.
+			return denials, resp, err
 		}
-		if ctx.Err() == context.DeadlineExceeded {
-			return resp, &invokeError{
-				msg:  fmt.Sprintf("stub timeout after %v", timeout),
-				errs: []error{ErrTimeout, runErr},
-			}
-		}
-		if parent.Err() != nil {
-			return resp, parent.Err()
-		}
-		return resp, fmt.Errorf("stub command %q failed: %w: %s", command, runErr, strings.TrimSpace(resp.Stderr))
 	}
-	return Response{}, nil
+	return denials, Response{}, nil
+}
+
+// runOneStubCommand runs a single command under the already-deadlined ctx. start
+// anchors the reported Duration across a sequence of calls sharing one ctx, so
+// callers that interleave commands (environment actions then gated tool calls)
+// still report one cumulative duration and one shared deadline. On success it
+// returns a zero Response and nil error.
+func runOneStubCommand(ctx, parent context.Context, req Request, command string, timeout time.Duration, start time.Time) (Response, error) {
+	cmd := exec.CommandContext(ctx, "sh", "-c", command)
+	cmd.Dir = req.WorkDir
+	cmd.WaitDelay = stubCommandWaitDelay
+	setProcessGroup(cmd)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+
+	runErr := cmd.Run()
+	if runErr == nil {
+		return Response{}, nil
+	}
+
+	resp := Response{Stderr: stderr.String(), Duration: time.Since(start)}
+	var exitErr *exec.ExitError
+	if errors.As(runErr, &exitErr) {
+		resp.ExitCode = exitErr.ExitCode()
+	}
+	if ctx.Err() == context.DeadlineExceeded {
+		return resp, &invokeError{
+			msg:  fmt.Sprintf("stub timeout after %v", timeout),
+			errs: []error{ErrTimeout, runErr},
+		}
+	}
+	if parent.Err() != nil {
+		return resp, parent.Err()
+	}
+	return resp, fmt.Errorf("stub command %q failed: %w: %s", command, runErr, strings.TrimSpace(resp.Stderr))
 }
