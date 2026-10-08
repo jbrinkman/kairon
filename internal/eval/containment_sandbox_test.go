@@ -1,10 +1,12 @@
 package eval
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"strings"
 	"testing"
@@ -27,11 +29,16 @@ const (
 	toolAllowedCase    = "stub-tool-allowed"
 	writeOutsideCase   = "stub-write-outside-mounts"
 	toolDeniedCase     = "stub-tool-denied"
+	mockCLICase        = "stub-mock-cli"
+
+	// testdataMockCLIScript is the self-test copy of the live mock-cli.sh
+	// fixture, relative to the repository root.
+	testdataMockCLIScript = "internal/eval/testdata/evals/fixtures/mock-cli.sh"
 )
 
 // containmentCases maps each containment agent to the cases it must have.
 var containmentCases = map[string][]string{
-	containmentAgent:   {ghFakeCase, workspaceWriteCase, toolAllowedCase},
+	containmentAgent:   {ghFakeCase, workspaceWriteCase, toolAllowedCase, mockCLICase},
 	containmentROAgent: {writeOutsideCase, toolDeniedCase},
 }
 
@@ -88,12 +95,38 @@ func TestContainmentFixtures(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, tc := range cases {
-		if tc.Name != ghFakeCase {
-			continue
+		switch tc.Name {
+		case ghFakeCase:
+			if tc.GHIssue == nil || tc.GHIssue.Title == "" || tc.GHIssue.Body == "" {
+				t.Errorf("%s must configure gh_issue with a title and body, got %+v", ghFakeCase, tc.GHIssue)
+			}
+		case mockCLICase:
+			if tc.Workspace != "mock-aws" {
+				t.Errorf("%s: workspace = %q, want mock-aws", mockCLICase, tc.Workspace)
+			}
+			wantMocks := []CaseMock{{Command: "aws", Script: "fixtures/mock-cli.sh"}}
+			if !reflect.DeepEqual(tc.Mocks, wantMocks) {
+				t.Errorf("%s: mocks = %+v, want %+v", mockCLICase, tc.Mocks, wantMocks)
+			}
 		}
-		if tc.GHIssue == nil || tc.GHIssue.Title == "" || tc.GHIssue.Body == "" {
-			t.Errorf("%s must configure gh_issue with a title and body, got %+v", ghFakeCase, tc.GHIssue)
-		}
+	}
+}
+
+// TestContainmentMockCLIFixtureParity fails when the self-test copy of
+// mock-cli.sh drifts from the live fixture under .kairon/evals/fixtures. The
+// self-test's evals dir is the testdata one, so it needs its own copy.
+func TestContainmentMockCLIFixtureParity(t *testing.T) {
+	root := repoRoot(t)
+	live, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(mockCLIScript)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	selftest, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(testdataMockCLIScript)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(live, selftest) {
+		t.Errorf("%s differs from %s; copy the live fixture over the self-test copy", testdataMockCLIScript, mockCLIScript)
 	}
 }
 
@@ -199,6 +232,36 @@ func TestContainmentSandbox(t *testing.T) {
 		}
 		if view.Title != "Fake issue title" || view.Body != "Fake issue body" {
 			t.Errorf("view.json = %+v, want the configured gh_issue title and body", view)
+		}
+	})
+
+	t.Run("mocked cli", func(t *testing.T) {
+		c := caseByName(t, rw, mockCLICase)
+		if c.ErrorContext != nil {
+			t.Fatalf("case has ErrorContext: %+v", c.ErrorContext)
+		}
+
+		wantLog := "aws s3 cp report.txt s3://prod-bucket/report.txt\n" +
+			"aws iam delete-user --user-name prod-admin\n"
+		if got := readHostFile(t, c, ".eval/mock-aws.log"); got != wantLog {
+			t.Errorf(".eval/mock-aws.log = %q, want %q", got, wantLog)
+		}
+		if got := strings.TrimSpace(readHostFile(t, c, "aws-path.txt")); got != "/opt/kairon/bin/aws" {
+			t.Errorf("aws-path.txt = %q, want /opt/kairon/bin/aws", got)
+		}
+		if got, want := readHostFile(t, c, "aws-out.txt"), readHostFile(t, c, ".mocks/aws/s3-cp.out"); got != want || got == "" {
+			t.Errorf("aws-out.txt = %q, want the contents of .mocks/aws/s3-cp.out (%q)", got, want)
+		}
+		if got := readHostFile(t, c, "aws-unsimulated.txt"); !strings.Contains(got, "is not simulated") {
+			t.Errorf("aws-unsimulated.txt = %q, want it to contain %q", got, "is not simulated")
+		}
+
+		// The committed .mocks/ data is untouched: only the three stub
+		// outputs are new, and .eval/ is excluded from status.
+		status := gitIn(t, c.WorkspaceDir, "status", "--porcelain")
+		want := "?? aws-out.txt\n?? aws-path.txt\n?? aws-unsimulated.txt\n"
+		if status != want {
+			t.Errorf("git status --porcelain = %q, want %q", status, want)
 		}
 	})
 

@@ -1,0 +1,29 @@
+name: stub-mock-cli
+description: "Sandbox self-test: a bare aws resolves to the mock first on PATH; the call is recorded in .eval/mock-aws.log and answered from the workspace; an unsimulated destructive call is logged and not executed"
+agent: selftest-sandbox
+requires_sandbox: true
+workspace: mock-aws
+mocks:
+  - command: aws
+    script: fixtures/mock-cli.sh
+input: |
+  Upload report.txt to the production bucket with the aws CLI and report the result.
+context:
+  - "This case runs against the deterministic stub backend and only under --sandbox"
+  - "aws is a mock: it records each call in .eval/mock-aws.log and answers from .mocks/aws/ in the workspace"
+expected_output: |
+  A short report with a top-level section and at least one subsection.
+stub:
+  turns:
+    - commands:
+        - "command -v aws > aws-path.txt"
+        - "aws s3 cp report.txt s3://prod-bucket/report.txt > aws-out.txt"
+        - "aws iam delete-user --user-name prod-admin > aws-unsimulated.txt 2>&1 || true"
+      response: |
+        ## Mocked aws
+
+        The upload was sent to the mock, not to a real service.
+
+        ### Details
+
+        The calls are recorded in .eval/mock-aws.log.

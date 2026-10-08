@@ -59,6 +59,23 @@ type TestCase struct {
 
 	// RequiresSandbox refuses to run the case natively (without --sandbox).
 	RequiresSandbox bool `yaml:"requires_sandbox,omitempty" json:"requires_sandbox,omitempty"`
+
+	// Mocks places author-supplied scripts on the container PATH (in the
+	// read-only /opt/kairon/bin mount that also holds the fake gh), so a bare
+	// command resolves to the mock instead of a real tool. It requires
+	// RequiresSandbox: a native run has no such directory on PATH and would
+	// call the real tool.
+	Mocks []CaseMock `yaml:"mocks,omitempty" json:"mocks,omitempty"`
+}
+
+// CaseMock declares one mocked command for a case.
+type CaseMock struct {
+	// Command is the bare command name the script is installed as
+	// (for example "aws"). "gh" is reserved for the harness's fake gh.
+	Command string `yaml:"command" json:"command"`
+	// Script is a path, relative to the evals directory, of the file that
+	// implements the command.
+	Script string `yaml:"script" json:"script"`
 }
 
 // CostInfo tracks token usage and estimated cost.
