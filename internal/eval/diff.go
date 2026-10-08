@@ -3,6 +3,7 @@ package eval
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -55,8 +56,14 @@ func DiffWithOptions(runA, runB string, opts RunOptions) error {
 	return Diff(runA, runB)
 }
 
-// Diff compares two eval runs and prints score/cost deltas.
+// Diff compares two eval runs and prints provenance and score/cost deltas to
+// stdout.
 func Diff(runA, runB string) error {
+	return diffTo(os.Stdout, runA, runB)
+}
+
+// diffTo is Diff writing to w. It writes nothing anywhere else.
+func diffTo(w io.Writer, runA, runB string) error {
 	resultsDir := evalsPath("results")
 
 	resolvedA, err := resolveRunDirectory(runA)
@@ -79,8 +86,13 @@ func Diff(runA, runB string) error {
 		return fmt.Errorf("failed to load run %s: %w", runB, err)
 	}
 
-	fmt.Printf("Eval Diff: %s → %s\n", runA, runB)
-	fmt.Println(strings.Repeat("─", 60))
+	fmt.Fprintf(w, "Eval Diff: %s → %s\n", runA, runB)
+	fmt.Fprintln(w, strings.Repeat("─", 60))
+
+	// Provenance and execution mode, before any deltas.
+	printProvenance(w, runA, runB,
+		loadRunInfo(summaryA, filepath.Join(resultsDir, resolvedA)),
+		loadRunInfo(summaryB, filepath.Join(resultsDir, resolvedB)))
 
 	// Per-agent, per-criterion deltas
 	allAgents := mergeKeys(summaryA.AgentScores, summaryB.AgentScores)
@@ -97,7 +109,7 @@ func Diff(runA, runB string) error {
 		} else if delta < -0.001 {
 			indicator = "↓"
 		}
-		fmt.Printf("\n%s: %.3f → %.3f  %s %+.3f\n", agent, scoreA, scoreB, indicator, delta)
+		fmt.Fprintf(w, "\n%s: %.3f → %.3f  %s %+.3f\n", agent, scoreA, scoreB, indicator, delta)
 
 		if errA != nil || errB != nil {
 			continue
@@ -122,41 +134,41 @@ func Diff(runA, runB string) error {
 				cInd = "↓"
 			}
 			if !hasA {
-				fmt.Printf("  %-30s  [new]  %.3f\n", crit, cB)
+				fmt.Fprintf(w, "  %-30s  [new]  %.3f\n", crit, cB)
 			} else if !hasB {
-				fmt.Printf("  %-30s  %.3f  [removed]\n", crit, cA)
+				fmt.Fprintf(w, "  %-30s  %.3f  [removed]\n", crit, cA)
 			} else {
-				fmt.Printf("  %-30s  %.3f → %.3f  %s %+.3f\n", crit, cA, cB, cInd, cDelta)
+				fmt.Fprintf(w, "  %-30s  %.3f → %.3f  %s %+.3f\n", crit, cA, cB, cInd, cDelta)
 			}
 		}
 
 		// Show output changes for significant score deltas
 		if delta > 0.05 || delta < -0.05 {
-			showOutputChanges(resultA, resultB)
+			showOutputChanges(w, resultA, resultB)
 		}
 	}
 
 	// Cost delta
-	fmt.Printf("\nCost Delta:\n")
+	fmt.Fprintf(w, "\nCost Delta:\n")
 	costDelta := summaryB.TotalCost.EstimatedUSD - summaryA.TotalCost.EstimatedUSD
 	tokenDelta := (summaryB.TotalCost.TokensIn + summaryB.TotalCost.TokensOut) -
 		(summaryA.TotalCost.TokensIn + summaryA.TotalCost.TokensOut)
-	fmt.Printf("  Tokens: %+d\n", tokenDelta)
-	fmt.Printf("  Cost:   %+.6f USD\n", costDelta)
+	fmt.Fprintf(w, "  Tokens: %+d\n", tokenDelta)
+	fmt.Fprintf(w, "  Cost:   %+.6f USD\n", costDelta)
 
 	// Cost trends (agent vs judge)
-	fmt.Printf("\nCost Trends:\n")
-	showCostTrends(summaryA, summaryB, resolvedA, resolvedB, resultsDir)
+	fmt.Fprintf(w, "\nCost Trends:\n")
+	showCostTrends(w, summaryA, summaryB, resolvedA, resolvedB, resultsDir)
 
 	// Quality per dollar
-	fmt.Printf("\nQuality per Dollar:\n")
+	fmt.Fprintf(w, "\nQuality per Dollar:\n")
 	avgA := avgScore(summaryA.AgentScores)
 	avgB := avgScore(summaryB.AgentScores)
 	if summaryA.TotalCost.EstimatedUSD > 0 {
-		fmt.Printf("  %s: %.2f quality/$ \n", runA, avgA/summaryA.TotalCost.EstimatedUSD)
+		fmt.Fprintf(w, "  %s: %.2f quality/$ \n", runA, avgA/summaryA.TotalCost.EstimatedUSD)
 	}
 	if summaryB.TotalCost.EstimatedUSD > 0 {
-		fmt.Printf("  %s: %.2f quality/$\n", runB, avgB/summaryB.TotalCost.EstimatedUSD)
+		fmt.Fprintf(w, "  %s: %.2f quality/$\n", runB, avgB/summaryB.TotalCost.EstimatedUSD)
 	}
 
 	return nil
@@ -232,7 +244,7 @@ func avgScore(scores map[string]float64) float64 {
 	return sum / float64(len(scores))
 }
 
-func showOutputChanges(resultA, resultB AgentResult) {
+func showOutputChanges(w io.Writer, resultA, resultB AgentResult) {
 	// Compare outputs for cases with same name
 	outputsA := make(map[string]string)
 	outputsB := make(map[string]string)
@@ -246,7 +258,7 @@ func showOutputChanges(resultA, resultB AgentResult) {
 
 	for caseName, outputA := range outputsA {
 		if outputB, exists := outputsB[caseName]; exists && outputA != outputB {
-			fmt.Printf("    Case '%s' output changed:\n", caseName)
+			fmt.Fprintf(w, "    Case '%s' output changed:\n", caseName)
 
 			// Truncate long outputs for side-by-side display
 			linesA := strings.Split(strings.TrimSpace(outputA), "\n")
@@ -260,22 +272,22 @@ func showOutputChanges(resultA, resultB AgentResult) {
 				linesB = append(linesB[:maxLines], "...")
 			}
 
-			fmt.Printf("      Before: %s\n", strings.Join(linesA, " "))
-			fmt.Printf("      After:  %s\n", strings.Join(linesB, " "))
+			fmt.Fprintf(w, "      Before: %s\n", strings.Join(linesA, " "))
+			fmt.Fprintf(w, "      After:  %s\n", strings.Join(linesB, " "))
 		}
 	}
 }
 
-func showCostTrends(summaryA, summaryB Summary, runA, runB, resultsDir string) {
+func showCostTrends(w io.Writer, summaryA, summaryB Summary, runA, runB, resultsDir string) {
 	agentCostA, judgeCostA := calculateAgentJudgeCosts(runA, resultsDir)
 	agentCostB, judgeCostB := calculateAgentJudgeCosts(runB, resultsDir)
 
-	fmt.Printf("  Agent tokens:  %d → %d (%+d)\n",
+	fmt.Fprintf(w, "  Agent tokens:  %d → %d (%+d)\n",
 		agentCostA.TokensIn+agentCostA.TokensOut,
 		agentCostB.TokensIn+agentCostB.TokensOut,
 		(agentCostB.TokensIn+agentCostB.TokensOut)-(agentCostA.TokensIn+agentCostA.TokensOut))
 
-	fmt.Printf("  Judge tokens:  %d → %d (%+d)\n",
+	fmt.Fprintf(w, "  Judge tokens:  %d → %d (%+d)\n",
 		judgeCostA.TokensIn+judgeCostA.TokensOut,
 		judgeCostB.TokensIn+judgeCostB.TokensOut,
 		(judgeCostB.TokensIn+judgeCostB.TokensOut)-(judgeCostA.TokensIn+judgeCostA.TokensOut))

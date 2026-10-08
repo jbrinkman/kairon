@@ -1,0 +1,22 @@
+{
+  "git_hash": "a1b2c3d",
+  "total_cost": {
+    "tokens_in": 1500,
+    "tokens_out": 400,
+    "estimated_usd": 0.0150
+  },
+  "agent_scores": {
+    "architect": 0.875
+  },
+  "judge_model": "claude-sonnet-5.5",
+  "agent_model": "claude-sonnet-5.5",
+  "prompt_sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+  "resources_present": ["file://./architect-prompt.md"],
+  "agents": {
+    "architect": {
+      "agent_model": "claude-sonnet-5.5",
+      "prompt_sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+      "resources_present": ["file://./architect-prompt.md"]
+    }
+  }
+}

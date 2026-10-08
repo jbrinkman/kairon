@@ -171,6 +171,10 @@ type AgentResult struct {
 	// score requires_sandbox cases under a different execution model and mark
 	// them completed, so a correct later resume would skip them.
 	Sandbox *bool `json:"sandbox,omitempty"`
+	// Containment records what contained this agent's cases. It is set for a
+	// container run and nil for a native run (nothing is contained), so
+	// native files keep their previous shape.
+	Containment *Containment `json:"containment,omitempty"`
 	// ResourcesPresent lists the config resources that existed when the hash
 	// was computed. It is not omitempty: a resolved-but-empty list serialises
 	// as [] so that "the missing resource was omitted" is observable.
@@ -211,6 +215,44 @@ type Summary struct {
 	PromptSHA256     string                     `json:"prompt_sha256,omitempty"`
 	ResourcesPresent []string                   `json:"resources_present,omitempty"`
 	Agents           map[string]AgentProvenance `json:"agents,omitempty"`
+
+	// Sandbox is the execution mode of the whole run: "native" or "container".
+	// <agent>.json spells the same fact as a boolean (AgentResult.Sandbox,
+	// true = container). Empty for a run that predates mode tracking.
+	Sandbox string `json:"sandbox,omitempty"`
+	// Containment is keyed by agent, like Agents, because the tool-trust set
+	// is per agent. Absent for native runs.
+	Containment map[string]Containment `json:"containment,omitempty"`
+}
+
+// RunMode is the execution mode of an eval run, as recorded in summary.json.
+type RunMode string
+
+const (
+	// RunModeNative runs the agent directly on the host.
+	RunModeNative RunMode = "native"
+	// RunModeContainer runs the agent in the sandbox container (--sandbox).
+	RunModeContainer RunMode = "container"
+)
+
+// runModeOf returns the mode for a sandbox flag.
+func runModeOf(sandbox bool) RunMode {
+	if sandbox {
+		return RunModeContainer
+	}
+	return RunModeNative
+}
+
+// Containment summarises what contained a container run of one agent.
+type Containment struct {
+	// ToolTrust is the normalised --trust-tools name set. [] means trust
+	// nothing, so it is deliberately not omitempty.
+	ToolTrust  []string `json:"tool_trust"`
+	FakeGH     bool     `json:"fake_gh"`
+	ReadOnlyFS bool     `json:"read_only_fs"`
+	// Network is always "unrestricted": Kairon makes no network containment
+	// guarantee. It is not the container runtime's NetworkMode.
+	Network string `json:"network"`
 }
 
 // MarshalJSON emits resources_present whenever the top-level agent fields are

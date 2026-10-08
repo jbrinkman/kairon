@@ -419,7 +419,7 @@ func evaluate(rubric Rubric, cases []TestCase, gitHash string, out io.Writer, cC
 		Agent:   rubric.Agent,
 		GitHash: gitHash,
 	}
-	cfg.pins.applyTo(&result)
+	applyRunContext(&result, cConfig)
 
 	for i, tc := range cases {
 		fmt.Fprintf(out, "   [%d/%d] %s", i+1, len(cases), tc.Name)
@@ -743,7 +743,9 @@ func buildContainerMounts(ws *caseWorkspace, cConfig *ContainerConfig, backendNa
 		{HostPath: ws.KiroDir, ContainerPath: path.Join(dir, ".kiro"), ReadOnly: true},
 		{HostPath: ws.Dir, ContainerPath: dir},
 		{HostPath: ws.EvalDir, ContainerPath: path.Join(dir, ".eval")},
-		{HostPath: ws.BinDir, ContainerPath: containerBinDir, ReadOnly: true},
+	}
+	if fakeGHInstalled {
+		mounts = append(mounts, sandbox.Mount{HostPath: ws.BinDir, ContainerPath: containerBinDir, ReadOnly: true})
 	}
 	if backendName != inference.NameKiroCLI {
 		bin, err := resolveLinuxBinary(cConfig.Platform)
@@ -1459,15 +1461,8 @@ func buildSummary(results []AgentResult, gitHash string) Summary {
 	}
 
 	for _, r := range results {
-		var totalScore, totalMax float64
+		totalScore, totalMax := agentScoreTotals(r)
 		for _, c := range r.Cases {
-			for _, sc := range c.Scores {
-				if sc.Skipped {
-					continue
-				}
-				totalScore += float64(sc.Score)
-				totalMax += float64(sc.MaxScore)
-			}
 			s.TotalCost.TokensIn += c.AgentCost.TokensIn
 			s.TotalCost.TokensOut += c.AgentCost.TokensOut
 			s.TotalCost.EstimatedUSD += c.AgentCost.EstimatedUSD
@@ -1715,6 +1710,19 @@ func checkResumeIntegrity(resultsDir, agent string, sandbox bool) error {
 		}
 	}
 
+	// summary.json records the run-level mode. In a multi-agent run
+	// interrupted before this agent's file exists there is nothing per-agent
+	// to compare, yet updateIncrementalSummary would refuse (or worse, mix
+	// modes) later. Refuse up front, like the run-level judge_model check.
+	if sumData, err := os.ReadFile(filepath.Join(resultsDir, "summary.json")); err == nil {
+		var existingSum Summary
+		if json.Unmarshal(sumData, &existingSum) == nil && existingSum.Sandbox != "" &&
+			RunMode(existingSum.Sandbox) != runModeOf(sandbox) {
+			return fmt.Errorf("❌ cannot resume: sandbox mode changed since the interrupted run (summary recorded sandbox=%s; now %s) — resume with the same mode or start a fresh run",
+				existingSum.Sandbox, runModeOf(sandbox))
+		}
+	}
+
 	pin, ok := cfg.pins.pinOf(agent)
 	if !ok {
 		return nil
@@ -1767,13 +1775,11 @@ func checkResumeIntegrity(resultsDir, agent string, sandbox bool) error {
 
 // evaluateProgressive runs evaluation with progressive result saving after each test case.
 func evaluateProgressive(rubric Rubric, cases []TestCase, gitHash string, out io.Writer, resultsDir string, isResume bool, cConfig *ContainerConfig) AgentResult {
-	sandboxMode := cConfig != nil
 	result := AgentResult{
 		Agent:   rubric.Agent,
 		GitHash: gitHash,
-		Sandbox: &sandboxMode,
 	}
-	cfg.pins.applyTo(&result)
+	applyRunContext(&result, cConfig)
 
 	// If resuming, load existing results
 	if isResume {
@@ -1782,12 +1788,10 @@ func evaluateProgressive(rubric Rubric, cases []TestCase, gitHash string, out io
 			if json.Unmarshal(existingData, &existing) == nil {
 				result = existing
 				// Provenance is verified equal by checkResumeIntegrity (or the
-				// file predates provenance); stamp it from the current pins.
-				cfg.pins.applyTo(&result)
-				// Sandbox mode is verified compatible by checkResumeIntegrity.
-				// Record the current mode so a resumed legacy file (nil) gains a
-				// definite mode going forward.
-				result.Sandbox = &sandboxMode
+				// file predates provenance) and so is the sandbox mode; stamp
+				// both from the current run. A resumed legacy file (nil mode)
+				// gains a definite mode, and a stale containment is replaced.
+				applyRunContext(&result, cConfig)
 			}
 		}
 	}
@@ -1903,6 +1907,29 @@ func updateIncrementalSummary(summaryFile string, agentResult AgentResult, gitHa
 		json.Unmarshal(data, &summary)
 	}
 
+	// Record the run mode. One summary never mixes modes: refuse before
+	// changing anything. A result with no recorded mode (nil Sandbox, a
+	// legacy shape) leaves the summary's mode untouched.
+	if agentResult.Sandbox != nil {
+		mode := runModeOf(*agentResult.Sandbox)
+		if summary.Sandbox != "" && RunMode(summary.Sandbox) != mode {
+			return fmt.Errorf("refusing to overwrite summary sandbox mode %q with %q: one summary never mixes execution modes", summary.Sandbox, mode)
+		}
+		summary.Sandbox = string(mode)
+		if mode == RunModeContainer && agentResult.Containment != nil {
+			if summary.Containment == nil {
+				summary.Containment = make(map[string]Containment)
+			}
+			summary.Containment[agentResult.Agent] = *agentResult.Containment
+		} else {
+			// Native: nothing is contained; drop any stale entry.
+			delete(summary.Containment, agentResult.Agent)
+			if len(summary.Containment) == 0 {
+				summary.Containment = nil
+			}
+		}
+	}
+
 	// Initialize if empty
 	if summary.AgentScores == nil {
 		summary.AgentScores = make(map[string]float64)
@@ -1910,16 +1937,10 @@ func updateIncrementalSummary(summaryFile string, agentResult AgentResult, gitHa
 	}
 
 	// Calculate and update agent score
-	var totalScore, totalMax float64
+	totalScore, totalMax := agentScoreTotals(agentResult)
 	var agentCost CostInfo
 
 	for _, c := range agentResult.Cases {
-		for _, sc := range c.Scores {
-			if !sc.Skipped {
-				totalScore += float64(sc.Score)
-				totalMax += float64(sc.MaxScore)
-			}
-		}
 		agentCost.TokensIn += c.AgentCost.TokensIn
 		agentCost.TokensOut += c.AgentCost.TokensOut
 		agentCost.EstimatedUSD += c.AgentCost.EstimatedUSD

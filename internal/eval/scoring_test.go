@@ -343,3 +343,142 @@ func TestScoringParityEvaluateVsEvaluateProgressive(t *testing.T) {
 		t.Errorf("kiro-cli invoked: %q", got)
 	}
 }
+
+func TestCaseTotals(t *testing.T) {
+	tests := []struct {
+		name      string
+		cr        CaseResult
+		wantScore int
+		wantMax   int
+	}{
+		{
+			name:      "no scores",
+			cr:        CaseResult{},
+			wantScore: 0,
+			wantMax:   0,
+		},
+		{
+			name: "all scored",
+			cr: CaseResult{Scores: []CriterionScore{
+				{Name: "a", Score: 4, MaxScore: 5},
+				{Name: "b", Score: 3, MaxScore: 5},
+			}},
+			wantScore: 7,
+			wantMax:   10,
+		},
+		{
+			name: "skipped criteria excluded from numerator and denominator",
+			cr: CaseResult{Scores: []CriterionScore{
+				{Name: "a", Score: 4, MaxScore: 5},
+				{Name: "b", Score: 5, MaxScore: 5, Skipped: true},
+				{Name: "c", Score: 0, MaxScore: 10, Skipped: true},
+			}},
+			wantScore: 4,
+			wantMax:   5,
+		},
+		{
+			name: "all skipped gives zero denominator",
+			cr: CaseResult{Scores: []CriterionScore{
+				{Name: "a", Score: 0, MaxScore: 5, Skipped: true},
+				{Name: "b", Score: 0, MaxScore: 5, Skipped: true},
+			}},
+			wantScore: 0,
+			wantMax:   0,
+		},
+		{
+			name: "scored criterion with zero max",
+			cr: CaseResult{Scores: []CriterionScore{
+				{Name: "a", Score: 0, MaxScore: 0},
+			}},
+			wantScore: 0,
+			wantMax:   0,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gotScore, gotMax := caseTotals(tt.cr)
+			if gotScore != tt.wantScore || gotMax != tt.wantMax {
+				t.Errorf("caseTotals() = (%d, %d), want (%d, %d)", gotScore, gotMax, tt.wantScore, tt.wantMax)
+			}
+		})
+	}
+}
+
+func TestAgentScoreTotals(t *testing.T) {
+	tests := []struct {
+		name      string
+		ar        AgentResult
+		wantScore float64
+		wantMax   float64
+	}{
+		{
+			name:      "no cases",
+			ar:        AgentResult{Agent: "x"},
+			wantScore: 0,
+			wantMax:   0,
+		},
+		{
+			name: "case with no scores contributes nothing",
+			ar: AgentResult{Agent: "x", Cases: []CaseResult{
+				{CaseName: "empty"},
+				{CaseName: "scored", Scores: []CriterionScore{{Name: "a", Score: 3, MaxScore: 5}}},
+			}},
+			wantScore: 3,
+			wantMax:   5,
+		},
+		{
+			name: "skipped criteria excluded across cases",
+			ar: AgentResult{Agent: "x", Cases: []CaseResult{
+				{CaseName: "c1", Scores: []CriterionScore{
+					{Name: "a", Score: 5, MaxScore: 5},
+					{Name: "b", Score: 5, MaxScore: 5, Skipped: true},
+				}},
+				{CaseName: "c2", Scores: []CriterionScore{
+					{Name: "a", Score: 2, MaxScore: 5},
+					{Name: "b", Score: 0, MaxScore: 10, Skipped: true},
+				}},
+			}},
+			wantScore: 7,
+			wantMax:   10,
+		},
+		{
+			name: "everything skipped gives zero denominator",
+			ar: AgentResult{Agent: "x", Cases: []CaseResult{
+				{CaseName: "c1", Scores: []CriterionScore{{Name: "a", Score: 0, MaxScore: 5, Skipped: true}}},
+			}},
+			wantScore: 0,
+			wantMax:   0,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			gotScore, gotMax := agentScoreTotals(tt.ar)
+			if gotScore != tt.wantScore || gotMax != tt.wantMax {
+				t.Errorf("agentScoreTotals() = (%v, %v), want (%v, %v)", gotScore, gotMax, tt.wantScore, tt.wantMax)
+			}
+		})
+	}
+}
+
+// A zero denominator must not produce an agent score entry in the summary
+// (previous behaviour: only totalMax > 0 writes AgentScores).
+func TestBuildSummaryZeroDenominatorOmitsAgentScore(t *testing.T) {
+	results := []AgentResult{
+		{Agent: "zero", Cases: []CaseResult{
+			{CaseName: "c", Scores: []CriterionScore{{Name: "a", Score: 0, MaxScore: 5, Skipped: true}}},
+		}},
+		{Agent: "scored", Cases: []CaseResult{
+			{CaseName: "c", Scores: []CriterionScore{
+				{Name: "a", Score: 3, MaxScore: 4},
+				{Name: "b", Score: 5, MaxScore: 5, Skipped: true},
+			}},
+		}},
+	}
+	s := buildSummary(results, "abc")
+	if _, ok := s.AgentScores["zero"]; ok {
+		t.Errorf("agent with zero denominator should have no score, got %v", s.AgentScores["zero"])
+	}
+	if got := s.AgentScores["scored"]; got != 0.75 {
+		t.Errorf("AgentScores[scored] = %v, want 0.75", got)
+	}
+}
