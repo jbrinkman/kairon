@@ -1,0 +1,33 @@
+{
+  "agent": "architect",
+  "git_hash": "a1b2c3d",
+  "agent_model": "claude-sonnet-5.5",
+  "judge_model": "claude-sonnet-5.5",
+  "prompt_sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+  "resources_present": ["file://./architect-prompt.md"],
+  "cases": [
+    {
+      "case_name": "basic-spec-generation",
+      "actual_output": "## Design\n\nA short design specification.",
+      "scores": [
+        {"name": "has_summary", "score": 4, "max_score": 4, "deterministic": true},
+        {"name": "clarity", "score": 3, "max_score": 4, "deterministic": false, "reasoning": "clear enough"}
+      ],
+      "agent_cost": {"tokens_in": 1300, "tokens_out": 360, "estimated_usd": 0.013, "model": "claude-sonnet-5.5", "usage_source": "reported"},
+      "judge_cost": {"tokens_in": 200, "tokens_out": 40, "estimated_usd": 0.002, "model": "claude-sonnet-5.5"},
+      "calls": [
+        {
+          "role": "agent", "model": "claude-sonnet-5.5", "agent": "architect",
+          "input_tokens": 1300, "output_tokens": 360, "cost_usd": 0.013, "estimated": false,
+          "duration_ms": 900,
+          "prompt_sha256": "1111111111111111111111111111111111111111111111111111111111111111"
+        },
+        {
+          "role": "judge", "model": "claude-sonnet-5.5", "criterion": "clarity",
+          "input_tokens": 200, "output_tokens": 40, "cost_usd": 0.002, "estimated": true,
+          "duration_ms": 300
+        }
+      ]
+    }
+  ]
+}

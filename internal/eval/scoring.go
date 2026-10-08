@@ -42,19 +42,38 @@ func scoreCase(rubric Rubric, tc TestCase, cr *CaseResult) {
 	}
 }
 
+// caseTotals returns the summed score and maximum score of a case's criteria.
+// Skipped criteria contribute to neither the numerator nor the denominator.
+// This is the single place the per-case score arithmetic lives.
+func caseTotals(cr CaseResult) (score, max int) {
+	for _, s := range cr.Scores {
+		if s.Skipped {
+			continue
+		}
+		score += s.Score
+		max += s.MaxScore
+	}
+	return score, max
+}
+
+// agentScoreTotals returns the summed score and maximum score across every
+// case of an agent, as floats, using caseTotals so skipped criteria are
+// excluded from both. The agent score is score/max when max > 0.
+func agentScoreTotals(ar AgentResult) (score, max float64) {
+	for _, c := range ar.Cases {
+		cs, cm := caseTotals(c)
+		score += float64(cs)
+		max += float64(cm)
+	}
+	return score, max
+}
+
 // printCaseResult writes the final status line for a scored case:
 // "no output" / "no scored criteria" / pass (✅) / warn (⚠️, pct>=60) / fail (❌),
 // plus the breakdown of criteria scoring below 3/4 of max when pct < threshold.
 func printCaseResult(out io.Writer, tc TestCase, cr CaseResult) {
 	if cr.ActualOutput != "" {
-		totalScore := 0
-		maxTotal := 0
-		for _, s := range cr.Scores {
-			if !s.Skipped {
-				totalScore += s.Score
-				maxTotal += s.MaxScore
-			}
-		}
+		totalScore, maxTotal := caseTotals(cr)
 		if maxTotal == 0 {
 			fmt.Fprintf(out, " ⚠️  no scored criteria\n")
 		} else {

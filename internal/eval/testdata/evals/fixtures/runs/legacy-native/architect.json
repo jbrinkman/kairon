@@ -1,0 +1,17 @@
+{
+  "agent": "architect",
+  "git_hash": "e369501",
+  "cases": [
+    {
+      "case_name": "basic-spec-generation",
+      "actual_output": "## Design\n\nA short design specification.",
+      "scores": [
+        {"name": "has_summary", "score": 4, "max_score": 4, "deterministic": true},
+        {"name": "clarity", "score": 2, "max_score": 4, "deterministic": false, "reasoning": "somewhat unclear"},
+        {"name": "optional_check", "score": 0, "max_score": 4, "deterministic": false, "skipped": true, "reasoning": "judge unavailable"}
+      ],
+      "agent_cost": {"tokens_in": 1000, "tokens_out": 300, "estimated_usd": 0.01},
+      "judge_cost": {"tokens_in": 200, "tokens_out": 40, "estimated_usd": 0.0023}
+    }
+  ]
+}

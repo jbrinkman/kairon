@@ -53,6 +53,11 @@ func tmpfsMounts() map[string]string {
 	}
 }
 
+// ReadonlyRootfs is whether the container root filesystem is read-only. It is
+// the value NewHostConfigWithMounts sets and the value eval runs record as
+// containment.read_only_fs, so the record cannot drift from what is enforced.
+const ReadonlyRootfs = true
+
 // selinuxEnforcePath is the kernel interface reporting SELinux enforcing mode.
 const selinuxEnforcePath = "/sys/fs/selinux/enforce"
 
@@ -100,7 +105,7 @@ func newHostConfigWithMounts(limits ResourceLimits, mounts []Mount, selinuxEnfor
 		},
 		NetworkMode: "none", // Disable network access for security
 		// Only the bind mounts below and the tmpfs entries are writable.
-		ReadonlyRootfs: true,
+		ReadonlyRootfs: ReadonlyRootfs,
 		Tmpfs:          tmpfsMounts(),
 	}
 

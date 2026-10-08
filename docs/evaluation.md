@@ -225,7 +225,7 @@ Each `agent_cost` and `judge_cost` in a result file carries `model` (when known)
 - `kiro-cli` exposes neither the served model nor token counts, so its usage is always `estimated`. The `model` it records is the model the process was *launched with* (the value passed as `--model`, i.e. the pinned model), not a model confirmed by the service. It is empty (omitted from JSON) only for unpinned calls, such as code paths that do not go through `kairon eval`.
 - `estimated_usd` is always computed from the token counts at a fixed $3 / $15 per million input / output tokens, whether the counts were reported or estimated.
 - When several judge calls are accumulated into `judge_cost`, the merged `usage_source` is `reported` only if every contributing call was `reported`; otherwise it is `estimated`. The stub judge always produces estimated usage with model `stub`.
-- `summary.json` totals only `tokens_in`, `tokens_out` and `estimated_usd` (plus the provenance fields described below).
+- `summary.json` totals only `tokens_in`, `tokens_out` and `estimated_usd` (plus the provenance, execution-mode and containment fields described below).
 - The individual calls behind `agent_cost` and `judge_cost` are listed in each case's `calls` array (see [Per-call records](#per-call-records-calls)).
 
 Example from the self-test `stub-usage` case:
@@ -342,7 +342,7 @@ Details:
 - `agent_cost` and `judge_cost` are unchanged; `calls` is the per-call breakdown behind them.
 - No agent record is written when prompt assembly failed, because no call was made.
 - A judge call is recorded even when its output could not be parsed (the tokens were spent). Its cost appears in that call's `calls[]` record but **not** in the case's `judge_cost`, which keeps a zero cost for a failed or unparseable judge call — so for such a case the sum of `calls[].cost_usd` can exceed `judge_cost`.
-- A `--sandbox` run builds its agent record exactly like a native one, from the same request and the same completion logic: the cost comes from the backend's reported or estimated usage, `model` is the served model when the backend reports one (the stub) or the pinned model (`kiro-cli`), and `estimated` is `true` unless the usage was `reported`. For the same case the sandboxed and native `output`, `agent_cost` and call record match, except that the sandboxed agent record also carries `trusted_tools`.
+- A `--sandbox` run builds its agent record exactly like a native one, from the same request and the same completion logic: the cost comes from the backend's reported or estimated usage, `model` is the served model when the backend reports one (the stub) or the pinned model (`kiro-cli`), and `estimated` is `true` unless the usage was `reported`. For the same case the sandboxed and native `output`, `agent_cost`, call record `model` and `prompt_sha256` match. The sandboxed agent record additionally carries `trusted_tools`; the only other differences between a native and a container run are the run-level `sandbox` and `containment` fields (see [Execution mode and containment](#execution-mode-and-containment) and [Parity between native and container runs](#parity-between-native-and-container-runs)).
 
 The per-call records (field values below are illustrative):
 
@@ -385,6 +385,8 @@ The per-agent result file always carries:
 | `judge_model` | The model used for judge calls. |
 | `prompt_sha256` | Hash of everything that shapes the agent's prompt (see below). |
 | `resources_present` | The agent-config `resources` entries that existed when the hash was computed. Always written; an empty list serialises as `[]`. |
+| `sandbox` | Execution mode as a **boolean**: `true` for a `--sandbox` (container) run, `false` for a native run. Written by every run, including single-case (`--testcase`) runs. Absent in files written before mode tracking. Note that `summary.json` spells the same fact as a string (`"native"` / `"container"`); see below. |
+| `containment` | What contained this agent's cases (see [Execution mode and containment](#execution-mode-and-containment)). Present for container runs only; absent for native runs. |
 
 ```json
 {
@@ -393,6 +395,7 @@ The per-agent result file always carries:
   "agent_model": "claude-sonnet-5.5",
   "judge_model": "claude-sonnet-5.5",
   "prompt_sha256": "9f2c…",
+  "sandbox": false,
   "resources_present": [],
   "cases": [ … ]
 }
@@ -400,7 +403,7 @@ The per-agent result file always carries:
 
 #### Run summary (`summary.json`)
 
-`summary.json` always carries `judge_model` and an `agents` map with `agent_model`, `prompt_sha256` and `resources_present` per agent:
+`summary.json` always carries `judge_model` and an `agents` map with `agent_model`, `prompt_sha256` and `resources_present` per agent. It also records the run's execution mode in `sandbox` and, for container runs, a per-agent `containment` map. The example below is a `--sandbox` (container) run (the `tool_trust` values are illustrative; they follow each agent's trust set, see [Tool trust](#tool-trust)):
 
 ```json
 {
@@ -411,11 +414,57 @@ The per-agent result file always carries:
   "agents": {
     "architect": { "agent_model": "claude-sonnet-5.5", "prompt_sha256": "…", "resources_present": [] },
     "builder":   { "agent_model": "claude-sonnet-5.5", "prompt_sha256": "…", "resources_present": [] }
+  },
+  "sandbox": "container",
+  "containment": {
+    "architect": { "tool_trust": ["fs_read", "fs_write", "execute_bash"], "fake_gh": true, "read_only_fs": true, "network": "unrestricted" },
+    "builder":   { "tool_trust": ["fs_read", "fs_write", "execute_bash"], "fake_gh": true, "read_only_fs": true, "network": "unrestricted" }
   }
 }
 ```
 
+| Field | Description |
+|-------|-------------|
+| `git_hash`, `total_cost`, `agent_scores` | Run totals. `agent_scores` is score / maximum per agent, skipped criteria excluded (see [Skipped Criteria](#skipped-criteria)). |
+| `judge_model`, `agents` | Run-level provenance, as described above. |
+| `sandbox` | Execution mode of the whole run: `"native"` or `"container"`. Absent in a `summary.json` written before mode tracking. |
+| `containment` | Map of agent name to its containment record (see [Execution mode and containment](#execution-mode-and-containment)). Present for `container` runs; **absent** for `native` runs. |
+
+**Two spellings of one fact.** `summary.json` records the mode as a string (`"native"` / `"container"`), while each `<agent>.json` keeps `sandbox` as a boolean (`true` = container, `false` = native). Both come from the same run, and `eval diff` and `--resume` read both. A summary never mixes modes: one run is entirely native or entirely container.
+
 **Single-agent rule.** A run can cover several agents (`kairon eval` with no agent), each with its own model and prompt hash, so one top-level value would be ambiguous. The top-level `agent_model`, `prompt_sha256` and `resources_present` are therefore written **only when the run covers exactly one agent** (`kairon eval <agent>`, a single-case run, or the self-test) and are omitted otherwise. Use the `agents` map, or the per-agent `<agent>.json`, for multi-agent runs. Single-case runs also write a `summary.json`, with the same provenance fields.
+
+#### Execution mode and containment
+
+Every run records how it was executed, through the same code that records the model pins, so no path (full run, single case, resume) can skip it.
+
+- A **native** run records `sandbox: "native"` in `summary.json` (`sandbox: false` in `<agent>.json`) and **no containment**: nothing is contained, so there is nothing to describe. Native summaries do not carry a `containment` key at all, and an old native summary has the same shape as a new one apart from `sandbox`.
+- A **container** run (`--sandbox`) records `sandbox: "container"` (`sandbox: true` in `<agent>.json`) and a containment record per agent, in `summary.json` under `containment.<agent>` and in `<agent>.json` as `containment`. The record is per agent because the tool trust set is per agent.
+
+The containment record has four fields:
+
+| Field | Meaning |
+|-------|---------|
+| `tool_trust` | The normalised `--trust-tools` names the agent's cases ran with, in `kiro-cli` spelling (for example `["fs_read","fs_write"]`; see [Tool trust](#tool-trust)). It is the same resolved set the call used, so it equals `trusted_tools` on that agent's [call records](#per-call-records-calls). `[]` means "trust nothing" and is always written, never omitted. If the trust set cannot be resolved (no `evals.trust_tools` override and the agent config is unreadable), `[]` is recorded and a warning is printed; the agent call itself fails closed, as described under Tool trust. |
+| `fake_gh` | `true`: the fake `gh` is first on `PATH` (see [The fake `gh`](#the-fake-gh)). |
+| `read_only_fs` | `true`: the container root filesystem is read-only (see [Read-only root filesystem](#read-only-root-filesystem)). |
+| `network` | Always `"unrestricted"`. See below. |
+
+`tool_trust`, `fake_gh` and `read_only_fs` are taken from the same sources that enforce them (the trust resolution used for the call, the fake-`gh` mount and the container host config's read-only root filesystem), so the record cannot drift from what was applied.
+
+**`network: "unrestricted"` is not the container's network mode.** The value records that Kairon makes **no network containment guarantee** for the run. It says nothing about the runtime's `NetworkMode`: containers are currently created with `NetworkMode: none`, but, as the [Sandbox Containment](#sandbox-containment) layer table and [Limits](#limits) state, that is a pre-existing setting that is "not a network policy" and is not part of the containment guarantee. Do not read `unrestricted` as "the container has network access", and do not read the absence of a guarantee as "the network is blocked". Side effects over the network remain the eval author's responsibility, handled with mocks; guidance for writing those mocks is planned as a separate follow-up (the mock-guidance issue, see [Limits](#limits)). `NetworkMode` itself is unchanged by this recording.
+
+#### Parity between native and container runs
+
+A native run and a `--sandbox` run of the same case are meant to be directly comparable, and the harness is built so that this holds structurally rather than by convention:
+
+- **Provenance.** `agent_model`, `judge_model`, `prompt_sha256` and `resources_present`, in `<agent>.json` and `summary.json`, and `model` and `prompt_sha256` on every `calls[]` record, come from the same pinning and call-record code on both paths, so they are identical for the same inputs.
+- **Scoring.** Both paths score a case through the same function. The score and denominator arithmetic (skipped criteria excluded from numerator and denominator) lives in one place, shared by the printed case result, the incremental `summary.json` writer and the summary builder, so a native and a container summary cannot compute `agent_scores` differently.
+- **What may differ.** Apart from fields that are inherently per-run (timestamps in directory names, per-case container ids and workspace paths), a container run differs from a native run only in `sandbox`, `containment`, and `trusted_tools` on the agent call records.
+
+The daemon-gated test `TestProvenanceParitySandbox` (run by `task eval:selftest:sandbox`) checks this by running `selftest` and `selftest-fail` natively and with `--sandbox` on the stub backend. It compares the provenance fields in `<agent>.json`, `summary.json` and every call record, checks `native` without containment against `container` with it, compares the **whole** `Summary` after normalising only `sandbox` and `containment`, compares per-case score totals and the threshold outcome, and requires `eval diff` between the two runs to succeed and report the mode difference. Like the other gated tests it skips, without passing, when the gate is unset or no daemon is reachable (see [Self-Test in the Container Sandbox](#self-test-in-the-container-sandbox)).
+
+**The per-agent threshold verdict (E7) is separate work.** There is no per-agent pass threshold, PASS/FAIL verdict or non-zero exit code in `kairon eval` yet: scores are reported, and `kairon eval` does not fail the process on them. This change does not add one. What it guarantees is parity of the **inputs** such a verdict will use (the per-case and per-agent score and denominator, computed in one shared place). When the verdict is added it will build on that shared code, and because the parity test compares the whole `Summary`, any verdict fields added to it are covered on both paths.
 
 #### How `prompt_sha256` is computed
 
@@ -448,6 +497,17 @@ When an `<evals-dir>/agents/` overlay is used, the agent runs in its case worksp
 ```
 
 Start a fresh run (without `--resume`) after changing a prompt, a resource or `evals`. A result file written before provenance existed (no `prompt_sha256`) is **refused when it already holds saved cases** — resuming would attribute those scores to the current prompt and models, which were unknown when they were produced; an empty legacy file is allowed. An unchanged resume continues as before.
+
+**Execution mode.** Resume also refuses to switch between native and `--sandbox`, because scoring `requires_sandbox` cases under the other mode would mark them completed under the wrong execution model. The check is made at two levels:
+
+- per agent, against the `sandbox` boolean in the existing `<agent>.json` (a file that holds saved cases but predates mode tracking is refused, since its mode cannot be verified);
+- for the run as a whole, against the `sandbox` string in `summary.json`. This catches a multi-agent run that was interrupted before a later agent's file existed, where there is nothing per-agent to compare. The error names both modes:
+
+```
+❌ cannot resume: sandbox mode changed since the interrupted run (summary recorded sandbox=native; now container) — resume with the same mode or start a fresh run
+```
+
+Resume with the same mode, or start a fresh run. As a last line of defence, the summary writer also refuses to overwrite a recorded mode with a different one, so one `summary.json` never mixes modes. A `summary.json` with no recorded `sandbox` (an old run) is not mode-checked at this level.
 
 ## Evals Directory (`--evals-dir`)
 
@@ -647,7 +707,7 @@ The same self-test can run hermetically inside a container sandbox. It needs a P
 task eval:selftest:sandbox
 # runs the daemon-gated tests with KAIRON_EVAL_SANDBOX_SELFTEST=1:
 #   internal/eval/sandbox: TestBaseImage_ToolsOnlyNoMounts, TestEnsureBaseImage_ReusesExistingImage
-#   internal/eval:         TestSelftestSandbox, TestSandboxWorkspace, TestContainmentSandbox, TestContainmentContainerGH
+#   internal/eval:         TestSelftestSandbox, TestSandboxWorkspace, TestContainmentSandbox, TestContainmentContainerGH, TestProvenanceParitySandbox
 
 # or run the sandboxed self-test directly:
 go run ./cmd/kairon eval --backend stub --sandbox --evals-dir internal/eval/testdata/evals selftest
@@ -656,6 +716,7 @@ go run ./cmd/kairon eval --backend stub --sandbox --evals-dir internal/eval/test
 `TestSelftestSandbox` runs `selftest` natively and then again with `--sandbox --backend stub`, and requires the sandboxed run to match the native one for every case: non-empty and identical `actual_output`, identical `agent_cost`, and the same model on the recorded agent call. It also applies the same self-test expectations to the sandboxed results. The `stub-quoted-input` case checks that shell metacharacters in the input arrive intact.
 
 The other gated tests cover the sandbox layering:
+- `TestProvenanceParitySandbox` runs `selftest` and `selftest-fail` natively and with `--sandbox` and checks provenance and scoring parity and the `eval diff` mode report (see [Parity between native and container runs](#parity-between-native-and-container-runs)).
 - `TestBaseImage_ToolsOnlyNoMounts` starts a container from the base image with no mounts and checks it runs as `sandbox` (uid 1000), has `kiro-cli`, `gh`, `git` and `sh` on `PATH`, and has an empty `/workspace` with no `/workspace/.kiro` and no project or agent content anywhere.
 - `TestEnsureBaseImage_ReusesExistingImage` calls `EnsureBaseImage` twice and requires the second call to report no build with the same tag and image ID.
 - `TestSandboxWorkspace` runs `stub-marker`, `stub-seeded-workspace` and the `selftest-fail` timeout case both natively and under `--sandbox` with kept workspaces and compares them: no `Permission denied` anywhere, `marker.txt` containing `hi` on the host, identical host trees (excluding `.git` and `.kiro`) and `git status --porcelain`, `.eval/` present in both, an unchanged repository-root `git status`, keep/no-keep behaviour of `workspace_dir`, the sandboxed timeout recorded as `timeout after 1s`, and base-image reuse after editing an agent config and a case.
@@ -929,6 +990,8 @@ A `--sandbox` run contains an arbitrary agent at the layers Kairon itself contro
 | Network (not a guarantee) | Containers are created with `NetworkMode: none`. This is left exactly as it was and is not a network policy. | Container runtime |
 
 Native runs (without `--sandbox`) are **not** contained: they keep `--trust-all-tools`, use the real `gh` on your machine and write wherever the agent can. For a case that is only safe inside the sandbox, set `requires_sandbox: true` (see [Test Case Format](#test-case-format)).
+
+What a run applied is recorded in its results: `sandbox` and a per-agent `containment` record in `summary.json`, and a native run records no containment. See [Execution mode and containment](#execution-mode-and-containment) (including why the recorded `network` value is `unrestricted`).
 
 What this does and does not cover, and how to keep a case away from real AWS, `npm publish` and arbitrary HTTP, is the subject of [Preventing Production Side Effects (Containment and Mocking)](#preventing-production-side-effects-containment-and-mocking) below.
 
@@ -1291,7 +1354,43 @@ Limits of this layer: tool trust is per tool, not per argument; the network is n
 
 ## Comparing Runs
 
-The `eval diff` command shows:
+```bash
+kairon eval diff <runA> <runB>
+```
+
+The `eval diff` command shows, in this order:
+- A **Run Provenance** block (below)
 - Per-criterion score deltas per agent
 - Token and cost deltas
 - Quality-per-dollar assessment
+
+### Run Provenance
+
+Scores are only comparable when the runs were produced under comparable conditions, so the diff starts with a `Run Provenance` block, printed before any deltas. It always shows each run's execution mode, then lists every difference between the two runs in:
+
+- `sandbox` (execution mode: `native` or `container`),
+- `containment`, per agent (`tool_trust`, `fake_gh`, `read_only_fs`, `network`; a run with a containment record against one without is shown as `record: none → …`),
+- `judge_model`,
+- `agent_model`, per agent,
+- `prompt_sha256`, per agent.
+
+Trust sets are compared ignoring order. A value a run did not record is shown as `(not recorded)`. When nothing differs the block says `No provenance differences.`
+
+Example, a native run against a `--sandbox` run:
+
+```
+Run Provenance:
+  260620-200919-e369501: mode native
+  260621-160207-8a19eb2: mode container
+  sandbox: native → container
+  selftest containment.record: none → tool_trust=[execute_bash,fs_read,fs_write] fake_gh=true read_only_fs=true network=unrestricted
+  ⚠ Runs used different execution modes (native vs container); scores are not directly comparable.
+```
+
+(The run names and values are illustrative.)
+
+**Mode-difference warning.** When both runs have a known execution mode and the modes differ, the block ends with a `⚠` line stating that the runs used different execution modes and that their scores are not directly comparable. A native run is not contained and a container run is, so a score difference may come from the mode rather than from the change under test. Compare like with like where you can.
+
+**Old runs show mode `unknown`.** The mode is read from `summary.json`'s `sandbox`; when that is absent, from the `sandbox` boolean in the agent files, provided every agent file records it and they all agree; otherwise it is shown as `unknown (predates sandbox-mode tracking)`. If either run's mode is unknown the `⚠` line is replaced by a note that comparability cannot be verified, because nothing can be said about whether the modes differ.
+
+**The provenance block only reports.** It never fails the diff and never changes the deltas that follow. All the provenance and mode fields are optional, so **result directories written before this tracking existed still load**: a missing field shows as `(not recorded)` and the mode as `unknown`, and a malformed agent file is skipped as before.
