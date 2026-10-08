@@ -50,12 +50,12 @@ func TestKiroCLIExecution_SandboxUser(t *testing.T) {
 	// container's user rather than creating one at runtime.
 
 	// kiro-cli --version fails because kiro-cli isn't installed in base Alpine.
+	// Run directly (no shell): the exec reports exit code 127 (command not
+	// found) with empty stderr, so assert on that signal rather than parsing a
+	// shell's error text.
 	output, err := c.ExecWithOutput(ctx, []string{"kiro-cli", "--version"})
 	if err != nil {
-		// Expected: kiro-cli is missing. Alpine may phrase this a few ways.
-		errStr := err.Error()
-		hasExpectedError := strings.Contains(errStr, "kiro-cli") || strings.Contains(errStr, "not found") || strings.Contains(errStr, "No such file")
-		assert.True(t, hasExpectedError, "Error should indicate kiro-cli is missing: %v", err)
+		assert.True(t, kiroCLIMissing(err), "Error should indicate kiro-cli is missing: %v", err)
 		t.Logf("Expected failure - kiro-cli not installed: %v", err)
 	} else {
 		// If somehow it works, verify output.
@@ -66,12 +66,22 @@ func TestKiroCLIExecution_SandboxUser(t *testing.T) {
 	// kiro-cli chat --help also fails without an installation.
 	output, err = c.ExecWithOutput(ctx, []string{"kiro-cli", "chat", "--help"})
 	if err != nil {
-		errStr := err.Error()
-		hasExpectedError := strings.Contains(errStr, "kiro-cli") || strings.Contains(errStr, "not found") || strings.Contains(errStr, "No such file")
-		assert.True(t, hasExpectedError, "Error should indicate kiro-cli is missing: %v", err)
+		assert.True(t, kiroCLIMissing(err), "Error should indicate kiro-cli is missing: %v", err)
 		t.Logf("Expected failure - kiro-cli chat not available: %v", err)
 	} else {
 		assert.Contains(t, strings.ToLower(output), "help")
 		t.Logf("Unexpected success - kiro-cli chat help: %s", output)
 	}
+}
+
+// kiroCLIMissing reports whether err indicates kiro-cli is absent. Running a
+// missing binary directly via exec yields exit code 127 (command not found)
+// with empty stderr, so the exit code is the reliable signal; the name/text
+// checks also catch a shell-mediated "not found" message.
+func kiroCLIMissing(err error) bool {
+	s := err.Error()
+	return strings.Contains(s, "exit code 127") ||
+		strings.Contains(s, "kiro-cli") ||
+		strings.Contains(s, "not found") ||
+		strings.Contains(s, "No such file")
 }
