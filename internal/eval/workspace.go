@@ -189,7 +189,9 @@ func validateMockCommand(command string) error {
 }
 
 // validateMockScript checks that script is a relative path inside the evals
-// directory naming an existing regular file.
+// directory naming an existing regular file. Symlinks are rejected: os.Stat
+// and os.ReadFile follow them, so a symlinked fixture pointing outside the
+// evals directory would otherwise be staged, defeating the restriction.
 func validateMockScript(script string) error {
 	if script == "" {
 		return fmt.Errorf("script is required")
@@ -198,9 +200,12 @@ func validateMockScript(script string) error {
 		return fmt.Errorf("invalid script %q: must be a relative path inside the evals directory (no absolute path or '..')", script)
 	}
 	p := evalsPath(script)
-	info, err := os.Stat(p)
+	info, err := os.Lstat(p)
 	if err != nil {
 		return fmt.Errorf("script %q not found at %s", script, p)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("script %q at %s is a symlink; mock scripts must be regular files inside the evals directory", script, p)
 	}
 	if !info.Mode().IsRegular() {
 		return fmt.Errorf("script %q at %s is not a regular file", script, p)
@@ -221,7 +226,13 @@ func (w *caseWorkspace) stageMocks(mocks []CaseMock) error {
 		if !filepath.IsLocal(m.Script) {
 			return fmt.Errorf("mocks[%d] (%s): invalid script %q", i, m.Command, m.Script)
 		}
-		data, err := os.ReadFile(evalsPath(m.Script))
+		src := evalsPath(m.Script)
+		if info, lerr := os.Lstat(src); lerr != nil {
+			return fmt.Errorf("mocks[%d] (%s): script %q: %w", i, m.Command, m.Script, lerr)
+		} else if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("mocks[%d] (%s): script %q is a symlink; mock scripts must be regular files inside the evals directory", i, m.Command, m.Script)
+		}
+		data, err := os.ReadFile(src)
 		if err != nil {
 			return fmt.Errorf("mocks[%d] (%s): reading script: %w", i, m.Command, err)
 		}

@@ -185,6 +185,42 @@ func TestMocksStageRefusesUnsafeInput(t *testing.T) {
 	}
 }
 
+func TestMocksRejectSymlinkScript(t *testing.T) {
+	wsEnv(t)
+	// A real regular file the symlink points at, placed OUTSIDE the evals dir.
+	outside := filepath.Join(t.TempDir(), "outside.sh")
+	if err := os.WriteFile(outside, []byte("#!/bin/sh\necho pwned\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// evals/fixtures/link.sh -> outside.sh. filepath.IsLocal passes (the path
+	// text has no "..") but the link resolves outside the evals directory.
+	if err := os.MkdirAll(filepath.Join("evals", "fixtures"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(outside, filepath.Join("evals", "fixtures", "link.sh")); err != nil {
+		t.Skipf("symlinks not supported: %v", err)
+	}
+	mock := []CaseMock{{Command: "aws", Script: "fixtures/link.sh"}}
+
+	// Validation seam.
+	if err := validateSandboxFields(TestCase{Name: "c", RequiresSandbox: true, Mocks: mock}, "c.yaml"); err == nil {
+		t.Fatal("validateSandboxFields accepted a symlinked script")
+	} else if !strings.Contains(err.Error(), "symlink") {
+		t.Errorf("error %q does not mention symlink", err)
+	}
+
+	// Staging seam (reached directly by newCaseWorkspace).
+	before := dirNames(t, os.Getenv(workspaceRootEnv))
+	if _, err := newCaseWorkspace(TestCase{Name: "c", RequiresSandbox: true, Mocks: mock}); err == nil {
+		t.Fatal("newCaseWorkspace staged a symlinked script")
+	} else if !strings.Contains(err.Error(), "symlink") {
+		t.Errorf("staging error %q does not mention symlink", err)
+	}
+	if after := dirNames(t, os.Getenv(workspaceRootEnv)); !reflect.DeepEqual(before, after) {
+		t.Errorf("failed staging left files behind: %v -> %v", before, after)
+	}
+}
+
 func binNames(t *testing.T, dir string) []string {
 	t.Helper()
 	return dirNames(t, dir)
