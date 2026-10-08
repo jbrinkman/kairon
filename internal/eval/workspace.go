@@ -40,6 +40,22 @@ var workspaceNameRe = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
 // name that cannot contain a path separator or start with '.' or '-'.
 var mockCommandRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._+-]*$`)
 
+// reservedMockCommands names commands that may not be mocked, each with the
+// reason reported to the eval author. "gh" shadows the harness-owned fake gh.
+// The remaining names are POSIX helpers the mock shim itself invokes via PATH
+// (see fixtures/mock-cli.sh); because the staged mock directory is first on
+// PATH, mocking one of them would make the shim re-enter itself (recursion or
+// hang) and would also be hit by any sibling mock in the same case.
+var reservedMockCommands = map[string]string{
+	"gh":       "reserved for the harness's fake gh",
+	"basename": "used internally by the mock shim and cannot be mocked",
+	"dirname":  "used internally by the mock shim and cannot be mocked",
+	"cat":      "used internally by the mock shim and cannot be mocked",
+	"head":     "used internally by the mock shim and cannot be mocked",
+	"tr":       "used internally by the mock shim and cannot be mocked",
+	"sed":      "used internally by the mock shim and cannot be mocked",
+}
+
 // caseWorkspace is the host-side workspace of one test case: a git repo whose
 // single commit is the fixture, plus harness-owned .eval/ (outputs) and
 // .kiro/ (staged agent and skill configuration).
@@ -157,7 +173,8 @@ func validateMocks(tc TestCase, file string) error {
 }
 
 // validateMockCommand checks that command is a bare command name that cannot
-// escape the bin directory and does not shadow the harness-owned fake gh.
+// escape the bin directory and is not reserved (the fake gh, or a helper the
+// mock shim invokes via PATH).
 func validateMockCommand(command string) error {
 	if command == "" {
 		return fmt.Errorf("command is required")
@@ -165,8 +182,8 @@ func validateMockCommand(command string) error {
 	if !mockCommandRe.MatchString(command) {
 		return fmt.Errorf("invalid command %q: must match %s", command, mockCommandRe)
 	}
-	if command == "gh" {
-		return fmt.Errorf("command %q is reserved for the harness's fake gh", command)
+	if reason, ok := reservedMockCommands[command]; ok {
+		return fmt.Errorf("command %q is %s", command, reason)
 	}
 	return nil
 }

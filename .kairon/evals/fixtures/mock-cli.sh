@@ -46,9 +46,14 @@
 #   eval author, not a tamper-proof audit trail.
 #
 # SAFETY
-#   Never executes another binary of any name (so a real <cmd> elsewhere on
-#   PATH is never run) and never touches the network. Needs KAIRON_EVAL_DIR
-#   to be an existing directory, else exits 1.
+#   Never executes the real tool it stands in for, nor any binary named by the
+#   agent's call (so a real <cmd> elsewhere on PATH is never run), and never
+#   touches the network. It does invoke a fixed set of POSIX helpers resolved
+#   via PATH -- basename, dirname, cat, head, tr and sed -- so those names are
+#   reserved and cannot be mocked (validateMockCommand rejects them, alongside
+#   gh); otherwise, since the staged mock dir is first on PATH, the shim would
+#   re-enter itself. Needs KAIRON_EVAL_DIR to be an existing directory, else
+#   exits 1.
 #
 # POSIX sh only (the sandbox image uses busybox ash): no arrays, no [[ ]], no
 # local, no jq. To get richer behaviour copy this file and edit the dispatch
