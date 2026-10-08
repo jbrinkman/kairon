@@ -53,3 +53,31 @@ to review comments:
 
 Template-synchronized files (see `.kiro/skills/builder-conventions/SKILL.md`) must be re-synced into
 `cmd/kairon/templates/` after editing and verified with `task sync:check`.
+
+## Test-driven development
+
+These rules apply to every agent and tool that changes code in this repository (the Kairon pipeline, KiroCrew,
+Copilot, the `pr-comment-resolver` skill, and any other). Follow them for new features, bug fixes and refactors.
+
+### New features and bug fixes
+
+1. Write a failing test first that captures the desired behavior (for a bug, the correct behavior the bug violates).
+2. Run it and confirm it fails **for the expected reason** — not because of a compile error, typo or unrelated setup problem.
+3. Write the minimal code that makes the test pass.
+4. Re-run the tests and confirm they pass.
+
+### Refactors
+
+1. Before changing anything, confirm existing tests cover the behavior you are about to change.
+2. If coverage is missing, add characterization tests first that pin down the current behavior.
+3. Those tests must pass both before and after the refactor.
+
+### Rules
+
+- **Commit the test and the implementation (or refactor) together** in the same commit, so no commit leaves CI red.
+  Do not commit a failing test on its own.
+- **Keep the change minimal.** Implement the smallest change that makes the new test pass. Put unrelated changes in
+  separate issues or PRs.
+- **Say what you observed.** In the commit message or PR description, name the test you saw fail first (features and
+  bug fixes), or the tests you added or relied on (refactors).
+- **Exemption:** non-code changes (docs, prompts, config, skills) do not require a test first.
