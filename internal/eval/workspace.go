@@ -36,6 +36,10 @@ const (
 // workspaceNameRe is the allowed shape of a case's workspace fixture name.
 var workspaceNameRe = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
 
+// mockCommandRe is the allowed shape of a mocked command name: a bare file
+// name that cannot contain a path separator or start with '.' or '-'.
+var mockCommandRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._+-]*$`)
+
 // caseWorkspace is the host-side workspace of one test case: a git repo whose
 // single commit is the fixture, plus harness-owned .eval/ (outputs) and
 // .kiro/ (staged agent and skill configuration).
@@ -43,7 +47,7 @@ type caseWorkspace struct {
 	Dir     string // absolute, symlink-resolved workspace root (a git repo)
 	EvalDir string // Dir/.eval
 	KiroDir string // Dir/.kiro
-	BinDir  string // <root>/bin: holds the fake gh, mounted read-only at /opt/kairon/bin
+	BinDir  string // <root>/bin: holds the fake gh and case mocks, mounted read-only at /opt/kairon/bin
 
 	// root is the private (0700) parent that holds Dir. It keeps other local
 	// users from traversing into the world-writable workspace.
@@ -107,22 +111,118 @@ func validateCaseFields(tc TestCase, file string) error {
 	return nil
 }
 
-// validateSandboxFields validates gh_issue and requires_sandbox. A gh_issue is
+// validateSandboxFields validates gh_issue, mocks and requires_sandbox. A gh_issue is
 // only meaningful to the fake gh, which exists only under --sandbox: a native
 // run would call the developer's real gh, so the case must be sandbox-only.
 // gh_issue.number defaults to 1 when unset.
 func validateSandboxFields(tc TestCase, file string) error {
-	if tc.GHIssue == nil {
+	if tc.GHIssue != nil {
+		if strings.TrimSpace(tc.GHIssue.Title) == "" {
+			return fmt.Errorf("case %q (%s): gh_issue.title is required", tc.Name, file)
+		}
+		if tc.GHIssue.Number < 0 {
+			return fmt.Errorf("case %q (%s): gh_issue.number must be positive", tc.Name, file)
+		}
+		if !tc.RequiresSandbox {
+			return fmt.Errorf("case %q (%s): gh_issue requires requires_sandbox: true (a native run would call the real gh)", tc.Name, file)
+		}
+	}
+	return validateMocks(tc, file)
+}
+
+// validateMocks validates the case's mocks. A mock is only placed on PATH by
+// the sandbox, so a native run would silently skip it and call the real tool:
+// the case must be sandbox-only.
+func validateMocks(tc TestCase, file string) error {
+	if len(tc.Mocks) == 0 {
 		return nil
 	}
-	if strings.TrimSpace(tc.GHIssue.Title) == "" {
-		return fmt.Errorf("case %q (%s): gh_issue.title is required", tc.Name, file)
-	}
-	if tc.GHIssue.Number < 0 {
-		return fmt.Errorf("case %q (%s): gh_issue.number must be positive", tc.Name, file)
-	}
 	if !tc.RequiresSandbox {
-		return fmt.Errorf("case %q (%s): gh_issue requires requires_sandbox: true (a native run would call the real gh)", tc.Name, file)
+		return fmt.Errorf("case %q (%s): mocks requires requires_sandbox: true (a native run would call the real tool)", tc.Name, file)
+	}
+	seen := map[string]bool{}
+	for i, m := range tc.Mocks {
+		if err := validateMockCommand(m.Command); err != nil {
+			return fmt.Errorf("case %q (%s): mocks[%d]: %w", tc.Name, file, i, err)
+		}
+		if seen[m.Command] {
+			return fmt.Errorf("case %q (%s): mocks[%d]: duplicate command %q", tc.Name, file, i, m.Command)
+		}
+		seen[m.Command] = true
+		if err := validateMockScript(m.Script); err != nil {
+			return fmt.Errorf("case %q (%s): mocks[%d] (%s): %w", tc.Name, file, i, m.Command, err)
+		}
+	}
+	return nil
+}
+
+// validateMockCommand checks that command is a bare command name that cannot
+// escape the bin directory and does not shadow the harness-owned fake gh.
+func validateMockCommand(command string) error {
+	if command == "" {
+		return fmt.Errorf("command is required")
+	}
+	if !mockCommandRe.MatchString(command) {
+		return fmt.Errorf("invalid command %q: must match %s", command, mockCommandRe)
+	}
+	if command == "gh" {
+		return fmt.Errorf("command %q is reserved for the harness's fake gh", command)
+	}
+	return nil
+}
+
+// validateMockScript checks that script is a relative path inside the evals
+// directory naming an existing regular file.
+func validateMockScript(script string) error {
+	if script == "" {
+		return fmt.Errorf("script is required")
+	}
+	if !filepath.IsLocal(script) {
+		return fmt.Errorf("invalid script %q: must be a relative path inside the evals directory (no absolute path or '..')", script)
+	}
+	p := evalsPath(script)
+	info, err := os.Stat(p)
+	if err != nil {
+		return fmt.Errorf("script %q not found at %s", script, p)
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("script %q at %s is not a regular file", script, p)
+	}
+	return nil
+}
+
+// stageMocks writes each mock script to BinDir/<command> with mode 0755. The
+// directory is bind-mounted read-only first on the container PATH, so the
+// agent cannot alter a mock. An existing file (the fake gh) is never replaced.
+// The inputs are re-checked because newCaseWorkspace may be handed a case that
+// did not come through loadCases.
+func (w *caseWorkspace) stageMocks(mocks []CaseMock) error {
+	for i, m := range mocks {
+		if err := validateMockCommand(m.Command); err != nil {
+			return fmt.Errorf("mocks[%d]: %w", i, err)
+		}
+		if !filepath.IsLocal(m.Script) {
+			return fmt.Errorf("mocks[%d] (%s): invalid script %q", i, m.Command, m.Script)
+		}
+		data, err := os.ReadFile(evalsPath(m.Script))
+		if err != nil {
+			return fmt.Errorf("mocks[%d] (%s): reading script: %w", i, m.Command, err)
+		}
+		dst := filepath.Join(w.BinDir, m.Command)
+		f, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o755)
+		if err != nil {
+			return fmt.Errorf("mocks[%d] (%s): staging %s: %w", i, m.Command, dst, err)
+		}
+		_, werr := f.Write(data)
+		if cerr := f.Close(); werr == nil {
+			werr = cerr
+		}
+		if werr != nil {
+			return fmt.Errorf("mocks[%d] (%s): writing %s: %w", i, m.Command, dst, werr)
+		}
+		if err := os.Chmod(dst, 0o755); err != nil { // not subject to umask
+			return fmt.Errorf("mocks[%d] (%s): %w", i, m.Command, err)
+		}
 	}
 	return nil
 }
@@ -180,6 +280,10 @@ func newCaseWorkspace(tc TestCase) (ws *caseWorkspace, err error) {
 	// the directory is bind-mounted read-only.
 	if err = sandbox.WriteFakeGH(w.BinDir); err != nil {
 		return nil, err
+	}
+	// Author-supplied mocks go in the same read-only directory.
+	if err = w.stageMocks(tc.Mocks); err != nil {
+		return nil, fmt.Errorf("case %q: %w", tc.Name, err)
 	}
 
 	// Files the fixture provides, relative to the workspace, so that staging

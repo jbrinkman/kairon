@@ -26,7 +26,7 @@ See [evaluation.md](evaluation.md#container-sandboxing) for the user-facing desc
 **Used by:** Native and container runs (via `executeCase`)
 **Purpose:** Create the per-case git workspace, staged `.kiro/` and `.eval/` on the host.
 
-The workspace is a temp directory under `KAIRON_EVAL_WORKSPACE_ROOT` (or the OS temp directory), symlink-resolved, containing the case fixture as the single git commit, a staged `.kiro/` (fixture > `<evals-dir>/agents` > project `.kiro`) and an empty `.eval/`. Next to it, in the same private parent, the host writes the fake `gh` to `bin/gh` and, when the case defines `gh_issue`, renders `.eval/gh-issue.json` and `.eval/gh-issue.txt` for it. See [Case Workspaces](evaluation.md#case-workspaces) and [The fake `gh`](evaluation.md#the-fake-gh).
+The workspace is a temp directory under `KAIRON_EVAL_WORKSPACE_ROOT` (or the OS temp directory), symlink-resolved, containing the case fixture as the single git commit, a staged `.kiro/` (fixture > `<evals-dir>/agents` > project `.kiro`) and an empty `.eval/`. Next to it, in the same private parent, the host writes the fake `gh` to `bin/gh` and then stages each of the case's `mocks:` entries as `bin/<command>` (mode `0755`, never replacing an existing file), and, when the case defines `gh_issue`, renders `.eval/gh-issue.json` and `.eval/gh-issue.txt` for it. See [Case Workspaces](evaluation.md#case-workspaces), [The fake `gh`](evaluation.md#the-fake-gh) and [Preventing Production Side Effects](evaluation.md#preventing-production-side-effects-containment-and-mocking).
 
 ### Phase 3: Create container
 **Location:** `internal/eval/runner.go` - `invokeAgentInContainer()`, `internal/eval/sandbox/mounts.go` - `NewHostConfigWithMounts()`
@@ -34,7 +34,7 @@ The workspace is a temp directory under `KAIRON_EVAL_WORKSPACE_ROOT` (or the OS 
 **Purpose:** Create a container from the cached base image with explicit bind mounts.
 
 **Steps:**
-1. Build the mount list (`buildContainerMounts`): `<ws>/.kiro` read-only, `<ws>` read-write and `<ws>/.eval` read-write at the configured workspace path, the per-case bin directory holding the fake `gh` read-only at `/opt/kairon/bin`, plus the linux `kairon` helper read-only at `/opt/kairon/kairon` for non-`kiro-cli` backends only.
+1. Build the mount list (`buildContainerMounts`): `<ws>/.kiro` read-only, `<ws>` read-write and `<ws>/.eval` read-write at the configured workspace path, the per-case bin directory holding the fake `gh` and any case mocks read-only at `/opt/kairon/bin`, plus the linux `kairon` helper read-only at `/opt/kairon/kairon` for non-`kiro-cli` backends only.
 2. Validate every host path (absolute, exists, symlink-resolved) before the container is created. Structured `HostConfig.Mounts` are used, not `Binds` strings, so a missing path fails instead of being created as a root-owned directory.
 3. Apply resource limits (CPU, memory) and `NetworkMode: none`, set `ReadonlyRootfs: true` and add the `/tmp`, `/var/tmp` and `/home/sandbox` tmpfs mounts; no tmpfs is mounted at the workspace path.
 4. Set `User: sandbox`, `WorkingDir`, `HOME=/home/sandbox`, `PATH` with `/opt/kairon/bin` first, `KAIRON_EVAL_DIR`, `GH_PROMPT_DISABLED=1`, `GH_NO_UPDATE_NOTIFIER=1` and the git `safe.directory=*` environment, plus the configured environment (for example `KIRO_CLI_DISABLE_TELEMETRY=1`). GitHub credential variables (`GH_TOKEN`, `GITHUB_TOKEN`, `GH_ENTERPRISE_TOKEN`, `GITHUB_ENTERPRISE_TOKEN`, `GH_HOST`) are never passed on.
@@ -122,5 +122,5 @@ docker run --rm kairon-eval-base:<platform>-<hash> sh -c 'id -un; command -v kir
 ## Future Enhancements
 
 1. **Image Registry:** Push built images to a registry for sharing across instances
-2. **Network policy and mock guidance:** the container still has `NetworkMode: none` as a plain setting, not an enforced policy. Network policy, and guidance for writing mocks of network services, are separate follow-up work. Read-only root filesystem, the fake `gh` and whole-tool trust are done (see [Sandbox Containment](evaluation.md#sandbox-containment))
+2. **Network policy:** the container still has `NetworkMode: none` as a plain setting, not an enforced policy, and Kairon does not gateway network traffic (an allowlist that classifies destinations is an application gateway that still cannot tell model traffic from exfiltration). Network side effects are the eval author's responsibility. The read-only root filesystem, the fake `gh`, whole-tool trust and the documented mock pattern (`mocks:` plus `fixtures/mock-cli.sh`) are done (see [Sandbox Containment](evaluation.md#sandbox-containment) and [Preventing Production Side Effects](evaluation.md#preventing-production-side-effects-containment-and-mocking)). An enforced network policy remains future work.
 3. **Health Checks:** Add container health checks for better reliability monitoring
