@@ -1726,10 +1726,22 @@ func checkResumeIntegrity(resultsDir, agent string, sandbox bool) error {
 	// modes) later. Refuse up front, like the run-level judge_model check.
 	if sumData, err := os.ReadFile(filepath.Join(resultsDir, "summary.json")); err == nil {
 		var existingSum Summary
-		if json.Unmarshal(sumData, &existingSum) == nil && existingSum.Sandbox != "" &&
-			RunMode(existingSum.Sandbox) != runModeOf(sandbox) {
-			return fmt.Errorf("❌ cannot resume: sandbox mode changed since the interrupted run (summary recorded sandbox=%s; now %s) — resume with the same mode or start a fresh run",
-				existingSum.Sandbox, runModeOf(sandbox))
+		if json.Unmarshal(sumData, &existingSum) == nil {
+			if existingSum.Sandbox != "" {
+				if RunMode(existingSum.Sandbox) != runModeOf(sandbox) {
+					return fmt.Errorf("❌ cannot resume: sandbox mode changed since the interrupted run (summary recorded sandbox=%s; now %s) — resume with the same mode or start a fresh run",
+						existingSum.Sandbox, runModeOf(sandbox))
+				}
+			} else if other, found := conflictingSavedMode(resultsDir, agent, sandbox); found {
+				// A run interrupted before summary-level mode tracking has no
+				// summary.sandbox, and a not-yet-started agent has no file of
+				// its own to compare. The sibling <agent>.json files may still
+				// record a definite mode; if any ran in a mode different from
+				// this resume, continuing would stamp one run-wide mode onto a
+				// directory that mixes modes. Refuse, like the checks above.
+				return fmt.Errorf("❌ cannot resume: a saved agent in this run recorded sandbox=%t but this resume is sandbox=%t (summary has no run-wide mode); the run's execution mode cannot be mixed — start a fresh run",
+					other, sandbox)
+			}
 		}
 	}
 
@@ -1781,6 +1793,40 @@ func checkResumeIntegrity(resultsDir, agent string, sandbox bool) error {
 			pin.Model, cfg.pins.Judge, pin.Provenance.PromptSHA256)
 	}
 	return nil
+}
+
+// conflictingSavedMode scans the sibling <agent>.json result files in
+// resultsDir (skipping summary.json and the resuming agent's own file) for a
+// recorded execution mode that differs from the mode of this resume. It is the
+// fallback used when summary.json records no run-wide mode: a run interrupted
+// before summary-level mode tracking existed. It returns the first conflicting
+// mode found and true; false means no saved agent contradicts this resume.
+// A file with a nil Sandbox (legacy, no recorded mode) is ignored here — the
+// per-agent legacy guard already refuses resuming over such a file.
+func conflictingSavedMode(resultsDir, agent string, sandbox bool) (bool, bool) {
+	entries, err := os.ReadDir(resultsDir)
+	if err != nil {
+		return false, false
+	}
+	self := agent + ".json"
+	for _, e := range entries {
+		name := e.Name()
+		if e.IsDir() || name == "summary.json" || name == self || !strings.HasSuffix(name, ".json") {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(resultsDir, name))
+		if err != nil {
+			continue
+		}
+		var other AgentResult
+		if json.Unmarshal(data, &other) != nil || other.Sandbox == nil {
+			continue
+		}
+		if *other.Sandbox != sandbox {
+			return *other.Sandbox, true
+		}
+	}
+	return false, false
 }
 
 // evaluateProgressive runs evaluation with progressive result saving after each test case.

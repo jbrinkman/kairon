@@ -341,6 +341,60 @@ func TestCheckResumeIntegrityTrustSetChange(t *testing.T) {
 	}
 }
 
+// TestCheckResumeIntegritySiblingModeFallback verifies that when summary.json
+// records no run-wide mode (a run interrupted before summary-level mode
+// tracking), a resume of a not-yet-started agent is still refused if a sibling
+// saved agent recorded a different execution mode — the directory must not mix
+// modes under one run-wide label.
+func TestCheckResumeIntegritySiblingModeFallback(t *testing.T) {
+	t.Cleanup(resetConfig)
+	cfg.pins = nil
+	dir := t.TempDir()
+
+	// Legacy summary with no sandbox field.
+	if err := os.WriteFile(filepath.Join(dir, "summary.json"),
+		[]byte(`{"git_hash":"g","total_cost":{},"agent_scores":{}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// A sibling agent that already ran in a container.
+	arch := AgentResult{Agent: "architect", Sandbox: boolPtr(true), Cases: []CaseResult{{CaseName: "c1"}}}
+	data, err := json.Marshal(arch)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "architect.json"), data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Resuming the not-yet-started builder NATIVELY is refused: the sibling
+	// container agent would otherwise be mislabeled native run-wide.
+	if err := checkResumeIntegrity(dir, "builder", false); err == nil ||
+		!strings.Contains(err.Error(), "cannot be mixed") {
+		t.Fatalf("native resume: err = %v, want sibling-mode refusal", err)
+	}
+	// Resuming in the SAME (container) mode is allowed.
+	if err := checkResumeIntegrity(dir, "builder", true); err != nil {
+		t.Errorf("container resume with matching sibling mode refused: %v", err)
+	}
+
+	// A legacy sibling (nil Sandbox) is ignored by the fallback: it is the
+	// per-agent legacy guard's job, so a not-yet-started agent is not blocked
+	// by an unlabeled sibling here.
+	legacy := map[string]any{"agent": "architect", "cases": []any{}}
+	ldata, err := json.Marshal(legacy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "architect.json"), ldata, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, mode := range []bool{false, true} {
+		if err := checkResumeIntegrity(dir, "builder", mode); err != nil {
+			t.Errorf("resume (mode=%t) with unlabeled sibling refused: %v", mode, err)
+		}
+	}
+}
+
 func TestEvaluateRecordsSandboxInResultAndSummary(t *testing.T) {
 	t.Cleanup(resetConfig)
 	cfg.pins = &runPins{TrustOverrides: map[string][]string{execRubric().Agent: {}}}
