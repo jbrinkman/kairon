@@ -113,6 +113,9 @@ kairon eval architect
 # Compare two runs (names of directories under results/)
 kairon eval diff <runA> <runB>
 
+# Check an agent's iteration logs against committed results
+kairon eval verify-log <agent>
+
 # Choose the inference backend (default: kiro-cli)
 kairon eval --backend kiro-cli architect
 kairon eval --backend stub --evals-dir internal/eval/testdata/evals selftest
@@ -791,6 +794,16 @@ kairon eval
 kairon eval diff <baseline-hash> <current-hash>
 ```
 
+### Record the Iteration
+
+Once a baseline run and a post-change run exist, record the change as an iteration log at `.kairon/iterations/<agent>/iteration-NN.md` (baseline, hypothesis, change, measured results, reasoning), commit the two runs it references, and check the log with:
+
+```bash
+kairon eval verify-log <agent>
+```
+
+See [Iteration Logs and `verify-log`](#iteration-logs-and-verify-log) for the format, flags and rules.
+
 ### Creating Test Cases for Behavioral Changes
 
 When making specific behavioral changes, create targeted test cases:
@@ -823,6 +836,66 @@ Treat evaluations like unit tests:
 - **Regression prevention**: Catch unintended behavior changes
 - **Performance tracking**: Monitor cost and quality over time
 - **Documentation**: Results serve as behavioral specifications
+
+## Iteration Logs and `verify-log`
+
+An iteration log documents one measured change to an agent: the baseline, the hypothesis, the change, the measured results and the reasoning. Every number in a log is checked against committed eval results, so a log cannot claim a score that no run produced.
+
+### Format
+
+Logs live at `.kairon/iterations/<agent>/iteration-NN.md`, where `NN` is a zero-padded number starting at `00` with no gaps. Each file has YAML front-matter (`iteration`, `date`, `change_type`, `baseline_run`, `result_run`, `baseline_score`, `result_score`) followed by five fixed level-2 headings: `## Baseline`, `## Hypothesis`, `## Change`, `## Results`, `## Reasoning`. `change_type` is `prompt` or `eval` (a rubric, case or fixture change). `baseline_run` and `result_run` are exact run directory names under `<evals-dir>/results/`, and each iteration's `baseline_run` is the previous iteration's `result_run`. Scores are percentages written with exactly one decimal (`60.0`, `87.5`, `100.0`).
+
+The full field table, the heading contents and a complete example are in [`.kairon/iterations/README.md`](../.kairon/iterations/README.md).
+
+### The `verify-log` command
+
+```bash
+kairon eval verify-log <agent> [--iterations-dir DIR] [--evals-dir DIR] [--min-iterations N]
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--iterations-dir` | `.kairon/iterations` | Directory holding `<agent>/iteration-NN.md`. |
+| `--evals-dir` | `.kairon/evals` | Evals directory whose `results/<run>/` the logs refer to. Inherited from `kairon eval`, as for `eval diff`. |
+| `--min-iterations` | `2` | Minimum number of iterations the agent must have. Must not be negative. |
+
+The command is read-only. It collects every violation and prints each as `<file>: [<rule>] <message>` on stderr, then exits non-zero (`verify-log failed: N violation(s)`). On success it prints `✅ <agent>: N iteration(s) verified` and exits 0. An invalid agent name (it must be a single path element), a negative `--min-iterations` or an unreadable directory is reported as an error instead of a violation.
+
+```bash
+kairon eval verify-log builder
+kairon eval verify-log builder --min-iterations 3
+kairon eval verify-log builder --iterations-dir path/to/iterations --evals-dir path/to/evals
+```
+
+### Rules
+
+Rule ids are stable and appear in the output.
+
+| Rule id | Fails when |
+|---------|-----------|
+| `front-matter` | Front-matter is missing, unterminated or invalid YAML; a required key is missing or has the wrong type; `date` is not `YYYY-MM-DD`; `change_type` is not `prompt` or `eval`; a score is not written as `N.N` or is outside 0-100; a run name is empty or is not a single path element (no `/`, `\` or `..`). |
+| `headings` | A required heading is missing, duplicated, out of order, or has empty content. |
+| `numbering` | Iteration numbers are not contiguous from `00`; `iteration:` differs from the number in the file name; a file named `iteration-*` does not match `iteration-NN.md`. |
+| `chain` | Iteration N's `baseline_run` is not iteration N-1's `result_run`. |
+| `date-order` | An iteration's `date` is earlier than the previous iteration's. |
+| `run-missing` | `baseline_run` or `result_run` has no `<evals-dir>/results/<run>/summary.json`. |
+| `run-no-score` | The run exists but its `summary.json` has no `agent_scores` entry for the agent. |
+| `score-mismatch` | A claimed score differs from the recorded score by more than 0.1 (see below). |
+| `prompt-unchanged` | `change_type: prompt`, but both runs record the same `prompt_sha256` for the agent. |
+| `prompt-unrecorded` | `change_type: prompt`, but either run records no `prompt_sha256` for the agent, so the claim cannot be checked. |
+| `min-iterations` | The agent has fewer iterations than `--min-iterations`, or has no iterations directory. |
+
+The run-dependent rules (`run-missing`, `run-no-score`, `score-mismatch`, `prompt-unchanged`, `prompt-unrecorded`) are skipped for an iteration whose front-matter is invalid; that iteration is reported once under `front-matter`.
+
+### How scores are checked
+
+A claimed `baseline_score` or `result_score` is compared with `agent_scores[<agent>]` in that run's `summary.json`, multiplied by 100. `agent_scores` is a fraction (`0.725`) that excludes skipped criteria (see [Skipped Criteria](#skipped-criteria) and the [run summary](#run-summary-summaryjson)), so a logged `72.5` matches `0.725`. A difference of up to 0.1 percentage points is accepted; anything larger is a `score-mismatch`. A run whose `summary.json` has no `agent_scores` entry for the agent (it had no scored criteria) is a `run-no-score` violation.
+
+### How the prompt change is checked
+
+For `change_type: prompt`, the agent's `prompt_sha256` (see [How `prompt_sha256` is computed](#how-prompt_sha256-is-computed)) must differ between `baseline_run` and `result_run`; otherwise the prompt did not change and the iteration fails with `prompt-unchanged`. The hash is read from `summary.json` (`agents.<agent>.prompt_sha256`) and falls back to `<agent>.json`, the same sources `eval diff` uses for [Run Provenance](#run-provenance). If either run records no hash, the iteration fails with `prompt-unrecorded` rather than passing unchecked. Iterations with `change_type: eval` are exempt from both prompt rules, because a rubric or case change need not change the prompt hash.
+
+Because a log pins exact run directory names, commit the runs it references under `<evals-dir>/results/`.
 
 ## Container Sandboxing
 

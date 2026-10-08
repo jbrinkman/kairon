@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"fmt"
+	"path/filepath"
 	"strings"
 
 	"github.com/jbrinkman/kairon/internal/eval"
@@ -22,6 +23,9 @@ var (
 	evalBackend        string
 	evalEvalsDir       string
 	evalKeepWorkspaces bool
+
+	verifyLogIterationsDir string
+	verifyLogMinIterations int
 )
 
 var evalCmd = &cobra.Command{
@@ -75,6 +79,40 @@ var diffCmd = &cobra.Command{
 	},
 }
 
+var verifyLogCmd = &cobra.Command{
+	Use:   "verify-log <agent>",
+	Short: "Verify an agent's iteration log against committed eval results",
+	Long: `Verify .kairon/iterations/<agent>/iteration-NN.md against the committed eval results.
+
+Checks the log format, numbering, baseline/result chain, claimed scores and
+(for prompt changes) the recorded prompt_sha256. Each violation is printed to
+stderr as "<file>: [<rule>] <message>" and the command exits non-zero.`,
+	Args: cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		// Arguments are valid at this point; a failure below is not a usage error.
+		cmd.SilenceUsage = true
+		agent := args[0]
+		violations, err := eval.VerifyLog(eval.VerifyLogOptions{
+			Agent:         agent,
+			IterationsDir: verifyLogIterationsDir,
+			EvalsDir:      evalEvalsDir,
+			MinIterations: verifyLogMinIterations,
+		})
+		if err != nil {
+			return err
+		}
+		if len(violations) > 0 {
+			for _, v := range violations {
+				fmt.Fprintln(cmd.ErrOrStderr(), v.String())
+			}
+			return fmt.Errorf("verify-log failed: %d violation(s)", len(violations))
+		}
+		matches, _ := filepath.Glob(filepath.Join(verifyLogIterationsDir, agent, "iteration-*.md"))
+		fmt.Fprintf(cmd.OutOrStdout(), "✅ %s: %d iteration(s) verified\n", agent, len(matches))
+		return nil
+	},
+}
+
 func init() {
 	evalCmd.Flags().BoolVar(&evalList, "list", false, "List available test cases for the agent")
 	evalCmd.Flags().BoolVar(&evalResume, "resume", false, "Resume interrupted evaluation from last completed test")
@@ -91,6 +129,12 @@ func init() {
 	evalCmd.PersistentFlags().StringVar(&evalEvalsDir, "evals-dir", "",
 		"Evals directory holding rubrics, cases, fixtures and results (default \".kairon/evals\")")
 
+	verifyLogCmd.Flags().StringVar(&verifyLogIterationsDir, "iterations-dir", eval.DefaultIterationsDir,
+		"Directory holding iteration logs (<dir>/<agent>/iteration-NN.md)")
+	verifyLogCmd.Flags().IntVar(&verifyLogMinIterations, "min-iterations", eval.DefaultMinIterations,
+		"Minimum number of documented iterations required")
+
 	evalCmd.AddCommand(diffCmd)
+	evalCmd.AddCommand(verifyLogCmd)
 	rootCmd.AddCommand(evalCmd)
 }

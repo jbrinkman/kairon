@@ -1,0 +1,8 @@
+{
+  "agent": "selftest",
+  "git_hash": "ddddddd",
+  "agent_model": "test-model",
+  "prompt_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "resources_present": [],
+  "cases": []
+}

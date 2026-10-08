@@ -1,13 +1,16 @@
 package cmd
 
 import (
+	"bytes"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
 	"github.com/jbrinkman/kairon/internal/inference"
+	"github.com/spf13/cobra"
 )
 
 func TestEvalFlagsRegistered(t *testing.T) {
@@ -151,5 +154,133 @@ func TestEvalSelfTestSucceedsWithDefaults(t *testing.T) {
 	runs, _ := filepath.Glob(filepath.Join(evalsDir, "results", "*", "summary.json"))
 	if len(runs) != 1 {
 		t.Fatalf("summary.json files = %v, want 1", runs)
+	}
+}
+
+// verifyLogSub returns the registered `eval verify-log` subcommand, failing the
+// test when it is not registered.
+func verifyLogSub(t *testing.T) *cobra.Command {
+	t.Helper()
+	for _, c := range evalCmd.Commands() {
+		if c.Name() == "verify-log" {
+			return c
+		}
+	}
+	t.Fatal("verify-log subcommand not registered on eval")
+	return nil
+}
+
+func TestEvalFlagsVerifyLogRegistered(t *testing.T) {
+	sub := verifyLogSub(t)
+
+	if err := sub.Args(sub, nil); err == nil {
+		t.Error("verify-log accepted zero arguments, want exactly one")
+	}
+	if err := sub.Args(sub, []string{"a", "b"}); err == nil {
+		t.Error("verify-log accepted two arguments, want exactly one")
+	}
+	if err := sub.Args(sub, []string{"selftest"}); err != nil {
+		t.Errorf("verify-log rejected one argument: %v", err)
+	}
+
+	iterDir := sub.Flags().Lookup("iterations-dir")
+	if iterDir == nil {
+		t.Fatal("--iterations-dir flag not registered on verify-log")
+	}
+	if iterDir.DefValue != ".kairon/iterations" {
+		t.Errorf("--iterations-dir default = %q, want %q", iterDir.DefValue, ".kairon/iterations")
+	}
+	minIter := sub.Flags().Lookup("min-iterations")
+	if minIter == nil {
+		t.Fatal("--min-iterations flag not registered on verify-log")
+	}
+	if minIter.DefValue != "2" {
+		t.Errorf("--min-iterations default = %q, want %q", minIter.DefValue, "2")
+	}
+	// --evals-dir is the persistent flag of eval, inherited by verify-log.
+	if sub.InheritedFlags().Lookup("evals-dir") == nil {
+		t.Error("verify-log does not inherit --evals-dir")
+	}
+}
+
+// runVerifyLog runs the verify-log subcommand against a fixture set under
+// internal/eval/testdata/verifylog and returns the error and captured stderr.
+func runVerifyLog(t *testing.T, set string, minIterations int) (error, string) {
+	t.Helper()
+	sub := verifyLogSub(t)
+	root := filepath.Join("..", "..", "..", "internal", "eval", "testdata", "verifylog")
+
+	origEvals := evalEvalsDir
+	t.Cleanup(func() {
+		evalEvalsDir = origEvals
+		_ = sub.Flags().Set("iterations-dir", sub.Flags().Lookup("iterations-dir").DefValue)
+		_ = sub.Flags().Set("min-iterations", sub.Flags().Lookup("min-iterations").DefValue)
+		sub.SetErr(nil)
+		sub.SetOut(nil)
+	})
+	evalEvalsDir = filepath.Join(root, "evals")
+	if err := sub.Flags().Set("iterations-dir", filepath.Join(root, set)); err != nil {
+		t.Fatal(err)
+	}
+	if err := sub.Flags().Set("min-iterations", strconv.Itoa(minIterations)); err != nil {
+		t.Fatal(err)
+	}
+
+	var stderr, stdout bytes.Buffer
+	sub.SetErr(&stderr)
+	sub.SetOut(&stdout)
+	err := sub.RunE(sub, []string{"selftest"})
+	return err, stderr.String()
+}
+
+func TestEvalVerifyLogValidSet(t *testing.T) {
+	err, stderr := runVerifyLog(t, "valid", 2)
+	if err != nil {
+		t.Fatalf("valid set returned error: %v (stderr: %s)", err, stderr)
+	}
+	if stderr != "" {
+		t.Errorf("valid set wrote to stderr: %q", stderr)
+	}
+}
+
+func TestEvalVerifyLogViolations(t *testing.T) {
+	tests := []struct {
+		set  string
+		file string
+		rule string
+	}{
+		{"missing-run", "iteration-01.md", "run-missing"},
+		{"score-mismatch", "iteration-00.md", "score-mismatch"},
+		{"gap", "iteration-02.md", "numbering"},
+		{"broken-chain", "iteration-01.md", "chain"},
+		{"no-prompt-change", "iteration-00.md", "prompt-unchanged"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.set, func(t *testing.T) {
+			err, stderr := runVerifyLog(t, tt.set, 2)
+			if err == nil {
+				t.Fatalf("expected error for %s set (stderr: %s)", tt.set, stderr)
+			}
+			if !strings.Contains(err.Error(), "verify-log failed") {
+				t.Errorf("error %q does not mention verify-log failed", err)
+			}
+			line := tt.file + ": [" + tt.rule + "]"
+			if !strings.Contains(stderr, line) {
+				t.Errorf("stderr %q does not contain %q", stderr, line)
+			}
+		})
+	}
+}
+
+func TestEvalVerifyLogMinIterations(t *testing.T) {
+	err, stderr := runVerifyLog(t, "valid", 5)
+	if err == nil {
+		t.Fatal("expected error for valid set with --min-iterations 5")
+	}
+	if !strings.Contains(stderr, "[min-iterations]") {
+		t.Errorf("stderr %q does not contain the min-iterations rule", stderr)
+	}
+	if !strings.Contains(err.Error()+stderr, "min-iterations") {
+		t.Errorf("error %q / stderr %q do not mention min-iterations", err, stderr)
 	}
 }

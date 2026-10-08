@@ -1,0 +1,18 @@
+{
+  "git_hash": "ddddddd",
+  "total_cost": {
+    "tokens_in": 0,
+    "tokens_out": 0,
+    "estimated_usd": 0
+  },
+  "agent_scores": {
+    "selftest": 0.7
+  },
+  "agents": {
+    "selftest": {
+      "agent_model": "test-model",
+      "prompt_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "resources_present": []
+    }
+  }
+}
