@@ -26,12 +26,14 @@ func runParity(t *testing.T, evalsDir, agent string, useSandbox bool) parityRun 
 	resultsDir := filepath.Join(evalsDir, "results")
 	before := snapshotDirs(t, resultsDir)
 
-	if err := RunWithOptions(agent, "", RunOptions{
+	// Parity compares the written results, not the verdict: agents that
+	// legitimately fail their pass threshold are still compared.
+	if err := tolerateThresholdFailure(RunWithOptions(agent, "", RunOptions{
 		Backend:   "stub",
 		EvalsDir:  evalsDir,
 		Sandbox:   useSandbox,
 		NoSandbox: !useSandbox,
-	}); err != nil {
+	})); err != nil {
 		t.Fatalf("%s run (sandbox=%v) failed: %v", agent, useSandbox, err)
 	}
 	added := newRunDirs(t, resultsDir, before)
@@ -228,9 +230,13 @@ func assertScoringParity(t *testing.T, evalsDir, agent string, native, container
 	if err != nil {
 		t.Fatal(err)
 	}
+	rubrics, err := loadRubrics(agent)
+	if err != nil || len(rubrics) != 1 {
+		t.Fatalf("loadRubrics(%q): %v, %d rubrics", agent, err, len(rubrics))
+	}
 	thresholds := map[string]float64{}
 	for _, tc := range cases {
-		thresholds[tc.Name] = getThreshold(tc)
+		thresholds[tc.Name] = getThreshold(rubrics[0], tc)
 	}
 
 	index := func(r AgentResult) map[string]CaseResult {
@@ -254,7 +260,7 @@ func assertScoringParity(t *testing.T, evalsDir, agent string, native, container
 		if max == 0 {
 			return false
 		}
-		return float64(score)/float64(max)*100 >= thresholds[c.CaseName]
+		return scorePercent(float64(score), float64(max)) >= thresholds[c.CaseName]
 	}
 	for name, n := range nc {
 		c, ok := cc[name]

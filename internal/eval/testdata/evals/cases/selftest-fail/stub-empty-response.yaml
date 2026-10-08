@@ -1,0 +1,13 @@
+name: stub-empty-response
+description: "Self-test: a stub agent that returns an empty response produces no output; every scored criterion counts as 0 over its maximum instead of being excluded"
+agent: selftest-fail
+input: |
+  This case is expected to produce no output.
+context:
+  - "This case runs against the deterministic stub backend"
+  - "Expected to FAIL: the scripted stub response is empty, so there is no output to score"
+expected_output: |
+  No output: the stub response is empty.
+stub:
+  turns:
+    - response: ""

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"os/exec"
 	"path"
@@ -303,6 +304,13 @@ func runSingleTestCase(agent string, testcase string, cConfig *ContainerConfig) 
 		fmt.Printf("  Bottlenecks: %d identified (see performance.json)\n", len(profile.Bottlenecks))
 	}
 
+	// The verdict line and the error come last, after the result, summary and
+	// performance output are written.
+	verdict := agentVerdict(result)
+	fmt.Println(formatVerdictLine(agent, verdict))
+	if !verdict.Passed {
+		return &ThresholdError{Agents: []string{agent}}
+	}
 	return nil
 }
 
@@ -420,6 +428,7 @@ func evaluate(rubric Rubric, cases []TestCase, gitHash string, out io.Writer, cC
 		GitHash: gitHash,
 	}
 	applyRunContext(&result, cConfig)
+	result.Threshold = floatRef(rubric.Threshold())
 
 	for i, tc := range cases {
 		fmt.Fprintf(out, "   [%d/%d] %s", i+1, len(cases), tc.Name)
@@ -1456,23 +1465,42 @@ func newCallRecord(req inference.Request, resp inference.Response, err error, wa
 
 func buildSummary(results []AgentResult, gitHash string) Summary {
 	s := Summary{
-		GitHash:     gitHash,
-		AgentScores: make(map[string]float64),
+		GitHash:       gitHash,
+		AgentScores:   make(map[string]float64),
+		AgentVerdicts: make(map[string]AgentVerdict),
 	}
 
 	for _, r := range results {
 		totalScore, totalMax := agentScoreTotals(r)
-		for _, c := range r.Cases {
-			s.TotalCost.TokensIn += c.AgentCost.TokensIn
-			s.TotalCost.TokensOut += c.AgentCost.TokensOut
-			s.TotalCost.EstimatedUSD += c.AgentCost.EstimatedUSD
-		}
 		if totalMax > 0 {
 			s.AgentScores[r.Agent] = totalScore / totalMax
 		}
+		s.AgentVerdicts[r.Agent] = agentVerdict(r)
 	}
+	s.TotalCost = sumVerdictCosts(s.AgentVerdicts)
 
 	return s
+}
+
+// sumVerdictCosts adds up the per-agent costs of the verdicts. Only tokens
+// and estimated USD are summed; Model and UsageSource stay unset because a
+// total spans agents. Agents are added in name order so the float sum is
+// deterministic.
+func sumVerdictCosts(verdicts map[string]AgentVerdict) CostInfo {
+	names := make([]string, 0, len(verdicts))
+	for name := range verdicts {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	var total CostInfo
+	for _, name := range names {
+		c := verdicts[name].Cost
+		total.TokensIn += c.TokensIn
+		total.TokensOut += c.TokensOut
+		total.EstimatedUSD += c.EstimatedUSD
+	}
+	return total
 }
 
 func parseMaxScore(scoring string) int {
@@ -1509,6 +1537,12 @@ func loadRubrics(agentFilter string) ([]Rubric, error) {
 		var r Rubric
 		if err := yaml.Unmarshal(data, &r); err != nil {
 			return nil, fmt.Errorf("failed to parse rubric %s: %w", e.Name(), err)
+		}
+
+		if r.PassThreshold != nil {
+			if v := *r.PassThreshold; math.IsNaN(v) || v < 0 || v > 100 {
+				return nil, fmt.Errorf("invalid rubric %s: pass_threshold must be between 0 and 100, got %v", e.Name(), v)
+			}
 		}
 
 		if agentFilter == "" || r.Agent == agentFilter {
@@ -1560,12 +1594,13 @@ func stripANSISequences(s string) string {
 	return ansiRegex.ReplaceAllString(s, "")
 }
 
-// getThreshold returns the success threshold for a test case (defaults to 80%).
-func getThreshold(tc TestCase) float64 {
+// getThreshold returns the success threshold for a test case: its min_score,
+// else the rubric's threshold.
+func getThreshold(rubric Rubric, tc TestCase) float64 {
 	if tc.MinScore != nil {
 		return *tc.MinScore
 	}
-	return 80.0 // Default 80% threshold
+	return rubric.Threshold()
 }
 
 func getGitShortHash() (string, error) {
@@ -1647,6 +1682,7 @@ func runProgressiveEvaluation(agent, resultsDir string, isResume bool, cConfig *
 		return fmt.Errorf("❌ Fatal: no rubrics found")
 	}
 
+	var failedAgents []string
 	for _, rubric := range rubrics {
 		fmt.Printf("\n📋 Agent: %s\n", rubric.Agent)
 
@@ -1670,6 +1706,14 @@ func runProgressiveEvaluation(agent, resultsDir string, isResume bool, cConfig *
 		}
 
 		fmt.Printf("✅ %s: %d cases completed\n", rubric.Agent, len(result.Cases))
+
+		// One PASS/FAIL line per evaluated agent. Agents skipped above (no
+		// cases directory) are not evaluated and get no verdict.
+		verdict := agentVerdict(result)
+		fmt.Println(formatVerdictLine(rubric.Agent, verdict))
+		if !verdict.Passed {
+			failedAgents = append(failedAgents, rubric.Agent)
+		}
 	}
 
 	// Clean up progress file on completion
@@ -1678,6 +1722,12 @@ func runProgressiveEvaluation(agent, resultsDir string, isResume bool, cConfig *
 
 	fmt.Printf("\n🎉 Evaluation complete\n")
 	fmt.Printf("📂 Results: %s\n", resultsDir)
+
+	// Returned only now that every result, the summary and the progress-file
+	// cleanup are done.
+	if len(failedAgents) > 0 {
+		return &ThresholdError{Agents: failedAgents}
+	}
 	return nil
 }
 
@@ -1852,6 +1902,9 @@ func evaluateProgressive(rubric Rubric, cases []TestCase, gitHash string, out io
 		}
 	}
 
+	// Re-stamp from the current rubric, also on resume.
+	result.Threshold = floatRef(rubric.Threshold())
+
 	for i, tc := range cases {
 		// Skip if already completed during resume
 		if isResume && isTestCaseCompleted(resultsDir, rubric.Agent, tc.Name) {
@@ -1994,24 +2047,18 @@ func updateIncrementalSummary(summaryFile string, agentResult AgentResult, gitHa
 
 	// Calculate and update agent score
 	totalScore, totalMax := agentScoreTotals(agentResult)
-	var agentCost CostInfo
-
-	for _, c := range agentResult.Cases {
-		agentCost.TokensIn += c.AgentCost.TokensIn
-		agentCost.TokensOut += c.AgentCost.TokensOut
-		agentCost.EstimatedUSD += c.AgentCost.EstimatedUSD
-
-		agentCost.TokensIn += c.JudgeCost.TokensIn
-		agentCost.TokensOut += c.JudgeCost.TokensOut
-		agentCost.EstimatedUSD += c.JudgeCost.EstimatedUSD
-	}
-
 	if totalMax > 0 {
 		summary.AgentScores[agentResult.Agent] = totalScore / totalMax
 	}
 
-	// Update total cost (this is cumulative across all agents)
-	summary.TotalCost = agentCost
+	// Record the verdict (it carries the agent's cost) and recompute the
+	// total from all recorded verdicts. The agent's entry is replaced, not
+	// added to, so saving it after every case does not double count.
+	if summary.AgentVerdicts == nil {
+		summary.AgentVerdicts = make(map[string]AgentVerdict)
+	}
+	summary.AgentVerdicts[agentResult.Agent] = agentVerdict(agentResult)
+	summary.TotalCost = sumVerdictCosts(summary.AgentVerdicts)
 
 	// Provenance. A multi-agent run cannot carry a single top-level agent
 	// model/hash, so those are set only when exactly one agent is covered.

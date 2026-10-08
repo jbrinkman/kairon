@@ -1,12 +1,14 @@
 package cmd
 
 import (
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/jbrinkman/kairon/internal/eval"
 	"github.com/jbrinkman/kairon/internal/inference"
 )
 
@@ -151,5 +153,44 @@ func TestEvalSelfTestSucceedsWithDefaults(t *testing.T) {
 	runs, _ := filepath.Glob(filepath.Join(evalsDir, "results", "*", "summary.json"))
 	if len(runs) != 1 {
 		t.Fatalf("summary.json files = %v, want 1", runs)
+	}
+}
+
+// A failed verdict is a result, not a usage mistake: RunE must silence the
+// usage text (and cobra's own error line, since main prints it) for
+// ErrThresholdFailed, and must leave them untouched for other errors.
+func TestEvalThresholdFailureSilencesUsage(t *testing.T) {
+	origBackend, origDir := evalBackend, evalEvalsDir
+	t.Cleanup(func() {
+		evalBackend, evalEvalsDir = origBackend, origDir
+		evalCmd.SilenceUsage, evalCmd.SilenceErrors = false, false
+	})
+
+	evalsDir := filepath.Join(t.TempDir(), "evals")
+	if err := os.CopyFS(evalsDir, os.DirFS(filepath.Join("..", "..", "..", "internal", "eval", "testdata", "evals"))); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(filepath.Join(evalsDir, "results")); err != nil {
+		t.Fatal(err)
+	}
+	evalBackend, evalEvalsDir = inference.NameStub, evalsDir
+
+	evalCmd.SilenceUsage, evalCmd.SilenceErrors = false, false
+	err := evalCmd.RunE(evalCmd, []string{"selftest-fail"})
+	if !errors.Is(err, eval.ErrThresholdFailed) {
+		t.Fatalf("err = %v, want ErrThresholdFailed", err)
+	}
+	if !evalCmd.SilenceUsage || !evalCmd.SilenceErrors {
+		t.Errorf("SilenceUsage=%v SilenceErrors=%v, want both true for a threshold failure",
+			evalCmd.SilenceUsage, evalCmd.SilenceErrors)
+	}
+
+	evalCmd.SilenceUsage, evalCmd.SilenceErrors = false, false
+	evalBackend = "nope"
+	if err := evalCmd.RunE(evalCmd, []string{"selftest"}); err == nil || errors.Is(err, eval.ErrThresholdFailed) {
+		t.Fatalf("err = %v, want a non-threshold error", err)
+	}
+	if evalCmd.SilenceUsage || evalCmd.SilenceErrors {
+		t.Error("usage/errors silenced for a non-threshold error")
 	}
 }

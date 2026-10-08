@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 
@@ -50,7 +51,7 @@ var evalCmd = &cobra.Command{
 			}
 		}
 
-		return eval.RunWithOptions(agent, testcase, eval.RunOptions{
+		err := eval.RunWithOptions(agent, testcase, eval.RunOptions{
 			List:           evalList,
 			Resume:         evalResume,
 			Sandbox:        evalSandbox,
@@ -63,6 +64,14 @@ var evalCmd = &cobra.Command{
 			EvalsDir:       evalEvalsDir,
 			KeepWorkspaces: evalKeepWorkspaces,
 		})
+		if errors.Is(err, eval.ErrThresholdFailed) {
+			// A failed verdict is a result, not a usage mistake: don't print
+			// the usage text, and let main print the single "Error: ..." line
+			// (and exit 1) instead of cobra printing it a second time.
+			cmd.SilenceUsage = true
+			cmd.SilenceErrors = true
+		}
+		return err
 	},
 }
 

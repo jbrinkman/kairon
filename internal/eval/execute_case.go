@@ -51,7 +51,7 @@ func caseTimeout(tc TestCase) time.Duration {
 // workspace see it. WorkspaceDir is recorded whether or not the directory is
 // later removed.
 func executeCase(rubric Rubric, tc TestCase, cConfig *ContainerConfig, out io.Writer, keep bool) CaseResult {
-	cr := CaseResult{CaseName: tc.Name}
+	cr := CaseResult{CaseName: tc.Name, Threshold: floatRef(getThreshold(rubric, tc))}
 
 	// Fail fast, before any workspace or agent call, for cases that are only
 	// safe inside the sandbox.

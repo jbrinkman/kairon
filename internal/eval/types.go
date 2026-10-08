@@ -11,6 +11,21 @@ import (
 type Rubric struct {
 	Agent    string      `yaml:"agent" json:"agent"`
 	Criteria []Criterion `yaml:"criteria" json:"criteria"`
+	// PassThreshold is the agent's pass bar and the default case threshold,
+	// as a percent (0-100). Nil means DefaultPassThreshold.
+	PassThreshold *float64 `yaml:"pass_threshold,omitempty" json:"pass_threshold,omitempty"`
+}
+
+// DefaultPassThreshold is the pass bar (percent) used when a rubric does not
+// set pass_threshold.
+const DefaultPassThreshold = 95.0
+
+// Threshold returns the rubric's pass threshold in percent.
+func (r Rubric) Threshold() float64 {
+	if r.PassThreshold != nil {
+		return *r.PassThreshold
+	}
+	return DefaultPassThreshold
 }
 
 // Criterion is a single scoring dimension within a rubric.
@@ -30,6 +45,16 @@ type SetupEntry struct {
 	Path    string `yaml:"path,omitempty" json:"path,omitempty"` // optional path for file entries
 }
 
+// AgentVerdict is the pass/fail verdict for one agent's evaluated cases.
+type AgentVerdict struct {
+	Score       float64  `json:"score"`     // percent, 0-100
+	Threshold   float64  `json:"threshold"` // percent, 0-100
+	Passed      bool     `json:"passed"`
+	CasesTotal  int      `json:"cases_total"`
+	CasesFailed int      `json:"cases_failed"`
+	Cost        CostInfo `json:"cost"`
+}
+
 // TestCase defines input and expected characteristics for an agent evaluation.
 type TestCase struct {
 	Name           string       `yaml:"name" json:"name"`
@@ -39,7 +64,7 @@ type TestCase struct {
 	Context        []string     `yaml:"context,omitempty" json:"context,omitempty"`
 	Setup          []SetupEntry `yaml:"setup,omitempty" json:"setup,omitempty"`
 	Agent          string       `yaml:"agent" json:"agent"`
-	MinScore       *float64     `yaml:"min_score,omitempty" json:"min_score,omitempty"` // Success threshold (0-100), defaults to 80%
+	MinScore       *float64     `yaml:"min_score,omitempty" json:"min_score,omitempty"` // Case threshold (0-100); overrides the rubric's pass_threshold
 
 	// Stub scripts the agent's response for the stub inference backend.
 	// Other backends ignore it.
@@ -148,6 +173,10 @@ type CaseResult struct {
 	AgentCost    CostInfo         `json:"agent_cost"`
 	JudgeCost    CostInfo         `json:"judge_cost"`
 	ErrorContext *ErrorContext    `json:"error_context,omitempty"`
+	// Threshold is the effective pass threshold (percent) of this case: its
+	// min_score, else the rubric's. Nil in results written before thresholds
+	// were recorded; readers then fall back to the agent threshold.
+	Threshold *float64 `json:"threshold,omitempty"`
 	// WorkspaceDir is the host path of the case's workspace. It is recorded
 	// whether or not the directory is removed after the case.
 	WorkspaceDir string `json:"workspace_dir,omitempty"`
@@ -180,6 +209,9 @@ type AgentResult struct {
 	AgentModel   string `json:"agent_model,omitempty"`
 	JudgeModel   string `json:"judge_model,omitempty"`
 	PromptSHA256 string `json:"prompt_sha256,omitempty"`
+	// Threshold is the rubric's pass threshold (percent) for this agent. Nil
+	// in results written before thresholds were recorded (treated as 95).
+	Threshold *float64 `json:"threshold,omitempty"`
 	// Sandbox records whether the run was containerised (--sandbox). It is a
 	// pointer so a result written before sandbox-mode tracking (legacy, field
 	// absent) is distinguishable (nil) from an explicitly native run (false):
@@ -221,7 +253,12 @@ type RunOptions struct {
 type Summary struct {
 	GitHash     string             `json:"git_hash"`
 	TotalCost   CostInfo           `json:"total_cost"`
-	AgentScores map[string]float64 `json:"agent_scores"` // agent -> average score
+	AgentScores map[string]float64 `json:"agent_scores"` // agent -> average score (fraction, 0-1)
+
+	// AgentVerdicts is the per-agent pass/fail verdict (percent scores),
+	// keyed by agent. TotalCost is the sum of the verdict costs. Absent in
+	// summaries written before verdicts were recorded.
+	AgentVerdicts map[string]AgentVerdict `json:"agent_verdicts,omitempty"`
 
 	// Provenance. JudgeModel and Agents are always set for a pinned run; the
 	// top-level agent fields are populated only when the run covers exactly

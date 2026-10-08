@@ -58,7 +58,9 @@ func runEvalIn(t *testing.T, evalsDir, agent string, opts RunOptions) AgentResul
 
 	opts.Backend = "stub"
 	opts.EvalsDir = evalsDir
-	if err := RunWithOptions(agent, "", opts); err != nil {
+	// These runs inspect the written results, not the verdict: agents such as
+	// selftest-fail legitimately fail their pass threshold.
+	if err := tolerateThresholdFailure(RunWithOptions(agent, "", opts)); err != nil {
 		t.Fatalf("run of %s (sandbox=%v, keep=%v) failed: %v", agent, opts.Sandbox, opts.KeepWorkspaces, err)
 	}
 	added := newRunDirs(t, resultsDir, before)

@@ -441,8 +441,8 @@ func TestSharedTotalsEqualAcrossModes(t *testing.T) {
 	if ns != cs || nm != cm {
 		t.Fatalf("totals differ: native %v/%v, container %v/%v", ns, nm, cs, cm)
 	}
-	if ns != 7 || nm != 12 {
-		t.Errorf("totals = %v/%v, want 7/12 (skipped criterion excluded)", ns, nm)
+	if ns != 7 || nm != 16 {
+		t.Errorf("totals = %v/%v, want 7/16 (skipped criterion counts as 0)", ns, nm)
 	}
 	for i := range cases {
 		a, am := caseTotals(native.Cases[i])
@@ -471,7 +471,7 @@ func TestSharedTotalsEqualAcrossModes(t *testing.T) {
 	if !reflect.DeepEqual(nsum.AgentScores, csum.AgentScores) {
 		t.Errorf("agent_scores differ: native %v, container %v", nsum.AgentScores, csum.AgentScores)
 	}
-	if got, want := nsum.AgentScores["builder"], 7.0/12.0; got != want {
+	if got, want := nsum.AgentScores["builder"], 7.0/16.0; got != want {
 		t.Errorf("agent score = %v, want %v", got, want)
 	}
 

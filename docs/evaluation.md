@@ -43,6 +43,7 @@ Each agent has a rubric YAML file defining scoring criteria:
 
 ```yaml
 agent: architect
+pass_threshold: 95        # Optional: the agent's pass bar, in percent (0-100). Default 95.
 criteria:
   - name: task_decomposition
     description: "Spec breaks work into discrete, independently implementable tasks"
@@ -58,11 +59,14 @@ criteria:
 
 Fields:
 - `agent` — which agent this rubric evaluates
+- `pass_threshold` — (optional) the agent's pass bar as a **percent** from 0 to 100, default `95`. An agent passes when its aggregate score, as a percent of the maximum, is at least this value. It is also the default per-case threshold; a case's [`min_score`](#test-case-format) overrides it for that case. A value outside 0–100 (or not a number) fails the run when the rubrics are loaded, with an error naming the rubric file. See [Pass Thresholds, Verdicts and Exit Code](#pass-thresholds-verdicts-and-exit-code).
 - `criteria[].name` — unique identifier for the criterion
 - `criteria[].description` — what is being measured
 - `criteria[].scoring` — score range (e.g. "1-5")
 - `criteria[].deterministic` — if true, scored by code checks rather than LLM
 - `criteria[].type` — set to "cost" for cost-tracking criteria
+
+> **Rubrics without `pass_threshold` inherit 95.** Omitting the key is the same as `pass_threshold: 95`, so an agent must score at least 95% of the maximum to pass. Set `pass_threshold` explicitly to choose a different bar for an agent (for example `pass_threshold: 80`, or `0` to record scores without ever failing the agent).
 
 ## Test Case Format
 
@@ -75,6 +79,7 @@ output: |
   Optional: pre-captured agent output for offline evaluation.
 workspace: seeded         # Optional: workspace fixture name (see Case Workspaces)
 timeout: 30s               # Optional: per-case timeout (Go duration)
+min_score: 80              # Optional: this case's pass threshold in percent; overrides the rubric's pass_threshold
 requires_sandbox: true     # Optional: refuse to run without --sandbox (see Sandbox Containment)
 gh_issue:                  # Optional: data for the sandbox's fake `gh issue view` (needs requires_sandbox)
   title: "Add widget"
@@ -96,6 +101,7 @@ Fields:
 - `setup` — (optional) extra prompt context; `type: file` entries read `path` from disk
 - `workspace` — (optional) name of a fixture under `<evals-dir>/fixtures/workspaces/` that the case's workspace starts from (see [Case Workspaces](#case-workspaces)). Must match `^[A-Za-z0-9._-]+$` (and not be `.` or `..`) and the fixture directory must exist, otherwise loading the cases fails with an error naming the case.
 - `timeout` — (optional) a positive Go duration such as `30s` or `2m`. It overrides the default timeout for this case, natively and under `--sandbox` (see [Case Timeout](#case-timeout)). An invalid or non-positive value is a load error naming the case.
+- `min_score` — (optional) the case's own pass threshold, as a percent (0–100). It **overrides the rubric's `pass_threshold`** for this case; without it the case uses the rubric's `pass_threshold` (default 95). The effective value is what the case's `✅`/`⚠️`/`❌` line is compared against, it is recorded on the case result as `threshold`, and it decides whether the case counts in the agent's `cases_failed`. It does **not** change the agent's own pass bar, which is always the rubric's `pass_threshold` (see [Pass Thresholds, Verdicts and Exit Code](#pass-thresholds-verdicts-and-exit-code)).
 - `requires_sandbox` — (optional, default `false`) when `true`, the case refuses to run without `--sandbox`: a native run records the case as failed with `case "<name>" requires --sandbox` before it creates a workspace or invokes anything (see [Sandbox Containment](#sandbox-containment)).
 - `gh_issue` — (optional) the issue the sandbox's fake `gh issue view` answers with: `number` (default `1`), `title` (required), `body`, `state` (default `OPEN`), `author` (default `fake-user`), `labels`. It is only valid together with `requires_sandbox: true`; otherwise loading the cases fails with an error naming the case, because a native run would call the developer's **real** `gh` (see [The fake `gh`](#the-fake-gh)).
 - `mocks` — (optional) a list of `{command, script}` entries that each place a mock of a command on the container `PATH`, so a bare `aws`, `npm` or `curl` resolves to the author's script instead of a real tool. `command` is the bare command name (it must match `^[A-Za-z0-9][A-Za-z0-9._+-]*$`, must be unique within the case, and cannot be `gh`, which is the harness's fake). `script` is a path relative to the evals directory (no absolute path, no `..`) naming an existing regular file; `fixtures/mock-cli.sh` is the reusable one. Like `gh_issue`, `mocks` is only valid together with `requires_sandbox: true`, because a native run has no such directory on `PATH` and would silently call the **real** tool; otherwise loading the cases fails with an error naming the case. See [Preventing Production Side Effects](#preventing-production-side-effects-containment-and-mocking).
@@ -127,6 +133,8 @@ kairon eval --evals-dir path/to/evals architect
 | `--evals-dir` | `.kairon/evals` | Directory holding `rubrics/`, `cases/`, `fixtures/`, optional `agents/`, and `results/`. Persistent flag, so `kairon eval diff` honours it too. |
 | `--keep-workspaces` | off | Keep each case's workspace after the run instead of deleting it. The path is printed on the case line and recorded as `workspace_dir` in the results (see [Case Workspaces](#case-workspaces)). Combine with `--debug` to inspect both the preserved container and its workspace. |
 
+Each evaluated agent ends with a `PASS`/`FAIL` line, and `kairon eval` exits non-zero when any evaluated agent fails its pass threshold (0 when all pass). See [Pass Thresholds, Verdicts and Exit Code](#pass-thresholds-verdicts-and-exit-code).
+
 ## Adding Test Cases
 
 1. Create a YAML file in `.kairon/evals/cases/<agent>/`
@@ -141,7 +149,13 @@ kairon eval --evals-dir path/to/evals architect
 
 ### Skipped Criteria
 
-Non-deterministic criteria require an LLM judge to score. When no LLM judge is configured, these criteria are marked as `skipped` in the results and excluded from aggregate score calculations. This prevents false signal — scores only reflect what was actually measured.
+A criterion that could not be scored is marked `skipped` in the results, with the reason in `reasoning`. This happens when:
+
+- the case produced no output (the agent call failed, timed out, the workspace could not be built, or a `requires_sandbox` case ran natively),
+- a deterministic criterion has no checker implemented for its name,
+- an LLM-judged criterion has no output to judge, or the judge call errors or returns a result that cannot be parsed.
+
+**Errored, skipped and no-output criteria count as 0 and stay in the denominator.** A skipped criterion contributes a `score` of 0 and its full `max_score` to the case total, so a failure can only lower a score, never raise it. The `skipped` flag is kept in the result as the reason for the 0; it does not change the arithmetic. (Cost criteria, `type: cost`, are not scored and add nothing to either side.)
 
 Skipped criteria appear in results as:
 ```json
@@ -150,11 +164,53 @@ Skipped criteria appear in results as:
   "score": 0,
   "max_score": 5,
   "skipped": true,
-  "reasoning": "LLM judge not configured — criterion skipped"
+  "reasoning": "no output available for LLM judging"
 }
 ```
 
-To get full scoring coverage, configure an LLM judge (future feature). Until then, aggregate scores reflect only deterministic criteria.
+For example, a case with two criteria out of 5 where one scores 5 and the other is skipped scores 5/10 = 50%, not 5/5 = 100%. A case with no output at all scores 0 over the sum of all its criteria maxima. A case or agent with nothing scorable (maximum 0, for example a rubric with only cost criteria) scores 0 and fails.
+
+Scores are computed as a percent with the multiplication first (`score * 100 / max`), so 19 of 20 is exactly 95% and meets a 95 threshold.
+
+### Pass Thresholds, Verdicts and Exit Code
+
+Every evaluated agent gets a pass/fail verdict, and `kairon eval` turns it into its exit code.
+
+**Thresholds.** An agent's pass bar is the rubric's [`pass_threshold`](#rubric-format) (percent, default 95; a rubric without it inherits 95). Each case has its own threshold: its [`min_score`](#test-case-format) when set, otherwise the rubric's `pass_threshold`. Both are recorded in the results (`threshold` on the agent result and on each case result).
+
+**The verdict.** After an agent's cases are scored, the verdict is derived from that agent's result alone:
+
+| Field | Meaning |
+|-------|---------|
+| `score` | The agent's aggregate score as a percent (0–100): the sum of every case's criterion scores over the sum of their maxima, skipped criteria counted as 0. |
+| `threshold` | The agent's pass bar (the rubric's `pass_threshold`). |
+| `passed` | `true` when `score >= threshold`. |
+| `cases_total` | Number of cases evaluated for the agent. |
+| `cases_failed` | Number of cases whose own score is below their own threshold (their `min_score`, else the rubric's `pass_threshold`). A case with nothing scorable counts as failed. |
+| `cost` | The agent's agent + judge cost: `tokens_in`, `tokens_out`, `estimated_usd`. |
+
+**`passed` depends on the aggregate score only.** `cases_failed` is informational: it is reported in the PASS/FAIL line and in `summary.json`, but a non-zero `cases_failed` does not by itself fail the agent. For example, an agent can pass at 96% overall while one of its cases is below its threshold, and an agent can fail with `0/N cases failed` when its cases carry a `min_score` lower than the rubric's `pass_threshold` and score between the two.
+
+**The PASS/FAIL line.** After each agent finishes, `kairon eval` prints exactly one line that starts with `PASS ` or `FAIL `:
+
+```
+PASS|FAIL <agent>: <score>% (threshold <t>%, <failed>/<total> cases failed)
+```
+
+Scores and thresholds are printed with one decimal place. For example:
+
+```
+PASS selftest: 100.0% (threshold 95.0%, 0/5 cases failed)
+FAIL selftest-fail: 0.0% (threshold 95.0%, 2/2 cases failed)
+```
+
+An agent with no cases directory is skipped with a warning; it is not evaluated and gets no line and no verdict. For a single-case run (`kairon eval <agent> <case>`) the line is printed for that agent after the performance summary.
+
+**Exit code.** `kairon eval` exits **non-zero (1) when any evaluated agent fails** its threshold, and **0 when all evaluated agents pass**. The failure is reported only after the whole run has finished: every result file and `summary.json` are written and the `.progress` file is removed first, so a failing run leaves complete, comparable results behind. The process prints a one-line error naming the failing agents, without the usage text, because a failed verdict is a result and not a command-line mistake. In Go, the returned error satisfies `errors.Is(err, eval.ErrThresholdFailed)`.
+
+Other failures (a refused model pin, a missing rubrics directory, an unavailable backend, and so on) are still errors with a non-zero exit as before. `--list`, `--perf` and `--cleanup` do not produce verdicts and are unaffected.
+
+> **Heads-up for CI and existing evals.** Because the default bar is 95%, an agent whose rubric does not set `pass_threshold` now fails (and `kairon eval` exits non-zero) until its score reaches 95% or the rubric sets an explicit, lower `pass_threshold`.
 
 Results are written to `<evals-dir>/results/<timestamp>-<git-hash>/` (default `.kairon/evals/results/...`) enabling before/after comparison when prompts change.
 
@@ -225,7 +281,7 @@ Each `agent_cost` and `judge_cost` in a result file carries `model` (when known)
 - `kiro-cli` exposes neither the served model nor token counts, so its usage is always `estimated`. The `model` it records is the model the process was *launched with* (the value passed as `--model`, i.e. the pinned model), not a model confirmed by the service. It is empty (omitted from JSON) only for unpinned calls, such as code paths that do not go through `kairon eval`.
 - `estimated_usd` is always computed from the token counts at a fixed $3 / $15 per million input / output tokens, whether the counts were reported or estimated.
 - When several judge calls are accumulated into `judge_cost`, the merged `usage_source` is `reported` only if every contributing call was `reported`; otherwise it is `estimated`. The stub judge always produces estimated usage with model `stub`.
-- `summary.json` totals only `tokens_in`, `tokens_out` and `estimated_usd` (plus the provenance, execution-mode and containment fields described below).
+- `summary.json` totals only `tokens_in`, `tokens_out` and `estimated_usd` (plus the provenance, execution-mode and containment fields described below). Its `total_cost` is the sum of the per-agent costs in `agent_verdicts`.
 - The individual calls behind `agent_cost` and `judge_cost` are listed in each case's `calls` array (see [Per-call records](#per-call-records-calls)).
 
 Example from the self-test `stub-usage` case:
@@ -403,13 +459,31 @@ The per-agent result file always carries:
 
 #### Run summary (`summary.json`)
 
-`summary.json` always carries `judge_model` and an `agents` map with `agent_model`, `prompt_sha256` and `resources_present` per agent. It also records the run's execution mode in `sandbox` and, for container runs, a per-agent `containment` map. The example below is a `--sandbox` (container) run (the `tool_trust` values are illustrative; they follow each agent's trust set, see [Tool trust](#tool-trust)):
+`summary.json` always carries `judge_model` and an `agents` map with `agent_model`, `prompt_sha256` and `resources_present` per agent. It also records each evaluated agent's pass/fail verdict in `agent_verdicts` (see [Pass Thresholds, Verdicts and Exit Code](#pass-thresholds-verdicts-and-exit-code)), the run's execution mode in `sandbox` and, for container runs, a per-agent `containment` map. The example below is a `--sandbox` (container) run (the `tool_trust` values are illustrative; they follow each agent's trust set, see [Tool trust](#tool-trust)):
 
 ```json
 {
   "git_hash": "a1b2c3d",
-  "total_cost": { … },
+  "total_cost": { "tokens_in": 4210, "tokens_out": 980, "estimated_usd": 0.027330 },
   "agent_scores": { "architect": 0.85, "builder": 0.8 },
+  "agent_verdicts": {
+    "architect": {
+      "score": 85,
+      "threshold": 95,
+      "passed": false,
+      "cases_total": 3,
+      "cases_failed": 2,
+      "cost": { "tokens_in": 2400, "tokens_out": 560, "estimated_usd": 0.015600 }
+    },
+    "builder": {
+      "score": 80,
+      "threshold": 75,
+      "passed": true,
+      "cases_total": 2,
+      "cases_failed": 1,
+      "cost": { "tokens_in": 1810, "tokens_out": 420, "estimated_usd": 0.011730 }
+    }
+  },
   "judge_model": "claude-sonnet-5.5",
   "agents": {
     "architect": { "agent_model": "claude-sonnet-5.5", "prompt_sha256": "…", "resources_present": [] },
@@ -425,7 +499,8 @@ The per-agent result file always carries:
 
 | Field | Description |
 |-------|-------------|
-| `git_hash`, `total_cost`, `agent_scores` | Run totals. `agent_scores` is score / maximum per agent, skipped criteria excluded (see [Skipped Criteria](#skipped-criteria)). |
+| `git_hash`, `total_cost`, `agent_scores` | Run totals. `total_cost` is the **sum across all agents** in the run (`tokens_in`, `tokens_out`, `estimated_usd` of each agent's `agent_verdicts.<agent>.cost`), not the cost of the agent saved last; it stays correct when an agent is saved after every case and when a run is resumed. `agent_scores` is score / maximum per agent as a fraction (0–1), with skipped criteria counted as 0 over their maximum (see [Skipped Criteria](#skipped-criteria)). |
+| `agent_verdicts` | Map of agent name to its verdict, one entry per evaluated agent: `score` (percent, 0–100), `threshold` (percent, the agent's pass bar), `passed` (`score >= threshold`; depends on the aggregate score only), `cases_total`, `cases_failed` (cases below their own threshold; informational) and `cost` (`tokens_in`, `tokens_out`, `estimated_usd` for the agent's agent + judge calls). Absent in a `summary.json` written before verdicts were recorded. |
 | `judge_model`, `agents` | Run-level provenance, as described above. |
 | `sandbox` | Execution mode of the whole run: `"native"` or `"container"`. Absent in a `summary.json` written before mode tracking. |
 | `containment` | Map of agent name to its containment record (see [Execution mode and containment](#execution-mode-and-containment)). Present for `container` runs; **absent** for `native` runs. |
@@ -459,12 +534,12 @@ The containment record has four fields:
 A native run and a `--sandbox` run of the same case are meant to be directly comparable, and the harness is built so that this holds structurally rather than by convention:
 
 - **Provenance.** `agent_model`, `judge_model`, `prompt_sha256` and `resources_present`, in `<agent>.json` and `summary.json`, and `model` and `prompt_sha256` on every `calls[]` record, come from the same pinning and call-record code on both paths, so they are identical for the same inputs.
-- **Scoring.** Both paths score a case through the same function. The score and denominator arithmetic (skipped criteria excluded from numerator and denominator) lives in one place, shared by the printed case result, the incremental `summary.json` writer and the summary builder, so a native and a container summary cannot compute `agent_scores` differently.
+- **Scoring.** Both paths score a case through the same function. The score and denominator arithmetic (every criterion counts, skipped or not: skipped, errored and no-output criteria score 0 and stay in the denominator) lives in one place, shared by the printed case result, the incremental `summary.json` writer, the verdict and the summary builder, so a native and a container summary cannot compute `agent_scores` or `agent_verdicts` differently.
 - **What may differ.** Apart from fields that are inherently per-run (timestamps in directory names, per-case container ids and workspace paths), a container run differs from a native run only in `sandbox`, `containment`, and `trusted_tools` on the agent call records.
 
 The daemon-gated test `TestProvenanceParitySandbox` (run by `task eval:selftest:sandbox`) checks this by running `selftest` and `selftest-fail` natively and with `--sandbox` on the stub backend. It compares the provenance fields in `<agent>.json`, `summary.json` and every call record, checks `native` without containment against `container` with it, compares the **whole** `Summary` after normalising only `sandbox` and `containment`, compares per-case score totals and the threshold outcome, and requires `eval diff` between the two runs to succeed and report the mode difference. Like the other gated tests it skips, without passing, when the gate is unset or no daemon is reachable (see [Self-Test in the Container Sandbox](#self-test-in-the-container-sandbox)).
 
-**The per-agent threshold verdict (E7) is separate work.** There is no per-agent pass threshold, PASS/FAIL verdict or non-zero exit code in `kairon eval` yet: scores are reported, and `kairon eval` does not fail the process on them. This change does not add one. What it guarantees is parity of the **inputs** such a verdict will use (the per-case and per-agent score and denominator, computed in one shared place). When the verdict is added it will build on that shared code, and because the parity test compares the whole `Summary`, any verdict fields added to it are covered on both paths.
+**The per-agent threshold verdict.** The verdict (`agent_verdicts` in `summary.json`, the `PASS`/`FAIL` line and the exit code) is built on that same shared score and denominator code, so it is identical on both paths. Because the parity test compares the **whole** `Summary` (after normalising only `sandbox` and `containment`), the verdict fields are covered on both paths too. See [Pass Thresholds, Verdicts and Exit Code](#pass-thresholds-verdicts-and-exit-code).
 
 #### How `prompt_sha256` is computed
 
@@ -648,7 +723,7 @@ internal/eval/testdata/evals/
   agents/selftest.json              # minimal agent config (model: claude-sonnet-5.5; prompt: file://./selftest-prompt.md;
                                     #   resources: a non-existent selftest-conventions skill, so resources_present is [])
   agents/selftest-prompt.md
-  agents/selftest-fail.json         # separate agent whose case is expected to FAIL (see below)
+  agents/selftest-fail.json         # separate agent whose cases are expected to FAIL (see below)
   agents/selftest-fail-prompt.md
   rubrics/selftest.yaml             # structural_completeness (deterministic), clarity (LLM-judged), cost_efficiency (cost)
   rubrics/selftest-fail.yaml
@@ -658,6 +733,7 @@ internal/eval/testdata/evals/
   cases/selftest/stub-marker.yaml   # stub turn command 'echo hi > marker.txt' leaves marker.txt in the case workspace
   cases/selftest/stub-seeded-workspace.yaml  # workspace: seeded; the stub appends to README.md -> ' M README.md'
   cases/selftest-fail/stub-timeout.yaml      # timeout: 1s, stub turn command 'sleep 3' -> timeout failure
+  cases/selftest-fail/stub-empty-response.yaml  # stub turn with an empty response -> no agent output, every scored criterion 0
   agents/selftest-sandbox.json      # containment agent, allowedTools [read, write]; its cases are all requires_sandbox
   agents/selftest-sandbox-prompt.md
   agents/selftest-sandbox-ro.json   # containment agent, allowedTools [read]
@@ -678,15 +754,20 @@ internal/eval/testdata/evals/
 
 `selftest.json` declares a `model` so the self-test passes the model-pinning pre-flight, and lists a `skill://.kiro/skills/selftest-conventions/SKILL.md` resource that intentionally does not exist. It exercises the "missing resources are normal" rule: the run succeeds and the recorded `resources_present` is `[]`.
 
-The `selftest` agent has five cases and all of them pass (`task eval:selftest`). The `selftest-fail` agent is deliberately separate, so `selftest` keeps meaning "everything passes". Its one case, `stub-timeout`, is **expected to fail**: it records a timeout failure (empty `actual_output`, `error_context.stderr` containing `timeout after 1s`) in about a second. Run it with:
+The `selftest` agent has five cases and all of them pass: `task eval:selftest` prints `PASS selftest: 100.0% (threshold 95.0%, 0/5 cases failed)` and **exits 0**. The `selftest-fail` agent is deliberately separate, so `selftest` keeps meaning "everything passes". It has two cases, both **expected to fail**:
+
+- `stub-timeout` records a timeout failure (empty `actual_output`, `error_context.stderr` containing `timeout after 1s`) in about a second.
+- `stub-empty-response` has a stub turn whose `response` is empty. The stub backend treats that as an agent-call error (`case has no stub.turns[0].response`), so the case has an empty `actual_output`, and every scored criterion is recorded as `skipped` with `score` 0 and its full `max_score`. It exercises the rule that no-output criteria count as 0 and stay in the denominator.
+
+Run it with:
 
 ```bash
 go run ./cmd/kairon eval --backend stub --no-sandbox --evals-dir internal/eval/testdata/evals selftest-fail
 ```
 
-The run itself exits 0; the failure is the recorded result for that case.
+The `selftest-fail` command **exits non-zero**: the agent scores 0% against the default 95% threshold, so it prints `FAIL selftest-fail: 0.0% (threshold 95.0%, 2/2 cases failed)`, writes its results and `summary.json` (with `agent_verdicts.selftest-fail.passed: false`) and then returns the threshold error. The failure is both the recorded result for each case and the process exit code. `task eval:selftest` runs only the `selftest` agent and stays green. A run that covers several agents records a `total_cost` equal to the sum of the agents' costs.
 
-The `selftest-sandbox` and `selftest-sandbox-ro` agents exercise [Sandbox Containment](#sandbox-containment) with the stub backend (`selftest-sandbox` includes `stub-mock-cli`, the working example of [the mock pattern](#preventing-production-side-effects-containment-and-mocking)). Every one of their cases is `requires_sandbox: true`, so a native run records each as failed with `requires --sandbox` and starts nothing. `stub-write-outside-mounts` is, like `selftest-fail`, **expected to fail** under `--sandbox`: that failure is the proof that the root filesystem is read-only. Run them under the sandbox with:
+The `selftest-sandbox` and `selftest-sandbox-ro` agents exercise [Sandbox Containment](#sandbox-containment) with the stub backend (`selftest-sandbox` includes `stub-mock-cli`, the working example of [the mock pattern](#preventing-production-side-effects-containment-and-mocking)). Every one of their cases is `requires_sandbox: true`, so a native run records each as failed with `requires --sandbox` and starts nothing. `stub-write-outside-mounts` is, like `selftest-fail`, **expected to fail** under `--sandbox`: that failure is the proof that the root filesystem is read-only. Because it is a failing case in a rubric with the default 95% bar, the `selftest-sandbox-ro` command reports `FAIL` and exits non-zero; the case failing is the expected outcome. Run them under the sandbox with:
 
 ```bash
 go run ./cmd/kairon eval --backend stub --sandbox --evals-dir internal/eval/testdata/evals selftest-sandbox
@@ -1456,3 +1537,5 @@ Run Provenance:
 **Old runs show mode `unknown`.** The mode is read from `summary.json`'s `sandbox`; when that is absent, from the `sandbox` boolean in the agent files, provided every agent file records it and they all agree; otherwise it is shown as `unknown (predates sandbox-mode tracking)`. If either run's mode is unknown the `⚠` line is replaced by a note that comparability cannot be verified, because nothing can be said about whether the modes differ.
 
 **The provenance block only reports.** It never fails the diff and never changes the deltas that follow. All the provenance and mode fields are optional, so **result directories written before this tracking existed still load**: a missing field shows as `(not recorded)` and the mode as `unknown`, and a malformed agent file is skipped as before.
+
+**Older results and the scoring rule.** The per-criterion averages in the diff follow the same rule as the live scoring: a skipped criterion counts as 0 over its maximum instead of being left out. The per-agent line still shows the `agent_scores` stored in each run's `summary.json`, so a run written before this rule keeps the score it was saved with. Result directories written before `agent_verdicts` existed (no verdicts; their `total_cost` held only the last agent saved) still load; the new fields are optional on read.

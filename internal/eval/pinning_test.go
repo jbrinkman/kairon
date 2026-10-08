@@ -52,7 +52,7 @@ func setupPinProject(t *testing.T, agentJSON, evalsYAML string) {
 	}
 	writeProjectFile(t, ".kiro/agents/architect.json", agentJSON)
 	writeProjectFile(t, ".kairon/evals/rubrics/architect.yaml",
-		"agent: architect\ncriteria:\n  - name: clarity\n    description: d\n    scoring: 1-5\n")
+		"agent: architect\npass_threshold: 0\ncriteria:\n  - name: clarity\n    description: d\n    scoring: 1-5\n")
 	writeProjectFile(t, ".kairon/evals/cases/architect/c1.yaml",
 		"name: c1\ndescription: d\nagent: architect\ninput: do it\n")
 	if evalsYAML != "" {

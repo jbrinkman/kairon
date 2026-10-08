@@ -32,21 +32,45 @@ func TestPrintCaseResultStatuses(t *testing.T) {
 			want: " ⚠️  no scored criteria\n",
 		},
 		{
-			name: "no scored criteria when all skipped",
+			name: "all skipped criteria score 0 over their maximum",
 			tc:   TestCase{Name: "c"},
 			cr: CaseResult{ActualOutput: "out", Scores: []CriterionScore{
 				{Name: "a", Score: 0, MaxScore: 5, Skipped: true},
 				{Name: "b", Score: 0, MaxScore: 5, Skipped: true},
 			}},
-			want: " ⚠️  no scored criteria\n",
+			want: " ❌ 0% (threshold: 95%)\n      a: 0/5\n      b: 0/5\n",
 		},
 		{
 			name: "pass at default threshold",
 			tc:   TestCase{Name: "c"},
 			cr: CaseResult{ActualOutput: "out", Scores: []CriterionScore{
+				{Name: "a", Score: 5, MaxScore: 5},
+			}},
+			want: " ✅ 100% (threshold: 95%)\n",
+		},
+		{
+			name: "19 of 20 passes the 95 bar exactly",
+			tc:   TestCase{Name: "c"},
+			cr: CaseResult{ActualOutput: "out", Scores: []CriterionScore{
+				{Name: "a", Score: 19, MaxScore: 20},
+			}},
+			want: " ✅ 95% (threshold: 95%)\n",
+		},
+		{
+			name: "80% no longer passes the default",
+			tc:   TestCase{Name: "c"},
+			cr: CaseResult{ActualOutput: "out", Scores: []CriterionScore{
 				{Name: "a", Score: 4, MaxScore: 5},
 			}},
-			want: " ✅ 80% (threshold: 80%)\n",
+			want: " ⚠️  80% (threshold: 95%)\n",
+		},
+		{
+			name: "recorded case threshold is used",
+			tc:   TestCase{Name: "c"},
+			cr: CaseResult{ActualOutput: "out", Threshold: floatPtr(70), Scores: []CriterionScore{
+				{Name: "a", Score: 4, MaxScore: 5},
+			}},
+			want: " ✅ 80% (threshold: 70%)\n",
 		},
 		{
 			name: "warn between 60 and threshold",
@@ -55,7 +79,7 @@ func TestPrintCaseResultStatuses(t *testing.T) {
 				{Name: "a", Score: 4, MaxScore: 5},
 				{Name: "b", Score: 2, MaxScore: 5},
 			}},
-			want: " ⚠️  60% (threshold: 80%)\n      b: 2/5\n",
+			want: " ⚠️  60% (threshold: 95%)\n      b: 2/5\n",
 		},
 		{
 			name: "fail below 60",
@@ -63,7 +87,7 @@ func TestPrintCaseResultStatuses(t *testing.T) {
 			cr: CaseResult{ActualOutput: "out", Scores: []CriterionScore{
 				{Name: "a", Score: 2, MaxScore: 5},
 			}},
-			want: " ❌ 40% (threshold: 80%)\n      a: 2/5\n",
+			want: " ❌ 40% (threshold: 95%)\n      a: 2/5\n",
 		},
 		{
 			name: "custom min_score lowers threshold so 40% passes",
@@ -100,21 +124,21 @@ func TestPrintCaseResultBreakdownOnlyBelowThreshold(t *testing.T) {
 		{Name: "low", Score: 1, MaxScore: 5},                        // 1 < 3 => shown
 		{Name: "edge", Score: 3, MaxScore: 5},                       // 3 < 5*3/4=3 false => omitted
 		{Name: "high", Score: 5, MaxScore: 5},                       // omitted
-		{Name: "skipped-low", Score: 0, MaxScore: 5, Skipped: true}, // skipped => omitted
+		{Name: "skipped-low", Score: 0, MaxScore: 5, Skipped: true}, // counts as 0 => shown
 		{Name: "just-under", Score: 2, MaxScore: 5},                 // 2 < 3 => shown
 	}
-	// total = 1+3+5+2 = 11 / 20 = 55% (skipped excluded) -> fail, below threshold.
+	// total = 1+3+5+0+2 = 11 / 25 = 44% (skipped counted as 0) -> fail, below threshold.
 	cr := CaseResult{ActualOutput: "out", Scores: scores}
 
 	var sb strings.Builder
 	printCaseResult(&sb, TestCase{Name: "c"}, cr)
 	got := sb.String()
 
-	want := " ❌ 55% (threshold: 80%)\n      low: 1/5\n      just-under: 2/5\n"
+	want := " ❌ 44% (threshold: 95%)\n      low: 1/5\n      skipped-low: 0/5\n      just-under: 2/5\n"
 	if got != want {
 		t.Fatalf("output = %q, want %q", got, want)
 	}
-	for _, absent := range []string{"edge", "high", "skipped-low"} {
+	for _, absent := range []string{"edge", "high"} {
 		if strings.Contains(got, absent) {
 			t.Errorf("breakdown unexpectedly contains %q: %q", absent, got)
 		}
@@ -123,7 +147,7 @@ func TestPrintCaseResultBreakdownOnlyBelowThreshold(t *testing.T) {
 
 func TestPrintCaseResultNoBreakdownWhenPassing(t *testing.T) {
 	// 17/20 = 85% >= 80% threshold, even though "weak" is below 3/4 of its max.
-	cr := CaseResult{ActualOutput: "out", Scores: []CriterionScore{
+	cr := CaseResult{ActualOutput: "out", Threshold: floatPtr(80), Scores: []CriterionScore{
 		{Name: "weak", Score: 2, MaxScore: 5},
 		{Name: "strong", Score: 5, MaxScore: 5},
 		{Name: "strong2", Score: 5, MaxScore: 5},
@@ -330,8 +354,8 @@ func TestScoringParityEvaluateVsEvaluateProgressive(t *testing.T) {
 	// Sanity: the outputs contain the expected status lines so parity is not vacuous.
 	got := singleOut.String()
 	for _, want := range []string{
-		" ✅ 100% (threshold: 80%)\n",
-		" ⚠️  70% (threshold: 80%)\n      structural_completeness: 2/5\n",
+		" ✅ 100% (threshold: 95%)\n",
+		" ⚠️  70% (threshold: 95%)\n      structural_completeness: 2/5\n",
 		" ✅ 70% (threshold: 50%)\n", // passing: breakdown omitted
 	} {
 		if !strings.Contains(got, want) {
@@ -367,23 +391,23 @@ func TestCaseTotals(t *testing.T) {
 			wantMax:   10,
 		},
 		{
-			name: "skipped criteria excluded from numerator and denominator",
+			name: "skipped criteria count in the denominator with their score",
 			cr: CaseResult{Scores: []CriterionScore{
 				{Name: "a", Score: 4, MaxScore: 5},
-				{Name: "b", Score: 5, MaxScore: 5, Skipped: true},
+				{Name: "b", Score: 0, MaxScore: 5, Skipped: true},
 				{Name: "c", Score: 0, MaxScore: 10, Skipped: true},
 			}},
 			wantScore: 4,
-			wantMax:   5,
+			wantMax:   20,
 		},
 		{
-			name: "all skipped gives zero denominator",
+			name: "all skipped scores 0 over a non-zero maximum",
 			cr: CaseResult{Scores: []CriterionScore{
 				{Name: "a", Score: 0, MaxScore: 5, Skipped: true},
 				{Name: "b", Score: 0, MaxScore: 5, Skipped: true},
 			}},
 			wantScore: 0,
-			wantMax:   0,
+			wantMax:   10,
 		},
 		{
 			name: "scored criterion with zero max",
@@ -427,11 +451,11 @@ func TestAgentScoreTotals(t *testing.T) {
 			wantMax:   5,
 		},
 		{
-			name: "skipped criteria excluded across cases",
+			name: "skipped criteria counted as 0 across cases",
 			ar: AgentResult{Agent: "x", Cases: []CaseResult{
 				{CaseName: "c1", Scores: []CriterionScore{
 					{Name: "a", Score: 5, MaxScore: 5},
-					{Name: "b", Score: 5, MaxScore: 5, Skipped: true},
+					{Name: "b", Score: 0, MaxScore: 5, Skipped: true},
 				}},
 				{CaseName: "c2", Scores: []CriterionScore{
 					{Name: "a", Score: 2, MaxScore: 5},
@@ -439,15 +463,15 @@ func TestAgentScoreTotals(t *testing.T) {
 				}},
 			}},
 			wantScore: 7,
-			wantMax:   10,
+			wantMax:   25,
 		},
 		{
-			name: "everything skipped gives zero denominator",
+			name: "everything skipped scores 0 over a non-zero maximum",
 			ar: AgentResult{Agent: "x", Cases: []CaseResult{
 				{CaseName: "c1", Scores: []CriterionScore{{Name: "a", Score: 0, MaxScore: 5, Skipped: true}}},
 			}},
 			wantScore: 0,
-			wantMax:   0,
+			wantMax:   5,
 		},
 	}
 	for _, tt := range tests {
@@ -465,12 +489,12 @@ func TestAgentScoreTotals(t *testing.T) {
 func TestBuildSummaryZeroDenominatorOmitsAgentScore(t *testing.T) {
 	results := []AgentResult{
 		{Agent: "zero", Cases: []CaseResult{
-			{CaseName: "c", Scores: []CriterionScore{{Name: "a", Score: 0, MaxScore: 5, Skipped: true}}},
+			{CaseName: "c", Scores: []CriterionScore{{Name: "a", Score: 0, MaxScore: 0}}},
 		}},
 		{Agent: "scored", Cases: []CaseResult{
 			{CaseName: "c", Scores: []CriterionScore{
 				{Name: "a", Score: 3, MaxScore: 4},
-				{Name: "b", Score: 5, MaxScore: 5, Skipped: true},
+				{Name: "b", Score: 1, MaxScore: 4},
 			}},
 		}},
 	}
@@ -478,7 +502,168 @@ func TestBuildSummaryZeroDenominatorOmitsAgentScore(t *testing.T) {
 	if _, ok := s.AgentScores["zero"]; ok {
 		t.Errorf("agent with zero denominator should have no score, got %v", s.AgentScores["zero"])
 	}
-	if got := s.AgentScores["scored"]; got != 0.75 {
-		t.Errorf("AgentScores[scored] = %v, want 0.75", got)
+	if got := s.AgentScores["scored"]; got != 0.5 {
+		t.Errorf("AgentScores[scored] = %v, want 0.5", got)
+	}
+}
+
+// A skipped (errored / no-output) criterion must lower the case and agent
+// score instead of vanishing from the denominator.
+func TestSkippedCriterionLowersCaseAndAgentScore(t *testing.T) {
+	scored := CaseResult{CaseName: "c", Scores: []CriterionScore{
+		{Name: "a", Score: 5, MaxScore: 5},
+	}}
+	withSkip := CaseResult{CaseName: "c", Scores: []CriterionScore{
+		{Name: "a", Score: 5, MaxScore: 5},
+		{Name: "b", Score: 0, MaxScore: 5, Skipped: true},
+	}}
+	s1, m1 := caseTotals(scored)
+	s2, m2 := caseTotals(withSkip)
+	if p1, p2 := scorePercent(float64(s1), float64(m1)), scorePercent(float64(s2), float64(m2)); p1 != 100 || p2 != 50 {
+		t.Errorf("case percent without skip %v, with skip %v; want 100 and 50", p1, p2)
+	}
+
+	ok := AgentResult{Agent: "x", Cases: []CaseResult{scored}}
+	bad := AgentResult{Agent: "x", Cases: []CaseResult{withSkip}}
+	if v1, v2 := agentVerdict(ok), agentVerdict(bad); v2.Score >= v1.Score {
+		t.Errorf("agent with a skipped criterion scored %v, not below %v", v2.Score, v1.Score)
+	}
+}
+
+func TestNoOutputCaseScoresZeroOverNonZeroMax(t *testing.T) {
+	chdirTemp(t)
+	useStubBackend(t)
+	rubric := Rubric{Agent: "a", Criteria: []Criterion{
+		{Name: "structural_completeness", Scoring: "1-5", Deterministic: true},
+		{Name: "clarity", Scoring: "1-7"},
+	}}
+	cr := CaseResult{} // no agent output
+	scoreCase(rubric, TestCase{Name: "c"}, &cr)
+
+	score, max := caseTotals(cr)
+	if score != 0 || max != 12 {
+		t.Errorf("caseTotals = %d/%d, want 0/12", score, max)
+	}
+}
+
+func TestVerdictBoundaryAndFailures(t *testing.T) {
+	mk := func(score, max int, thr *float64) CaseResult {
+		return CaseResult{CaseName: "c", Threshold: thr, Scores: []CriterionScore{{Name: "a", Score: score, MaxScore: max}}}
+	}
+
+	// 19 of 20 is exactly 95 and passes the default bar.
+	v := agentVerdict(AgentResult{Agent: "x", Cases: []CaseResult{mk(19, 20, nil)}})
+	if v.Score != 95 || v.Threshold != 95 || !v.Passed || v.CasesTotal != 1 || v.CasesFailed != 0 {
+		t.Errorf("19/20 verdict = %+v", v)
+	}
+
+	// 18 of 20 fails.
+	v = agentVerdict(AgentResult{Agent: "x", Cases: []CaseResult{mk(18, 20, nil)}})
+	if v.Score != 90 || v.Passed || v.CasesFailed != 1 {
+		t.Errorf("18/20 verdict = %+v", v)
+	}
+
+	// An agent threshold of its own, and per-case thresholds for cases_failed:
+	// the agent passes on the aggregate while one case is below its own bar.
+	ar := AgentResult{Agent: "x", Threshold: floatPtr(80), Cases: []CaseResult{
+		mk(20, 20, nil),          // 100 >= 80
+		mk(12, 20, nil),          // 60 < 80  -> failed
+		mk(12, 20, floatPtr(50)), // 60 >= its own 50 -> not failed
+		mk(20, 20, nil),
+	}}
+	v = agentVerdict(ar)
+	if v.Score != 80 || v.Threshold != 80 || !v.Passed || v.CasesTotal != 4 || v.CasesFailed != 1 {
+		t.Errorf("verdict = %+v, want score 80 threshold 80 passed total 4 failed 1", v)
+	}
+}
+
+func TestVerdictZeroMaxFails(t *testing.T) {
+	// No cases at all.
+	v := agentVerdict(AgentResult{Agent: "x", Threshold: floatPtr(0)})
+	if v.Passed || v.Score != 0 || v.CasesTotal != 0 {
+		t.Errorf("no-case verdict = %+v, want failed with score 0", v)
+	}
+
+	// A case with nothing scorable fails even at threshold 0, and so does the agent.
+	ar := AgentResult{Agent: "x", Threshold: floatPtr(0), Cases: []CaseResult{{CaseName: "empty"}}}
+	v = agentVerdict(ar)
+	if v.Passed || v.CasesFailed != 1 || v.CasesTotal != 1 {
+		t.Errorf("zero-max verdict = %+v, want failed with 1/1 cases failed", v)
+	}
+}
+
+func TestVerdictLegacyResultFallsBackTo95(t *testing.T) {
+	ar := AgentResult{Agent: "x", Cases: []CaseResult{
+		{CaseName: "c", Scores: []CriterionScore{{Name: "a", Score: 9, MaxScore: 10}}},
+	}}
+	v := agentVerdict(ar)
+	if v.Threshold != 95 || v.Passed || v.CasesFailed != 1 {
+		t.Errorf("legacy verdict = %+v, want threshold 95, failed", v)
+	}
+}
+
+func TestVerdictCostSumsAgentAndJudge(t *testing.T) {
+	ar := AgentResult{Agent: "x", Threshold: floatPtr(0), Cases: []CaseResult{
+		{CaseName: "a", Scores: []CriterionScore{{Name: "k", Score: 1, MaxScore: 1}},
+			AgentCost: CostInfo{TokensIn: 10, TokensOut: 5, EstimatedUSD: 0.5, Model: "m", UsageSource: "reported"},
+			JudgeCost: CostInfo{TokensIn: 1, TokensOut: 2, EstimatedUSD: 0.25}},
+		{CaseName: "b", Scores: []CriterionScore{{Name: "k", Score: 1, MaxScore: 1}},
+			AgentCost: CostInfo{TokensIn: 20, TokensOut: 10, EstimatedUSD: 1}},
+	}}
+	want := CostInfo{TokensIn: 31, TokensOut: 17, EstimatedUSD: 1.75}
+	if got := agentVerdict(ar).Cost; got != want {
+		t.Errorf("verdict cost = %+v, want %+v (tokens and usd only)", got, want)
+	}
+}
+
+func TestExecuteCaseRecordsEffectiveThreshold(t *testing.T) {
+	chdirTemp(t)
+	useStubBackend(t)
+	rubric := Rubric{Agent: "a", PassThreshold: floatPtr(70), Criteria: []Criterion{
+		{Name: "structural_completeness", Scoring: "1-5", Deterministic: true},
+	}}
+	stub := &inference.StubScript{Turns: []inference.StubTurn{{Response: "## H\n### S\ntext"}}}
+
+	cr := executeCase(rubric, TestCase{Name: "inherits", Input: "x", Stub: stub}, nil, &strings.Builder{}, false)
+	if cr.Threshold == nil || *cr.Threshold != 70 {
+		t.Errorf("inherited Threshold = %v, want 70", cr.Threshold)
+	}
+	cr = executeCase(rubric, TestCase{Name: "overrides", Input: "x", MinScore: floatPtr(40), Stub: stub}, nil, &strings.Builder{}, false)
+	if cr.Threshold == nil || *cr.Threshold != 40 {
+		t.Errorf("min_score Threshold = %v, want 40", cr.Threshold)
+	}
+	// Recorded on early-failure paths too.
+	cr = executeCase(rubric, TestCase{Name: "sandbox-only", RequiresSandbox: true}, nil, &strings.Builder{}, false)
+	if cr.Threshold == nil || *cr.Threshold != 70 {
+		t.Errorf("requires-sandbox Threshold = %v, want 70", cr.Threshold)
+	}
+}
+
+func TestEvaluateStampsAgentThreshold(t *testing.T) {
+	chdirTemp(t)
+	useStubBackend(t)
+	rubric := Rubric{Agent: "a", PassThreshold: floatPtr(66)}
+	for name, res := range map[string]AgentResult{
+		"evaluate":    evaluate(rubric, nil, "abc", &strings.Builder{}, nil),
+		"progressive": evaluateProgressive(rubric, nil, "abc", &strings.Builder{}, t.TempDir(), false, nil),
+	} {
+		if res.Threshold == nil || *res.Threshold != 66 {
+			t.Errorf("%s: AgentResult.Threshold = %v, want 66", name, res.Threshold)
+		}
+	}
+}
+
+func TestCriterionAveragesCountSkippedAsZero(t *testing.T) {
+	ar := AgentResult{Agent: "x", Cases: []CaseResult{
+		{CaseName: "c1", Scores: []CriterionScore{{Name: "a", Score: 4, MaxScore: 4}}},
+		{CaseName: "c2", Scores: []CriterionScore{{Name: "a", Score: 0, MaxScore: 4, Skipped: true}}},
+		{CaseName: "c3", Scores: []CriterionScore{{Name: "unset-max", Score: 0, MaxScore: 0}}},
+	}}
+	avgs := criterionAverages(ar)
+	if got := avgs["a"]; got != 0.5 {
+		t.Errorf("average for a = %v, want 0.5 (skipped counted as 0)", got)
+	}
+	if _, ok := avgs["unset-max"]; ok {
+		t.Errorf("criterion with no max_score should not be averaged: %v", avgs)
 	}
 }

@@ -199,7 +199,7 @@ func criterionAverages(result AgentResult) map[string]float64 {
 	counts := make(map[string]int)
 	for _, c := range result.Cases {
 		for _, sc := range c.Scores {
-			if sc.Skipped || sc.MaxScore == 0 {
+			if sc.MaxScore == 0 {
 				continue
 			}
 			totals[sc.Name] += float64(sc.Score) / float64(sc.MaxScore)
