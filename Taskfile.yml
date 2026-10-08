@@ -56,9 +56,10 @@ tasks:
       - go run ./cmd/kairon eval --backend stub --evals-dir internal/eval/testdata/evals selftest
 
   eval:selftest:sandbox:
-    desc: Run the eval self-test natively and in a container sandbox and compare the results (needs Podman or Docker; skips with a message when no daemon is reachable)
+    desc: Run the eval self-test and the base-image/workspace checks natively and in a container sandbox and compare the results (needs Podman or Docker; skips with a message when no daemon is reachable)
     cmds:
-      - KAIRON_EVAL_SANDBOX_SELFTEST=1 go test ./internal/eval -run '^TestSelftestSandbox$' -count=1 -v
+      - KAIRON_EVAL_SANDBOX_SELFTEST=1 go test ./internal/eval/sandbox -run '^(TestBaseImage_ToolsOnlyNoMounts|TestEnsureBaseImage_ReusesExistingImage)$' -count=1 -v
+      - KAIRON_EVAL_SANDBOX_SELFTEST=1 go test ./internal/eval -run '^(TestSelftestSandbox|TestSandboxWorkspace)$' -count=1 -v
 
   sync:check:
     desc: Verify template-synchronized files match their live counterparts
@@ -68,7 +69,9 @@ tasks:
         diff -rq .kiro/agents/ cmd/kairon/templates/kiro/agents/ || error=1
         diff -rq .kairon/scripts/ cmd/kairon/templates/kairon/scripts/ || error=1
         diff -rq .kairon/themes/ cmd/kairon/templates/kairon/themes/ || error=1
-        diff -rq --exclude=results --exclude=.DS_Store --exclude=tmp .kairon/evals/ cmd/kairon/templates/kairon/evals/ || error=1
+        # fixtures/workspaces (per-case workspace fixtures) and fixtures/hidden are
+        # live-only eval inputs; they are not distributed in the templates.
+        diff -rq --exclude=results --exclude=.DS_Store --exclude=tmp --exclude=workspaces --exclude=hidden .kairon/evals/ cmd/kairon/templates/kairon/evals/ || error=1
         diff -rq .kiro/skills/sentinel-protocol/ cmd/kairon/templates/kiro/skills/sentinel-protocol/ || error=1
 
         if [ $error -eq 0 ]; then

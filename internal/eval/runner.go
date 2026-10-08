@@ -8,8 +8,10 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -37,16 +39,6 @@ func checkDockerAvailability() error {
 }
 
 // RunWithOptions executes evaluation with extended CLI options.
-// willContainerize reports whether a non-nil ContainerConfig actually reaches
-// Run for these options: a sandbox run that is not opted out and not diverted
-// to the perf, single-case, or resume paths (which never containerise). It is
-// the single source of truth the model pre-flight uses to decide whether the
-// evals-dir agent overlay is visible to the agent (it is not inside a kiro-cli
-// container).
-func willContainerize(testcase string, options RunOptions) bool {
-	return options.Sandbox && !options.NoSandbox && !options.Perf && testcase == "" && !options.Resume
-}
-
 func RunWithOptions(agent string, testcase string, options RunOptions) error {
 	// Apply backend / evals-dir configuration before doing any work so that
 	// an unknown backend is rejected up front.
@@ -60,11 +52,14 @@ func RunWithOptions(agent string, testcase string, options RunOptions) error {
 	}
 
 	// Pre-flight: pin and validate the judge and agent models before any
-	// case (or kiro-cli call) starts. willContainerize is the single source of
-	// truth for whether a non-nil ContainerConfig reaches Run.
+	// case (or kiro-cli call) starts.
 	if !options.List {
-		ignoreOverlay := willContainerize(testcase, options) && cfg.backend.Name() == inference.NameKiroCLI
-		if err := pinRun(agent, options, ignoreOverlay); err != nil {
+		// The overlay is always visible to the agent: a native run uses the
+		// staged <evals-dir>/agents directly, and a --sandbox run now stages
+		// it into the per-case workspace's .kiro, which is bind-mounted into
+		// the container. So provenance must consider the overlay on every
+		// path (there is no longer a kiro-cli container that cannot see it).
+		if err := pinRun(agent, options, false); err != nil {
 			return err
 		}
 	}
@@ -74,10 +69,9 @@ func RunWithOptions(agent string, testcase string, options RunOptions) error {
 		return RunPerformanceInvestigation(agent)
 	}
 
-	// Configure container sandboxing. (The guard is broader than
-	// willContainerize because the single-case/resume paths below build and
-	// then ignore cConfig; willContainerize captures when it actually reaches
-	// Run, which is what the pre-flight above must mirror.)
+	// Configure container sandboxing. The single-case/resume paths below
+	// build and then ignore cConfig, so this guard is broader than the set of
+	// runs that actually containerise.
 	var cConfig *ContainerConfig
 	if options.Sandbox && !options.NoSandbox {
 		// Early Docker availability check before any configuration work
@@ -302,50 +296,28 @@ func Run(agent string, cConfig *ContainerConfig) error {
 
 	fmt.Println("🚀 Starting evaluation framework...")
 
-	// Task 4: Build images once at evaluation start if using containers
+	// Obtain the tools-only base image once per run. It is cached by content
+	// hash and persistent: nothing builds or removes an image per call.
 	if cConfig != nil {
-		// Generate evaluation ID for image scoping
-		gitHash, err := getGitShortHash()
-		if err != nil {
-			return fmt.Errorf("failed to get git hash: %w", err)
-		}
-		timestamp := generateTimestampPrefix()
-		evaluationID := fmt.Sprintf("%s-%s", timestamp, gitHash)
-
-		fmt.Println("🔨 Building evaluation images...")
-		imageManager, err := sandbox.NewImageManager(evaluationID, cConfig.Debug)
+		imageManager, err := sandbox.NewImageManager("", cConfig.Debug)
 		if err != nil {
 			return fmt.Errorf("failed to create image manager: %w", err)
 		}
-		defer func() {
-			if err := imageManager.Cleanup(context.Background()); err != nil {
-				fmt.Printf("⚠️ Warning: Failed to cleanup images: %v\n", err)
-			}
-			imageManager.Close()
-		}()
+		defer imageManager.Close()
 
-		// Pre-build the image for this platform
-		buildStart := time.Now()
-		c, err := sandbox.NewContainerWithDebug("", cConfig.Debug)
+		tag, built, err := imageManager.EnsureBaseImage(context.Background(), cConfig.Platform)
 		if err != nil {
-			return fmt.Errorf("creating container for image build: %w", err)
+			return fmt.Errorf("preparing base image: %w", err)
 		}
-		defer c.Close()
-
-		dockerfile, err := c.GenerateDockerfileWithPlatform(cConfig.WorkspaceDir, cConfig.Platform)
-		if err != nil {
-			return fmt.Errorf("generating dockerfile: %w", err)
+		if built {
+			fmt.Printf("🔨 Base image built: %s\n", tag)
+		} else {
+			fmt.Printf("✅ Base image reused: %s\n", tag)
 		}
-
-		imageName, err := imageManager.BuildForEvaluation(context.Background(), dockerfile, cConfig.Platform)
-		if err != nil {
-			return fmt.Errorf("building evaluation image: %w", err)
-		}
-		fmt.Printf("✅ Images built: %v\n", time.Since(buildStart))
 
 		// Add image manager and cached image name to config for test cases
 		cConfig.ImageManager = imageManager
-		cConfig.CachedImageName = imageName
+		cConfig.CachedImageName = tag
 	}
 
 	// Measure startup overhead
@@ -418,33 +390,10 @@ func evaluate(rubric Rubric, cases []TestCase, gitHash string, out io.Writer, cC
 		fmt.Fprintf(out, "   [%d/%d] %s", i+1, len(cases), tc.Name)
 
 		testStart := time.Now()
-		cr := CaseResult{CaseName: tc.Name}
 
-		// Task 4: Structured output - Agent → Case execution
-		prompt, err := assemblePrompt(tc.Setup, tc.Input)
-		if err != nil {
-			fmt.Fprintf(out, " ❌ (prompt error)\n")
-			fmt.Fprintf(out, "      Error: %v\n", err)
-			cr.ActualOutput = ""
-		} else {
-			fmt.Fprintf(out, " → running agent...")
-			actualOutput, cost, rec, errorContext, err := invokeAgent(rubric.Agent, prompt, cConfig, tc.Stub)
-			cr.Calls = append(cr.Calls, rec)
-			if err != nil {
-				fmt.Fprintf(out, " ❌ (agent failed)\n")
-				fmt.Fprintf(out, "      Error: %v\n", err)
-				cr.ActualOutput = ""
-				cr.ErrorContext = errorContext
-			} else {
-				cr.ActualOutput = actualOutput
-				cr.AgentCost = cost
-				cr.ErrorContext = errorContext
-				fmt.Fprintf(out, " → evaluating...")
-			}
-		}
-
-		// Task 4: Criterion-by-criterion evaluation display
-		scoreCase(rubric, tc, &cr)
+		// Task 4: Structured output - Agent → Case execution (workspace, agent
+		// call and criterion-by-criterion scoring in one shared path).
+		cr := executeCase(rubric, tc, cConfig, out, cfg.keepWorkspaces)
 
 		// Task 4: Color-coded final status for the case
 		printCaseResult(out, tc, cr)
@@ -504,12 +453,16 @@ func assemblePrompt(setup []SetupEntry, input string) (string, error) {
 // Both paths share one inference.Request (newAgentRequest) and one completion
 // (completeAgentCall); they differ only in where the backend process runs:
 // in-process through the configured backend, or inside a container when a
-// container config is given. stub is the case's scripted response, used only
-// by the stub backend.
+// container config is given. opts.Stub is the case's scripted response, used
+// only by the stub backend.
+//
+// opts.Workspace, when set, is the native agent's working directory.
+// opts.Timeout, when set, overrides the default timeout (native) and the
+// sandbox resource-limit timeout (container).
 //
 // The returned CallRecord describes the call (also when it failed).
-func invokeAgent(agent, prompt string, cConfig *ContainerConfig, stub *inference.StubScript) (string, CostInfo, inference.CallRecord, *ErrorContext, error) {
-	req := newAgentRequest(agent, prompt, stub)
+func invokeAgent(agent, prompt string, cConfig *ContainerConfig, opts callOpts) (string, CostInfo, inference.CallRecord, *ErrorContext, error) {
+	req := newAgentRequest(agent, prompt, opts.Stub)
 
 	if cConfig != nil {
 		// The container exec is bounded by the sandbox timeout, and the
@@ -520,14 +473,34 @@ func invokeAgent(agent, prompt string, cConfig *ContainerConfig, stub *inference
 		// The agent config directory is a host path; nothing in the
 		// container can read it.
 		req.AgentConfigDir = ""
+		// The case's own timeout wins over the sandbox default.
+		if opts.Timeout > 0 {
+			req.Timeout = opts.Timeout
+		}
+		// The agent works in the container-side workspace path (the bind
+		// mount of the host workspace), not a host path.
+		req.WorkDir = cConfig.WorkspaceDir
 
 		start := time.Now()
-		resp, baseEC, err := invokeInContainer(req, cConfig)
+		resp, baseEC, err := invokeInContainer(req, cConfig, opts.Workspace)
 		return completeAgentCall(req, resp, err, time.Since(start), baseEC)
+	}
+
+	// The case's own timeout wins over KAIRON_EVAL_TIMEOUT and the default.
+	if opts.Timeout > 0 {
+		req.Timeout = opts.Timeout
 	}
 
 	// Capture working directory and relevant environment for error context.
 	workingDir, _ := os.Getwd()
+	if opts.Workspace != nil {
+		// The agent runs in the case workspace, not the process cwd. The
+		// staged .kiro/agents there already holds the evals-dir overlay, so
+		// the host agent-config path is not needed.
+		req.WorkDir = opts.Workspace.Dir
+		req.AgentConfigDir = ""
+		workingDir = opts.Workspace.Dir
+	}
 	envVars := make(map[string]string)
 	for _, key := range []string{"KAIRON_EVAL_TIMEOUT"} {
 		if val := os.Getenv(key); val != "" {
@@ -677,12 +650,124 @@ func createContainerConfig(sandboxCfg *config.SandboxConfig, resourceLimits map[
 	return config
 }
 
-// invokeAgentInContainer runs one agent request inside a Docker container with
-// cached images. The container is only a transport: the backend selected by
+// containerHelperPath is where the kairon helper binary is bind-mounted
+// (read-only) in the container for non-kiro-cli backends. Nothing is copied
+// into the running container.
+const containerHelperPath = "/opt/kairon/kairon"
+
+// containerUser is the unprivileged user every container runs as.
+const containerUser = "sandbox"
+
+// containerHome is the sandbox user's home directory in the base image.
+const containerHome = "/home/sandbox"
+
+// helperExecGrace is added to the host exec deadline for helper backends, so
+// the in-container backend normally reports its own timeout (an
+// ErrTimeout-wrapped envelope) and the host deadline is only a backstop.
+const helperExecGrace = 10 * time.Second
+
+// buildContainerMounts returns the bind mounts for one case: the staged
+// .kiro read-only, the workspace and its .eval/ read-write, and, for
+// non-kiro-cli backends, the kairon helper read-only. There is deliberately
+// no tmpfs at the workspace path.
+func buildContainerMounts(ws *caseWorkspace, cConfig *ContainerConfig, backendName string) ([]sandbox.Mount, error) {
+	if ws == nil {
+		return nil, fmt.Errorf("container run needs a case workspace")
+	}
+	dir := cConfig.WorkspaceDir
+	mounts := []sandbox.Mount{
+		{HostPath: ws.KiroDir, ContainerPath: path.Join(dir, ".kiro"), ReadOnly: true},
+		{HostPath: ws.Dir, ContainerPath: dir},
+		{HostPath: ws.EvalDir, ContainerPath: path.Join(dir, ".eval")},
+	}
+	if backendName != inference.NameKiroCLI {
+		bin, err := resolveLinuxBinary(cConfig.Platform)
+		if err != nil {
+			return nil, fmt.Errorf("preparing %s helper for the container: %w", backendName, err)
+		}
+		info, err := os.Stat(bin)
+		if err != nil {
+			return nil, fmt.Errorf("preparing %s helper for the container: %w", backendName, err)
+		}
+		// The sandbox user (uid 1000) is not the owner: it needs r-x for others.
+		if info.Mode().Perm()&0o005 != 0o005 {
+			return nil, fmt.Errorf("%s helper %s (mode %v) is not readable and executable by the container user; chmod 755 it", backendName, bin, info.Mode().Perm())
+		}
+		mounts = append(mounts, sandbox.Mount{HostPath: bin, ContainerPath: containerHelperPath, ReadOnly: true})
+	}
+	return mounts, nil
+}
+
+// containerEnv returns the container environment: the configured variables
+// (sorted for determinism), then HOME and the git safe.directory setting. The
+// latter is required because the mounted repository is owned by a different
+// uid than the sandbox user, and git refuses it ("dubious ownership")
+// otherwise. It is environment, not a file operation.
+func containerEnv(cConfig *ContainerConfig) []string {
+	env := []string{"KIRO_CLI_DISABLE_TELEMETRY=1"}
+	keys := make([]string, 0, len(cConfig.Environment))
+	for k := range cConfig.Environment {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		env = append(env, fmt.Sprintf("%s=%s", k, cConfig.Environment[k]))
+	}
+	return append(env,
+		"HOME="+containerHome,
+		"GIT_CONFIG_COUNT=1",
+		"GIT_CONFIG_KEY_0=safe.directory",
+		"GIT_CONFIG_VALUE_0=*",
+	)
+}
+
+// newContainerConfig is the container.Config for one case.
+func newContainerConfig(image string, cConfig *ContainerConfig) *container.Config {
+	return &container.Config{
+		Image:      image,
+		Cmd:        []string{"sleep", "3600"},
+		Env:        containerEnv(cConfig),
+		User:       containerUser,
+		WorkingDir: cConfig.WorkspaceDir,
+	}
+}
+
+// ensureBaseImageName returns the cached base image tag, resolving it through
+// the (cached) EnsureBaseImage when Run() did not.
+func ensureBaseImageName(ctx context.Context, cConfig *ContainerConfig) (string, error) {
+	if cConfig.CachedImageName != "" {
+		return cConfig.CachedImageName, nil
+	}
+	im, err := sandbox.NewImageManager("", cConfig.Debug)
+	if err != nil {
+		return "", fmt.Errorf("creating image manager: %w", err)
+	}
+	defer im.Close()
+	tag, _, err := im.EnsureBaseImage(ctx, cConfig.Platform)
+	if err != nil {
+		return "", fmt.Errorf("preparing base image: %w", err)
+	}
+	return tag, nil
+}
+
+// invokeAgentInContainer runs one agent request inside a container created
+// from the cached base image. Everything the agent sees is bind-mounted from
+// the host-built case workspace; nothing is copied or installed in the running
+// container. The container is only a transport: the backend selected by
 // cfg.backend runs inside it (see runAgentInContainer) and the result is
 // completed by the same logic as a native call.
-func invokeAgentInContainer(req inference.Request, cConfig *ContainerConfig) (inference.Response, *ErrorContext, error) {
+func invokeAgentInContainer(req inference.Request, cConfig *ContainerConfig, ws *caseWorkspace) (inference.Response, *ErrorContext, error) {
 	ctx := context.Background()
+	backendName := cfg.backend.Name()
+
+	mounts, err := buildContainerMounts(ws, cConfig, backendName)
+	if err != nil {
+		return inference.Response{}, nil, err
+	}
+	hostConfig, err := sandbox.NewHostConfigWithMounts(cConfig.ResourceLimits, mounts)
+	if err != nil {
+		return inference.Response{}, nil, fmt.Errorf("preparing container mounts: %w", err)
+	}
 
 	c, err := sandbox.NewContainerWithDebug("", cConfig.Debug)
 	if err != nil {
@@ -690,59 +775,13 @@ func invokeAgentInContainer(req inference.Request, cConfig *ContainerConfig) (in
 	}
 	defer c.Close()
 
-	// Use pre-built image or build one individually
-	var customImageName string
-	if cConfig.CachedImageName != "" {
-		customImageName = cConfig.CachedImageName
-	} else {
-		// Fallback to individual build for compatibility
-		buildCtx, buildCancel := context.WithTimeout(ctx, 5*time.Minute)
-		defer buildCancel()
-
-		buildStart := time.Now()
-		dockerfile, err := c.GenerateDockerfileWithPlatform(cConfig.WorkspaceDir, cConfig.Platform)
-		if err != nil {
-			return inference.Response{}, nil, fmt.Errorf("generating dockerfile: %w", err)
-		}
-
-		customImageName = c.GetCustomImageName(cConfig.Platform)
-		if err := c.BuildImageFromDockerfile(buildCtx, dockerfile, customImageName, cConfig.Platform); err != nil {
-			return inference.Response{}, nil, fmt.Errorf("building custom image: %w", err)
-		}
-		fmt.Printf("  Image build: %v\n", time.Since(buildStart))
-
-		// Clean up image after use (preserve in debug mode)
-		if !cConfig.Debug {
-			defer func() {
-				if _, err := c.RemoveImage(ctx, customImageName); err != nil {
-					fmt.Printf("⚠️ Warning: Failed to remove custom image %s: %v\n", customImageName, err)
-				}
-			}()
-		}
+	imageName, err := ensureBaseImageName(ctx, cConfig)
+	if err != nil {
+		return inference.Response{}, nil, err
 	}
 
-	// Container startup (same as before)
 	createStart := time.Now()
-
-	hostConfig := sandbox.NewHostConfigWithLimits(cConfig.ResourceLimits)
-
-	// Configure environment variables from host system and container config
-	envVars := []string{
-		"KIRO_CLI_DISABLE_TELEMETRY=1",
-	}
-	for key, value := range cConfig.Environment {
-		envVars = append(envVars, fmt.Sprintf("%s=%s", key, value))
-	}
-
-	containerCfg := &container.Config{
-		Image:      customImageName,
-		Cmd:        []string{"sleep", "3600"},
-		Env:        envVars,
-		WorkingDir: cConfig.WorkspaceDir,
-	}
-
-	// Use platform-aware container creation
-	if err := c.CreateWithPlatform(ctx, containerCfg, hostConfig, cConfig.Platform); err != nil {
+	if err := c.CreateWithPlatform(ctx, newContainerConfig(imageName, cConfig), hostConfig, cConfig.Platform); err != nil {
 		return inference.Response{}, nil, fmt.Errorf("creating container: %w", err)
 	}
 	containerFailed := false
@@ -759,35 +798,19 @@ func invokeAgentInContainer(req inference.Request, cConfig *ContainerConfig) (in
 
 	// Debug mode: Save container registry information
 	if cConfig.Debug {
-		shortID, imageName := c.GetContainerInfo()
-		if err := saveDebugContainerInfo(shortID, imageName, customImageName, cConfig.Platform, req.Agent); err != nil {
+		shortID, name := c.GetContainerInfo()
+		if err := saveDebugContainerInfo(shortID, name, imageName, cConfig.Platform, req.Agent); err != nil {
 			fmt.Printf("⚠️ Warning: Failed to save debug container info: %v\n", err)
 		}
 	}
 
-	// Container setup (same as before)
+	// A read-only check that the baked kiro-cli works (not an install).
 	setupStart := time.Now()
-
-	// kiro-cli validation and GitHub mocking exist solely for the kiro-cli
-	// backend; other backends (the stub) run a copied helper binary instead.
-	if cfg.backend.Name() == inference.NameKiroCLI {
-		// Verify kiro-cli is pre-installed and functional
+	if backendName == inference.NameKiroCLI {
 		if err := c.ValidateKiroCLI(ctx, cConfig.Platform); err != nil {
 			return inference.Response{}, nil, fmt.Errorf("validating kiro-cli: %w", err)
 		}
-
-		// Setup GitHub mocking if enabled
-		if cConfig.MockGitHub {
-			if err := c.SetupGitHubMocking(ctx, cConfig.WorkspaceDir); err != nil {
-				return inference.Response{}, nil, fmt.Errorf("setting up GitHub mocking: %w", err)
-			}
-
-			if err := c.ConfigureMockGitHubPath(ctx); err != nil {
-				return inference.Response{}, nil, fmt.Errorf("configuring mock GitHub PATH: %w", err)
-			}
-		}
 	}
-
 	fmt.Printf("  Container setup: %v\n", time.Since(setupStart))
 
 	executionStart := time.Now()
@@ -812,15 +835,10 @@ var invokeInContainer = invokeAgentInContainer
 
 // agentExecer is the part of *sandbox.Container that runAgentInContainer
 // needs. It is a seam so the container path is unit-testable without a
-// container daemon.
+// container daemon. It deliberately has no way to copy files in.
 type agentExecer interface {
-	CopyTo(ctx context.Context, destPath, srcPath string) error
 	ExecWithStdin(ctx context.Context, cmd []string, stdin io.Reader) (sandbox.ExecResult, error)
 }
-
-// containerHelperPath is where the kairon helper binary is copied in the
-// container (/tmp is writable by the non-root sandbox user).
-const containerHelperPath = "/tmp/kairon"
 
 // resolveLinuxBinary is a seam for tests; production uses sandbox.ResolveLinuxBinary.
 var resolveLinuxBinary = sandbox.ResolveLinuxBinary
@@ -851,16 +869,19 @@ func runAgentInContainer(ctx context.Context, x agentExecer, req inference.Reque
 		fmt.Printf("🔧 Debug: container invoke backend=%s agent=%s model=%s\n", backendName, req.Agent, req.Model)
 	}
 
-	timeout := cConfig.ResourceLimits.Timeout
-	if timeout <= 0 {
-		timeout = timeoutOrDefaultRequest(req)
-	}
+	// req.Timeout is the effective timeout (case timeout, else the sandbox
+	// resource limit); invokeAgent has already resolved it.
+	timeout := timeoutOrDefaultRequest(req)
 	req.Timeout = timeout
 
 	var (
 		cmd     []string
 		command string
 		stdin   string
+		// execTimeout is the host exec deadline: the effective timeout for
+		// kiro-cli, plus a grace for helper backends so the in-container
+		// backend normally reports the timeout itself.
+		execTimeout = timeout
 	)
 	if backendName == inference.NameKiroCLI {
 		args, c := inference.KiroCLIAgentCommand(req)
@@ -868,13 +889,6 @@ func runAgentInContainer(ctx context.Context, x agentExecer, req inference.Reque
 		command = c
 		stdin = req.Prompt
 	} else {
-		bin, err := resolveLinuxBinary(cConfig.Platform)
-		if err != nil {
-			return inference.Response{}, nil, fmt.Errorf("preparing %s helper for the container: %w", backendName, err)
-		}
-		if err := x.CopyTo(ctx, containerHelperPath, bin); err != nil {
-			return inference.Response{}, nil, fmt.Errorf("copying %s helper into the container: %w", backendName, err)
-		}
 		payload, err := json.Marshal(req)
 		if err != nil {
 			return inference.Response{}, nil, fmt.Errorf("encoding inference request: %w", err)
@@ -882,13 +896,14 @@ func runAgentInContainer(ctx context.Context, x agentExecer, req inference.Reque
 		cmd = []string{containerHelperPath, "inference-exec", "--backend", backendName}
 		command = strings.Join(cmd, " ")
 		stdin = string(payload)
+		execTimeout = timeout + helperExecGrace
 	}
 
-	execCtx, cancel := context.WithTimeout(ctx, timeout)
+	execCtx, cancel := context.WithTimeout(ctx, execTimeout)
 	defer cancel()
 
 	start := time.Now()
-	res, execErr := x.ExecWithStdin(execCtx, cmd, strings.NewReader(stdin))
+	res, execErr := x.ExecWithStdin(execCtx, sandbox.WithOpenUmask(cmd), strings.NewReader(stdin))
 	elapsed := time.Since(start)
 
 	resp := inference.Response{Command: command, Model: req.Model, Duration: elapsed}
@@ -914,7 +929,7 @@ func runAgentInContainer(ctx context.Context, x agentExecer, req inference.Reque
 	// Transport failure (exec could not run, or the context ended).
 	if execErr != nil {
 		ec := newEC(execErr.Error())
-		return resp, ec, mapContainerError(execErr, execCtx, imageName, cConfig, fmt.Errorf("container execution failed: %w", execErr))
+		return resp, ec, mapContainerError(execErr, execCtx, imageName, cConfig, timeout, fmt.Errorf("container execution failed: %w", execErr))
 	}
 
 	resp.ExitCode = res.ExitCode
@@ -929,7 +944,7 @@ func runAgentInContainer(ctx context.Context, x agentExecer, req inference.Reque
 		}
 		ec := newEC(detail.Error())
 		ec.Stderr = res.Stderr
-		return resp, ec, mapContainerError(detail, execCtx, imageName, cConfig, fallback)
+		return resp, ec, mapContainerError(detail, execCtx, imageName, cConfig, timeout, fallback)
 	}
 
 	if backendName == inference.NameKiroCLI {
@@ -971,13 +986,15 @@ func timeoutOrDefaultRequest(req inference.Request) time.Duration {
 
 // mapContainerError converts a container failure into the actionable
 // user-facing message for the common cases (timeout, OOM, image pull) and
-// falls back to the supplied error otherwise. Timeouts also satisfy
+// falls back to the supplied error otherwise. timeout is the effective
+// timeout of the call (the case timeout, else the sandbox limit), which is
+// what the message names. Timeouts also satisfy
 // errors.Is(err, inference.ErrTimeout).
-func mapContainerError(err error, execCtx context.Context, imageName string, cConfig *ContainerConfig, fallback error) error {
+func mapContainerError(err error, execCtx context.Context, imageName string, cConfig *ContainerConfig, timeout time.Duration, fallback error) error {
 	msg := err.Error()
 	if strings.Contains(msg, "timeout") || execCtx.Err() == context.DeadlineExceeded || errors.Is(err, context.DeadlineExceeded) {
 		return &containerError{
-			msg:  fmt.Sprintf("⏱️ Container execution timeout after %v. Consider increasing --resource-limit timeout=", cConfig.ResourceLimits.Timeout),
+			msg:  fmt.Sprintf("⏱️ Container execution timeout after %v. Consider increasing the case timeout or --resource-limit timeout=", timeout),
 			errs: []error{inference.ErrTimeout, err},
 		}
 	}
@@ -1002,7 +1019,51 @@ func agentConfigDir(agent string) string {
 	return dir
 }
 
-func scoreDeterministic(criterion Criterion, tc TestCase, actualOutput string) (int, string, bool) {
+// resolveReferencePath maps a file reference reported by the agent to a host
+// path to stat. Resolution, in order:
+//   - no host workspace: the reference is used as-is (legacy cwd-relative).
+//   - an absolute reference under the container workspace (e.g.
+//     /workspace/docs/x.md): rewritten onto the host workspace. The container
+//     path is always POSIX ("/"-rooted) because the sandbox is Linux, so it is
+//     parsed with path, not filepath (filepath.IsAbs would misread it on a
+//     Windows host).
+//   - any other relative reference: joined onto the host workspace.
+//   - any other absolute reference (a real host path): used as-is.
+func resolveReferencePath(ref, workspaceDir, containerWorkspaceDir string) string {
+	if workspaceDir == "" {
+		return ref
+	}
+	// A leading "/" marks a container (Linux) absolute path on any host OS.
+	if containerWorkspaceDir != "" && strings.HasPrefix(ref, "/") {
+		cws := path.Clean(filepath.ToSlash(containerWorkspaceDir))
+		clean := path.Clean(filepath.ToSlash(ref))
+		if clean == cws {
+			return workspaceDir
+		}
+		prefix := cws
+		if prefix != "/" {
+			prefix += "/"
+		}
+		if rel := strings.TrimPrefix(clean, prefix); rel != clean {
+			return filepath.Join(workspaceDir, filepath.FromSlash(rel))
+		}
+		// Absolute, but not under the container workspace: a real path.
+		return ref
+	}
+	if !filepath.IsAbs(ref) {
+		return filepath.Join(workspaceDir, ref)
+	}
+	return ref
+}
+
+// scoreDeterministic scores one deterministic criterion. workspaceDir, when
+// non-empty, is the case's host workspace: relative file references are
+// resolved against it (the agent runs there), not the harness process
+// directory. containerWorkspaceDir, when non-empty, is the workspace path
+// inside the sandbox container (e.g. "/workspace"): an absolute reference the
+// agent reported under it is rewritten onto workspaceDir on the host. Both
+// empty preserves the cwd-relative behavior for direct callers.
+func scoreDeterministic(criterion Criterion, tc TestCase, actualOutput, workspaceDir, containerWorkspaceDir string) (int, string, bool) {
 	output := actualOutput
 	if output == "" {
 		return 0, "no output to evaluate", true
@@ -1077,7 +1138,12 @@ func scoreDeterministic(criterion Criterion, tc TestCase, actualOutput string) (
 		verified := 0
 		for _, path := range candidates {
 			cleanPath := strings.Split(path, " ")[0]
-			if _, err := os.Stat(cleanPath); err == nil || strings.Contains(path, "verified by context") {
+			// The agent runs in the case workspace, so references are resolved
+			// there, not against the harness process directory. A sandbox agent
+			// reports paths under the container workspace (e.g. /workspace/x);
+			// rewrite those onto the host workspace too.
+			statPath := resolveReferencePath(cleanPath, workspaceDir, containerWorkspaceDir)
+			if _, err := os.Stat(statPath); err == nil || strings.Contains(path, "verified by context") {
 				verified++
 			}
 		}
@@ -1397,6 +1463,10 @@ func loadCases(agent string) ([]TestCase, error) {
 		}
 
 		tc.Agent = agent
+		if err := validateCaseFields(tc, e.Name()); err != nil {
+			return nil, err
+		}
+
 		cases = append(cases, tc)
 	}
 
@@ -1608,33 +1678,8 @@ func evaluateProgressive(rubric Rubric, cases []TestCase, gitHash string, out io
 		// Track test case start time for performance profiling
 		testStart := time.Now()
 
-		cr := CaseResult{CaseName: tc.Name}
-
-		// Execute test case
-		prompt, err := assemblePrompt(tc.Setup, tc.Input)
-		if err != nil {
-			fmt.Fprintf(out, " ❌ (prompt error)\n")
-			fmt.Fprintf(out, "      Error: %v\n", err)
-			cr.ActualOutput = ""
-		} else {
-			fmt.Fprintf(out, " → running agent...")
-			actualOutput, cost, rec, errorContext, err := invokeAgent(rubric.Agent, prompt, cConfig, tc.Stub)
-			cr.Calls = append(cr.Calls, rec)
-			if err != nil {
-				fmt.Fprintf(out, " ❌ (agent failed)\n")
-				fmt.Fprintf(out, "      Error: %v\n", err)
-				cr.ActualOutput = ""
-				cr.ErrorContext = errorContext
-			} else {
-				cr.ActualOutput = actualOutput
-				cr.AgentCost = cost
-				cr.ErrorContext = errorContext
-				fmt.Fprintf(out, " → evaluating...")
-			}
-		}
-
-		// Score the test case
-		scoreCase(rubric, tc, &cr)
+		// Execute and score the test case (shared per-case path)
+		cr := executeCase(rubric, tc, cConfig, out, cfg.keepWorkspaces)
 
 		// Add or update the case result
 		found := false

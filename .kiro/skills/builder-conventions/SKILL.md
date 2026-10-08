@@ -21,7 +21,7 @@ Sync is **one-way** (live → template). CI enforces this via `task sync:check` 
 | `.kiro/agents/*.md` | `cmd/kairon/templates/kiro/agents/` |
 | `.kairon/scripts/*.sh` | `cmd/kairon/templates/kairon/scripts/` |
 | `.kairon/themes/*.yaml` | `cmd/kairon/templates/kairon/themes/` |
-| `.kairon/evals/fixtures/*` | `cmd/kairon/templates/kairon/evals/fixtures/` |
+| `.kairon/evals/fixtures/*` (files only; not `workspaces/` or `hidden/`) | `cmd/kairon/templates/kairon/evals/fixtures/` |
 | `.kairon/evals/rubrics/*` | `cmd/kairon/templates/kairon/evals/rubrics/` |
 | `.kairon/evals/cases/**/*` | `cmd/kairon/templates/kairon/evals/cases/` |
 | `.kiro/skills/sentinel-protocol/*` | `cmd/kairon/templates/kiro/skills/sentinel-protocol/` |
@@ -46,7 +46,10 @@ cp .kairon/scripts/*.sh cmd/kairon/templates/kairon/scripts/
 cp .kairon/themes/*.yaml cmd/kairon/templates/kairon/themes/
 
 # Evals (excluding results directory)
-cp .kairon/evals/fixtures/* cmd/kairon/templates/kairon/evals/fixtures/
+# Fixtures: copy regular files only. Subdirectories (fixtures/workspaces/,
+# fixtures/hidden/) are live-only eval inputs, excluded by sync:check, and
+# `cp .kairon/evals/fixtures/*` would fail on them.
+find .kairon/evals/fixtures -maxdepth 1 -type f -exec cp {} cmd/kairon/templates/kairon/evals/fixtures/ \;
 cp .kairon/evals/rubrics/* cmd/kairon/templates/kairon/evals/rubrics/
 mkdir -p cmd/kairon/templates/kairon/evals/cases/
 cp -r .kairon/evals/cases/* cmd/kairon/templates/kairon/evals/cases/

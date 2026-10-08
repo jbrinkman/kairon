@@ -34,22 +34,3 @@ func (rl ResourceLimits) ApplyToHostConfig(hostConfig *container.HostConfig) {
 		hostConfig.Resources.Memory = rl.Memory
 	}
 }
-
-// NewHostConfigWithLimits creates a host config with resource limits applied
-func NewHostConfigWithLimits(limits ResourceLimits) *container.HostConfig {
-	hostConfig := &container.HostConfig{
-		Resources: container.Resources{
-			CPUQuota:  limits.CPUQuota,
-			CPUPeriod: 100000,
-			Memory:    limits.Memory,
-		},
-		NetworkMode: "none", // Disable network access for security
-		// Configure writable workspace directory with tmpfs.
-		// Note: tmpfs shadows any files placed at /workspace during image build;
-		// project files must be copied in after container start (e.g., via CopyTo).
-		Tmpfs: map[string]string{
-			"/workspace": "rw,nosuid,size=512m",
-		},
-	}
-	return hostConfig
-}

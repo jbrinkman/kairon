@@ -27,6 +27,8 @@ type runConfig struct {
 	// nil means unpinned (direct calls that bypass RunWithOptions): empty
 	// Request.Model and no provenance fields.
 	pins *runPins
+	// keepWorkspaces keeps per-case workspaces after the run (--keep-workspaces).
+	keepWorkspaces bool
 }
 
 // cfg is the active run configuration. Call configure before use; tests
@@ -70,7 +72,7 @@ func configure(opts RunOptions) error {
 		dir = defaultEvalsDir
 	}
 
-	cfg = runConfig{evalsDir: dir, backend: backend} // pins reset to nil
+	cfg = runConfig{evalsDir: dir, backend: backend, keepWorkspaces: opts.KeepWorkspaces} // pins reset to nil
 	return nil
 }
 

@@ -57,6 +57,10 @@ type StubTurn struct {
 	Response string     `yaml:"response" json:"response"`
 	Model    string     `yaml:"model,omitempty" json:"model,omitempty"`
 	Usage    *StubUsage `yaml:"usage,omitempty" json:"usage,omitempty"`
+	// Commands are shell commands (run with `sh -c`, in Request.WorkDir) that
+	// the stub executes before returning Response, simulating an agent that
+	// changes files in its workspace. They require a non-empty WorkDir.
+	Commands []string `yaml:"commands,omitempty" json:"commands,omitempty"`
 }
 
 // StubUsage is scripted, "reported" token usage for a StubTurn.
@@ -79,6 +83,11 @@ type Request struct {
 	// any prompt files it references). When it contains <Agent>.json it takes
 	// precedence over the working directory's .kiro/agents.
 	AgentConfigDir string `json:"AgentConfigDir"`
+	// WorkDir is the working directory for the call. The kiro-cli backend runs
+	// in it when non-empty (and then does not use the AgentConfigDir overlay:
+	// the workspace is expected to hold its own .kiro/agents). The stub backend
+	// runs StubTurn.Commands in it. Empty means the process working directory.
+	WorkDir string `json:"WorkDir"`
 	// Model pins the model for this call. "" means the backend default
 	// (unpinned). The kiro-cli backend passes it as --model; the stub backend
 	// ignores it.

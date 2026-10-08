@@ -8,7 +8,6 @@ import (
 	"testing"
 
 	"github.com/jbrinkman/kairon/internal/eval/sandbox"
-	"github.com/jbrinkman/kairon/internal/inference"
 )
 
 // selftestEvalsDir is the checked-in self-test fixture set, relative to this
@@ -116,7 +115,7 @@ func assertSelfTestResults(t *testing.T, res AgentResult) {
 	for _, c := range res.Cases {
 		byName[c.CaseName] = c
 	}
-	for _, name := range []string{"stub-basic", "stub-usage", "stub-quoted-input"} {
+	for _, name := range []string{"stub-basic", "stub-usage", "stub-quoted-input", markerCase, seededCase} {
 		if _, ok := byName[name]; !ok {
 			t.Fatalf("case %q missing from results (have %v)", name, byName)
 		}
@@ -134,19 +133,22 @@ func assertSelfTestResults(t *testing.T, res AgentResult) {
 		t.Errorf("stub-usage model = %q, want stub-model", usage.AgentCost.Model)
 	}
 
-	for _, name := range []string{"stub-basic", "stub-quoted-input"} {
+	for _, name := range []string{"stub-basic", "stub-quoted-input", markerCase, seededCase} {
 		if got := byName[name].AgentCost.UsageSource; got != "estimated" {
 			t.Errorf("%s usage_source = %q, want estimated", name, got)
 		}
 	}
-	if len(res.Cases) != 3 {
-		t.Errorf("selftest has %d cases, want 3", len(res.Cases))
+	if len(res.Cases) != 5 {
+		t.Errorf("selftest has %d cases, want 5", len(res.Cases))
 	}
 	if out := byName["stub-quoted-input"].ActualOutput; !strings.Contains(out, "arrived verbatim") {
 		t.Errorf("stub-quoted-input output = %q, want the scripted stub response", out)
 	}
 
 	for _, c := range res.Cases {
+		if c.WorkspaceDir == "" {
+			t.Errorf("case %s has no workspace_dir", c.CaseName)
+		}
 		if c.ErrorContext != nil {
 			t.Errorf("case %s has ErrorContext: %+v", c.CaseName, c.ErrorContext)
 		}
@@ -264,11 +266,9 @@ func TestSelfTestStubWithSandboxPassesPreflight(t *testing.T) {
 	if err := configure(opts); err != nil {
 		t.Fatal(err)
 	}
-	ignoreOverlay := willContainerize("", opts) && cfg.backend.Name() == inference.NameKiroCLI
-	if ignoreOverlay {
-		t.Fatal("the overlay must stay visible for the stub backend")
-	}
-	if err := pinRun("selftest", opts, ignoreOverlay); err != nil {
+	// The overlay is visible on every path now (native and --sandbox),
+	// including the stub backend, so provenance pins the evals-dir config.
+	if err := pinRun("selftest", opts, false); err != nil {
 		t.Fatalf("pre-flight under --sandbox --backend stub: %v", err)
 	}
 	pin, ok := cfg.pins.pinOf("selftest")

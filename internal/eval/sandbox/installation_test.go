@@ -4,7 +4,6 @@ import (
 	"context"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
@@ -13,61 +12,11 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestDockerfileGeneration_IncludesKiroCLI(t *testing.T) {
-	skipIfNoContainerDaemon(t)
-	tests := []struct {
-		name     string
-		platform string
-		expected []string
-	}{
-		{
-			name:     "AMD64 platform",
-			platform: "linux/amd64",
-			expected: []string{
-				"# Install kiro-cli",
-				"kirocli-x86_64-linux-musl.zip",
-				"chmod 755 kirocli/bin/kiro-cli",
-				"mv kirocli/bin/kiro-cli /usr/local/bin/kiro-cli",
-			},
-		},
-		{
-			name:     "ARM64 platform",
-			platform: "linux/arm64",
-			expected: []string{
-				"# Install kiro-cli",
-				"kirocli-aarch64-linux-musl.zip",
-				"chmod 755 kirocli/bin/kiro-cli",
-				"mv kirocli/bin/kiro-cli /usr/local/bin/kiro-cli",
-			},
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			tempDir := t.TempDir()
-
-			c, err := NewContainer("alpine:3.19")
-			require.NoError(t, err)
-			defer c.Close()
-
-			dockerfile, err := c.GenerateDockerfileWithPlatform(tempDir, tt.platform)
-			require.NoError(t, err)
-			assert.NotEmpty(t, dockerfile)
-
-			// Verify all expected content is present
-			for _, expected := range tt.expected {
-				assert.Contains(t, dockerfile, expected,
-					"Dockerfile should contain %q for platform %s", expected, tt.platform)
-			}
-
-			// Verify it's properly formatted
-			lines := strings.Split(dockerfile, "\n")
-			assert.True(t, len(lines) > 10, "Dockerfile should have substantial content")
-		})
-	}
-}
-
+// The platform -> kiro-cli download URL mapping lives in kiroCLIVersionedURL
+// (the base image pins the version); these tests keep the mapping and the
+// unsupported-platform error covered.
 func TestKiroCLIDownloadURL_SupportedPlatforms(t *testing.T) {
+	v := DefaultToolSet.KiroCLIVersion
 	tests := []struct {
 		name        string
 		platform    string
@@ -77,32 +26,28 @@ func TestKiroCLIDownloadURL_SupportedPlatforms(t *testing.T) {
 		{
 			name:        "AMD64 platform",
 			platform:    "linux/amd64",
-			expectedURL: "https://desktop-release.q.us-east-1.amazonaws.com/latest/kirocli-x86_64-linux-musl.zip",
-			expectError: false,
+			expectedURL: "https://desktop-release.q.us-east-1.amazonaws.com/" + v + "/kirocli-x86_64-linux-musl.zip",
 		},
 		{
 			name:        "ARM64 platform",
 			platform:    "linux/arm64",
-			expectedURL: "https://desktop-release.q.us-east-1.amazonaws.com/latest/kirocli-aarch64-linux-musl.zip",
-			expectError: false,
+			expectedURL: "https://desktop-release.q.us-east-1.amazonaws.com/" + v + "/kirocli-aarch64-linux-musl.zip",
 		},
 		{
 			name:        "Unsupported platform",
 			platform:    "linux/mips",
-			expectedURL: "",
 			expectError: true,
 		},
 		{
 			name:        "Invalid platform format",
 			platform:    "invalid",
-			expectedURL: "",
 			expectError: true,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			url, err := getKiroCLIDownloadURL(tt.platform)
+			url, err := kiroCLIVersionedURL(tt.platform, v)
 
 			if tt.expectError {
 				assert.Error(t, err)
@@ -110,35 +55,6 @@ func TestKiroCLIDownloadURL_SupportedPlatforms(t *testing.T) {
 			} else {
 				assert.NoError(t, err)
 				assert.Equal(t, tt.expectedURL, url)
-			}
-		})
-	}
-}
-
-func TestInstallationCommands_CrossPlatform(t *testing.T) {
-	platforms := []string{"linux/amd64", "linux/arm64"}
-
-	for _, platform := range platforms {
-		t.Run(platform, func(t *testing.T) {
-			dockerfile, err := addKiroCLIToDockerfile(platform)
-			require.NoError(t, err)
-			assert.NotEmpty(t, dockerfile)
-
-			// Verify installation command structure
-			assert.Contains(t, dockerfile, "# Install kiro-cli")
-			assert.Contains(t, dockerfile, "RUN cd /tmp")
-			assert.Contains(t, dockerfile, "curl -fsSL")
-			assert.Contains(t, dockerfile, "unzip -q")
-			assert.Contains(t, dockerfile, "chmod 755 kirocli/bin/kiro-cli")
-			assert.Contains(t, dockerfile, "mv kirocli/bin/kiro-cli /usr/local/bin/kiro-cli")
-			assert.Contains(t, dockerfile, "rm -rf kirocli.zip kirocli")
-
-			// Verify platform-specific binary is referenced
-			switch platform {
-			case "linux/amd64":
-				assert.Contains(t, dockerfile, "kirocli-x86_64-linux-musl.zip")
-			case "linux/arm64":
-				assert.Contains(t, dockerfile, "kirocli-aarch64-linux-musl.zip")
 			}
 		})
 	}
@@ -209,7 +125,7 @@ func TestInstallationFailures_ErrorHandling(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, err := getKiroCLIDownloadURL(tt.platform)
+			_, err := kiroCLIVersionedURL(tt.platform, DefaultToolSet.KiroCLIVersion)
 			if tt.wantErr {
 				assert.Error(t, err)
 			} else {
@@ -219,61 +135,17 @@ func TestInstallationFailures_ErrorHandling(t *testing.T) {
 	}
 }
 
-func TestDockerfileGeneration_ProjectDetection(t *testing.T) {
+func TestRuntimeVerification_DoesNotInstall(t *testing.T) {
 	skipIfNoContainerDaemon(t)
-	tempDir := t.TempDir()
 
 	c, err := NewContainer("alpine:3.19")
 	require.NoError(t, err)
 	defer c.Close()
 
-	// Test with empty directory (no project detection needed)
-	dockerfile, err := c.GenerateDockerfileWithPlatform(tempDir, "linux/amd64")
-	require.NoError(t, err)
-
-	// Verify basic structure and kiro-cli installation
-	assert.Contains(t, dockerfile, "FROM alpine:3.19")
-	assert.Contains(t, dockerfile, "# Install kiro-cli")
-	assert.Contains(t, dockerfile, "kirocli-x86_64-linux-musl.zip")
-	assert.Contains(t, dockerfile, "RUN adduser -D -s /bin/bash sandbox")
-	assert.Contains(t, dockerfile, "WORKDIR /workspace")
-	assert.Contains(t, dockerfile, "USER sandbox")
-}
-
-func TestBuildTimeVsRuntime_Installation(t *testing.T) {
-	t.Run("BuildTimeInstallation", func(t *testing.T) {
-		// Test that Dockerfile generation includes build-time installation
-		// No Docker required — only generates a string
-		tempDir := t.TempDir()
-		c := &Container{}
-		platform, err := DetectHostArchitecture()
-		require.NoError(t, err)
-		dockerfile, err := c.GenerateDockerfileWithPlatform(tempDir, platform)
-		require.NoError(t, err)
-
-		// Verify build-time installation commands are present
-		assert.Contains(t, dockerfile, "# Install kiro-cli")
-		assert.Contains(t, dockerfile, "curl -fsSL")
-		assert.Contains(t, dockerfile, "unzip -q")
-		assert.Contains(t, dockerfile, "chmod 755 kirocli/bin/kiro-cli")
-	})
-
-	t.Run("RuntimeVerification", func(t *testing.T) {
-		skipIfNoContainerDaemon(t)
-
-		c, err := NewContainer("alpine:3.19")
-		require.NoError(t, err)
-		defer c.Close()
-
-		// Test that ValidateKiroCLI only does verification, not installation
-		ctx := context.Background()
-
-		// This would fail in a real container since kiro-cli isn't installed
-		// But we can test the method exists and has correct signature
-		err = c.ValidateKiroCLI(ctx, "linux/amd64")
-		// Expect error since we don't have a running container with kiro-cli
-		assert.Error(t, err, "Should fail verification when kiro-cli not installed")
-	})
+	// ValidateKiroCLI only verifies; installation happens at image build time.
+	// There is no running container with kiro-cli here, so verification fails.
+	err = c.ValidateKiroCLI(context.Background(), "linux/amd64")
+	assert.Error(t, err, "Should fail verification when kiro-cli not installed")
 }
 
 func TestPlatformSpecificBinaries(t *testing.T) {
@@ -287,13 +159,13 @@ func TestPlatformSpecificBinaries(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.platform, func(t *testing.T) {
-			url, err := getKiroCLIDownloadURL(tt.platform)
+			url, err := kiroCLIVersionedURL(tt.platform, DefaultToolSet.KiroCLIVersion)
 			require.NoError(t, err)
 			assert.Contains(t, url, tt.expectedFile)
 
-			dockerfile, err := addKiroCLIToDockerfile(tt.platform)
+			args, err := DefaultToolSet.BuildArgs(tt.platform)
 			require.NoError(t, err)
-			assert.Contains(t, dockerfile, tt.expectedFile)
+			assert.Contains(t, *args["KIRO_CLI_URL"], tt.expectedFile)
 		})
 	}
 }
@@ -364,7 +236,8 @@ func TestResourceLimits_Coverage(t *testing.T) {
 	limits.ApplyToHostConfig(hostConfig)
 	assert.NotNil(t, hostConfig.Resources)
 
-	newHostConfig := NewHostConfigWithLimits(limits)
+	newHostConfig, err := NewHostConfigWithMounts(limits, nil)
+	require.NoError(t, err)
 	assert.NotNil(t, newHostConfig)
 	assert.NotNil(t, newHostConfig.Resources)
 }
@@ -384,23 +257,6 @@ func TestKiroCLIVerification_Detailed(t *testing.T) {
 	assert.Contains(t, err.Error(), "kiro-cli")
 }
 
-func TestProjectDetection_Coverage(t *testing.T) {
-	tempDir := t.TempDir()
-
-	// Test with empty directory
-	projects := DetectProject(tempDir)
-	assert.Empty(t, projects, "Empty directory should detect no projects")
-
-	// Test fileExists function indirectly
-	nonExistent := filepath.Join(tempDir, "nonexistent.txt")
-	assert.False(t, fileExists(nonExistent))
-
-	existentFile := filepath.Join(tempDir, "existent.txt")
-	err := os.WriteFile(existentFile, []byte("test"), 0644)
-	require.NoError(t, err)
-	assert.True(t, fileExists(existentFile))
-}
-
 func TestContainer_ArchitectureErrors(t *testing.T) {
 	skipIfNoContainerDaemon(t)
 	c, err := NewContainer("alpine:3.19")
@@ -417,46 +273,9 @@ func TestContainer_ArchitectureErrors(t *testing.T) {
 	assert.Contains(t, err.Error(), "invalid platform format")
 }
 
-func TestGenerateDockerfile_ErrorHandling(t *testing.T) {
-	skipIfNoContainerDaemon(t)
-	c, err := NewContainer("alpine:3.19")
-	require.NoError(t, err)
-	defer c.Close()
-
-	// Test with unsupported platform
-	_, err = c.GenerateDockerfileWithPlatform(t.TempDir(), "windows/amd64")
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "unsupported platform")
-}
-
-func TestMockGitHub_Functions(t *testing.T) {
-	// Test mock functions for coverage even though they're not installation-related
-	skipIfNoContainerDaemon(t)
-
-	c, err := NewContainer("alpine:3.19")
-	require.NoError(t, err)
-	defer c.Close()
-
-	ctx := context.Background()
-
-	config := &container.Config{
-		Image: "alpine:3.19",
-		Cmd:   []string{"sleep", "30"},
-	}
-	err = c.Create(ctx, config, &container.HostConfig{})
-	require.NoError(t, err)
-
-	err = c.Start(ctx)
-	require.NoError(t, err)
-	defer c.Cleanup(ctx)
-
-	err = c.SetupGitHubMocking(ctx, "/workspace")
-	assert.NoError(t, err, "SetupGitHubMocking should not fail")
-
-	// Test ConfigureMockGitHubPath (requires running container)
-	// This would need a running container to work properly
-
-	// Test SimulateGitHubResponse
+// SimulateGitHubResponse and the embedded mock skill are kept for the
+// containment work (#298); nothing installs them into a container any more.
+func TestSimulateGitHubResponse(t *testing.T) {
 	response := SimulateGitHubResponse("issue", []string{"create"})
 	assert.Equal(t, 12345, response.IssueNumber)
 
@@ -467,36 +286,8 @@ func TestMockGitHub_Functions(t *testing.T) {
 	assert.Equal(t, "success", response.Status)
 }
 
-func TestContainer_CompleteInstallationFlow(t *testing.T) {
-	skipIfNoContainerDaemon(t)
-	// Test complete installation flow against a live container daemon (Podman or Docker)
-	c, err := NewContainer("alpine:3.19")
+func TestMockGitHubSkill_Embedded(t *testing.T) {
+	content, err := MockGitHubSkill.ReadFile("testdata/github-cli-mock/gh")
 	require.NoError(t, err)
-	defer c.Close()
-
-	// Test all platforms
-	platforms := []string{"linux/amd64", "linux/arm64"}
-
-	for _, platform := range platforms {
-		t.Run(platform, func(t *testing.T) {
-			// Generate dockerfile
-			dockerfile, err := c.GenerateDockerfileWithPlatform(t.TempDir(), platform)
-			require.NoError(t, err)
-
-			// Verify installation commands are present
-			assert.Contains(t, dockerfile, "# Install kiro-cli")
-			assert.Contains(t, dockerfile, "curl -fsSL")
-			assert.Contains(t, dockerfile, "/usr/local/bin/kiro-cli")
-
-			// Test URL generation
-			url, err := getKiroCLIDownloadURL(platform)
-			require.NoError(t, err)
-			assert.Contains(t, dockerfile, filepath.Base(url))
-
-			// Test dockerfile command generation
-			installCommands, err := addKiroCLIToDockerfile(platform)
-			require.NoError(t, err)
-			assert.Contains(t, dockerfile, strings.TrimSpace(strings.Split(installCommands, "\n")[0]))
-		})
-	}
+	assert.Contains(t, string(content), "[MOCK]")
 }

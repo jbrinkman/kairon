@@ -1,0 +1,1 @@
+A nested file, so the workspace comparison covers more than the top level.

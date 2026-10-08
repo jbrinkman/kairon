@@ -1,0 +1,22 @@
+name: stub-marker
+description: "Self-test: a stub turn runs a command in the case workspace and leaves marker.txt there (workspace is built on the host, never in the repo root)"
+agent: selftest
+input: |
+  Create the marker file and report that you did.
+context:
+  - "This case runs against the deterministic stub backend"
+  - "The stub turn runs 'echo hi > marker.txt' in the per-case workspace before responding"
+expected_output: |
+  A short report with a top-level section and at least one subsection.
+stub:
+  turns:
+    - commands:
+        - "echo hi > marker.txt"
+      response: |
+        ## Marker
+
+        The marker file was written to the case workspace.
+
+        ### Details
+
+        marker.txt contains the text hi.

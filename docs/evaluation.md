@@ -23,6 +23,8 @@ Kairon's evaluation framework measures agent quality and cost, enabling data-dri
     krew-lead/
       case-1.yaml
     ...
+  fixtures/          # Files referenced by cases
+    workspaces/      # Optional per-case workspace fixtures: workspaces/<name>/ (see Case Workspaces)
   results/           # One directory per run: <timestamp>-<git-short-hash>
     <timestamp>-<git-short-hash>/
       architect.json
@@ -70,6 +72,8 @@ input: |
   The issue body or spec that the agent receives as input.
 output: |
   Optional: pre-captured agent output for offline evaluation.
+workspace: seeded         # Optional: workspace fixture name (see Case Workspaces)
+timeout: 30s               # Optional: per-case timeout (Go duration)
 stub:                      # Optional: scripted response for `--backend stub`
   turns:
     - response: |
@@ -83,6 +87,8 @@ Fields:
 - `input` — the input the agent would receive
 - `output` — (optional) pre-captured output for offline scoring
 - `setup` — (optional) extra prompt context; `type: file` entries read `path` from disk
+- `workspace` — (optional) name of a fixture under `<evals-dir>/fixtures/workspaces/` that the case's workspace starts from (see [Case Workspaces](#case-workspaces)). Must match `^[A-Za-z0-9._-]+$` (and not be `.` or `..`) and the fixture directory must exist, otherwise loading the cases fails with an error naming the case.
+- `timeout` — (optional) a positive Go duration such as `30s` or `2m`. It overrides the default timeout for this case, natively and under `--sandbox` (see [Case Timeout](#case-timeout)). An invalid or non-positive value is a load error naming the case.
 - `stub.turns[]` — (optional) scripted model responses, used only by the `stub` backend (see [Stub Case Fields](#stub-case-fields))
 
 ## Running Evaluations
@@ -109,6 +115,7 @@ kairon eval --evals-dir path/to/evals architect
 |------|---------|-------------|
 | `--backend` | `kiro-cli` | Inference backend for agent and judge calls. Valid values: `kiro-cli`, `stub`. An unknown value fails immediately and lists the valid backends. |
 | `--evals-dir` | `.kairon/evals` | Directory holding `rubrics/`, `cases/`, `fixtures/`, optional `agents/`, and `results/`. Persistent flag, so `kairon eval diff` honours it too. |
+| `--keep-workspaces` | off | Keep each case's workspace after the run instead of deleting it. The path is printed on the case line and recorded as `workspace_dir` in the results (see [Case Workspaces](#case-workspaces)). Combine with `--debug` to inspect both the preserved container and its workspace. |
 
 ## Adding Test Cases
 
@@ -173,6 +180,8 @@ stub:
       usage:               # optional: scripted, "reported" token usage
         input_tokens: 123
         output_tokens: 45
+      commands:            # optional: shell commands run in the case workspace before responding
+        - "echo hi > marker.txt"
 ```
 
 | Field | Required | Description |
@@ -180,8 +189,14 @@ stub:
 | `stub.turns[].response` | yes | Text returned as the agent output. |
 | `stub.turns[].model` | no | Model name recorded in `agent_cost.model`. |
 | `stub.turns[].usage.input_tokens` / `output_tokens` | no | If present, these counts are used verbatim and marked `reported`. If absent, usage is estimated from text length. |
+| `stub.turns[].commands` | no | Shell commands, each run with `sh -c` in the case workspace (the request's `WorkDir`), in order, before the response is returned. This lets a stub case simulate an agent that edits files. |
 
 Only `turns[0]` is used today. A case with no `stub`, empty `turns`, or an empty `response` fails with `case has no stub.turns[0].response` rather than silently producing empty output. The `kiro-cli` backend ignores `stub`.
+
+How `commands` behave:
+- They run in the case workspace: natively the host workspace directory, under `--sandbox` the container's workspace path, as the `sandbox` user. Commands with no workspace directory are an error and run nothing, so a test cannot write into the repository root by accident.
+- A command that exits non-zero fails the call with an error carrying the command and its stderr; the scripted response is not returned and later commands do not run.
+- All commands of a turn share one deadline: the request timeout (the case [`timeout`](#case-timeout), else the default). On expiry the command's whole process group is killed and the call fails with a timeout error (`stub timeout after <duration>`) that wraps `inference.ErrTimeout`, so it is recorded exactly like a `kiro-cli` timeout.
 
 ### Reported vs Estimated Usage
 
@@ -282,7 +297,7 @@ When the pre-flight passes, one line summarises what the run is pinned to:
 
 `evals.judge_model` is honoured in the same way: judge calls execute on the host through the inference backend, pinned with `--model <judge_model>`, and are subject to the same allowlist check.
 
-The one thing a `kiro-cli` container cannot see is the `<evals-dir>/agents/` overlay (the evals directory is not copied into the container). For `--backend kiro-cli --sandbox`, provenance (`prompt_sha256`, `resources_present`, and the config model used when `evals.agent_model` is unset) is therefore computed from `.kiro/agents/<agent>.json` only. With `--backend stub --sandbox` no agent config is read inside the container, so the overlay applies exactly as in a native run; this is what lets the self-test, whose agent config lives only in `internal/eval/testdata/evals/agents/`, pass the pre-flight under `--sandbox`.
+The `<evals-dir>/agents/` overlay is staged into the case workspace's `.kiro/agents/` on the host and reaches the container through the read-only `.kiro` mount (see [Staged `.kiro`](#staged-kiro-and-precedence)), so the agent itself can see it. The model-pinning provenance for `--backend kiro-cli --sandbox` is nevertheless computed from `.kiro/agents/<agent>.json` only (`prompt_sha256`, `resources_present`, and the config model used when `evals.agent_model` is unset); that part of the pre-flight is unchanged. With `--backend stub --sandbox` no agent config is read inside the container, so the overlay applies exactly as in a native run; this is what lets the self-test, whose agent config lives only in `internal/eval/testdata/evals/agents/`, pass the pre-flight under `--sandbox`.
 
 ### Recorded provenance
 
@@ -386,7 +401,7 @@ The per-agent result file always carries:
 
 `prompt_sha256` is a lowercase hex SHA-256 (64 characters). It is a hash only; the prompt text itself is not stored. It is computed over an ordered sequence of parts:
 
-1. **config** — the raw bytes of the agent config file. The config is `<evals-dir>/agents/<agent>.json` when it exists, else `.kiro/agents/<agent>.json` relative to the working directory (in a `kiro-cli` sandbox run only the latter, because the container cannot see the overlay).
+1. **config** — the raw bytes of the agent config file. The config is `<evals-dir>/agents/<agent>.json` when it exists, else `.kiro/agents/<agent>.json` relative to the working directory (in a `kiro-cli` sandbox run only the latter).
 2. **prompt** — if the config's `prompt` starts with `file://`, the bytes of that file. A relative path resolves against the config file's directory; absolute paths are allowed. A missing or unreadable prompt file is an error. An inline prompt is already covered by the config bytes.
 3. **resource** — for each entry of the config's `resources` array, in config order, the bytes of every existing matching file.
 
@@ -402,7 +417,7 @@ Resource handling:
 - **A missing resource is normal, not an error.** Resources such as `skill://.kiro/skills/<agent>-conventions/SKILL.md` are optional per-project overrides and often do not exist. A missing entry is skipped: it does not contribute to the hash and is omitted from `resources_present`. If the file is created later, it appears in `resources_present` and the hash changes.
 - `resources_present` lists entries exactly as written in the config (for example `skill://.kiro/skills/sentinel-protocol/SKILL.md`), in config order.
 
-When an `<evals-dir>/agents/` overlay is used, `kiro-cli` runs in a temporary working directory (see the [overlay caveat](#agent-configs-agents-precedence)) and does not load relative resources from the repository. The hash reflects the files the harness can see from the repository root.
+When an `<evals-dir>/agents/` overlay is used, the agent runs in its case workspace, whose `.kiro/` is staged by the harness (see [Case Workspaces](#case-workspaces)), and does not load relative resources from the repository root. The hash reflects the files the harness can see from the repository root.
 
 ### Resume refusal
 
@@ -436,12 +451,100 @@ Start a fresh run (without `--resume`) after changing a prompt, a resource or `e
 
 If `<evals-dir>/agents/<agent>.json` exists, the agent under test is run with that config instead of the repository's `.kiro/agents/<agent>.json`. If it does not exist, nothing changes and the repo's `.kiro/agents` is used. The precedence is chosen per agent, so an evals dir may override only some agents.
 
-**kiro-cli temp-cwd overlay caveat.** `kiro-cli` only discovers local agents under `<cwd>/.kiro/agents/`. To give `<evals-dir>/agents/` precedence without touching the repo, the `kiro-cli` backend copies the whole `agents/` directory (so `file://./x.md` prompts keep resolving) into a temporary `<tmp>/.kiro/agents/`, runs the agent with its working directory set to `<tmp>`, and deletes the temp directory afterwards. Consequences:
+**How the overlay reaches the agent.** `kiro-cli` only discovers local agents under `<cwd>/.kiro/agents/`. Every case runs in its own workspace (see [Case Workspaces](#case-workspaces)), and the harness stages that workspace's `.kiro/` on the host with the precedence *workspace fixture > `<evals-dir>/agents/` > project `.kiro/`*. The whole `agents/` directory is copied, so `file://./x.md` prompts keep resolving. Consequences:
 
-- The agent's working directory is a temp directory, **not** the repository, whenever an `agents/` override applies. Tools that read files or run shell commands relative to the cwd will not see the repo.
+- The agent's working directory is the case workspace, **not** the repository root. Tools that read files or run shell commands relative to the cwd see the workspace (the project's `.kiro/` plus whatever the case's fixture provides), not the repo. The repository's own `.kiro/` is only read, never modified.
 - Only the agent-under-test call is affected; judge calls always run in the normal working directory.
-- Without an override no working directory is set and behaviour is identical to earlier versions.
-- The `stub` backend ignores `agents/` because it does not run an agent. A `kiro-cli` sandbox container cannot see the overlay at all (see [`--sandbox` and `evals.agent_model`](#--sandbox-and-evalsagent_model)).
+- The `stub` backend does not run an agent, so it ignores `agents/` (it still runs `stub.turns[].commands` in the workspace).
+- The temporary-directory overlay in the `kiro-cli` backend (copy `agents/` to `<tmp>/.kiro/agents/` and run there) is now only used by callers that provide no workspace directory; `kairon eval` always provides one.
+
+## Case Workspaces
+
+Every case runs in its own **workspace**, built on the host by the harness. The native and `--sandbox` paths share the same builder, so a case sees the same layout either way. Nothing runs in the repository root, and the live repository is never modified by a case.
+
+A workspace is a temporary directory laid out like this:
+
+```
+<workspace>/            # a git repo; its single commit is the fixture
+  <fixture files>       # contents of fixtures/workspaces/<name>/ (empty by default)
+  .kiro/                # staged agent and skill configuration (harness-owned)
+  .eval/                # outputs directory (harness-owned, created empty)
+```
+
+How it is built, in order:
+
+1. A private (`0700`) parent directory is created under `$KAIRON_EVAL_WORKSPACE_ROOT` or, when unset, the OS temp directory, and symlinks in the path are resolved (macOS `/var` is really `/private/var`, and Docker Desktop and Podman machine only share real paths). Set `KAIRON_EVAL_WORKSPACE_ROOT` when your `TMPDIR` is not on a path your container runtime can mount.
+2. The case's fixture, `<evals-dir>/fixtures/workspaces/<name>/`, is copied in (regular files and directories only; symlinks and `.git` are skipped). A case without `workspace:` gets an empty workspace.
+3. `git init -b main` and a single commit of the fixture (`--allow-empty` for the default workspace). The commit is hermetic: fixed identity and date, no hooks, no signing, and no user or system git config. **That commit is the only commit and its tree is the fixture**, so `git status --porcelain` afterwards shows exactly what the agent (or the stub's `commands`) changed.
+4. `.eval/` and `.kiro/` are added to `.git/info/exclude` (not to a tracked file), so harness-owned paths never appear in `git status`. Files the fixture itself tracks under `.kiro/` stay tracked.
+5. `.kiro/` is staged (below) and an empty `.eval/` is created.
+6. Permissions are opened so the unprivileged container user can use the tree whatever its host owner: `a+rwX` on everything including `.git`, and `a+rX` (read-only) on `.kiro/`.
+
+### Staged `.kiro` and precedence
+
+The workspace's `.kiro/` is assembled on the host, never copied into a running container. Precedence, highest first:
+
+1. a file provided by the workspace fixture itself,
+2. `<evals-dir>/agents/*` (copied to `.kiro/agents/`),
+3. the project's own `.kiro/` (agents, skills, MCP config, as set up by `kairon init`).
+
+The project's `.kiro/` is only read. The live repository's `.kiro/` is never exposed to the agent, and a fixture can override any file (for example a `*-conventions` skill).
+
+### Workspace fixtures
+
+Fixtures live in `<evals-dir>/fixtures/workspaces/<name>/` and are referenced by a case's `workspace:` field:
+
+```yaml
+name: stub-seeded-workspace
+agent: selftest
+workspace: seeded            # => fixtures/workspaces/seeded/
+input: |
+  Append a line to the seeded README and report that you did.
+stub:
+  turns:
+    - commands:
+        - "echo 'appended by the stub' >> README.md"
+      response: |
+        ## Seeded workspace
+        ### Details
+```
+
+The name must match `^[A-Za-z0-9._-]+$` and not be `.` or `..`, and the directory must exist. Both are checked when cases are loaded. After this case runs, `git status --porcelain` in the kept workspace is ` M README.md`.
+
+Fixtures under `fixtures/workspaces/` and `fixtures/hidden/` are excluded from the `task sync:check` comparison of `.kairon/evals` against the shipped templates.
+
+### Keeping workspaces and `workspace_dir`
+
+By default a workspace is deleted once its case has been scored. With `--keep-workspaces` it is kept so you can inspect the result (`git -C <workspace> status`, `ls <workspace>/.eval`). Either way, each case in `<agent>.json` records the path:
+
+```json
+{
+  "case_name": "stub-marker",
+  "workspace_dir": "/private/var/folders/…/kairon-eval-ws-123456789/ws",
+  …
+}
+```
+
+`workspace_dir` is omitted when empty (for example when workspace creation failed, which is recorded as a failed case) and older result files without it still load. The path is set before the case is scored and the workspace is removed only after scoring, so scoring reads the host workspace: its file tree, `git status` and `.eval/` contents. Without `--keep-workspaces` the recorded directory no longer exists once the run is over. Removal is best effort: a failure prints a warning with the path and never fails the run.
+
+The single-case (`kairon eval <agent> <case>`) and `--resume` paths go through the same code, so `workspace_dir` and `--keep-workspaces` behave identically there.
+
+> The `file_exists` and `changed_files` check types are **not** part of this change. Workspace scoring today means the data those checks will read; when they land they read `workspace_dir` and need no container-specific code.
+
+### Outputs: `.eval/`
+
+`.eval/` is the outputs directory. Under `--sandbox` it is bind-mounted read-write into the container, but it physically lives inside the host workspace, so whatever the process writes there is on the host the moment it is written. No "copy outputs out" step exists, and the layout is identical to a native run.
+
+### Case Timeout
+
+A case's `timeout` takes precedence over the default for that case:
+
+| Where | Without `timeout` | With `timeout` |
+|-------|-------------------|----------------|
+| Native | `KAIRON_EVAL_TIMEOUT`, else 2 minutes | the case `timeout` |
+| `--sandbox` | the sandbox limit (`--resource-limit timeout=`, `sandbox.timeout`; default 5 minutes) | the case `timeout` |
+
+The same value is sent to the backend as the request timeout, so a host-side and an in-container deadline agree. For the `kiro-cli` backend the container exec deadline equals the timeout. For helper-based backends such as `stub` the host deadline is the timeout plus 10 seconds, so the in-container backend normally reports the timeout itself and the host deadline is only a backstop. A timeout is recorded as an empty `actual_output`, an `error_context.stderr` beginning `timeout after <duration>` (the effective duration, for example `1s`, not the sandbox default), a call record with an `error`, and a failing score. The container error message names both the case `timeout` and `--resource-limit timeout=`.
 
 ## Self-Test
 
@@ -460,14 +563,29 @@ internal/eval/testdata/evals/
   agents/selftest.json              # minimal agent config (model: claude-sonnet-5.5; prompt: file://./selftest-prompt.md;
                                     #   resources: a non-existent selftest-conventions skill, so resources_present is [])
   agents/selftest-prompt.md
+  agents/selftest-fail.json         # separate agent whose case is expected to FAIL (see below)
+  agents/selftest-fail-prompt.md
   rubrics/selftest.yaml             # structural_completeness (deterministic), clarity (LLM-judged), cost_efficiency (cost)
+  rubrics/selftest-fail.yaml
   cases/selftest/stub-basic.yaml    # no stub usage -> estimated; setup file exercises path rebasing
   cases/selftest/stub-usage.yaml    # stub model + usage 123/45 -> reported
   cases/selftest/stub-quoted-input.yaml  # input with quotes, newlines, $(...) and backticks; must reach the backend verbatim
+  cases/selftest/stub-marker.yaml   # stub turn command 'echo hi > marker.txt' leaves marker.txt in the case workspace
+  cases/selftest/stub-seeded-workspace.yaml  # workspace: seeded; the stub appends to README.md -> ' M README.md'
+  cases/selftest-fail/stub-timeout.yaml      # timeout: 1s, stub turn command 'sleep 3' -> timeout failure
   fixtures/selftest-input.md        # referenced as .kairon/evals/fixtures/selftest-input.md
+  fixtures/workspaces/seeded/       # README.md plus docs/notes.txt: the seeded workspace fixture
 ```
 
 `selftest.json` declares a `model` so the self-test passes the model-pinning pre-flight, and lists a `skill://.kiro/skills/selftest-conventions/SKILL.md` resource that intentionally does not exist. It exercises the "missing resources are normal" rule: the run succeeds and the recorded `resources_present` is `[]`.
+
+The `selftest` agent has five cases and all of them pass (`task eval:selftest`). The `selftest-fail` agent is deliberately separate, so `selftest` keeps meaning "everything passes". Its one case, `stub-timeout`, is **expected to fail**: it records a timeout failure (empty `actual_output`, `error_context.stderr` containing `timeout after 1s`) in about a second. Run it with:
+
+```bash
+go run ./cmd/kairon eval --backend stub --no-sandbox --evals-dir internal/eval/testdata/evals selftest-fail
+```
+
+The run itself exits 0; the failure is the recorded result for that case.
 
 The self-test runs with the stub backend, so its per-call `model` values are `stub` / `stub-model` (what the stub reports) rather than the pinned names. The pinned models still appear in the run-level `agent_model` and `judge_model` fields.
 
@@ -481,8 +599,9 @@ The same self-test can run hermetically inside a container sandbox. It needs a P
 
 ```bash
 task eval:selftest:sandbox
-# runs TestSelftestSandbox with KAIRON_EVAL_SANDBOX_SELFTEST=1:
-# KAIRON_EVAL_SANDBOX_SELFTEST=1 go test ./internal/eval -run '^TestSelftestSandbox$' -count=1 -v
+# runs the daemon-gated tests with KAIRON_EVAL_SANDBOX_SELFTEST=1:
+#   internal/eval/sandbox: TestBaseImage_ToolsOnlyNoMounts, TestEnsureBaseImage_ReusesExistingImage
+#   internal/eval:         TestSelftestSandbox, TestSandboxWorkspace
 
 # or run the sandboxed self-test directly:
 go run ./cmd/kairon eval --backend stub --sandbox --evals-dir internal/eval/testdata/evals selftest
@@ -490,10 +609,17 @@ go run ./cmd/kairon eval --backend stub --sandbox --evals-dir internal/eval/test
 
 `TestSelftestSandbox` runs `selftest` natively and then again with `--sandbox --backend stub`, and requires the sandboxed run to match the native one for every case: non-empty and identical `actual_output`, identical `agent_cost`, and the same model on the recorded agent call. It also applies the same self-test expectations to the sandboxed results. The `stub-quoted-input` case checks that shell metacharacters in the input arrive intact.
 
+The other gated tests cover the sandbox layering:
+- `TestBaseImage_ToolsOnlyNoMounts` starts a container from the base image with no mounts and checks it runs as `sandbox` (uid 1000), has `kiro-cli`, `gh`, `git` and `sh` on `PATH`, and has an empty `/workspace` with no `/workspace/.kiro` and no project or agent content anywhere.
+- `TestEnsureBaseImage_ReusesExistingImage` calls `EnsureBaseImage` twice and requires the second call to report no build with the same tag and image ID.
+- `TestSandboxWorkspace` runs `stub-marker`, `stub-seeded-workspace` and the `selftest-fail` timeout case both natively and under `--sandbox` with kept workspaces and compares them: no `Permission denied` anywhere, `marker.txt` containing `hi` on the host, identical host trees (excluding `.git` and `.kiro`) and `git status --porcelain`, `.eval/` present in both, an unchanged repository-root `git status`, keep/no-keep behaviour of `workspace_dir`, the sandboxed timeout recorded as `timeout after 1s`, and base-image reuse after editing an agent config and a case.
+
+A plain `go test ./...` also runs `TestSelfTestWorkspaceCasesNative`, which needs no daemon: it runs the same new cases natively and checks the workspace behaviour above.
+
 Skip behaviour (the test never builds an image by accident, so `task test` and `go test ./...` are unaffected):
 
-- **No container daemon.** When neither Podman nor Docker is reachable the test is skipped, not failed, with a message such as `no container daemon reachable (tried Podman and Docker); start Podman or Docker to run the sandbox self-test`. `task eval:selftest:sandbox` then exits 0.
-- **Gate not set.** Without `KAIRON_EVAL_SANDBOX_SELFTEST=1` (for example a plain `go test ./internal/eval`) the test is skipped with `sandbox self-test is opt-in: set KAIRON_EVAL_SANDBOX_SELFTEST=1 or run task eval:selftest:sandbox (needs Podman or Docker)` and no container is started.
+- **No container daemon.** When neither Podman nor Docker is reachable the tests are skipped, not failed, with a message such as `no container daemon reachable (tried Podman and Docker); start Podman or Docker to run the sandbox self-test`. `task eval:selftest:sandbox` then exits 0.
+- **Gate not set.** Without `KAIRON_EVAL_SANDBOX_SELFTEST=1` (for example a plain `go test ./internal/eval`) the tests are skipped with `sandbox self-test is opt-in: set KAIRON_EVAL_SANDBOX_SELFTEST=1 or run task eval:selftest:sandbox (needs Podman or Docker)` and no container is started.
 
 The direct `go run ... --sandbox` command has no skip: without a reachable daemon it fails up front with the daemon-unavailable error.
 
@@ -589,11 +715,11 @@ Treat evaluations like unit tests:
 
 ## Container Sandboxing
 
-The evaluation framework includes container sandboxing for secure, isolated agent testing using Docker.
+The evaluation framework includes container sandboxing for isolated agent testing, using Podman or Docker.
 
 ### Using the --sandbox Flag
 
-Run agent evaluations in Docker containers for complete isolation:
+Run agent evaluations in containers for isolation:
 
 ```bash
 # Run all agents in sandbox containers
@@ -602,18 +728,93 @@ kairon eval --sandbox
 # Run specific agent in sandbox
 kairon eval --sandbox architect
 
-# List available agents (detects project type)
+# List available test cases for an agent
 kairon eval --sandbox --list architect
+
+# Keep each case's host-side workspace for inspection
+kairon eval --sandbox --keep-workspaces architect
 ```
 
-The `--sandbox` flag automatically:
-- Detects project type (Go, Node.js, Python, Rust, Java)
-- Generates appropriate Dockerfile with required toolchains
-- Creates isolated container with resource limits
-- Mocks GitHub CLI operations
-- Copies project files and runs evaluations safely
+The `--sandbox` flag:
+- Obtains one cached, **tools-only base image** (built on first use, reused afterwards; see [Sandbox Layering](#sandbox-layering)).
+- Builds each case's workspace on the host (see [Case Workspaces](#case-workspaces)) and bind-mounts it into a fresh container with resource limits and no network.
+- Runs the selected backend inside the container as the unprivileged `sandbox` user.
+
+Nothing is copied into a running container: no project files, no `.kiro`, no helper binary, no mocked tools.
 
 > **Model pinning in sandbox runs:** `--sandbox` honours `evals.agent_model` (it is passed to `kiro-cli` as `--model`, exactly as in a native run) and `evals.judge_model` for judge calls. See [`--sandbox` and `evals.agent_model`](#--sandbox-and-evalsagent_model).
+
+### Sandbox Layering
+
+The sandbox is split strictly by stability. Stable tools are baked once into an image at build time. Everything that varies per project or per run is supplied from the host through bind mounts.
+
+```
+build time, as root, cached by content hash        run time, host-side only, mounted
+┌───────────────────────────────────────┐     ┌──────────────────────────────────────────────┐
+│ kairon-eval-base:<platform>-<hash>    │     │ <ws>/.kiro   ro  staged project .kiro        │
+│  alpine, git, bash/sh, ca-certs,      │  +  │ <ws>         rw  git repo, fixture commit    │
+│  gh (pinned), kiro-cli (pinned),      │     │ <ws>/.eval   rw  outputs (inside <ws>)       │
+│  user sandbox (uid 1000), /workspace  │     │ /opt/kairon/kairon ro  helper (non-kiro-cli) │
+└───────────────────────────────────────┘     └──────────────────────────────────────────────┘
+```
+
+#### Base image contents
+
+The image is defined by `internal/eval/dockerfile/base.Dockerfile` (embedded in the binary). It contains:
+
+- Alpine 3.19 with `git`, `bash` and CA certificates (a POSIX `sh` is always present),
+- `kiro-cli` at a pinned version, in `/usr/local/bin`,
+- `gh` (GitHub CLI) at a pinned version, in `/usr/local/bin`,
+- the unprivileged user `sandbox` (uid 1000) and an empty `/workspace` it owns,
+- a build-time smoke test (`kiro-cli --version && gh --version && git --version`).
+
+Deliberately **absent**: project toolchains (Go, Node.js, Python, Rust, Java, Task), any `COPY`/`ADD` of project content, `.kiro`, agents, skills, cases and the `kairon` binary. The sandbox no longer detects the project type or installs toolchains; if your evals need a toolchain, add it to the image (see [bumping a baked tool](#when-the-base-image-is-rebuilt)).
+
+`gh` is present but **unconfigured**: it is unauthenticated, and with the container network disabled it cannot reach GitHub. Faking `gh` behaviour and a network policy are separate work (the containment issue, #298), as are a read-only root filesystem and tool trust. `ContainerConfig.MockGitHub` is no longer consulted. `kiro-cli` authentication inside the container is also not provided: a real `kiro-cli` sandbox run still needs credentials supplied through the container environment.
+
+#### Mounts
+
+Every container gets exactly these mounts (all are `bind` mounts of host paths that must exist; a missing path is an error, not an auto-created root-owned directory):
+
+| Host | Container | Mode |
+|------|-----------|------|
+| `<workspace>/.kiro` | `<workspace_dir>/.kiro` | read-only |
+| `<workspace>` | `<workspace_dir>` | read-write |
+| `<workspace>/.eval` | `<workspace_dir>/.eval` | read-write |
+| the linux `kairon` helper (non-`kiro-cli` backends only) | `/opt/kairon/kairon` | read-only |
+
+`<workspace_dir>` is `sandbox.workspace_dir` from `.kairon/config.yaml` (default `/workspace`). There is no `tmpfs` at the workspace path. The container runs as `sandbox` with `WorkingDir` set to the workspace, `HOME=/home/sandbox`, and a git `safe.directory=*` setting passed as environment (`GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_0`/`GIT_CONFIG_VALUE_0`), because the mounted repo is owned by a different uid than `sandbox` and git would otherwise refuse it as "dubious ownership".
+
+#### Ownership and cleanup
+
+Mounted directories are owned by the host user while the container runs as uid 1000. To make that work on rootful Docker, rootless Podman and the Docker Desktop / Podman machine VMs on macOS:
+
+- The host opens the workspace to everyone (`a+rwX`) before the container starts. The temporary parent directory is `0700`, so other local users cannot traverse into it.
+- Every command the harness executes in the container is wrapped as `sh -c 'umask 000; exec "$@"' kairon-exec <command…>`, so files the agent creates are world-accessible and the host user can read them for scoring and delete them afterwards, even when the container uid maps to a foreign host uid. The wrapper does not change the command's arguments, and the prompt is still delivered on stdin only.
+- Removing the workspace never fails a run (a warning with the path is printed instead).
+
+While a run is in flight the workspace contents are world-writable.
+
+#### Platform notes
+
+- **macOS (Docker Desktop, Podman machine):** the workspace path must be shared with the VM. The harness resolves symlinks (`/var` → `/private/var`), but if your `TMPDIR` is not a shared mount, set `KAIRON_EVAL_WORKSPACE_ROOT` to a directory under your home directory.
+- **Rootless Podman:** supported through the ownership rules above; the open umask wrapper is what normally prevents files that the host cannot delete.
+- **SELinux:** when the host reports SELinux as enforcing (`/sys/fs/selinux/enforce` is `1`), the container is created with `label=disable` so the user's directories are not relabeled with `:z`/`:Z`. This is only done on enforcing hosts and may be revisited by the containment work.
+
+#### When the base image is rebuilt
+
+The image tag is `kairon-eval-base:<platform>-<12 hex>` (platform `/` becomes `-`), where the hash covers **only** the Dockerfile bytes, the platform and the tool pins (`sandbox.ToolSet`). It does not depend on the evals directory, agents, skills, cases, the working directory or the environment.
+
+| Change | Result |
+|--------|--------|
+| Edit an agent config, a prompt, a skill, a rubric or a case; add a fixture; change `.kiro` | Image **reused** (`✅ Base image reused: <tag>`) |
+| Change `base.Dockerfile`, a tool pin, or the platform | New tag, **rebuilt once** (`🔨 Base image built: <tag>`) |
+
+The image is persistent: it is not removed at the end of a run, and the old per-run evaluation images are gone. A bumped pin yields a new tag, and the previous image stays until you remove it yourself (for example with `docker image prune` or `podman image prune`).
+
+To bump a baked tool, change the version in `DefaultToolSet` in `internal/eval/sandbox/baseimage.go` (`KiroCLIVersion`, `GHVersion`). Both pins are versioned download URLs (the kiro-cli zip at `…/<version>/kirocli-<arch>-linux-musl.zip`, `gh` from the GitHub release `v<version>`), so the pin names a real, immutable artifact and nothing resolves to `latest`. To add another tool or toolchain, edit `base.Dockerfile`; either way the next run builds once.
+
+Building the image needs network access and a container daemon, even for `--backend stub`. Container *execution* has no network; `NetworkMode: none` applies to containers, not to the build.
 
 ### Backends in the Container
 
@@ -621,12 +822,12 @@ The container is a transport: whichever backend `--backend` selects runs inside 
 
 | Backend | What runs in the container | Needs |
 |---------|----------------------------|-------|
-| `kiro-cli` | `kiro-cli` directly: `kiro-cli chat --agent <agent> --no-interactive --trust-all-tools [--model <model>]`, prompt on stdin. The argument list and the output handling (ANSI stripped, usage estimated, model = the pinned `--model`) are the same code the native backend uses. | `kiro-cli` in the image (installed at image build). `kiro-cli` is validated and the mocked GitHub CLI is set up in the container. |
-| `stub` (and any other non-`kiro-cli` backend) | The backend runs in-process in the container through a hidden helper command, `kairon inference-exec --backend <name>`. The host copies a linux `kairon` binary to `/tmp/kairon`, sends the request as one JSON document on stdin, and reads one JSON result on stdout. The stub reads its script (`stub.turns`) from that request. | A static linux `kairon` binary for the container's platform (see below). `kiro-cli` is not validated and GitHub mocking is skipped. |
+| `kiro-cli` | `kiro-cli` directly: `kiro-cli chat --agent <agent> --no-interactive --trust-all-tools [--model <model>]`, prompt on stdin. The argument list and the output handling (ANSI stripped, usage estimated, model = the pinned `--model`) are the same code the native backend uses. | `kiro-cli` in the image (baked at image build). The harness only verifies it is present (`ValidateKiroCLI`); it installs nothing. |
+| `stub` (and any other non-`kiro-cli` backend) | The backend runs in-process in the container through a hidden helper command, `kairon inference-exec --backend <name>`. The host mounts a linux `kairon` binary read-only at `/opt/kairon/kairon`, sends the request as one JSON document on stdin, and reads one JSON result on stdout. The stub reads its script (`stub.turns`, including `commands`) from that request, and `WorkDir` is the container workspace path. | A static linux `kairon` binary for the container's platform (see below). `kiro-cli` is not validated. |
 
 `kairon inference-exec` is an internal protocol between the harness and its own binary; it is hidden from `kairon --help` and is not meant to be run by hand.
 
-**The helper binary.** The container image has no `kairon`, so for the stub backend the harness needs a static linux binary matching the container's platform (`linux/amd64` or `linux/arm64`, the host's architecture). It is resolved in this order:
+**The helper binary.** The container image has no `kairon`, so for the stub backend the harness needs a static linux binary matching the container's platform (`linux/amd64` or `linux/arm64`, the host's architecture), which it bind-mounts read-only at `/opt/kairon/kairon`. The file must be readable and executable by the `sandbox` user (mode `0755`); otherwise the run fails with an error naming the file. It is resolved in this order:
 
 1. `KAIRON_SANDBOX_BINARY` — path to a prebuilt static linux `kairon` binary. Use this when Go or the source tree is not available, for example `KAIRON_SANDBOX_BINARY=dist/release/kairon-linux-arm64` (see `task build:linux:arm64` / `task build:linux:amd64`).
 2. The running executable, when it is itself a linux binary of the container's architecture.
@@ -634,24 +835,9 @@ The container is a transport: whichever backend `--backend` selects runs inside 
 
 Case 3 requires `go` on `PATH` and a kairon source checkout, which is the case for `task eval:selftest:sandbox`. If none of these is available the run fails with an error that names `KAIRON_SANDBOX_BINARY`. The `kiro-cli` backend never needs the helper binary.
 
-**Network.** Container *execution* has no network by default, but building the sandbox image does: the image installs its toolchains and `kiro-cli`, so the first build needs network access (and a container daemon) even for `--backend stub`.
+**Network.** Container *execution* has no network by default, but building the base image does: it downloads `kiro-cli` and `gh`, so the first build needs network access (and a container daemon) even for `--backend stub`. Later runs reuse the cached image (see [When the base image is rebuilt](#when-the-base-image-is-rebuilt)).
 
-**Debugging.** With `--debug` the harness prints `🔧 Debug: container invoke backend=<backend> agent=<agent> model=<model>` before each in-container call, showing which backend and model were sent. The in-container call is bounded by the sandbox timeout (`--resource-limit timeout=`, or the sandbox config), which is also passed to the backend as the request timeout.
-
-### Project Detection
-
-The sandbox automatically detects project types and installs required toolchains:
-
-| Project Type | Detection Files | Toolchain Installed |
-|--------------|-----------------|-------------------|
-| Go | `go.mod`, `go.sum` | Go compiler and tools |
-| Node.js | `package.json` | Node.js and npm |
-| Python | `requirements.txt`, `pyproject.toml` | Python and pip |
-| Rust | `Cargo.toml` | Rust and Cargo |
-| Java | `pom.xml`, `build.gradle` | OpenJDK and Maven/Gradle |
-| Task | `Taskfile.yml` | Task runner |
-
-Multi-language projects are supported - all detected toolchains will be installed.
+**Debugging.** With `--debug` the harness prints `🔧 Debug: container invoke backend=<backend> agent=<agent> model=<model>` before each in-container call, showing which backend and model were sent. The in-container call is bounded by the effective timeout (the case's [`timeout`](#case-timeout), else `--resource-limit timeout=` or the sandbox config), which is also passed to the backend as the request timeout.
 
 ### Resource Limits
 
@@ -677,74 +863,31 @@ KAIRON_EVAL_TIMEOUT=30s \
 kairon eval --sandbox builder
 ```
 
-### GitHub CLI Mocking
+### GitHub CLI in the Sandbox
 
-The sandbox includes a mocked GitHub CLI (`gh`) that returns realistic responses without making real API calls:
-
-```bash
-# Mocked commands return test data:
-gh auth status          # ✓ Logged in as sandbox-user (mocked)
-gh issue create         # Returns mock issue URL
-gh pr create           # Returns mock PR URL
-gh issue list          # Returns mock issue JSON
-```
-
-This enables testing GitHub-dependent workflows safely without:
-- Making real API requests
-- Requiring authentication
-- Creating test repositories
-- Rate limiting issues
-
-### Dynamic Dockerfile Generation
-
-Containers use dynamically generated Dockerfiles based on detected project types:
-
-```dockerfile
-FROM alpine:3.19
-
-# Install essential tools
-RUN apk add --no-cache \
-    git \
-    curl \
-    bash \
-    ca-certificates
-
-# Install detected toolchains (example: Go + Node.js project)
-# Install Go
-RUN apk add --no-cache go
-ENV GOPATH=/home/sandbox/go
-ENV PATH=$PATH:/usr/local/go/bin:$GOPATH/bin
-
-# Install Node.js
-RUN apk add --no-cache nodejs npm
-ENV NODE_PATH=/usr/lib/node_modules
-
-# Setup sandbox user and workspace
-RUN adduser -D -s /bin/bash sandbox
-WORKDIR /workspace
-USER sandbox
-CMD ["/bin/bash"]
-```
+The base image includes `gh` at a pinned version, but the harness does **not** install a mocked `gh` into the container at run time (that mechanism was removed), and nothing configures or authenticates it. With the container network disabled, `gh` commands cannot reach GitHub, so a sandboxed run cannot make real API calls or create issues or pull requests. Fake `gh` responses and a `gh_issue` check belong to the containment work (#298). The helper `SimulateGitHubResponse` and its embedded skill are kept in the code for that work to reuse or replace.
 
 ### Container Lifecycle
 
-Each evaluation follows this container lifecycle:
+Each evaluation follows this lifecycle:
 
-1. **Detection** - Analyze project files to determine required toolchains
-2. **Generation** - Create Dockerfile with appropriate base image and tools
-3. **Build** - Build Docker image with generated Dockerfile
-4. **Create** - Create container with resource limits and security settings
-5. **Copy** - Copy project files and mock GitHub CLI into container (`kiro-cli` backend), or the helper `kairon` binary (other backends)
-6. **Execute** - Run the selected backend inside the container with the prompt on stdin (see [Backends in the Container](#backends-in-the-container))
-7. **Cleanup** - Stop and remove container, clean up temporary files
+1. **Base image** - once per run, `EnsureBaseImage` reuses the cached tools-only image or builds it (see [When the base image is rebuilt](#when-the-base-image-is-rebuilt)). Nothing is built or removed per case.
+2. **Workspace** - on the host, build the case's git workspace, staged `.kiro/` and `.eval/` (see [Case Workspaces](#case-workspaces)).
+3. **Create** - create the container from the base image with resource limits, no network, the `sandbox` user and the [mounts](#mounts).
+4. **Execute** - run the selected backend inside the container, wrapped for the open umask, with the prompt on stdin (see [Backends in the Container](#backends-in-the-container)). For `kiro-cli` the harness first checks (read-only) that `kiro-cli` is present.
+5. **Score** - score the case while the host workspace still exists.
+6. **Cleanup** - stop and remove the container, then delete the workspace unless `--keep-workspaces` is set.
 
 ### Troubleshooting Container Issues
 
-**Docker not running:**
+**Container daemon not running:**
 ```bash
-# Ensure Docker daemon is running
+# Ensure the Docker daemon is running
 sudo systemctl start docker   # Linux
 open -a Docker               # macOS
+
+# Or start the Podman machine
+podman machine start
 ```
 
 **Permission denied:**
@@ -752,6 +895,14 @@ open -a Docker               # macOS
 # Add user to docker group (Linux)
 sudo usermod -aG docker $USER
 newgrp docker
+```
+
+Permission errors *inside* the workspace (`mkdir: can't create directory … Permission denied`) should not occur: the workspace and `.eval/` are mounted read-write and opened to all users, and `.kiro/` is intentionally read-only. If you see one, check that you are not writing to `.kiro/` and that `KAIRON_EVAL_WORKSPACE_ROOT` points at a path your runtime shares with its VM.
+
+**Workspace mount fails (macOS):**
+```bash
+# Put workspaces under a directory the VM shares
+KAIRON_EVAL_WORKSPACE_ROOT="$HOME/.cache/kairon-eval" kairon eval --sandbox
 ```
 
 **Out of memory:**
@@ -767,15 +918,17 @@ KAIRON_EVAL_MEMORY_LIMIT=1073741824 kairon eval --sandbox
 ```bash
 # Increase timeout for complex evaluations
 KAIRON_EVAL_TIMEOUT=10m kairon eval --sandbox
+
+# Or set it for one case in its YAML:  timeout: 10m
 ```
 
 **Build failures:**
 ```bash
-# Check Docker logs for build issues
-docker logs <container-id>
+# The first run builds the base image and needs network access (kiro-cli and gh are downloaded)
+docker images | grep kairon-eval-base
 
-# Verify project detection
-kairon eval --sandbox --list
+# Inspect a kept workspace and a preserved debug container
+kairon eval --sandbox --debug --keep-workspaces
 ```
 
 **Network connectivity (for debugging only):**
@@ -792,9 +945,12 @@ Container sandboxing provides multiple security layers:
 - **Process isolation** - Containers run in separate namespaces
 - **Resource limits** - CPU and memory usage restricted
 - **Network isolation** - No external network access by default
-- **User isolation** - Runs as non-root `sandbox` user
-- **GitHub mocking** - No real API calls or authentication required
+- **User isolation** - Runs as the non-root `sandbox` user (uid 1000)
+- **Read-only agent configuration** - the staged `.kiro/` is mounted read-only, and the live repository is never mounted
+- **No real GitHub access** - `gh` is unauthenticated and the network is off
 - **Temporary containers** - Automatically cleaned up after evaluation
+
+Limits of this layer: the container's root filesystem is still writable, tool trust is unchanged, and the workspace is world-writable on the host while a run is in flight. Tightening these is the containment work (#298).
 
 ## Comparing Runs
 

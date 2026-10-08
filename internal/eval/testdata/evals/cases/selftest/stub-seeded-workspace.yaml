@@ -1,0 +1,23 @@
+name: stub-seeded-workspace
+description: "Self-test: a case starting from a seeded workspace fixture; the stub turn modifies a tracked file so the workspace shows it as modified"
+agent: selftest
+workspace: seeded
+input: |
+  Append a line to the seeded README and report that you did.
+context:
+  - "This case runs against the deterministic stub backend"
+  - "The workspace starts from fixtures/workspaces/seeded/ as the single git commit"
+expected_output: |
+  A short report with a top-level section and at least one subsection.
+stub:
+  turns:
+    - commands:
+        - "echo 'appended by the stub' >> README.md"
+      response: |
+        ## Seeded workspace
+
+        The seeded README was modified in the case workspace.
+
+        ### Details
+
+        One line was appended to README.md.

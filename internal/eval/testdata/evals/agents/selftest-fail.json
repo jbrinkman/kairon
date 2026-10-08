@@ -1,0 +1,8 @@
+{
+  "name": "selftest-fail",
+  "description": "Minimal agent used only by the eval self-test fixtures; its case is expected to fail (timeout).",
+  "prompt": "file://./selftest-fail-prompt.md",
+  "model": "claude-sonnet-5.5",
+  "tools": ["read"],
+  "allowedTools": ["read"]
+}

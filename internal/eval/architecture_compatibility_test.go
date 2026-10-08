@@ -1,7 +1,6 @@
 package eval
 
 import (
-	"os"
 	"runtime"
 	"testing"
 
@@ -81,7 +80,8 @@ func TestKiroCLIURLGeneration(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.platform, func(t *testing.T) {
-			// Note: getKiroCLIDownloadURL is not exported, so we test via container creation
+			// Note: the URL mapping is unexported (sandbox.kiroCLIVersionedURL), so it is
+			// covered in the sandbox package; here we only check architecture detection
 			// This validates the URL generation logic is working for both architectures
 
 			// Create a temporary container to access the method
@@ -130,33 +130,6 @@ func TestEvalFrameworkArchitectureIndependence(t *testing.T) {
 	assert.Equal(t, 0.01, cost.EstimatedUSD)
 }
 
-func TestDockerfileGenerationArchitecture(t *testing.T) {
-	// Test that Dockerfile generation works regardless of host architecture
-	if testing.Short() {
-		t.Skip("Skipping Dockerfile generation test in short mode")
-	}
-
-	tmpDir := t.TempDir()
-
-	// Create a simple Go project
-	require.NoError(t,
-		writeFile(tmpDir+"/go.mod", "module test\ngo 1.21"))
-
-	// Test project detection (architecture independent)
-	projects := sandbox.DetectProject(tmpDir)
-	require.GreaterOrEqual(t, len(projects), 1)
-
-	// Verify Go project detected
-	hasGo := false
-	for _, p := range projects {
-		if p.Type == sandbox.ProjectTypeGo {
-			hasGo = true
-			break
-		}
-	}
-	assert.True(t, hasGo, "Should detect Go project")
-}
-
 func TestArchitecturePlatformConsistency(t *testing.T) {
 	// Verify our architecture detection is consistent
 	platform, err := sandbox.DetectHostArchitecture()
@@ -175,9 +148,4 @@ func TestArchitecturePlatformConsistency(t *testing.T) {
 	assert.True(t,
 		platform == "linux/amd64" || platform == "linux/arm64",
 		"Platform should be supported architecture")
-}
-
-// Helper function for tests
-func writeFile(filename, content string) error {
-	return os.WriteFile(filename, []byte(content), 0644)
 }

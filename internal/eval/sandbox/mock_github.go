@@ -1,98 +1,16 @@
 package sandbox
 
 import (
-	"archive/tar"
-	"bytes"
-	"context"
 	"embed"
-	"fmt"
-	"io/fs"
-	"path/filepath"
-
-	"github.com/docker/docker/api/types/container"
 )
 
+// MockGitHubSkill embeds the mock github-cli skill. Nothing installs it into a
+// container any more (the harness no longer copies content into a running
+// container); it is kept for the containment work in #298, which decides how a
+// fake gh is provided.
+//
 //go:embed testdata/github-cli-mock/*
-var mockGitHubSkill embed.FS
-
-// SetupGitHubMocking replaces .kiro/skills/github-cli/ with mock version in container
-func (c *Container) SetupGitHubMocking(ctx context.Context, workspacePath string) error {
-	if c.containerID == "" {
-		return fmt.Errorf("container not created - call Create() before SetupGitHubMocking")
-	}
-
-	skillPath := filepath.Join(workspacePath, ".kiro", "skills", "github-cli")
-
-	// Create skills directory if it doesn't exist
-	if _, err := c.ExecWithOutput(ctx, []string{"mkdir", "-p", filepath.Dir(skillPath)}); err != nil {
-		return err
-	}
-
-	// Remove existing github-cli skill if present
-	if _, err := c.ExecWithOutput(ctx, []string{"rm", "-rf", skillPath}); err != nil {
-		return err
-	}
-
-	// Create mock skill directory
-	if _, err := c.ExecWithOutput(ctx, []string{"mkdir", "-p", skillPath}); err != nil {
-		return err
-	}
-
-	// Copy mock skill files
-	return fs.WalkDir(mockGitHubSkill, "testdata/github-cli-mock", func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-
-		if d.IsDir() {
-			return nil
-		}
-
-		relPath, _ := filepath.Rel("testdata/github-cli-mock", path)
-		destPath := filepath.Join(skillPath, relPath)
-
-		content, err := mockGitHubSkill.ReadFile(path)
-		if err != nil {
-			return err
-		}
-
-		return c.copyContentToContainer(ctx, destPath, content, 0755)
-	})
-}
-
-// copyContentToContainer copies byte content to a file in the container
-func (c *Container) copyContentToContainer(ctx context.Context, destPath string, content []byte, mode int64) error {
-	// Create tar archive with the content
-	var buf bytes.Buffer
-	tw := tar.NewWriter(&buf)
-
-	header := &tar.Header{
-		Name: filepath.Base(destPath),
-		Mode: mode,
-		Size: int64(len(content)),
-	}
-
-	if err := tw.WriteHeader(header); err != nil {
-		return err
-	}
-
-	if _, err := tw.Write(content); err != nil {
-		return err
-	}
-
-	if err := tw.Close(); err != nil {
-		return err
-	}
-
-	// Copy to container
-	return c.client.CopyToContainer(ctx, c.containerID, filepath.Dir(destPath), &buf, container.CopyToContainerOptions{})
-}
-
-// ConfigureMockGitHubPath configures PATH to use mock gh binary in container
-func (c *Container) ConfigureMockGitHubPath(ctx context.Context) error {
-	// Add mock skill directory to PATH so 'gh' resolves to our mock
-	return c.Exec(ctx, []string{"bash", "-c", "echo 'export PATH=/workspace/.kiro/skills/github-cli:$PATH' >> /home/sandbox/.bashrc"})
-}
+var MockGitHubSkill embed.FS
 
 // GitHubMockResponse represents a mock GitHub API response
 type GitHubMockResponse struct {
