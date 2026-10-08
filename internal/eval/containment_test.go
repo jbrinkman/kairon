@@ -293,6 +293,54 @@ func TestCheckResumeIntegritySummaryModeMismatch(t *testing.T) {
 	}
 }
 
+// TestCheckResumeIntegrityTrustSetChange verifies a sandbox resume is refused
+// when evals.trust_tools changed since the interrupted run, so a re-stamp never
+// claims a trust set the already-completed cases never ran under.
+func TestCheckResumeIntegrityTrustSetChange(t *testing.T) {
+	t.Cleanup(resetConfig)
+	dir := t.TempDir()
+
+	// A saved container run of builder that recorded tool_trust=["fs_read"].
+	// Production always stores the normalized name (trust.Names()), so the
+	// saved record uses the canonical form, not the "read" alias.
+	saved := AgentResult{
+		Agent:       "builder",
+		Sandbox:     boolPtr(true),
+		Containment: &Containment{ToolTrust: []string{"fs_read"}, FakeGH: true, ReadOnlyFS: true, Network: "unrestricted"},
+		Cases:       []CaseResult{{CaseName: "c1"}},
+	}
+	data, err := json.Marshal(saved)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "builder.json"), data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Resuming with a changed trust set is refused.
+	cfg.pins = &runPins{TrustOverrides: map[string][]string{"builder": {"read", "write"}}}
+	err = checkResumeIntegrity(dir, "builder", true)
+	if err == nil || !strings.Contains(err.Error(), "tool-trust set changed") {
+		t.Fatalf("err = %v, want tool-trust refusal", err)
+	}
+
+	// Resuming with the same trust set is allowed.
+	cfg.pins = &runPins{TrustOverrides: map[string][]string{"builder": {"read"}}}
+	if err := checkResumeIntegrity(dir, "builder", true); err != nil {
+		t.Errorf("same trust set refused: %v", err)
+	}
+
+	// A native resume (sandbox=false) is not trust-checked: native runs record
+	// no containment, so there is nothing to drift.
+	cfg.pins = &runPins{TrustOverrides: map[string][]string{"builder": {"read", "write"}}}
+	if err := checkResumeIntegrity(dir, "builder", false); err == nil ||
+		!strings.Contains(err.Error(), "sandbox mode changed") {
+		// A native resume of a saved container run is caught by the mode check
+		// first, not the trust check — confirm it is the mode guard talking.
+		t.Errorf("native resume of container run: err = %v, want sandbox-mode refusal", err)
+	}
+}
+
 func TestEvaluateRecordsSandboxInResultAndSummary(t *testing.T) {
 	t.Cleanup(resetConfig)
 	cfg.pins = &runPins{TrustOverrides: map[string][]string{execRubric().Agent: {}}}

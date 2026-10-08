@@ -1706,6 +1706,16 @@ func checkResumeIntegrity(resultsDir, agent string, sandbox bool) error {
 			case *existing.Sandbox != sandbox:
 				return fmt.Errorf("❌ cannot resume: sandbox mode changed since the interrupted run of %s (recorded sandbox=%t; now %t) — resume with the same mode or start a fresh run",
 					agent, *existing.Sandbox, sandbox)
+			case sandbox && existing.Containment != nil &&
+				trustString(existing.Containment.ToolTrust) != trustString(containmentFor(agent).ToolTrust):
+				// A sandbox run records containment.tool_trust from the
+				// current evals.trust_tools override. Completed cases keep
+				// their old calls[].trusted_tools, so re-stamping the result
+				// with a changed trust set would claim a trust set those
+				// cases never actually ran under — the provenance drift
+				// AC1/AC2 rule out. Refuse, like the mode/model guards.
+				return fmt.Errorf("❌ cannot resume: tool-trust set changed since the interrupted run of %s (recorded tool_trust=%s; now %s) — resume with the same trust set or start a fresh run",
+					agent, trustString(existing.Containment.ToolTrust), trustString(containmentFor(agent).ToolTrust))
 			}
 		}
 	}
