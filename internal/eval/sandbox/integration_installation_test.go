@@ -11,7 +11,14 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestKiroCLIExecution_SandboxUser(t *testing.T) {
+// TestKiroCLINotInstalledInBaseImage verifies that kiro-cli is absent in the
+// bare base image: running it in a sandbox-configured container (read-only
+// rootfs + tmpfs) fails as "command not found". It does NOT exercise the
+// baked-in sandbox user or read-only-rootfs enforcement — bare alpine:3.19 has
+// no sandbox user, and a runtime adduser is (correctly) impossible under the
+// read-only rootfs. That containment behavior is covered by the daemon-gated
+// self-tests that build the real base image (e.g. TestContainmentSandbox).
+func TestKiroCLINotInstalledInBaseImage(t *testing.T) {
 	skipIfNoContainerDaemon(t)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
@@ -43,12 +50,6 @@ func TestKiroCLIExecution_SandboxUser(t *testing.T) {
 	err = c.Start(ctx)
 	require.NoError(t, err)
 
-	// The sandbox runs with a read-only root filesystem, so a runtime
-	// `adduser` (which writes /etc/passwd) is deliberately impossible — the
-	// real base image bakes the sandbox user in. This test runs on bare
-	// alpine:3.19, so it exercises the kiro-cli probes directly as the
-	// container's user rather than creating one at runtime.
-
 	// kiro-cli --version fails because kiro-cli isn't installed in base Alpine.
 	// Run directly (no shell): the exec reports exit code 127 (command not
 	// found) with empty stderr, so assert on that signal rather than parsing a
@@ -76,12 +77,14 @@ func TestKiroCLIExecution_SandboxUser(t *testing.T) {
 
 // kiroCLIMissing reports whether err indicates kiro-cli is absent. Running a
 // missing binary directly via exec yields exit code 127 (command not found)
-// with empty stderr, so the exit code is the reliable signal; the name/text
-// checks also catch a shell-mediated "not found" message.
+// with empty stderr, so the exit code is the reliable signal; "not found" /
+// "No such file" catch a shell-mediated message. It deliberately does NOT
+// match the command name "kiro-cli", which appears in almost every exec error
+// (the command is named in the message) and would make the check pass for
+// unrelated failures like a crash or a read-only-filesystem error.
 func kiroCLIMissing(err error) bool {
 	s := err.Error()
 	return strings.Contains(s, "exit code 127") ||
-		strings.Contains(s, "kiro-cli") ||
 		strings.Contains(s, "not found") ||
 		strings.Contains(s, "No such file")
 }
