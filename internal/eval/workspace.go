@@ -1,6 +1,7 @@
 package eval
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -451,29 +452,36 @@ func (w *caseWorkspace) stageKiro(fixtureFiles map[string]bool) error {
 // no mode bits besides x, so there is no status noise) and a+rX, no
 // group/other write, on .kiro, which is mounted read-only.
 func (w *caseWorkspace) setPermissions() error {
-	kiro := w.KiroDir
-	err := filepath.WalkDir(w.Dir, func(p string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if p == kiro {
-			return filepath.SkipDir
-		}
-		return chmodOpen(p, d, 0o666)
-	})
-	if err != nil {
+	if err := filepath.WalkDir(w.Dir, permWalkFunc(w.Dir, w.KiroDir, 0o666)); err != nil {
 		return fmt.Errorf("setting workspace permissions: %w", err)
 	}
-	err = filepath.WalkDir(kiro, func(p string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		return chmodOpen(p, d, 0o444)
-	})
-	if err != nil {
+	if err := filepath.WalkDir(w.KiroDir, permWalkFunc(w.KiroDir, "", 0o444)); err != nil {
 		return fmt.Errorf("setting %s permissions: %w", kiroDirName, err)
 	}
 	return nil
+}
+
+// permWalkFunc returns a WalkDir callback that applies chmodOpen(add) to every
+// entry under root, skipping skipDir's subtree (pass "" for none). Entries that
+// vanish mid-walk (fs.ErrNotExist, other than root itself) are skipped; every
+// other error is returned.
+func permWalkFunc(root, skipDir string, add fs.FileMode) fs.WalkDirFunc {
+	return func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			// An entry listed by ReadDir can be removed before it is visited
+			// (e.g. git's transient maintenance.lock). The root is never
+			// skippable: its absence is a real setup bug. For a root lstat
+			// failure d is nil, so return before touching it.
+			if p != root && errors.Is(err, fs.ErrNotExist) {
+				return nil
+			}
+			return err
+		}
+		if skipDir != "" && p == skipDir {
+			return filepath.SkipDir
+		}
+		return chmodOpen(p, d, add)
+	}
 }
 
 // chmodOpen adds the bits in add (applied for all of user/group/other) to p,
@@ -485,6 +493,9 @@ func chmodOpen(p string, d fs.DirEntry, add fs.FileMode) error {
 	}
 	info, err := d.Info()
 	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil // vanished before we could stat it
+		}
 		return err
 	}
 	mode := info.Mode().Perm() | add
@@ -497,7 +508,10 @@ func chmodOpen(p string, d fs.DirEntry, add fs.FileMode) error {
 	if mode == info.Mode().Perm() {
 		return nil
 	}
-	return os.Chmod(p, mode)
+	if err := os.Chmod(p, mode); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
+	return nil
 }
 
 // Remove deletes the workspace. It is best effort: failure (for example files
