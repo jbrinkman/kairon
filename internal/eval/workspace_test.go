@@ -2,12 +2,15 @@ package eval
 
 import (
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"syscall"
 	"testing"
 
 	"github.com/jbrinkman/kairon/internal/eval/sandbox"
@@ -716,5 +719,179 @@ func TestRemoveDeletesBinDir(t *testing.T) {
 	_ = ws.Remove()
 	if _, err := os.Stat(bin); !os.IsNotExist(err) {
 		t.Errorf("BinDir survived Remove: %v", err)
+	}
+}
+
+// errInfoEntry is an fs.DirEntry whose Info always fails with err.
+type errInfoEntry struct{ err error }
+
+func (e errInfoEntry) Name() string               { return "x" }
+func (e errInfoEntry) IsDir() bool                { return false }
+func (e errInfoEntry) Type() fs.FileMode          { return 0 }
+func (e errInfoEntry) Info() (fs.FileInfo, error) { return nil, e.err }
+
+func skipOnWindows(t *testing.T) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX permissions only")
+	}
+}
+
+// A file listed by ReadDir and removed before chmodOpen runs (the git
+// auto-maintenance race) is skipped, not an error.
+func TestChmodOpenVanishedFileIsSkipped(t *testing.T) {
+	skipOnWindows(t)
+	dir := t.TempDir()
+	p := filepath.Join(dir, "maintenance.lock")
+	if err := os.WriteFile(p, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil || len(entries) != 1 {
+		t.Fatalf("ReadDir: %v, %d entries", err, len(entries))
+	}
+	if err := os.Remove(p); err != nil {
+		t.Fatal(err)
+	}
+	if err := chmodOpen(p, entries[0], 0o666); err != nil {
+		t.Fatalf("chmodOpen on vanished file = %v, want nil", err)
+	}
+}
+
+// The entry's Info succeeds but the file is gone by the time os.Chmod runs.
+func TestChmodOpenVanishedBeforeChmodIsSkipped(t *testing.T) {
+	skipOnWindows(t)
+	dir := t.TempDir()
+	p := filepath.Join(dir, "f")
+	if err := os.WriteFile(p, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil || len(entries) != 1 {
+		t.Fatalf("ReadDir: %v, %d entries", err, len(entries))
+	}
+	// Cache the FileInfo so a later removal cannot fail d.Info().
+	info, err := entries[0].Info()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(p); err != nil {
+		t.Fatal(err)
+	}
+	d := fs.FileInfoToDirEntry(info)
+	if err := chmodOpen(p, cachedInfoEntry{d, info}, 0o666); err != nil {
+		t.Fatalf("chmodOpen with vanished target = %v, want nil", err)
+	}
+}
+
+// cachedInfoEntry returns a fixed FileInfo from Info, simulating an entry
+// whose lstat succeeded before the file was removed.
+type cachedInfoEntry struct {
+	fs.DirEntry
+	info fs.FileInfo
+}
+
+func (c cachedInfoEntry) Info() (fs.FileInfo, error) { return c.info, nil }
+
+func TestChmodOpenOtherInfoErrorPropagates(t *testing.T) {
+	err := chmodOpen("/x", errInfoEntry{fs.ErrPermission}, 0o666)
+	if !errors.Is(err, fs.ErrPermission) {
+		t.Fatalf("chmodOpen = %v, want fs.ErrPermission", err)
+	}
+}
+
+func TestPermWalkFuncSkipsNotExist(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "root")
+	p := filepath.Join(root, "gone")
+	pe := &fs.PathError{Op: "lstat", Path: p, Err: syscall.ENOENT}
+	for name, in := range map[string]error{
+		"path error": pe,
+		"wrapped":    fmt.Errorf("walk: %w", pe),
+		"sentinel":   fs.ErrNotExist,
+	} {
+		t.Run(name, func(t *testing.T) {
+			if err := permWalkFunc(root, "", 0o666)(p, nil, in); err != nil {
+				t.Fatalf("callback = %v, want nil", err)
+			}
+		})
+	}
+}
+
+func TestPermWalkFuncPropagatesOtherErrors(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "root")
+	p := filepath.Join(root, "f")
+	for name, in := range map[string]error{
+		"permission": fs.ErrPermission,
+		"eio":        &fs.PathError{Op: "lstat", Path: p, Err: syscall.EIO},
+		"eacces":     &fs.PathError{Op: "open", Path: p, Err: syscall.EACCES},
+	} {
+		t.Run(name, func(t *testing.T) {
+			err := permWalkFunc(root, "", 0o666)(p, nil, in)
+			if !errors.Is(err, in) {
+				t.Fatalf("callback = %v, want %v", err, in)
+			}
+		})
+	}
+}
+
+func TestPermWalkFuncRootNotExistPropagates(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "missing")
+	err := permWalkFunc(root, "", 0o666)(root, nil, fs.ErrNotExist)
+	if !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("callback on missing root = %v, want fs.ErrNotExist", err)
+	}
+	if err := filepath.WalkDir(root, permWalkFunc(root, "", 0o666)); err == nil {
+		t.Fatal("WalkDir over a missing root returned nil, want error")
+	}
+}
+
+// Entries removed after WalkDir listed them but before it visits them must
+// not fail the walk.
+func TestPermWalkMidWalkDeletion(t *testing.T) {
+	skipOnWindows(t)
+	root := t.TempDir()
+	for rel, mode := range map[string]os.FileMode{
+		"a.txt":       0o600,
+		"b.txt":       0o600,
+		"sub/c.txt":   0o600,
+		"sub2/d.txt":  0o600,
+		"sub2/e/f.go": 0o600,
+	} {
+		p := filepath.Join(root, rel)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, []byte("x"), mode); err != nil {
+			t.Fatal(err)
+		}
+	}
+	inner := permWalkFunc(root, "", 0o666)
+	removed := false
+	wrapper := func(p string, d fs.DirEntry, err error) error {
+		if !removed && p == filepath.Join(root, "a.txt") {
+			removed = true
+			if rerr := os.Remove(filepath.Join(root, "b.txt")); rerr != nil {
+				t.Fatal(rerr)
+			}
+			if rerr := os.RemoveAll(filepath.Join(root, "sub2")); rerr != nil {
+				t.Fatal(rerr)
+			}
+		}
+		return inner(p, d, err)
+	}
+	if err := filepath.WalkDir(root, wrapper); err != nil {
+		t.Fatalf("WalkDir with mid-walk deletion = %v, want nil", err)
+	}
+	if !removed {
+		t.Fatal("wrapper never removed entries; test is vacuous")
+	}
+	for _, rel := range []string{"a.txt", "sub/c.txt"} {
+		info, err := os.Stat(filepath.Join(root, rel))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := info.Mode().Perm() & 0o666; got != 0o666 {
+			t.Errorf("%s mode = %o, want rw for all", rel, info.Mode().Perm())
+		}
 	}
 }
