@@ -77,9 +77,24 @@ else
 	printf '%s\n' 'gh' >>"$LOG" || die "cannot write $LOG"
 fi
 
-# SEQ is the 1-based line number of this call in gh.log; it makes the fake
-# issue/PR numbers unique and deterministic.
-SEQ=$(wc -l <"$LOG" | tr -d ' ')
+# claim_seq atomically claims the next create number and prints it. It mirrors
+# claim_body's noclobber idiom against gh-seq-<n> marker files, so two
+# concurrent `gh issue/pr create` calls can never return the same number (the
+# old `wc -l` of gh.log read the count after a separate append and could race).
+# issue and pr share one number space, as the log-line-count scheme did.
+claim_seq() {
+	_n=1
+	while :; do
+		if (
+			set -C
+			: >"$EVALDIR/gh-seq-$_n"
+		) 2>/dev/null; then
+			printf '%s\n' "$_n"
+			return 0
+		fi
+		_n=$((_n + 1))
+	done
+}
 
 # claim_body atomically creates the next free gh-body-<n>.md and prints n.
 claim_body() {
@@ -266,7 +281,7 @@ case $1 in
 issue)
 	case $2 in
 	create)
-		printf 'https://github.com/fake-owner/fake-repo/issues/%s\n' "$SEQ"
+		printf 'https://github.com/fake-owner/fake-repo/issues/%s\n' "$(claim_seq)"
 		exit 0
 		;;
 	view)
@@ -280,7 +295,7 @@ issue)
 pr)
 	case $2 in
 	create)
-		printf 'https://github.com/fake-owner/fake-repo/pull/%s\n' "$SEQ"
+		printf 'https://github.com/fake-owner/fake-repo/pull/%s\n' "$(claim_seq)"
 		exit 0
 		;;
 	list | view | comment | edit) exit 0 ;;

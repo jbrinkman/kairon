@@ -7,7 +7,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -522,3 +524,60 @@ func TestRenderGHIssue_Errors(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "number")
 }
+
+// TestFakeGH_ConcurrentCreatesGetUniqueNumbers fires many `gh issue/pr create`
+// calls at once against one eval dir and asserts every returned number is
+// unique. Before claim_seq, the number came from a `wc -l` of gh.log read
+// after a separate append, so two concurrent creates could return the same
+// number. Runs only on /bin/sh (the always-present shell); each call is its
+// own subprocess sharing e.evalDir.
+func TestFakeGH_ConcurrentCreatesGetUniqueNumbers(t *testing.T) {
+	e := newFakeGHEnv(t, []string{"/bin/sh"})
+
+	const n = 24
+	results := make([]string, n)
+	var wg sync.WaitGroup
+	wg.Add(n)
+	for i := 0; i < n; i++ {
+		go func(i int) {
+			defer wg.Done()
+			kind := "issue"
+			if i%2 == 1 {
+				kind = "pr"
+			}
+			res := e.run("", kind, "create", "--title", "t", "--body", "b")
+			results[i] = strings.TrimSpace(res.stdout)
+		}(i)
+	}
+	wg.Wait()
+
+	seen := make(map[string]int, n)
+	for i, url := range results {
+		if url == "" {
+			t.Fatalf("call %d produced no URL (exit/err?)", i)
+		}
+		if prev, dup := seen[url]; dup {
+			t.Fatalf("duplicate create URL %q from calls %d and %d (number not unique under concurrency)", url, prev, i)
+		}
+		seen[url] = i
+	}
+	// Every call was logged, and the shared number space yields 1..n.
+	assert.Len(t, e.logLines(), n)
+	nums := make(map[string]bool, n)
+	for i := 1; i <= n; i++ {
+		nums["/issues/"+itoa(i)] = true
+		nums["/pull/"+itoa(i)] = true
+	}
+	for url := range seen {
+		matched := false
+		for suffix := range nums {
+			if strings.HasSuffix(url, suffix) {
+				matched = true
+				break
+			}
+		}
+		assert.True(t, matched, "URL %q should carry a number in 1..%d", url, n)
+	}
+}
+
+func itoa(i int) string { return strconv.Itoa(i) }
