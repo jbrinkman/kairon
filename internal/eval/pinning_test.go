@@ -518,7 +518,7 @@ func TestCheckResumeIntegrityGuardsRunLevelJudge(t *testing.T) {
 	// Pin the run to the default judge (claude-sonnet-5.5), which differs from
 	// the summary's recorded judge. "builder" has no result file.
 	cfg.pins = &runPins{Judge: "claude-sonnet-5.5", Agents: map[string]agentPin{"builder": {Model: "claude-sonnet-5.5"}}}
-	err := checkResumeIntegrity(resultsDir, "builder")
+	err := checkResumeIntegrity(resultsDir, "builder", false)
 	if err == nil || !strings.Contains(err.Error(), "judge_model changed") {
 		t.Fatalf("err = %v, want run-level judge refusal", err)
 	}
@@ -526,7 +526,7 @@ func TestCheckResumeIntegrityGuardsRunLevelJudge(t *testing.T) {
 	// Same judge as the summary: no run-level refusal, and with no builder.json
 	// the per-agent check is a no-op, so it passes.
 	cfg.pins = &runPins{Judge: "claude-haiku-4.5", Agents: map[string]agentPin{"builder": {Model: "claude-sonnet-5.5"}}}
-	if err := checkResumeIntegrity(resultsDir, "builder"); err != nil {
+	if err := checkResumeIntegrity(resultsDir, "builder", false); err != nil {
 		t.Fatalf("unchanged judge should pass: %v", err)
 	}
 }
@@ -546,7 +546,7 @@ func TestCheckResumeIntegrityRefusesLegacyWithCases(t *testing.T) {
 	// Legacy file with a saved case and no prompt_sha256: refused.
 	writeProjectFile(t, filepath.Join(resultsDir, "architect.json"),
 		`{"agent":"architect","git_hash":"old","cases":[{"case_name":"c1"}]}`)
-	err := checkResumeIntegrity(resultsDir, "architect")
+	err := checkResumeIntegrity(resultsDir, "architect", false)
 	if err == nil || !strings.Contains(err.Error(), "predates run provenance") {
 		t.Fatalf("err = %v, want legacy-with-cases refusal", err)
 	}
@@ -554,7 +554,40 @@ func TestCheckResumeIntegrityRefusesLegacyWithCases(t *testing.T) {
 	// Legacy file with no saved cases: allowed (nothing to mis-attribute).
 	writeProjectFile(t, filepath.Join(resultsDir, "architect.json"),
 		`{"agent":"architect","git_hash":"old","cases":[]}`)
-	if err := checkResumeIntegrity(resultsDir, "architect"); err != nil {
+	if err := checkResumeIntegrity(resultsDir, "architect", false); err != nil {
 		t.Fatalf("empty legacy file should be allowed: %v", err)
+	}
+}
+
+// TestCheckResumeIntegrityRefusesSandboxModeChange covers resuming a run with a
+// different sandbox mode than the interrupted run: it must be refused so
+// requires_sandbox cases are not scored wrongly and marked completed. The check
+// applies regardless of pinning and only when the file holds saved cases.
+func TestCheckResumeIntegrityRefusesSandboxModeChange(t *testing.T) {
+	setupPinProject(t, "", "")
+	resultsDir := ".kairon/evals/results/run1"
+	cfg.pins = &runPins{
+		Judge:  "claude-sonnet-5.5",
+		Agents: map[string]agentPin{"architect": {Model: "claude-sonnet-5.5", Provenance: agentProvenance{PromptSHA256: "h"}}},
+	}
+
+	// Interrupted run was sandboxed and has a saved case; resuming native (false) is refused.
+	writeProjectFile(t, filepath.Join(resultsDir, "architect.json"),
+		`{"agent":"architect","git_hash":"g","agent_model":"claude-sonnet-5.5","judge_model":"claude-sonnet-5.5","prompt_sha256":"h","sandbox":true,"cases":[{"case_name":"c1"}]}`)
+	err := checkResumeIntegrity(resultsDir, "architect", false)
+	if err == nil || !strings.Contains(err.Error(), "sandbox mode changed") {
+		t.Fatalf("err = %v, want sandbox-mode refusal", err)
+	}
+
+	// Resuming with the same mode (sandbox=true) passes the sandbox check.
+	if err := checkResumeIntegrity(resultsDir, "architect", true); err != nil {
+		t.Fatalf("same sandbox mode should pass: %v", err)
+	}
+
+	// A file with no saved cases is not sandbox-checked (nothing to protect).
+	writeProjectFile(t, filepath.Join(resultsDir, "architect.json"),
+		`{"agent":"architect","git_hash":"g","agent_model":"claude-sonnet-5.5","judge_model":"claude-sonnet-5.5","prompt_sha256":"h","sandbox":true,"cases":[]}`)
+	if err := checkResumeIntegrity(resultsDir, "architect", false); err != nil {
+		t.Fatalf("empty file should not be sandbox-checked: %v", err)
 	}
 }

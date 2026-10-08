@@ -163,6 +163,11 @@ type AgentResult struct {
 	AgentModel   string `json:"agent_model,omitempty"`
 	JudgeModel   string `json:"judge_model,omitempty"`
 	PromptSHA256 string `json:"prompt_sha256,omitempty"`
+	// Sandbox records whether the run was containerised (--sandbox). Resume
+	// refuses a mode change: resuming a sandbox run without --sandbox (or vice
+	// versa) would score the remaining cases under a different execution model
+	// and mark them completed, so a correct later resume would skip them.
+	Sandbox bool `json:"sandbox"`
 	// ResourcesPresent lists the config resources that existed when the hash
 	// was computed. It is not omitempty: a resolved-but-empty list serialises
 	// as [] so that "the missing resource was omitted" is observable.

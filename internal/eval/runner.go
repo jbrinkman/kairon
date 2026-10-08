@@ -1655,7 +1655,7 @@ func runProgressiveEvaluation(agent, resultsDir string, isResume bool, cConfig *
 		}
 
 		if isResume {
-			if err := checkResumeIntegrity(resultsDir, rubric.Agent); err != nil {
+			if err := checkResumeIntegrity(resultsDir, rubric.Agent, cConfig != nil); err != nil {
 				return err
 			}
 		}
@@ -1680,12 +1680,26 @@ func runProgressiveEvaluation(agent, resultsDir string, isResume bool, cConfig *
 }
 
 // checkResumeIntegrity refuses to resume into a result file that was written
-// with a different prompt or different models, so one file never mixes two
-// prompt/model versions. A legacy file (no recorded prompt_sha256) is refused
-// when it already holds saved cases, since resuming would stamp the current
-// models/hash onto scores produced under unknown inputs; an empty legacy file,
-// and unpinned runs, are not checked.
-func checkResumeIntegrity(resultsDir, agent string) error {
+// with a different prompt, different models, or a different sandbox mode, so
+// one file never mixes two execution configurations. A legacy file (no
+// recorded prompt_sha256) is refused when it already holds saved cases, since
+// resuming would stamp the current models/hash onto scores produced under
+// unknown inputs; an empty legacy file, and unpinned runs, are not
+// prompt/model-checked. The sandbox-mode check applies regardless of pinning,
+// because resuming with the wrong mode scores requires_sandbox cases wrongly
+// and marks them completed, which a correct later resume would then skip.
+func checkResumeIntegrity(resultsDir, agent string, sandbox bool) error {
+	// Sandbox mode is checked before the pin guard: a mode change corrupts the
+	// results regardless of whether the run is pinned.
+	if data, err := os.ReadFile(filepath.Join(resultsDir, agent+".json")); err == nil {
+		var existing AgentResult
+		if json.Unmarshal(data, &existing) == nil &&
+			len(existing.Cases) > 0 && existing.Sandbox != sandbox {
+			return fmt.Errorf("❌ cannot resume: sandbox mode changed since the interrupted run of %s (recorded sandbox=%t; now %t) — resume with the same mode or start a fresh run",
+				agent, existing.Sandbox, sandbox)
+		}
+	}
+
 	pin, ok := cfg.pins.pinOf(agent)
 	if !ok {
 		return nil
@@ -1741,6 +1755,7 @@ func evaluateProgressive(rubric Rubric, cases []TestCase, gitHash string, out io
 	result := AgentResult{
 		Agent:   rubric.Agent,
 		GitHash: gitHash,
+		Sandbox: cConfig != nil,
 	}
 	cfg.pins.applyTo(&result)
 
@@ -1753,6 +1768,9 @@ func evaluateProgressive(rubric Rubric, cases []TestCase, gitHash string, out io
 				// Provenance is verified equal by checkResumeIntegrity (or the
 				// file predates provenance); stamp it from the current pins.
 				cfg.pins.applyTo(&result)
+				// Sandbox mode is verified equal by checkResumeIntegrity; keep
+				// the interrupted run's recorded value rather than the current.
+				result.Sandbox = existing.Sandbox
 			}
 		}
 	}
