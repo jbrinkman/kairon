@@ -366,4 +366,3 @@ func TestScoreDeterministic_FileReferenceWorkspace(t *testing.T) {
 		t.Errorf("container-absolute ref, file absent: score = %d, want 1", score)
 	}
 }
-
