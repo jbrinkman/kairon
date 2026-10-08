@@ -2,6 +2,8 @@ package eval
 
 import (
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -47,7 +49,7 @@ func TestScoreDeterministic_AcceptanceCriteriaQuality(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			tc := TestCase{}
-			score, _, skipped := scoreDeterministic(criterion, tc, tt.output)
+			score, _, skipped := scoreDeterministic(criterion, tc, tt.output, "")
 			if score != tt.expectedScore {
 				t.Errorf("expected score %d, got %d", tt.expectedScore, score)
 			}
@@ -99,7 +101,7 @@ func TestScoreDeterministic_TestExecution(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			tc := TestCase{}
-			score, _, skipped := scoreDeterministic(criterion, tc, tt.output)
+			score, _, skipped := scoreDeterministic(criterion, tc, tt.output, "")
 			if score != tt.expectedScore {
 				t.Errorf("expected score %d, got %d", tt.expectedScore, score)
 			}
@@ -151,7 +153,7 @@ func TestScoreDeterministic_CodeCorrectness(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			tc := TestCase{}
-			score, _, skipped := scoreDeterministic(criterion, tc, tt.output)
+			score, _, skipped := scoreDeterministic(criterion, tc, tt.output, "")
 			if score != tt.expectedScore {
 				t.Errorf("expected score %d, got %d", tt.expectedScore, score)
 			}
@@ -197,7 +199,7 @@ func TestScoreDeterministic_TestCoverage(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			tc := TestCase{}
-			score, _, skipped := scoreDeterministic(criterion, tc, tt.output)
+			score, _, skipped := scoreDeterministic(criterion, tc, tt.output, "")
 			if score != tt.expectedScore {
 				t.Errorf("expected score %d, got %d", tt.expectedScore, score)
 			}
@@ -247,7 +249,7 @@ func TestScoreDeterministic_ExistingCheckers(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			tc := TestCase{}
-			_, _, skipped := scoreDeterministic(tt.criterion, tc, tt.output)
+			_, _, skipped := scoreDeterministic(tt.criterion, tc, tt.output, "")
 			if skipped != tt.expectSkip {
 				t.Errorf("expected skipped %v, got %v", tt.expectSkip, skipped)
 			}
@@ -319,5 +321,34 @@ func TestScoreLLMJudge_ANSISequences(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestScoreDeterministic_FileReferenceWorkspace verifies that the
+// file_reference scorer resolves relative references against the case
+// workspace (where the agent runs), not the harness process directory.
+func TestScoreDeterministic_FileReferenceWorkspace(t *testing.T) {
+	criterion := Criterion{Name: "file_reference_accuracy", Scoring: "1-5"}
+	// A reference the agent would have created inside its workspace.
+	output := "I created the design at `docs/result.md` as requested."
+
+	// Workspace that contains the referenced file.
+	wsWith := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(wsWith, "docs"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(wsWith, "docs", "result.md"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Workspace that does not.
+	wsWithout := t.TempDir()
+
+	tc := TestCase{}
+	// "1-5" scoring => max score 5.
+	if score, _, _ := scoreDeterministic(criterion, tc, output, wsWith); score != 5 {
+		t.Errorf("file present in workspace: score = %d, want 5", score)
+	}
+	if score, _, _ := scoreDeterministic(criterion, tc, output, wsWithout); score != 1 {
+		t.Errorf("file absent from workspace: score = %d, want 1", score)
 	}
 }

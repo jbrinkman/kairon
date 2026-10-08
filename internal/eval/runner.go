@@ -1019,7 +1019,11 @@ func agentConfigDir(agent string) string {
 	return dir
 }
 
-func scoreDeterministic(criterion Criterion, tc TestCase, actualOutput string) (int, string, bool) {
+// scoreDeterministic scores one deterministic criterion. workspaceDir, when
+// non-empty, is the case's workspace: relative file references are resolved
+// against it (the agent runs there), not the harness process directory. Empty
+// preserves the cwd-relative behavior for direct callers without a workspace.
+func scoreDeterministic(criterion Criterion, tc TestCase, actualOutput, workspaceDir string) (int, string, bool) {
 	output := actualOutput
 	if output == "" {
 		return 0, "no output to evaluate", true
@@ -1094,7 +1098,13 @@ func scoreDeterministic(criterion Criterion, tc TestCase, actualOutput string) (
 		verified := 0
 		for _, path := range candidates {
 			cleanPath := strings.Split(path, " ")[0]
-			if _, err := os.Stat(cleanPath); err == nil || strings.Contains(path, "verified by context") {
+			// The agent runs in the case workspace, so a relative reference is
+			// resolved there, not against the harness process directory.
+			statPath := cleanPath
+			if workspaceDir != "" && !filepath.IsAbs(cleanPath) {
+				statPath = filepath.Join(workspaceDir, cleanPath)
+			}
+			if _, err := os.Stat(statPath); err == nil || strings.Contains(path, "verified by context") {
 				verified++
 			}
 		}
