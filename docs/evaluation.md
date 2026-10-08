@@ -1291,7 +1291,7 @@ Reading the table: **enforced** means a mechanism stops the action whatever the 
 ##### What the model does not defend against
 
 - Code that runs in-process and talks to the network without going through `PATH` (an SDK called from a script the agent writes or runs).
-- Built-in and MCP tools that are trusted: `use_aws`, `web_fetch`, `web_search` and `@server/tool` do their own I/O, so neither the `PATH` shim nor the filesystem layer intercepts them.
+- Built-in and MCP tools that are trusted: `use_aws`, `web_fetch`, `web_search` and `@server/tool` do their own I/O, so the `PATH` shim does not intercept them and their network side effects are uncontrolled. Their filesystem writes are still subject to the read-only root filesystem and bind mounts like any other process in the container.
 - Credentials that a consuming project passes into the container environment. Kairon drops the GitHub credential variables; it does not drop others.
 - A trusted `execute_bash` doing anything the container can do inside its writable mounts.
 - Network access the agent itself needs. The agent is its own model client, so a destination filter could not tell model traffic from exfiltration (see [Why Kairon does not network-gateway these](#risk-vectors)).
