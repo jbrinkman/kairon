@@ -939,8 +939,8 @@ Because `.eval/` lives in the host workspace, `gh.log` and the `gh-body-<n>.md` 
 
 | Call | Result |
 |------|--------|
-| `gh issue create …` | Prints `https://github.com/fake-owner/fake-repo/issues/<seq>`, exit 0. `<seq>` is the call's line number in `gh.log`. |
-| `gh pr create …` | Prints `https://github.com/fake-owner/fake-repo/pull/<seq>`, exit 0. |
+| `gh issue create …` | Prints `https://github.com/fake-owner/fake-repo/issues/<seq>`, exit 0. `<seq>` is a sequence number counting only `create` calls, shared across `gh issue create` and `gh pr create` (so the first create in a case is `1`, the next `2`, …, regardless of other `gh` calls logged in between). It is claimed atomically, so concurrent creates never collide. |
+| `gh pr create …` | Prints `https://github.com/fake-owner/fake-repo/pull/<seq>`, exit 0. `<seq>` shares the same create counter as `gh issue create`. |
 | `gh issue view [N\|url]` | Answers from the case's `gh_issue`; see below. |
 | `gh issue list\|edit\|comment\|close\|reopen`, `gh pr list\|view\|comment\|edit` | Simulated: exit 0 with no output. |
 | `gh auth status` | Prints a fake logged-in state and exits 0, so an agent's pre-checks pass. This is the *fake*; it never consults the real binary. |
