@@ -21,7 +21,7 @@ func scoreCase(rubric Rubric, tc TestCase, cr *CaseResult) {
 		}
 
 		if criterion.Deterministic {
-			score.Score, score.Reasoning, score.Skipped = scoreDeterministic(criterion, tc, cr.ActualOutput, cr.WorkspaceDir)
+			score.Score, score.Reasoning, score.Skipped = scoreDeterministic(criterion, tc, cr.ActualOutput, cr.WorkspaceDir, cr.containerWorkspaceDir)
 		} else {
 			// LLM-judged criteria
 			if cr.ActualOutput == "" {

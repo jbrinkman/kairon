@@ -72,6 +72,11 @@ func executeCase(rubric Rubric, tc TestCase, cConfig *ContainerConfig, out io.Wr
 		return cr
 	}
 	cr.WorkspaceDir = ws.Dir
+	if cConfig != nil {
+		// Sandbox run: the agent sees the workspace at the container path, so
+		// absolute references it reports are rewritten to the host dir for scoring.
+		cr.containerWorkspaceDir = cConfig.WorkspaceDir
+	}
 	if keep {
 		fmt.Fprintf(out, " (workspace: %s)", ws.Dir)
 	} else {

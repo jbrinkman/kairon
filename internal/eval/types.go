@@ -127,6 +127,11 @@ type CaseResult struct {
 	// WorkspaceDir is the host path of the case's workspace. It is recorded
 	// whether or not the directory is removed after the case.
 	WorkspaceDir string `json:"workspace_dir,omitempty"`
+	// containerWorkspaceDir is the workspace path *inside* the container
+	// (e.g. "/workspace") for a sandbox run, empty for a native run. It lets
+	// deterministic scoring rewrite an absolute path the agent reported from
+	// inside the container back to the host workspace. Not serialized.
+	containerWorkspaceDir string
 	// Calls holds one record per agent call and per judge call, in execution order.
 	Calls []inference.CallRecord `json:"calls,omitempty"`
 }

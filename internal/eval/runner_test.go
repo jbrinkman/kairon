@@ -49,7 +49,7 @@ func TestScoreDeterministic_AcceptanceCriteriaQuality(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			tc := TestCase{}
-			score, _, skipped := scoreDeterministic(criterion, tc, tt.output, "")
+			score, _, skipped := scoreDeterministic(criterion, tc, tt.output, "", "")
 			if score != tt.expectedScore {
 				t.Errorf("expected score %d, got %d", tt.expectedScore, score)
 			}
@@ -101,7 +101,7 @@ func TestScoreDeterministic_TestExecution(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			tc := TestCase{}
-			score, _, skipped := scoreDeterministic(criterion, tc, tt.output, "")
+			score, _, skipped := scoreDeterministic(criterion, tc, tt.output, "", "")
 			if score != tt.expectedScore {
 				t.Errorf("expected score %d, got %d", tt.expectedScore, score)
 			}
@@ -153,7 +153,7 @@ func TestScoreDeterministic_CodeCorrectness(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			tc := TestCase{}
-			score, _, skipped := scoreDeterministic(criterion, tc, tt.output, "")
+			score, _, skipped := scoreDeterministic(criterion, tc, tt.output, "", "")
 			if score != tt.expectedScore {
 				t.Errorf("expected score %d, got %d", tt.expectedScore, score)
 			}
@@ -199,7 +199,7 @@ func TestScoreDeterministic_TestCoverage(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			tc := TestCase{}
-			score, _, skipped := scoreDeterministic(criterion, tc, tt.output, "")
+			score, _, skipped := scoreDeterministic(criterion, tc, tt.output, "", "")
 			if score != tt.expectedScore {
 				t.Errorf("expected score %d, got %d", tt.expectedScore, score)
 			}
@@ -249,7 +249,7 @@ func TestScoreDeterministic_ExistingCheckers(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			tc := TestCase{}
-			_, _, skipped := scoreDeterministic(tt.criterion, tc, tt.output, "")
+			_, _, skipped := scoreDeterministic(tt.criterion, tc, tt.output, "", "")
 			if skipped != tt.expectSkip {
 				t.Errorf("expected skipped %v, got %v", tt.expectSkip, skipped)
 			}
@@ -325,12 +325,12 @@ func TestScoreLLMJudge_ANSISequences(t *testing.T) {
 }
 
 // TestScoreDeterministic_FileReferenceWorkspace verifies that the
-// file_reference scorer resolves relative references against the case
-// workspace (where the agent runs), not the harness process directory.
+// file_reference scorer resolves references against the case workspace (where
+// the agent runs) — relative references natively, and absolute references
+// reported under the container workspace path for a sandbox run — not against
+// the harness process directory.
 func TestScoreDeterministic_FileReferenceWorkspace(t *testing.T) {
 	criterion := Criterion{Name: "file_reference_accuracy", Scoring: "1-5"}
-	// A reference the agent would have created inside its workspace.
-	output := "I created the design at `docs/result.md` as requested."
 
 	// Workspace that contains the referenced file.
 	wsWith := t.TempDir()
@@ -344,11 +344,26 @@ func TestScoreDeterministic_FileReferenceWorkspace(t *testing.T) {
 	wsWithout := t.TempDir()
 
 	tc := TestCase{}
+	const containerWS = "/workspace"
 	// "1-5" scoring => max score 5.
-	if score, _, _ := scoreDeterministic(criterion, tc, output, wsWith); score != 5 {
-		t.Errorf("file present in workspace: score = %d, want 5", score)
+
+	// Relative reference (native run): resolved against the host workspace.
+	relOut := "I created the design at `docs/result.md` as requested."
+	if score, _, _ := scoreDeterministic(criterion, tc, relOut, wsWith, ""); score != 5 {
+		t.Errorf("relative ref, file present: score = %d, want 5", score)
 	}
-	if score, _, _ := scoreDeterministic(criterion, tc, output, wsWithout); score != 1 {
-		t.Errorf("file absent from workspace: score = %d, want 1", score)
+	if score, _, _ := scoreDeterministic(criterion, tc, relOut, wsWithout, ""); score != 1 {
+		t.Errorf("relative ref, file absent: score = %d, want 1", score)
+	}
+
+	// Absolute container reference (sandbox run): /workspace/... is rewritten
+	// onto the host workspace, not stat'd on the host as a literal path.
+	absOut := "Wrote the design to `/workspace/docs/result.md` for review."
+	if score, _, _ := scoreDeterministic(criterion, tc, absOut, wsWith, containerWS); score != 5 {
+		t.Errorf("container-absolute ref, file present: score = %d, want 5", score)
+	}
+	if score, _, _ := scoreDeterministic(criterion, tc, absOut, wsWithout, containerWS); score != 1 {
+		t.Errorf("container-absolute ref, file absent: score = %d, want 1", score)
 	}
 }
+

@@ -1019,11 +1019,42 @@ func agentConfigDir(agent string) string {
 	return dir
 }
 
+// resolveReferencePath maps a file reference reported by the agent to a host
+// path to stat. Resolution, in order:
+//   - no host workspace: the reference is used as-is (legacy cwd-relative).
+//   - an absolute reference under the container workspace (e.g.
+//     /workspace/docs/x.md): rewritten onto the host workspace.
+//   - any other relative reference: joined onto the host workspace.
+//   - any other absolute reference (a real host path): used as-is.
+func resolveReferencePath(ref, workspaceDir, containerWorkspaceDir string) string {
+	if workspaceDir == "" {
+		return ref
+	}
+	if containerWorkspaceDir != "" && filepath.IsAbs(ref) {
+		cws := filepath.Clean(containerWorkspaceDir)
+		clean := filepath.Clean(ref)
+		if clean == cws {
+			return workspaceDir
+		}
+		if rel, err := filepath.Rel(cws, clean); err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			return filepath.Join(workspaceDir, rel)
+		}
+		return ref
+	}
+	if !filepath.IsAbs(ref) {
+		return filepath.Join(workspaceDir, ref)
+	}
+	return ref
+}
+
 // scoreDeterministic scores one deterministic criterion. workspaceDir, when
-// non-empty, is the case's workspace: relative file references are resolved
-// against it (the agent runs there), not the harness process directory. Empty
-// preserves the cwd-relative behavior for direct callers without a workspace.
-func scoreDeterministic(criterion Criterion, tc TestCase, actualOutput, workspaceDir string) (int, string, bool) {
+// non-empty, is the case's host workspace: relative file references are
+// resolved against it (the agent runs there), not the harness process
+// directory. containerWorkspaceDir, when non-empty, is the workspace path
+// inside the sandbox container (e.g. "/workspace"): an absolute reference the
+// agent reported under it is rewritten onto workspaceDir on the host. Both
+// empty preserves the cwd-relative behavior for direct callers.
+func scoreDeterministic(criterion Criterion, tc TestCase, actualOutput, workspaceDir, containerWorkspaceDir string) (int, string, bool) {
 	output := actualOutput
 	if output == "" {
 		return 0, "no output to evaluate", true
@@ -1098,12 +1129,11 @@ func scoreDeterministic(criterion Criterion, tc TestCase, actualOutput, workspac
 		verified := 0
 		for _, path := range candidates {
 			cleanPath := strings.Split(path, " ")[0]
-			// The agent runs in the case workspace, so a relative reference is
-			// resolved there, not against the harness process directory.
-			statPath := cleanPath
-			if workspaceDir != "" && !filepath.IsAbs(cleanPath) {
-				statPath = filepath.Join(workspaceDir, cleanPath)
-			}
+			// The agent runs in the case workspace, so references are resolved
+			// there, not against the harness process directory. A sandbox agent
+			// reports paths under the container workspace (e.g. /workspace/x);
+			// rewrite those onto the host workspace too.
+			statPath := resolveReferencePath(cleanPath, workspaceDir, containerWorkspaceDir)
 			if _, err := os.Stat(statPath); err == nil || strings.Contains(path, "verified by context") {
 				verified++
 			}
