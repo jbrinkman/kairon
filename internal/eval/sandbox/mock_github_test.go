@@ -623,3 +623,23 @@ func TestFakeGH_BodyFileUnwritableEvalDirFailsFast(t *testing.T) {
 	assert.Empty(t, out.String(), "a failed body capture must not print a success URL")
 	assert.Contains(t, errb.String(), "cannot write", "should report a write failure: %q", errb.String())
 }
+
+// TestFakeGH_DanglingBodySymlinkIsCollisionNotFailure verifies that a dangling
+// gh-body-1.md symlink in a writable .eval is treated as a taken name (the
+// claim advances to gh-body-2.md), not misread as an unwritable directory.
+// `set -C` refuses to create over the symlink, and -e alone would follow the
+// broken link and report "does not exist"; the added -L check catches it.
+func TestFakeGH_DanglingBodySymlinkIsCollisionNotFailure(t *testing.T) {
+	e := newFakeGHEnv(t, []string{"/bin/sh"})
+	e.writeFile("b.md", "payload")
+
+	// A dangling symlink occupying the gh-body-1.md name.
+	link := filepath.Join(e.evalDir, "gh-body-1.md")
+	require.NoError(t, os.Symlink(filepath.Join(e.evalDir, "missing-target"), link))
+
+	res := e.run("", "issue", "create", "--title", "t", "--body-file", "b.md")
+	require.Equal(t, 0, res.exit, "stderr=%q", res.stderr)
+	assert.Equal(t, "https://github.com/fake-owner/fake-repo/issues/1\n", res.stdout)
+	// The body landed in the next free slot, not clobbering the symlink.
+	assert.Equal(t, "payload", string(e.readEval("gh-body-2.md")))
+}

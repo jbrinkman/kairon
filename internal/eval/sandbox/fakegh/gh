@@ -103,9 +103,11 @@ _claim() {
 			printf '%s\n' "$_cl_n"
 			return 0
 		fi
-		if [ ! -e "$_cl_path" ]; then
-			# Create failed but the file does not exist: not a collision, so
-			# $EVALDIR cannot be written (full, read-only or no permission).
+		if [ ! -e "$_cl_path" ] && [ ! -L "$_cl_path" ]; then
+			# Create failed and nothing is at this name — not even a (possibly
+			# dangling) symlink, which -e would miss by following it. So the
+			# failure is not a collision: $EVALDIR is full, read-only or
+			# unwritable.
 			printf '%s: cannot write %s (is %s full or read-only?)\n' \
 				"$prog" "$_cl_path" "$EVALDIR" >&2
 			return 1
