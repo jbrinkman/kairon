@@ -81,6 +81,13 @@ func RunWithOptions(agent string, testcase string, options RunOptions) error {
 		var sandboxCfg *config.SandboxConfig
 		if cfg, err := config.Load(); err == nil {
 			sandboxCfg = &cfg.Sandbox
+		} else if !errors.Is(err, os.ErrNotExist) {
+			// A missing config file is fine — the sandbox runs with built-in
+			// defaults. But an existing config that fails to load (invalid
+			// workspace_dir, memory_mb, parse error, ...) must not be silently
+			// ignored: falling back to defaults would run with limits the
+			// config did not specify. Fail fast instead.
+			return fmt.Errorf("❌ cannot start sandbox run: %w", err)
 		}
 		cConfig = createContainerConfig(sandboxCfg, options.ResourceLimit, options.Debug)
 	}
