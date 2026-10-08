@@ -9,6 +9,8 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/jbrinkman/kairon/internal/eval/sandbox"
 )
 
 // wsEnv sets up a temp cwd with a project .kiro, an evals dir "evals" and a
@@ -173,6 +175,9 @@ func TestLoadCasesValidatesWorkspaceAndTimeout(t *testing.T) {
 		{"zero-timeout", "name: zero\ntimeout: 0s\ninput: x\n", "zero"},
 		{"negative-timeout", "name: neg\ntimeout: -5s\ninput: x\n", "neg"},
 		{"bare-number", "name: bare\ntimeout: 30\ninput: x\n", "bare"},
+		{"gh-issue-ok", "name: ghok\nrequires_sandbox: true\ngh_issue:\n  title: T\ninput: x\n", ""},
+		{"gh-issue-no-sandbox", "name: ghns\ngh_issue:\n  title: T\ninput: x\n", "requires_sandbox"},
+		{"gh-issue-no-title", "name: ghnt\nrequires_sandbox: true\ngh_issue:\n  number: 3\ninput: x\n", "title"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -635,5 +640,81 @@ func assertTreeEqual(t *testing.T, want, got map[string]string, what string) {
 		if got[k] != v {
 			t.Errorf("%s: %s changed (%q -> %q)", what, k, v, got[k])
 		}
+	}
+}
+
+func TestLoadCasesGHIssueDefaultsNumber(t *testing.T) {
+	wsEnv(t)
+	writeCfgFile(t, filepath.Join("evals", "cases", "agent-gh", "c.yaml"),
+		"name: gh\nrequires_sandbox: true\ngh_issue:\n  title: T\n  body: B\n  labels: [bug]\ninput: x\n")
+	writeCfgFile(t, filepath.Join("evals", "cases", "agent-gh", "d.yaml"),
+		"name: gh2\nrequires_sandbox: true\ngh_issue:\n  number: 42\n  title: T\ninput: x\n")
+	got, err := loadCases("agent-gh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("got %d cases", len(got))
+	}
+	byName := map[string]TestCase{}
+	for _, c := range got {
+		byName[c.Name] = c
+	}
+	if c := byName["gh"]; c.GHIssue == nil || c.GHIssue.Number != 1 || c.GHIssue.Title != "T" || !c.RequiresSandbox {
+		t.Errorf("defaults not applied: %+v", c.GHIssue)
+	}
+	if c := byName["gh2"]; c.GHIssue == nil || c.GHIssue.Number != 42 {
+		t.Errorf("explicit number lost: %+v", c.GHIssue)
+	}
+}
+
+func TestNewCaseWorkspaceWritesFakeGHAndIssue(t *testing.T) {
+	wsEnv(t)
+
+	// Without gh_issue: fake gh is present, issue files are not.
+	plain := newWS(t, TestCase{Name: "plain"})
+	info, err := os.Stat(filepath.Join(plain.BinDir, "gh"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm()&0o111 == 0 {
+		t.Errorf("BinDir/gh mode = %v, want executable", info.Mode().Perm())
+	}
+	if filepath.Dir(plain.BinDir) != plain.root || strings.HasPrefix(plain.BinDir, plain.Dir+string(filepath.Separator)) {
+		t.Errorf("BinDir %s must be a sibling of the workspace, not inside it", plain.BinDir)
+	}
+	for _, n := range []string{"gh-issue.json", "gh-issue.txt"} {
+		if _, err := os.Stat(filepath.Join(plain.EvalDir, n)); !os.IsNotExist(err) {
+			t.Errorf("%s must not exist without gh_issue (err=%v)", n, err)
+		}
+	}
+
+	// With gh_issue: both rendered, JSON one top-level field per line.
+	ws := newWS(t, TestCase{Name: "gh", RequiresSandbox: true, GHIssue: &sandbox.GHIssue{Title: "Add widget", Body: "b"}})
+	raw := readFileT(t, filepath.Join(ws.EvalDir, "gh-issue.json"))
+	var m map[string]any
+	if err := json.Unmarshal([]byte(raw), &m); err != nil {
+		t.Fatalf("gh-issue.json is not valid JSON: %v\n%s", err, raw)
+	}
+	if m["title"] != "Add widget" || m["number"] != float64(1) {
+		t.Errorf("rendered issue = %v", m)
+	}
+	if !strings.Contains(readFileT(t, filepath.Join(ws.EvalDir, "gh-issue.txt")), "Add widget") {
+		t.Error("gh-issue.txt lacks the title")
+	}
+
+	// A gh_issue without a title cannot be rendered.
+	if _, err := newCaseWorkspace(TestCase{Name: "bad", GHIssue: &sandbox.GHIssue{}}); err == nil {
+		t.Error("expected an error for gh_issue without title")
+	}
+}
+
+func TestRemoveDeletesBinDir(t *testing.T) {
+	wsEnv(t)
+	ws := newWS(t, TestCase{Name: "rm"})
+	bin := ws.BinDir
+	_ = ws.Remove()
+	if _, err := os.Stat(bin); !os.IsNotExist(err) {
+		t.Errorf("BinDir survived Remove: %v", err)
 	}
 }

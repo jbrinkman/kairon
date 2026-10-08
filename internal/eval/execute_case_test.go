@@ -232,3 +232,35 @@ func TestEvaluateProgressiveUsesWorkspace(t *testing.T) {
 		t.Fatalf("marker.txt = %q", got)
 	}
 }
+
+// A requires_sandbox case run natively must fail before creating a workspace
+// or invoking the agent.
+func TestExecuteCaseRequiresSandboxFailsFastNatively(t *testing.T) {
+	execEnv(t, true)
+	root := os.Getenv(workspaceRootEnv)
+
+	tc := stubCase("sandbox-only", "", "", "never", "touch invoked.txt")
+	tc.RequiresSandbox = true
+	var out bytes.Buffer
+	cr := executeCase(execRubric(), tc, nil, &out, true)
+
+	if cr.ErrorContext == nil || !strings.Contains(cr.ErrorContext.Stderr, "requires --sandbox") {
+		t.Fatalf("ErrorContext = %+v\n%s", cr.ErrorContext, out.String())
+	}
+	if !strings.Contains(out.String(), "requires --sandbox") {
+		t.Errorf("output lacks the reason: %s", out.String())
+	}
+	if cr.ActualOutput != "" || len(cr.Calls) != 0 {
+		t.Errorf("agent must not be invoked: output=%q calls=%d", cr.ActualOutput, len(cr.Calls))
+	}
+	if cr.WorkspaceDir != "" {
+		t.Errorf("WorkspaceDir = %q, want none", cr.WorkspaceDir)
+	}
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Errorf("workspace root not empty: %v", entries)
+	}
+}

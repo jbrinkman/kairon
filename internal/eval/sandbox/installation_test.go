@@ -272,22 +272,3 @@ func TestContainer_ArchitectureErrors(t *testing.T) {
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "invalid platform format")
 }
-
-// SimulateGitHubResponse and the embedded mock skill are kept for the
-// containment work (#298); nothing installs them into a container any more.
-func TestSimulateGitHubResponse(t *testing.T) {
-	response := SimulateGitHubResponse("issue", []string{"create"})
-	assert.Equal(t, 12345, response.IssueNumber)
-
-	response = SimulateGitHubResponse("pr", []string{"create"})
-	assert.Equal(t, 42, response.PRNumber)
-
-	response = SimulateGitHubResponse("unknown", []string{})
-	assert.Equal(t, "success", response.Status)
-}
-
-func TestMockGitHubSkill_Embedded(t *testing.T) {
-	content, err := MockGitHubSkill.ReadFile("testdata/github-cli-mock/gh")
-	require.NoError(t, err)
-	assert.Contains(t, string(content), "[MOCK]")
-}

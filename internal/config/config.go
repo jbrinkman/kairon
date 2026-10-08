@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"path"
 	"strings"
 	"time"
 
@@ -125,6 +126,9 @@ func Load() (*Config, error) {
 	if cfg.Sandbox.WorkspaceDir == "" {
 		return nil, fmt.Errorf("sandbox.workspace_dir cannot be empty")
 	}
+	if err := validateSandboxWorkspaceDir(cfg.Sandbox.WorkspaceDir); err != nil {
+		return nil, err
+	}
 
 	// Validate logging config
 	validLevels := map[string]bool{
@@ -200,5 +204,46 @@ func (c *Config) Save() error {
 		return fmt.Errorf("failed to write config file: %w", err)
 	}
 
+	return nil
+}
+
+// reservedSandboxWorkspacePaths are the container paths the sandbox mounts a
+// tmpfs at (see internal/eval/sandbox.tmpfsMounts). sandbox.workspace_dir is
+// bind-mounted, so it must not equal or sit under any of these: the container
+// cannot be created with two mounts on the same path. Kept in sync with the
+// sandbox Tmpfs*Path constants by TestReservedWorkspacePathsMatchTmpfs in the
+// sandbox package. These are container paths and therefore always POSIX.
+var reservedSandboxWorkspacePaths = []string{
+	"/tmp",
+	"/var/tmp",
+	"/home/sandbox",
+}
+
+// ReservedSandboxWorkspacePaths returns a copy of the container paths that
+// sandbox.workspace_dir may not equal or nest under. Exposed so the sandbox
+// package can assert its tmpfs mount targets stay in sync (drift guard).
+func ReservedSandboxWorkspacePaths() []string {
+	return append([]string(nil), reservedSandboxWorkspacePaths...)
+}
+
+// validateSandboxWorkspaceDir rejects a workspace_dir that collides with a
+// reserved tmpfs mount path. The value is a container path (always POSIX) and
+// must be absolute. A path equal to or nested under a reserved path is
+// rejected with a message naming the conflict, so the failure happens at
+// config load rather than as an opaque container-create error.
+func validateSandboxWorkspaceDir(dir string) error {
+	if !strings.HasPrefix(dir, "/") {
+		return fmt.Errorf("sandbox.workspace_dir %q must be an absolute path", dir)
+	}
+	clean := path.Clean(dir)
+	if clean == "/" {
+		return fmt.Errorf("sandbox.workspace_dir %q must not be the container root", dir)
+	}
+	for _, reserved := range reservedSandboxWorkspacePaths {
+		if clean == reserved || strings.HasPrefix(clean, reserved+"/") {
+			return fmt.Errorf("sandbox.workspace_dir %q collides with the container's tmpfs mount at %s; choose a path outside %s",
+				dir, reserved, strings.Join(reservedSandboxWorkspacePaths, ", "))
+		}
+	}
 	return nil
 }

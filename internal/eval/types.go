@@ -52,6 +52,13 @@ type TestCase struct {
 	// Timeout overrides the agent-call timeout for this case. It is a Go
 	// duration string (e.g. "30s") and must be positive when set.
 	Timeout string `yaml:"timeout,omitempty" json:"timeout,omitempty"`
+
+	// GHIssue is the data the sandbox's fake gh answers `gh issue view` with.
+	// It requires RequiresSandbox. number defaults to 1; title is required.
+	GHIssue *sandbox.GHIssue `yaml:"gh_issue,omitempty" json:"gh_issue,omitempty"`
+
+	// RequiresSandbox refuses to run the case natively (without --sandbox).
+	RequiresSandbox bool `yaml:"requires_sandbox,omitempty" json:"requires_sandbox,omitempty"`
 }
 
 // CostInfo tracks token usage and estimated cost.
@@ -156,6 +163,14 @@ type AgentResult struct {
 	AgentModel   string `json:"agent_model,omitempty"`
 	JudgeModel   string `json:"judge_model,omitempty"`
 	PromptSHA256 string `json:"prompt_sha256,omitempty"`
+	// Sandbox records whether the run was containerised (--sandbox). It is a
+	// pointer so a result written before sandbox-mode tracking (legacy, field
+	// absent) is distinguishable (nil) from an explicitly native run (false):
+	// resume refuses a mode change, and refuses a legacy file with cases
+	// outright since its mode is unknown. Resuming with the wrong mode would
+	// score requires_sandbox cases under a different execution model and mark
+	// them completed, so a correct later resume would skip them.
+	Sandbox *bool `json:"sandbox,omitempty"`
 	// ResourcesPresent lists the config resources that existed when the hash
 	// was computed. It is not omitempty: a resolved-but-empty list serialises
 	// as [] so that "the missing resource was omitted" is observable.
@@ -227,16 +242,13 @@ type AgentProvenance struct {
 
 // ContainerConfig configures containerized execution
 type ContainerConfig struct {
-	Platform       string                 `json:"platform"`
-	ResourceLimits sandbox.ResourceLimits `json:"resource_limits"`
-	Environment    map[string]string      `json:"environment"`
-	WorkspaceDir   string                 `json:"workspace_dir"`
-	// MockGitHub is not consulted: the runner no longer installs a mock gh
-	// into the container. Fake gh behavior is the containment work in #298.
-	MockGitHub      bool                  `json:"mock_github"`
-	Debug           bool                  `json:"debug"`
-	ImageManager    *sandbox.ImageManager `json:"-"`
-	CachedImageName string                `json:"-"`
+	Platform        string                 `json:"platform"`
+	ResourceLimits  sandbox.ResourceLimits `json:"resource_limits"`
+	Environment     map[string]string      `json:"environment"`
+	WorkspaceDir    string                 `json:"workspace_dir"`
+	Debug           bool                   `json:"debug"`
+	ImageManager    *sandbox.ImageManager  `json:"-"`
+	CachedImageName string                 `json:"-"`
 }
 
 // ProjectDetection holds results from project type detection

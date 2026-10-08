@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -131,6 +132,18 @@ func testContainerConfig() *ContainerConfig {
 	}
 }
 
+// useAgentConfigs points cfg.evalsDir at a temp evals dir holding agent
+// configs for the agents the container tests invoke: builder (allowedTools
+// read, write) and selftest (read). Call it after chdirTemp/useStubBackend,
+// which reset cfg.
+func useAgentConfigs(t *testing.T) {
+	t.Helper()
+	dir := t.TempDir()
+	writeCfgFile(t, filepath.Join(dir, "agents", "builder.json"), `{"name":"builder","allowedTools":["read","write"]}`)
+	writeCfgFile(t, filepath.Join(dir, "agents", "selftest.json"), `{"name":"selftest","allowedTools":["read"]}`)
+	cfg.evalsDir = dir
+}
+
 // useFakeLinuxBinary replaces the helper-binary resolver and returns the path
 // it hands out.
 func useFakeLinuxBinary(t *testing.T) string {
@@ -178,6 +191,7 @@ func assertNoPromptInArgv(t *testing.T, cmds [][]string) {
 
 func TestContainerKiroCLIPromptOnStdinNotArgv(t *testing.T) {
 	chdirTemp(t)
+	useAgentConfigs(t)
 	pinAgentModel("builder", "m1")
 	prompt := nastyPrompt()
 	x := &fakeExecer{kiroStdout: "\x1b[1mhello\x1b[0m"}
@@ -208,6 +222,7 @@ func TestContainerKiroCLIPromptOnStdinNotArgv(t *testing.T) {
 func TestContainerHelperPromptOnStdinNotArgv(t *testing.T) {
 	chdirTemp(t)
 	useStubBackend(t)
+	useAgentConfigs(t)
 	useFakeLinuxBinary(t)
 	prompt := nastyPrompt()
 	x := &fakeExecer{}
@@ -235,6 +250,7 @@ func TestContainerKiroCLIArgvMatchesNative(t *testing.T) {
 	for _, model := range []string{"", "claude-sonnet-4.5"} {
 		t.Run("model="+model, func(t *testing.T) {
 			chdirTemp(t)
+			useAgentConfigs(t)
 			_, calls := installFakeKiroCLI(t, "cat >/dev/null\necho ok")
 			if model != "" {
 				pinAgentModel("builder", model)
@@ -247,6 +263,9 @@ func TestContainerKiroCLIArgvMatchesNative(t *testing.T) {
 			if len(native) != 1 {
 				t.Fatalf("native calls = %q", native)
 			}
+			if !strings.Contains(native[0], "--trust-all-tools") {
+				t.Errorf("native argv lost --trust-all-tools: %q", native[0])
+			}
 
 			x := &fakeExecer{kiroStdout: "ok"}
 			useFakeContainer(t, x)
@@ -257,8 +276,16 @@ func TestContainerKiroCLIArgvMatchesNative(t *testing.T) {
 			if cmd[0] != "kiro-cli" {
 				t.Fatalf("program = %q", cmd[0])
 			}
-			if got := strings.Join(cmd[1:], " "); got != native[0] {
-				t.Errorf("container argv %q != native %q", got, native[0])
+			// Container argv equals native except that whole-tool trust
+			// (builder allowedTools read,write) replaces --trust-all-tools.
+			want := strings.Replace(native[0], "--trust-all-tools", "--trust-tools=fs_read,fs_write", 1)
+			if got := strings.Join(cmd[1:], " "); got != want {
+				t.Errorf("container argv %q != native with trust substituted %q", got, want)
+			}
+			for _, a := range cmd {
+				if a == "--trust-all-tools" {
+					t.Errorf("container argv must not trust all tools: %v", cmd)
+				}
 			}
 			hasModel := false
 			for _, a := range cmd {
@@ -299,6 +326,7 @@ func TestContainerStubMatchesNativeStub(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			chdirTemp(t)
 			useStubBackend(t)
+			useAgentConfigs(t)
 			useFakeLinuxBinary(t)
 			pinAgentModel("selftest", "claude-sonnet-5.5")
 			stub := loadSelftestStub(t, name)
@@ -323,7 +351,16 @@ func TestContainerStubMatchesNativeStub(t *testing.T) {
 			}
 			// Wall-clock duration legitimately differs; everything else must match.
 			cRec.DurationMS, nRec.DurationMS = 0, 0
-			if cRec != nRec {
+			// The one intended difference: only container calls are
+			// trust-restricted (selftest allowedTools: read).
+			if cRec.TrustedTools == nil || !reflect.DeepEqual(*cRec.TrustedTools, []string{"fs_read"}) {
+				t.Errorf("container TrustedTools = %v, want [fs_read]", cRec.TrustedTools)
+			}
+			if nRec.TrustedTools != nil {
+				t.Errorf("native TrustedTools = %v, want omitted", *nRec.TrustedTools)
+			}
+			cRec.TrustedTools = nil
+			if !reflect.DeepEqual(cRec, nRec) {
 				t.Errorf("record %+v != native %+v", cRec, nRec)
 			}
 			if cEC != nil || nEC != nil {
@@ -368,6 +405,7 @@ func TestContainerNoEstimateCostOrGuessedRecord(t *testing.T) {
 	// "estimated" when the usage source says so.
 	chdirTemp(t)
 	useStubBackend(t)
+	useAgentConfigs(t)
 	useFakeLinuxBinary(t)
 	useFakeContainer(t, &fakeExecer{})
 	_, _, rec, _, err := invokeAgent("selftest", "p", testContainerConfig(), callOpts{Stub: loadSelftestStub(t, "stub-usage")})
@@ -384,6 +422,7 @@ func TestContainerNoEstimateCostOrGuessedRecord(t *testing.T) {
 
 func TestContainerTimeoutMapping(t *testing.T) {
 	chdirTemp(t)
+	useAgentConfigs(t)
 	cc := testContainerConfig()
 	cc.ResourceLimits.Timeout = 30 * time.Millisecond
 	x := &fakeExecer{block: true}
@@ -413,6 +452,7 @@ func TestContainerTimeoutMapping(t *testing.T) {
 func TestContainerHelperReportedTimeout(t *testing.T) {
 	chdirTemp(t)
 	useStubBackend(t)
+	useAgentConfigs(t)
 	useFakeLinuxBinary(t)
 	env := `{"response":{},"error":"stub timeout","timeout":true}`
 	x := &fakeExecer{helperStdout: &env}
@@ -440,6 +480,7 @@ func TestContainerErrorMessages(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			chdirTemp(t)
+			useAgentConfigs(t)
 			useFakeContainer(t, tt.x)
 			_, _, rec, ec, err := invokeAgent("builder", "p", testContainerConfig(), callOpts{})
 			if err == nil || !strings.Contains(err.Error(), tt.want) {
@@ -456,6 +497,7 @@ func TestContainerErrorMessages(t *testing.T) {
 
 	t.Run("exit code and stderr reach the context", func(t *testing.T) {
 		chdirTemp(t)
+		useAgentConfigs(t)
 		useFakeContainer(t, &fakeExecer{kiroExit: 2, kiroStderr: "bad things"})
 		_, _, _, ec, _ := invokeAgent("builder", "p", testContainerConfig(), callOpts{})
 		if ec == nil || ec.ExitCode != 2 || !strings.Contains(ec.Stderr, "bad things") || !strings.HasPrefix(ec.Command, "kiro-cli chat") {
@@ -467,6 +509,7 @@ func TestContainerErrorMessages(t *testing.T) {
 func TestContainerHelperFailures(t *testing.T) {
 	chdirTemp(t)
 	useStubBackend(t)
+	useAgentConfigs(t)
 	useFakeLinuxBinary(t)
 
 	t.Run("backend error", func(t *testing.T) {
@@ -505,6 +548,7 @@ func TestContainerHelperFailures(t *testing.T) {
 func TestSharedRequestBuilder(t *testing.T) {
 	chdirTemp(t)
 	useStubBackend(t)
+	useAgentConfigs(t)
 	pinAgentModel("builder", "m1")
 	t.Setenv("KAIRON_EVAL_TIMEOUT", "7s")
 	stub := &inference.StubScript{Turns: []inference.StubTurn{{Response: "r"}}}

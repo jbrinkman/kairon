@@ -10,6 +10,8 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/jbrinkman/kairon/internal/eval/sandbox"
 )
 
 const (
@@ -21,6 +23,11 @@ const (
 	workspaceDirPrefix = "kairon-eval-ws-"
 	evalOutputDirName  = ".eval"
 	kiroDirName        = ".kiro"
+	binDirName         = "bin"
+
+	// Files in .eval/ the fake gh reads (see sandbox.RenderGHIssue).
+	ghIssueJSONName = "gh-issue.json"
+	ghIssueTextName = "gh-issue.txt"
 
 	// fixedGitDate keeps the fixture commit reproducible.
 	fixedGitDate = "2000-01-01T00:00:00Z"
@@ -36,6 +43,7 @@ type caseWorkspace struct {
 	Dir     string // absolute, symlink-resolved workspace root (a git repo)
 	EvalDir string // Dir/.eval
 	KiroDir string // Dir/.kiro
+	BinDir  string // <root>/bin: holds the fake gh, mounted read-only at /opt/kairon/bin
 
 	// root is the private (0700) parent that holds Dir. It keeps other local
 	// users from traversing into the world-writable workspace.
@@ -84,6 +92,9 @@ func validateCaseFields(tc TestCase, file string) error {
 			}
 		}
 	}
+	if err := validateSandboxFields(tc, file); err != nil {
+		return err
+	}
 	if tc.Timeout != "" {
 		d, err := time.ParseDuration(tc.Timeout)
 		if err != nil {
@@ -92,6 +103,26 @@ func validateCaseFields(tc TestCase, file string) error {
 		if d <= 0 {
 			return fmt.Errorf("case %q (%s): invalid timeout %q: must be a positive duration", tc.Name, file, tc.Timeout)
 		}
+	}
+	return nil
+}
+
+// validateSandboxFields validates gh_issue and requires_sandbox. A gh_issue is
+// only meaningful to the fake gh, which exists only under --sandbox: a native
+// run would call the developer's real gh, so the case must be sandbox-only.
+// gh_issue.number defaults to 1 when unset.
+func validateSandboxFields(tc TestCase, file string) error {
+	if tc.GHIssue == nil {
+		return nil
+	}
+	if strings.TrimSpace(tc.GHIssue.Title) == "" {
+		return fmt.Errorf("case %q (%s): gh_issue.title is required", tc.Name, file)
+	}
+	if tc.GHIssue.Number < 0 {
+		return fmt.Errorf("case %q (%s): gh_issue.number must be positive", tc.Name, file)
+	}
+	if !tc.RequiresSandbox {
+		return fmt.Errorf("case %q (%s): gh_issue requires requires_sandbox: true (a native run would call the real gh)", tc.Name, file)
 	}
 	return nil
 }
@@ -141,8 +172,14 @@ func newCaseWorkspace(tc TestCase) (ws *caseWorkspace, err error) {
 	w.Dir = filepath.Join(root, "ws")
 	w.EvalDir = filepath.Join(w.Dir, evalOutputDirName)
 	w.KiroDir = filepath.Join(w.Dir, kiroDirName)
+	w.BinDir = filepath.Join(root, binDirName)
 	if err = os.Mkdir(w.Dir, 0o755); err != nil {
 		return nil, fmt.Errorf("creating workspace: %w", err)
+	}
+	// The fake gh lives outside the workspace so the agent cannot modify it;
+	// the directory is bind-mounted read-only.
+	if err = sandbox.WriteFakeGH(w.BinDir); err != nil {
+		return nil, err
 	}
 
 	// Files the fixture provides, relative to the workspace, so that staging
@@ -183,10 +220,32 @@ func newCaseWorkspace(tc TestCase) (ws *caseWorkspace, err error) {
 	if err = os.MkdirAll(w.EvalDir, 0o755); err != nil {
 		return nil, err
 	}
+	if err = w.writeGHIssue(tc.GHIssue); err != nil {
+		return nil, err
+	}
 	if err = w.setPermissions(); err != nil {
 		return nil, err
 	}
 	return w, nil
+}
+
+// writeGHIssue renders the case's gh_issue into .eval/ for the fake gh. It
+// writes nothing when the case defines no gh_issue.
+func (w *caseWorkspace) writeGHIssue(issue *sandbox.GHIssue) error {
+	if issue == nil {
+		return nil
+	}
+	doc, text, err := sandbox.RenderGHIssue(*issue)
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(filepath.Join(w.EvalDir, ghIssueJSONName), doc, 0o644); err != nil {
+		return fmt.Errorf("writing %s: %w", ghIssueJSONName, err)
+	}
+	if err := os.WriteFile(filepath.Join(w.EvalDir, ghIssueTextName), []byte(text), 0o644); err != nil {
+		return fmt.Errorf("writing %s: %w", ghIssueTextName, err)
+	}
+	return nil
 }
 
 // gitInit initializes the repo with one hermetic commit holding the fixture.

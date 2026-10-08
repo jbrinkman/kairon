@@ -77,8 +77,81 @@ func TestNewHostConfigWithMounts_NoWorkspaceTmpfs(t *testing.T) {
 	if _, ok := hc.Tmpfs["/workspace"]; ok {
 		t.Error("host config must not have a tmpfs at /workspace")
 	}
-	if len(hc.Tmpfs) != 0 {
-		t.Errorf("expected no tmpfs entries, got %v", hc.Tmpfs)
+	for p := range hc.Tmpfs {
+		if p == "/workspace" || strings.HasPrefix(p, "/workspace/") {
+			t.Errorf("tmpfs entry %q must not be at or under the workspace", p)
+		}
+	}
+}
+
+func TestNewHostConfigWithMounts_ReadonlyRootfs(t *testing.T) {
+	ws := realTempDir(t)
+	for name, mounts := range map[string][]Mount{
+		"no mounts": nil,
+		"workspace": {{HostPath: ws, ContainerPath: "/workspace"}},
+		"read-only": {{HostPath: ws, ContainerPath: "/workspace", ReadOnly: true}},
+	} {
+		for _, selinux := range []bool{false, true} {
+			hc, err := newHostConfigWithMounts(DefaultLimits(), mounts, selinux)
+			if err != nil {
+				t.Fatalf("%s: %v", name, err)
+			}
+			if !hc.ReadonlyRootfs {
+				t.Errorf("%s (selinux=%v): ReadonlyRootfs must be true", name, selinux)
+			}
+		}
+	}
+	hc, err := NewHostConfigWithMounts(DefaultLimits(), []Mount{{HostPath: ws, ContainerPath: "/workspace"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hc.ReadonlyRootfs {
+		t.Error("public NewHostConfigWithMounts: ReadonlyRootfs must be true")
+	}
+}
+
+func TestNewHostConfigWithMounts_Tmpfs(t *testing.T) {
+	ws := realTempDir(t)
+	hc, err := newHostConfigWithMounts(DefaultLimits(), []Mount{{HostPath: ws, ContainerPath: "/workspace"}}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hc.Tmpfs) != 3 {
+		t.Fatalf("want exactly 3 tmpfs entries, got %v", hc.Tmpfs)
+	}
+	want := map[string][]string{
+		"/tmp":          {"rw", "nosuid", "nodev", "mode=1777", "size=" + TmpfsTmpSize},
+		"/var/tmp":      {"rw", "nosuid", "nodev", "mode=1777", "size=" + TmpfsVarTmpSize},
+		"/home/sandbox": {"rw", "nosuid", "nodev", "uid=1000", "gid=1000", "mode=0755", "size=" + TmpfsHomeSize},
+	}
+	for path, opts := range want {
+		got, ok := hc.Tmpfs[path]
+		if !ok {
+			t.Errorf("missing tmpfs entry for %s", path)
+			continue
+		}
+		have := strings.Split(got, ",")
+		for _, o := range opts {
+			found := false
+			for _, h := range have {
+				if h == o {
+					found = true
+					break
+				}
+			}
+			if !found {
+				t.Errorf("tmpfs %s options %q missing %q", path, got, o)
+			}
+		}
+		if strings.Contains(got, "noexec") {
+			t.Errorf("tmpfs %s must not set noexec: %q", path, got)
+		}
+	}
+	// Only /home/sandbox is chowned; temp dirs are world-writable sticky.
+	for _, p := range []string{"/tmp", "/var/tmp"} {
+		if strings.Contains(hc.Tmpfs[p], "uid=") || strings.Contains(hc.Tmpfs[p], "gid=") {
+			t.Errorf("tmpfs %s must not set uid/gid: %q", p, hc.Tmpfs[p])
+		}
 	}
 }
 

@@ -74,6 +74,9 @@ output: |
   Optional: pre-captured agent output for offline evaluation.
 workspace: seeded         # Optional: workspace fixture name (see Case Workspaces)
 timeout: 30s               # Optional: per-case timeout (Go duration)
+requires_sandbox: true     # Optional: refuse to run without --sandbox (see Sandbox Containment)
+gh_issue:                  # Optional: data for the sandbox's fake `gh issue view` (needs requires_sandbox)
+  title: "Add widget"
 stub:                      # Optional: scripted response for `--backend stub`
   turns:
     - response: |
@@ -89,6 +92,8 @@ Fields:
 - `setup` — (optional) extra prompt context; `type: file` entries read `path` from disk
 - `workspace` — (optional) name of a fixture under `<evals-dir>/fixtures/workspaces/` that the case's workspace starts from (see [Case Workspaces](#case-workspaces)). Must match `^[A-Za-z0-9._-]+$` (and not be `.` or `..`) and the fixture directory must exist, otherwise loading the cases fails with an error naming the case.
 - `timeout` — (optional) a positive Go duration such as `30s` or `2m`. It overrides the default timeout for this case, natively and under `--sandbox` (see [Case Timeout](#case-timeout)). An invalid or non-positive value is a load error naming the case.
+- `requires_sandbox` — (optional, default `false`) when `true`, the case refuses to run without `--sandbox`: a native run records the case as failed with `case "<name>" requires --sandbox` before it creates a workspace or invokes anything (see [Sandbox Containment](#sandbox-containment)).
+- `gh_issue` — (optional) the issue the sandbox's fake `gh issue view` answers with: `number` (default `1`), `title` (required), `body`, `state` (default `OPEN`), `author` (default `fake-user`), `labels`. It is only valid together with `requires_sandbox: true`; otherwise loading the cases fails with an error naming the case, because a native run would call the developer's **real** `gh` (see [The fake `gh`](#the-fake-gh)).
 - `stub.turns[]` — (optional) scripted model responses, used only by the `stub` backend (see [Stub Case Fields](#stub-case-fields))
 
 ## Running Evaluations
@@ -154,7 +159,7 @@ Every "send a prompt to a model, get text back" call made by the harness (the ag
 
 | Backend | Behaviour |
 |---------|-----------|
-| `kiro-cli` (default) | Shells out to `kiro-cli`. Agent: `kiro-cli chat --agent <agent> --no-interactive --trust-all-tools [--model <model>]`; judge: `kiro-cli chat --no-interactive [--model <model>]`; prompt on stdin. `--model` is appended when the request carries a model, which is always the case in a normal `kairon eval` run (see [Model Pinning and Run Provenance](#model-pinning-and-run-provenance)). Usage is always **estimated**. Requires `kiro-cli` on `PATH`. |
+| `kiro-cli` (default) | Shells out to `kiro-cli`. Agent (native run): `kiro-cli chat --agent <agent> --no-interactive --trust-all-tools [--model <model>]`; under `--sandbox` the agent call uses `--trust-tools=<per-agent set>` instead of `--trust-all-tools` (see [Tool trust](#tool-trust)); judge: `kiro-cli chat --no-interactive [--model <model>]`; prompt on stdin. `--model` is appended when the request carries a model, which is always the case in a normal `kairon eval` run (see [Model Pinning and Run Provenance](#model-pinning-and-run-provenance)). Usage is always **estimated**. Requires `kiro-cli` on `PATH`. |
 | `stub` | Deterministic and in-process. Never starts a process or touches the network, and does not require `kiro-cli`. The agent's output comes from the case's `stub.turns`; every judge call returns score 5 (the maximum of the judge scale) with `pass: true`. |
 
 ```bash
@@ -182,6 +187,9 @@ stub:
         output_tokens: 45
       commands:            # optional: shell commands run in the case workspace before responding
         - "echo hi > marker.txt"
+      tool_calls:          # optional: scripted tool calls, gated by the tool trust set (see Tool trust)
+        - tool: fs_write
+          command: "echo x > tool-marker.txt"
 ```
 
 | Field | Required | Description |
@@ -189,7 +197,8 @@ stub:
 | `stub.turns[].response` | yes | Text returned as the agent output. |
 | `stub.turns[].model` | no | Model name recorded in `agent_cost.model`. |
 | `stub.turns[].usage.input_tokens` / `output_tokens` | no | If present, these counts are used verbatim and marked `reported`. If absent, usage is estimated from text length. |
-| `stub.turns[].commands` | no | Shell commands, each run with `sh -c` in the case workspace (the request's `WorkDir`), in order, before the response is returned. This lets a stub case simulate an agent that edits files. |
+| `stub.turns[].commands` | no | Shell commands, each run with `sh -c` in the case workspace (the request's `WorkDir`), in order, before the response is returned. This lets a stub case simulate an agent that edits files. They are scripted environment actions, **not** tool calls, so the trust gate never applies to them. |
+| `stub.turns[].tool_calls[]` | no | Scripted tool calls, each `{tool, command}`. They run after `commands`, in order. Each runs `sh -c <command>` in the workspace only if the tool is in the request's trust set; otherwise the command is skipped and a denial is recorded (see [Tool trust](#tool-trust)). With no trust set (every native run) every tool call runs. |
 
 Only `turns[0]` is used today. A case with no `stub`, empty `turns`, or an empty `response` fails with `case has no stub.turns[0].response` rather than silently producing empty output. The `kiro-cli` backend ignores `stub`.
 
@@ -197,6 +206,7 @@ How `commands` behave:
 - They run in the case workspace: natively the host workspace directory, under `--sandbox` the container's workspace path, as the `sandbox` user. Commands with no workspace directory are an error and run nothing, so a test cannot write into the repository root by accident.
 - A command that exits non-zero fails the call with an error carrying the command and its stderr; the scripted response is not returned and later commands do not run.
 - All commands of a turn share one deadline: the request timeout (the case [`timeout`](#case-timeout), else the default). On expiry the command's whole process group is killed and the call fails with a timeout error (`stub timeout after <duration>`) that wraps `inference.ErrTimeout`, so it is recorded exactly like a `kiro-cli` timeout.
+- `commands` and the trusted `tool_calls` of a turn run under that same deadline, `commands` first. A failing command stops the turn like any other command, and denials already recorded for the turn are kept on the failed call.
 
 ### Reported vs Estimated Usage
 
@@ -244,6 +254,8 @@ evals:
     - "claude-sonnet-4.5"
     - "claude-sonnet-4"
     - "claude-haiku-4.5"
+  # trust_tools:                   # optional: agent name -> tools trusted in --sandbox runs (see Tool trust)
+  #   builder: [read, write, shell]
 ```
 
 | Key | Default | Description |
@@ -251,10 +263,11 @@ evals:
 | `evals.agent_model` | empty (not set) | Model for the agent under test. When set, it is used for every agent in the run and **overrides** the `model` in the agent's config. When empty, each agent runs on the `model` from its own agent config (`<evals-dir>/agents/<agent>.json` if present, else `.kiro/agents/<agent>.json`). |
 | `evals.judge_model` | `claude-sonnet-5.5` | Model for every LLM-judge call. An explicit empty value stays empty and is refused. |
 | `evals.allowed_models` | the six models listed above, in that order | Allowlist. The effective agent model and the judge model must each be exactly one of these entries. |
+| `evals.trust_tools` | none | Map of agent name to the tool names that agent is trusted to use in a `--sandbox` run. It **overrides** the agent config's `allowedTools` for that agent; an empty list (`builder: []`) trusts nothing. `*` and empty entries are rejected. Has no effect on native runs. See [Tool trust](#tool-trust). |
 
 Notes:
 - A user-supplied `allowed_models` list **replaces** the default list; it is not appended to it. Omit the key to keep the defaults.
-- All values are whitespace-trimmed, and empty `allowed_models` entries are dropped.
+- All values are whitespace-trimmed, and empty `allowed_models` entries are dropped. For `trust_tools`, agent and tool names are trimmed and entries with an empty agent name are dropped.
 - Use `agent_model` to run on a model that is available on your machine without editing agent configs (for example `agent_model: claude-sonnet-4.5` when `claude-sonnet-5.5` is not available). The override must itself be in `allowed_models`.
 - Agent configs are never modified; the model is passed to `kiro-cli` with `--model`, both natively and under `--sandbox`.
 
@@ -293,7 +306,7 @@ When the pre-flight passes, one line summarises what the run is pinned to:
 
 ### `--sandbox` and `evals.agent_model`
 
-**`--sandbox` honours `evals.agent_model`.** A sandboxed run builds the same agent request as a native run, so the pinned model is sent with the call. With the `kiro-cli` backend the container runs `kiro-cli chat --agent <agent> --no-interactive --trust-all-tools --model <model>`, with the same arguments as the native backend. The effective model is the same as without `--sandbox`: `evals.agent_model` when set, otherwise the `model` in the agent config. It is validated against `allowed_models` in the pre-flight, recorded as `agent_model`, and recorded on the agent call. No warning is printed.
+**`--sandbox` honours `evals.agent_model`.** A sandboxed run builds the same agent request as a native run, so the pinned model is sent with the call. With the `kiro-cli` backend the container runs `kiro-cli chat --agent <agent> --no-interactive --trust-tools=<per-agent set> --model <model>`: the same arguments as the native backend except that `--trust-all-tools` is replaced by `--trust-tools=…` (see [Tool trust](#tool-trust)). The effective model is the same as without `--sandbox`: `evals.agent_model` when set, otherwise the `model` in the agent config. It is validated against `allowed_models` in the pre-flight, recorded as `agent_model`, and recorded on the agent call. No warning is printed.
 
 `evals.judge_model` is honoured in the same way: judge calls execute on the host through the inference backend, pinned with `--model <judge_model>`, and are subject to the same allowlist check.
 
@@ -316,13 +329,15 @@ Each case in `<agent>.json` carries a `calls` array with one record per agent ca
 | `estimated` | `true` unless the usage was `reported` by the backend. |
 | `duration_ms` | Call duration in milliseconds: the backend's measurement, or wall-clock time when the backend reports none (the stub). |
 | `prompt_sha256` | Hash of the agent's prompt inputs (agent calls only; same value as the file-level `prompt_sha256`, see below). |
+| `trusted_tools` | The whole-tool trust set the call ran with, in `kiro-cli --trust-tools` spelling (for example `["fs_read","fs_write"]`). Present only on `--sandbox` agent calls; omitted for native calls, which run with `--trust-all-tools`. An empty list `[]` means "restricted to nothing", which is different from absent. |
+| `tool_denials` | Tool calls the trust gate refused: `{tool, command, reason}` with `reason` `tool not trusted`. Omitted when empty. Populated by the stub backend only (see [Limits](#limits)). |
 | `error` | Set when the call failed. A failed call is still recorded. |
 
 Details:
 - `agent_cost` and `judge_cost` are unchanged; `calls` is the per-call breakdown behind them.
 - No agent record is written when prompt assembly failed, because no call was made.
 - A judge call is recorded even when its output could not be parsed (the tokens were spent). Its cost appears in that call's `calls[]` record but **not** in the case's `judge_cost`, which keeps a zero cost for a failed or unparseable judge call — so for such a case the sum of `calls[].cost_usd` can exceed `judge_cost`.
-- A `--sandbox` run builds its agent record exactly like a native one, from the same request and the same completion logic: the cost comes from the backend's reported or estimated usage, `model` is the served model when the backend reports one (the stub) or the pinned model (`kiro-cli`), and `estimated` is `true` unless the usage was `reported`. For the same case the sandboxed and native `output`, `agent_cost` and call record match.
+- A `--sandbox` run builds its agent record exactly like a native one, from the same request and the same completion logic: the cost comes from the backend's reported or estimated usage, `model` is the served model when the backend reports one (the stub) or the pinned model (`kiro-cli`), and `estimated` is `true` unless the usage was `reported`. For the same case the sandboxed and native `output`, `agent_cost` and call record match, except that the sandboxed agent record also carries `trusted_tools`.
 
 The per-call records (field values below are illustrative):
 
@@ -465,11 +480,15 @@ Every case runs in its own **workspace**, built on the host by the harness. The 
 A workspace is a temporary directory laid out like this:
 
 ```
-<workspace>/            # a git repo; its single commit is the fixture
-  <fixture files>       # contents of fixtures/workspaces/<name>/ (empty by default)
-  .kiro/                # staged agent and skill configuration (harness-owned)
-  .eval/                # outputs directory (harness-owned, created empty)
+<workspace-parent>/     # private (0700) parent, removed with the workspace
+  bin/gh                # the fake gh (harness-owned; mounted read-only at /opt/kairon/bin under --sandbox)
+  ws/                   # the workspace proper (<workspace> below)
+    <fixture files>     # contents of fixtures/workspaces/<name>/ (empty by default)
+    .kiro/              # staged agent and skill configuration (harness-owned)
+    .eval/              # outputs directory (harness-owned, created empty)
 ```
+
+The tree below `ws/` is the git repo. `bin/` sits beside it, outside the repo and outside the agent's writable mounts, so an agent cannot modify the fake `gh`.
 
 How it is built, in order:
 
@@ -477,7 +496,7 @@ How it is built, in order:
 2. The case's fixture, `<evals-dir>/fixtures/workspaces/<name>/`, is copied in (regular files and directories only; symlinks and `.git` are skipped). A case without `workspace:` gets an empty workspace.
 3. `git init -b main` and a single commit of the fixture (`--allow-empty` for the default workspace). The commit is hermetic: fixed identity and date, no hooks, no signing, and no user or system git config. **That commit is the only commit and its tree is the fixture**, so `git status --porcelain` afterwards shows exactly what the agent (or the stub's `commands`) changed.
 4. `.eval/` and `.kiro/` are added to `.git/info/exclude` (not to a tracked file), so harness-owned paths never appear in `git status`. Files the fixture itself tracks under `.kiro/` stay tracked.
-5. `.kiro/` is staged (below) and an empty `.eval/` is created.
+5. `.kiro/` is staged (below) and an empty `.eval/` is created. If the case defines `gh_issue`, the host also renders `.eval/gh-issue.json` and `.eval/gh-issue.txt` for the fake `gh` (see [The fake `gh`](#the-fake-gh)); a case without `gh_issue` gets neither file. The fake `gh` script itself is written to `<workspace-parent>/bin/gh` (mode `0755`), next to the workspace rather than inside it.
 6. Permissions are opened so the unprivileged container user can use the tree whatever its host owner: `a+rwX` on everything including `.git`, and `a+rX` (read-only) on `.kiro/`.
 
 ### Staged `.kiro` and precedence
@@ -533,7 +552,7 @@ The single-case (`kairon eval <agent> <case>`) and `--resume` paths go through t
 
 ### Outputs: `.eval/`
 
-`.eval/` is the outputs directory. Under `--sandbox` it is bind-mounted read-write into the container, but it physically lives inside the host workspace, so whatever the process writes there is on the host the moment it is written. No "copy outputs out" step exists, and the layout is identical to a native run.
+`.eval/` is the outputs directory. Under `--sandbox` it is bind-mounted read-write into the container, but it physically lives inside the host workspace, so whatever the process writes there is on the host the moment it is written. No "copy outputs out" step exists, and the layout is identical to a native run. Under `--sandbox` the fake `gh` also uses it: it appends every call to `.eval/gh.log` and copies body files to `.eval/gh-body-<n>.md` (see [The fake `gh`](#the-fake-gh)).
 
 ### Case Timeout
 
@@ -573,6 +592,17 @@ internal/eval/testdata/evals/
   cases/selftest/stub-marker.yaml   # stub turn command 'echo hi > marker.txt' leaves marker.txt in the case workspace
   cases/selftest/stub-seeded-workspace.yaml  # workspace: seeded; the stub appends to README.md -> ' M README.md'
   cases/selftest-fail/stub-timeout.yaml      # timeout: 1s, stub turn command 'sleep 3' -> timeout failure
+  agents/selftest-sandbox.json      # containment agent, allowedTools [read, write]; its cases are all requires_sandbox
+  agents/selftest-sandbox-prompt.md
+  agents/selftest-sandbox-ro.json   # containment agent, allowedTools [read]
+  agents/selftest-sandbox-ro-prompt.md
+  rubrics/selftest-sandbox.yaml
+  rubrics/selftest-sandbox-ro.yaml
+  cases/selftest-sandbox/stub-gh-fake.yaml            # fake gh: logged call, copied --body-file, gh issue view from gh_issue
+  cases/selftest-sandbox/stub-workspace-write.yaml    # './marker.txt' in the workspace is writable
+  cases/selftest-sandbox/stub-tool-allowed.yaml       # fs_write tool call runs (fs_write is trusted)
+  cases/selftest-sandbox-ro/stub-write-outside-mounts.yaml  # write to /etc fails with 'Read-only file system' (expected to FAIL)
+  cases/selftest-sandbox-ro/stub-tool-denied.yaml     # fs_write tool call is denied and recorded (only fs_read is trusted)
   fixtures/selftest-input.md        # referenced as .kairon/evals/fixtures/selftest-input.md
   fixtures/workspaces/seeded/       # README.md plus docs/notes.txt: the seeded workspace fixture
 ```
@@ -586,6 +616,13 @@ go run ./cmd/kairon eval --backend stub --no-sandbox --evals-dir internal/eval/t
 ```
 
 The run itself exits 0; the failure is the recorded result for that case.
+
+The `selftest-sandbox` and `selftest-sandbox-ro` agents exercise [Sandbox Containment](#sandbox-containment) with the stub backend. Every one of their cases is `requires_sandbox: true`, so a native run records each as failed with `requires --sandbox` and starts nothing. `stub-write-outside-mounts` is, like `selftest-fail`, **expected to fail** under `--sandbox`: that failure is the proof that the root filesystem is read-only. Run them under the sandbox with:
+
+```bash
+go run ./cmd/kairon eval --backend stub --sandbox --evals-dir internal/eval/testdata/evals selftest-sandbox
+go run ./cmd/kairon eval --backend stub --sandbox --evals-dir internal/eval/testdata/evals selftest-sandbox-ro
+```
 
 The self-test runs with the stub backend, so its per-call `model` values are `stub` / `stub-model` (what the stub reports) rather than the pinned names. The pinned models still appear in the run-level `agent_model` and `judge_model` fields.
 
@@ -601,7 +638,7 @@ The same self-test can run hermetically inside a container sandbox. It needs a P
 task eval:selftest:sandbox
 # runs the daemon-gated tests with KAIRON_EVAL_SANDBOX_SELFTEST=1:
 #   internal/eval/sandbox: TestBaseImage_ToolsOnlyNoMounts, TestEnsureBaseImage_ReusesExistingImage
-#   internal/eval:         TestSelftestSandbox, TestSandboxWorkspace
+#   internal/eval:         TestSelftestSandbox, TestSandboxWorkspace, TestContainmentSandbox, TestContainmentContainerGH
 
 # or run the sandboxed self-test directly:
 go run ./cmd/kairon eval --backend stub --sandbox --evals-dir internal/eval/testdata/evals selftest
@@ -614,7 +651,11 @@ The other gated tests cover the sandbox layering:
 - `TestEnsureBaseImage_ReusesExistingImage` calls `EnsureBaseImage` twice and requires the second call to report no build with the same tag and image ID.
 - `TestSandboxWorkspace` runs `stub-marker`, `stub-seeded-workspace` and the `selftest-fail` timeout case both natively and under `--sandbox` with kept workspaces and compares them: no `Permission denied` anywhere, `marker.txt` containing `hi` on the host, identical host trees (excluding `.git` and `.kiro`) and `git status --porcelain`, `.eval/` present in both, an unchanged repository-root `git status`, keep/no-keep behaviour of `workspace_dir`, the sandboxed timeout recorded as `timeout after 1s`, and base-image reuse after editing an agent config and a case.
 
-A plain `go test ./...` also runs `TestSelfTestWorkspaceCasesNative`, which needs no daemon: it runs the same new cases natively and checks the workspace behaviour above.
+A plain `go test ./...` also runs `TestSelfTestWorkspaceCasesNative`, which needs no daemon: it runs the same new cases natively and checks the workspace behaviour above. It likewise runs `TestContainmentFixtures` and `TestContainmentNativeRefusal`, which need no daemon either: the first checks that the containment cases load and are all `requires_sandbox`, the second that a native run fails every one of them with `requires --sandbox`, makes no agent call and creates no workspace.
+
+The containment tests are daemon-gated like the rest:
+- `TestContainmentSandbox` runs the containment agents under `--sandbox --backend stub --keep-workspaces` and checks: `.eval/gh.log` holds the `gh issue create` call and `.eval/gh-body-1.md` equals `b.md`; `view.json` holds the configured `gh_issue` title and body; `stub-write-outside-mounts` fails with `Read-only file system` in `error_context.stderr`; `marker.txt` exists on the host after `stub-workspace-write`; `stub-tool-denied` leaves no `tool-marker.txt` and records an `fs_write` denial with `trusted_tools` `["fs_read"]`; `stub-tool-allowed` creates `tool-marker.txt` with no denials.
+- `TestContainmentContainerGH` starts a container with the case's mounts, environment and host config and checks that `command -v gh` is `/opt/kairon/bin/gh`, and that `/usr/local/bin/gh auth status` (the real `gh`, by absolute path) exits non-zero with a "not logged in" message.
 
 Skip behaviour (the test never builds an image by accident, so `task test` and `go test ./...` are unaffected):
 
@@ -737,10 +778,10 @@ kairon eval --sandbox --keep-workspaces architect
 
 The `--sandbox` flag:
 - Obtains one cached, **tools-only base image** (built on first use, reused afterwards; see [Sandbox Layering](#sandbox-layering)).
-- Builds each case's workspace on the host (see [Case Workspaces](#case-workspaces)) and bind-mounts it into a fresh container with resource limits and no network.
-- Runs the selected backend inside the container as the unprivileged `sandbox` user.
+- Builds each case's workspace on the host (see [Case Workspaces](#case-workspaces)) and bind-mounts it into a fresh container with resource limits, no network and a read-only root filesystem.
+- Runs the selected backend inside the container as the unprivileged `sandbox` user, with a fake `gh` first on `PATH` and a per-agent tool trust set instead of `--trust-all-tools` (see [Sandbox Containment](#sandbox-containment)).
 
-Nothing is copied into a running container: no project files, no `.kiro`, no helper binary, no mocked tools.
+Nothing is copied into a running container: no project files, no `.kiro`, no helper binary, no fake `gh`. Everything the agent sees arrives through bind mounts.
 
 > **Model pinning in sandbox runs:** `--sandbox` honours `evals.agent_model` (it is passed to `kiro-cli` as `--model`, exactly as in a native run) and `evals.judge_model` for judge calls. See [`--sandbox` and `evals.agent_model`](#--sandbox-and-evalsagent_model).
 
@@ -754,9 +795,12 @@ build time, as root, cached by content hash        run time, host-side only, mou
 │ kairon-eval-base:<platform>-<hash>    │     │ <ws>/.kiro   ro  staged project .kiro        │
 │  alpine, git, bash/sh, ca-certs,      │  +  │ <ws>         rw  git repo, fixture commit    │
 │  gh (pinned), kiro-cli (pinned),      │     │ <ws>/.eval   rw  outputs (inside <ws>)       │
-│  user sandbox (uid 1000), /workspace  │     │ /opt/kairon/kairon ro  helper (non-kiro-cli) │
-└───────────────────────────────────────┘     └──────────────────────────────────────────────┘
+│  user sandbox (uid 1000), /workspace  │     │ /opt/kairon/bin ro  the fake gh              │
+└───────────────────────────────────────┘     │ /opt/kairon/kairon ro  helper (non-kiro-cli) │
+                                              └──────────────────────────────────────────────┘
 ```
+
+The root filesystem of the running container is read-only; only the mounts above (the rw ones) and a few small tmpfs directories are writable (see [Read-only root filesystem](#read-only-root-filesystem)).
 
 #### Base image contents
 
@@ -770,7 +814,7 @@ The image is defined by `internal/eval/dockerfile/base.Dockerfile` (embedded in 
 
 Deliberately **absent**: project toolchains (Go, Node.js, Python, Rust, Java, Task), any `COPY`/`ADD` of project content, `.kiro`, agents, skills, cases and the `kairon` binary. The sandbox no longer detects the project type or installs toolchains; if your evals need a toolchain, add it to the image (see [bumping a baked tool](#when-the-base-image-is-rebuilt)).
 
-`gh` is present but **unconfigured**: it is unauthenticated, and with the container network disabled it cannot reach GitHub. Faking `gh` behaviour and a network policy are separate work (the containment issue, #298), as are a read-only root filesystem and tool trust. `ContainerConfig.MockGitHub` is no longer consulted. `kiro-cli` authentication inside the container is also not provided: a real `kiro-cli` sandbox run still needs credentials supplied through the container environment.
+The baked `gh` is the **real** GitHub CLI and is **unauthenticated**: the container environment carries no GitHub token, `$HOME` is a fresh tmpfs with no `~/.config/gh/hosts.yml`, and the network is disabled. It is not what an agent reaches by default: a fake `gh` is first on `PATH` and answers instead (see [The fake `gh`](#the-fake-gh)). The real binary is only reached by absolute path (`/usr/local/bin/gh`), where `gh auth status` reports "not logged in". `ContainerConfig.MockGitHub` no longer exists. `kiro-cli` authentication inside the container is also not provided: a real `kiro-cli` sandbox run still needs credentials supplied through the container environment.
 
 #### Mounts
 
@@ -781,9 +825,10 @@ Every container gets exactly these mounts (all are `bind` mounts of host paths t
 | `<workspace>/.kiro` | `<workspace_dir>/.kiro` | read-only |
 | `<workspace>` | `<workspace_dir>` | read-write |
 | `<workspace>/.eval` | `<workspace_dir>/.eval` | read-write |
+| `<workspace-parent>/bin` (holds the fake `gh`) | `/opt/kairon/bin` | read-only |
 | the linux `kairon` helper (non-`kiro-cli` backends only) | `/opt/kairon/kairon` | read-only |
 
-`<workspace_dir>` is `sandbox.workspace_dir` from `.kairon/config.yaml` (default `/workspace`). There is no `tmpfs` at the workspace path. The container runs as `sandbox` with `WorkingDir` set to the workspace, `HOME=/home/sandbox`, and a git `safe.directory=*` setting passed as environment (`GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_0`/`GIT_CONFIG_VALUE_0`), because the mounted repo is owned by a different uid than `sandbox` and git would otherwise refuse it as "dubious ownership".
+`<workspace_dir>` is `sandbox.workspace_dir` from `.kairon/config.yaml` (default `/workspace`). There is no `tmpfs` at the workspace path. On top of these bind mounts the container has three small `tmpfs` mounts (`/tmp`, `/var/tmp`, `/home/sandbox`) and a read-only root filesystem; see [Read-only root filesystem](#read-only-root-filesystem). The container runs as `sandbox` with `WorkingDir` set to the workspace, `HOME=/home/sandbox`, `PATH` starting with `/opt/kairon/bin`, and a git `safe.directory=*` setting passed as environment (`GIT_CONFIG_COUNT`/`GIT_CONFIG_KEY_0`/`GIT_CONFIG_VALUE_0`), because the mounted repo is owned by a different uid than `sandbox` and git would otherwise refuse it as "dubious ownership".
 
 #### Ownership and cleanup
 
@@ -799,7 +844,7 @@ While a run is in flight the workspace contents are world-writable.
 
 - **macOS (Docker Desktop, Podman machine):** the workspace path must be shared with the VM. The harness resolves symlinks (`/var` → `/private/var`), but if your `TMPDIR` is not a shared mount, set `KAIRON_EVAL_WORKSPACE_ROOT` to a directory under your home directory.
 - **Rootless Podman:** supported through the ownership rules above; the open umask wrapper is what normally prevents files that the host cannot delete.
-- **SELinux:** when the host reports SELinux as enforcing (`/sys/fs/selinux/enforce` is `1`), the container is created with `label=disable` so the user's directories are not relabeled with `:z`/`:Z`. This is only done on enforcing hosts and may be revisited by the containment work.
+- **SELinux:** when the host reports SELinux as enforcing (`/sys/fs/selinux/enforce` is `1`), the container is created with `label=disable` so the user's directories are not relabeled with `:z`/`:Z`. This is only done on enforcing hosts.
 
 #### When the base image is rebuilt
 
@@ -822,8 +867,8 @@ The container is a transport: whichever backend `--backend` selects runs inside 
 
 | Backend | What runs in the container | Needs |
 |---------|----------------------------|-------|
-| `kiro-cli` | `kiro-cli` directly: `kiro-cli chat --agent <agent> --no-interactive --trust-all-tools [--model <model>]`, prompt on stdin. The argument list and the output handling (ANSI stripped, usage estimated, model = the pinned `--model`) are the same code the native backend uses. | `kiro-cli` in the image (baked at image build). The harness only verifies it is present (`ValidateKiroCLI`); it installs nothing. |
-| `stub` (and any other non-`kiro-cli` backend) | The backend runs in-process in the container through a hidden helper command, `kairon inference-exec --backend <name>`. The host mounts a linux `kairon` binary read-only at `/opt/kairon/kairon`, sends the request as one JSON document on stdin, and reads one JSON result on stdout. The stub reads its script (`stub.turns`, including `commands`) from that request, and `WorkDir` is the container workspace path. | A static linux `kairon` binary for the container's platform (see below). `kiro-cli` is not validated. |
+| `kiro-cli` | `kiro-cli` directly: `kiro-cli chat --agent <agent> --no-interactive --trust-tools=<per-agent set> [--model <model>]`, prompt on stdin. The argument list and the output handling (ANSI stripped, usage estimated, model = the pinned `--model`) are the same code the native backend uses; the only difference is that the native backend passes `--trust-all-tools` where the container passes `--trust-tools=…` (see [Tool trust](#tool-trust)). | `kiro-cli` in the image (baked at image build). The harness only verifies it is present (`ValidateKiroCLI`); it installs nothing. |
+| `stub` (and any other non-`kiro-cli` backend) | The backend runs in-process in the container through a hidden helper command, `kairon inference-exec --backend <name>`. The host mounts a linux `kairon` binary read-only at `/opt/kairon/kairon`, sends the request as one JSON document on stdin, and reads one JSON result on stdout. The stub reads its script (`stub.turns`, including `commands` and `tool_calls`) from that request, and `WorkDir` is the container workspace path. The request carries the trust set and the result carries any tool denials, so the stub's trust gate runs inside the container. | A static linux `kairon` binary for the container's platform (see below). `kiro-cli` is not validated. |
 
 `kairon inference-exec` is an internal protocol between the harness and its own binary; it is hidden from `kairon --help` and is not meant to be run by hand.
 
@@ -863,18 +908,153 @@ KAIRON_EVAL_TIMEOUT=30s \
 kairon eval --sandbox builder
 ```
 
-### GitHub CLI in the Sandbox
+### Sandbox Containment
 
-The base image includes `gh` at a pinned version, but the harness does **not** install a mocked `gh` into the container at run time (that mechanism was removed), and nothing configures or authenticates it. With the container network disabled, `gh` commands cannot reach GitHub, so a sandboxed run cannot make real API calls or create issues or pull requests. Fake `gh` responses and a `gh_issue` check belong to the containment work (#298). The helper `SimulateGitHubResponse` and its embedded skill are kept in the code for that work to reuse or replace.
+A `--sandbox` run contains an arbitrary agent at the layers Kairon itself controls. It does not assume a fixed tool set. Three layers are enforced by mechanism, plus a pre-existing network setting that is **not** part of the containment guarantee (see [Limits](#limits)):
+
+| Layer | Mechanism | Enforced by |
+|-------|-----------|-------------|
+| `gh` | A fake `gh` is bind-mounted read-only and is first on `PATH`. It logs every call, copies `--body-file` bodies and answers `gh issue view` from the case's `gh_issue`. The baked, real `gh` stays reachable by absolute path but is unauthenticated. | Kernel mount and environment |
+| Filesystem | Read-only root filesystem. Only the workspace, `.eval/` and a few small tmpfs directories are writable. | Container runtime |
+| Tool trust | `--trust-all-tools` is replaced in the container by `--trust-tools=<per-agent set>`. Trust is per tool, not per argument. | `kiro-cli` |
+| Network (not a guarantee) | Containers are created with `NetworkMode: none`. This is left exactly as it was and is not a network policy. | Container runtime |
+
+Native runs (without `--sandbox`) are **not** contained: they keep `--trust-all-tools`, use the real `gh` on your machine and write wherever the agent can. For a case that is only safe inside the sandbox, set `requires_sandbox: true` (see [Test Case Format](#test-case-format)).
+
+#### The fake `gh`
+
+**Delivery.** The fake is a POSIX `sh` script embedded in the `kairon` binary. For each case the host writes it to `<workspace-parent>/bin/gh` (mode `0755`) and bind-mounts that directory **read-only** at `/opt/kairon/bin`. The container `PATH` is `/opt/kairon/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin`, so a bare `gh` resolves to the fake. Nothing is copied into the running container and the base image is unchanged, so its cache key is too. The script needs no `jq`.
+
+**Files.** The fake finds the outputs directory through `KAIRON_EVAL_DIR`, which is set to `<workspace_dir>/.eval` (so a non-default `sandbox.workspace_dir` works).
+
+| File in `.eval/` | Written by | Content |
+|------------------|------------|---------|
+| `gh.log` | the fake, on every call | One line per call: `gh <args>`. Args are space-joined with no timestamp (deterministic). An argument is single-quoted only if it is empty or contains a character outside `[A-Za-z0-9_./:=@%+,-]` (for example `gh issue create --title 'Add widget'`); newlines inside an argument are folded to spaces, so a call is always one line. Every invocation is logged first, including ones that then fail. |
+| `gh-body-<n>.md` | the fake | A copy of the body passed with `--body-file <path>`, `-F <path>` or `--body-file=<path>`. `n` starts at 1 and takes the next free number (claimed atomically), so a second call writes `gh-body-2.md`. `--body-file -` copies stdin. A missing file fails like real `gh` (`open <path>: no such file or directory`, exit 1) and is still logged. Bodies are copied for every call that carries the flag, including commands the fake does not simulate. `-F` is always read as `--body-file`, so `gh api -F key=value` fails with an open error. |
+| `gh-issue.json`, `gh-issue.txt` | the host, before the container starts | The case's `gh_issue` rendered as JSON (one top-level field per line) and as the human `gh issue view` text. Written only when the case defines `gh_issue`. |
+
+Because `.eval/` lives in the host workspace, `gh.log` and the `gh-body-<n>.md` files are on the host the moment they are written. With `--keep-workspaces` you can read them after the run (`cat <workspace_dir>/.eval/gh.log`).
+
+**Behaviour.**
+
+| Call | Result |
+|------|--------|
+| `gh issue create …` | Prints `https://github.com/fake-owner/fake-repo/issues/<seq>`, exit 0. `<seq>` is a sequence number counting only `create` calls, shared across `gh issue create` and `gh pr create` (so the first create in a case is `1`, the next `2`, …, regardless of other `gh` calls logged in between). It is claimed atomically, so concurrent creates never collide. |
+| `gh pr create …` | Prints `https://github.com/fake-owner/fake-repo/pull/<seq>`, exit 0. `<seq>` shares the same create counter as `gh issue create`. |
+| `gh issue view [N\|url]` | Answers from the case's `gh_issue`; see below. |
+| `gh issue list\|edit\|comment\|close\|reopen`, `gh pr list\|view\|comment\|edit` | Simulated: exit 0 with no output. |
+| `gh auth status` | Prints a fake logged-in state and exits 0, so an agent's pre-checks pass. This is the *fake*; it never consults the real binary. |
+| `gh --version` | Prints `gh version 2.0.0 (kairon fake gh)`. |
+| anything else | Logged, then stderr `kairon fake gh: "<args>" is not simulated (call logged only)` and exit 1. An honest failure rather than a silent success: the call is visible in `gh.log` and you can extend the script. |
+
+**`gh issue view` and `gh_issue`.** A case that wants `gh issue view` to return something sets `gh_issue` (and `requires_sandbox: true`, which loading enforces):
+
+```yaml
+requires_sandbox: true
+gh_issue:
+  number: 42            # default 1
+  title: "Add widget"   # required
+  body: "..."
+  state: OPEN           # default OPEN
+  author: octocat       # default fake-user
+  labels: [bug]
+```
+
+- Without `--json`, `gh issue view` prints `gh-issue.txt`.
+- `--json a,b` prints a JSON object holding just those fields, in the order requested. The available fields are `author` (`{"login": …}`), `body`, `labels` (`[{"name": …}]`), `number`, `state`, `title` and `url`. An unknown field prints `Unknown JSON field: "x"` and the available fields to stderr and exits 1.
+- A number or URL that differs from the configured `number` exits 1 with a `could not resolve to an issue with the number N` message. If the case has no `gh_issue`, the call exits 1 with `kairon fake gh: no issue configured for this case (gh_issue)`.
+- **`--jq`, `-q`, `--template` and `-t` are not supported** (the image has no `jq`). `gh issue view` exits 1 with a message telling the agent to use `--json` and parse the output itself, and the call is still logged. This is a documented limit of the fake, not something to work around by editing the image.
+
+**The real `gh` is unauthenticated.** The baked `gh` is still at `/usr/local/bin/gh`, so an agent that calls it by absolute path reaches the real binary. It cannot authenticate: the container environment is built from scratch and additionally drops `GH_TOKEN`, `GITHUB_TOKEN`, `GH_ENTERPRISE_TOKEN`, `GITHUB_ENTERPRISE_TOKEN` and `GH_HOST` even if they appear in `ContainerConfig.Environment`; `GH_PROMPT_DISABLED=1` and `GH_NO_UPDATE_NOTIFIER=1` are set; and `$HOME` is a fresh tmpfs, so there is no `~/.config/gh/hosts.yml`. `/usr/local/bin/gh auth status` therefore reports "not logged in" and exits non-zero. This does not rely on the network being disabled.
+
+#### Read-only root filesystem
+
+Every container is created with `ReadonlyRootfs: true`. It is always on; there is no opt-out. Only these paths are writable:
+
+| Path | Kind | Notes |
+|------|------|-------|
+| `<workspace_dir>` (default `/workspace`) | bind mount, read-write | The case's git workspace. |
+| `<workspace_dir>/.eval` | bind mount, read-write | Outputs, `gh.log` and `gh-body-<n>.md`. |
+| `/tmp` | tmpfs, `rw,nosuid,nodev,mode=1777,size=256m` | Scratch. |
+| `/var/tmp` | tmpfs, `rw,nosuid,nodev,mode=1777,size=64m` | Scratch. |
+| `/home/sandbox` | tmpfs, `rw,nosuid,nodev,uid=1000,gid=1000,mode=0755,size=256m` | `$HOME`. `kiro-cli` keeps state here, so it must be writable. Ephemeral: it is gone when the container is. |
+
+Everything else is read-only, including `<workspace_dir>/.kiro`, `/opt/kairon/bin`, `/opt/kairon/kairon` and the rest of the image. A write outside the writable paths fails with `Read-only file system` (EROFS), which is distinguishable from the `Permission denied` the unprivileged `sandbox` user already got for places like `/etc`.
+
+Notes:
+- `/home/sandbox` is a deliberate hole in "read-only". It is ephemeral and size-capped, and is the reason a real `kiro-cli` run works at all.
+- `noexec` is not set on the tmpfs mounts: `kiro-cli` and tools may execute from temporary locations.
+- tmpfs memory counts against the container memory limit (see [Resource Limits](#resource-limits)).
+- Not added, and possible further hardening: dropping Linux capabilities, `no-new-privileges` and a pids limit.
+
+#### Tool trust
+
+Tool trust applies to **container runs only**. A native run keeps `kiro-cli chat … --trust-all-tools`; under `--sandbox` the agent call gets a single argument `--trust-tools=<csv>` in its place (`--trust-tools=` when the set is empty, which trusts no tools). The trust set is per tool, not per argument.
+
+**Resolution.** For each agent, the first match wins:
+
+1. `evals.trust_tools[<agent>]` in `.kairon/config.yaml`: an explicit override. It may be an empty list, which trusts nothing.
+2. The agent config's `allowedTools`, read from the same file the model pinning uses: `<evals-dir>/agents/<agent>.json` if it exists, else `.kiro/agents/<agent>.json`.
+3. Neither: the empty set (`--trust-tools=`). The default **fails closed**. An agent config without an `allowedTools` key trusts nothing.
+
+If there is no override and the agent config cannot be found or read, the call fails with a `tool trust: …` error that lists the paths tried; the agent is not run, and the failed call is still recorded.
+
+`*` and empty entries in `evals.trust_tools` are rejected when the config is loaded (the error names the agent), so trusting all tools cannot be restored by accident. `toolsSettings` in an agent config (for example `shell.autoAllowReadonly` or `write.allowedPaths`) stay owned by the agent author and pass through in the staged `.kiro` unchanged; Kairon generates none.
+
+```yaml
+evals:
+  trust_tools:
+    builder: [read, write]   # narrower than the shipped builder allowedTools
+    validator: []            # trust nothing
+```
+
+**Name normalization.** The short names used in agent configs are rewritten to the spelling `kiro-cli --trust-tools` expects. The table lives in one place (`internal/inference/trust.go`). Duplicates are dropped and the first-seen order is kept; surrounding whitespace is trimmed.
+
+| In `allowedTools` / `trust_tools` | Passed to `--trust-tools` |
+|-----------------------------------|---------------------------|
+| `read` | `fs_read` |
+| `write` | `fs_write` |
+| `shell` | `execute_bash` |
+| `aws` | `use_aws` |
+| `fs_read`, `fs_write`, `execute_bash`, `use_aws` | unchanged |
+| any other name (`web_search`, `web_fetch`, `subagent`, `todo_list`, `@server/tool`, …) | unchanged |
+
+**Default per-agent trust sets.** With no `trust_tools` override, the trust set is the agent's own `allowedTools`. For the agents that `kairon init` ships:
+
+| Agent | `allowedTools` | Passed to `--trust-tools` |
+|-------|----------------|---------------------------|
+| `architect` | `read`, `write`, `shell` | `fs_read,fs_write,execute_bash` |
+| `builder` | `read`, `write`, `shell` | `fs_read,fs_write,execute_bash` |
+| `validator` | `read`, `write`, `shell` | `fs_read,fs_write,execute_bash` |
+| `documenter` | `read`, `write` | `fs_read,fs_write` |
+| `planner` | `read`, `write`, `shell`, `web_search`, `web_fetch` | `fs_read,fs_write,execute_bash,web_search,web_fetch` |
+| `krew-lead` | `read`, `shell`, `subagent`, `todo_list` | `fs_read,execute_bash,subagent,todo_list` |
+
+If you edit an agent's `allowedTools` (or add MCP entries), the default follows it; entries are passed through as written. The self-test agents use `allowedTools` too: `selftest-sandbox` trusts `fs_read,fs_write` and `selftest-sandbox-ro` trusts `fs_read`.
+
+**What is recorded.** Each container agent call carries `trusted_tools` in its [call record](#per-call-records-calls): the normalized set it ran with, `[]` when restricted to nothing, absent for native calls.
+
+**The stub backend models the plumbing.** With `--backend stub`, a turn's `tool_calls` run only if the tool is in the trust set; a denied call is skipped (its command does not run) and added to the call's `tool_denials` with reason `tool not trusted`. For example, with `selftest-sandbox-ro` (trust set `fs_read`) an `fs_write` tool call leaves no file behind and records a denial, while the same call under `selftest-sandbox` (trust set `fs_read,fs_write`) runs. This is a deterministic, network-free model of the harness plumbing; the real enforcement is `kiro-cli`'s.
+
+#### Limits
+
+Containment here is deliberately narrow. These are the boundaries it does **not** provide:
+
+- **Trust is whole-tool, not per-argument.** Trusting `execute_bash` trusts every shell command the agent runs; trusting `fs_write` trusts every path it can write. Kairon does not inspect or constrain arguments, and per-argument interception is not built. It is an extension seam for later work. `toolsSettings` an agent author wrote (for example `allowedPaths`) are passed through as written; Kairon neither generates nor verifies them.
+- **The network is not an enforced boundary.** None of the layers above severs or gateways network access. Containers are currently created with `NetworkMode: none`, which this work leaves exactly as it was; it is not a policy to rely on, and it is the reason a real `kiro-cli` run in the container cannot reach a model endpoint today. **Side effects over the network are the eval author's responsibility, handled with mocks** (for example a fake of the service a case would otherwise call). Guidance for writing those mocks is planned as a separate follow-up (the mock-guidance issue); until it lands, nothing in the harness stops a case that is given credentials and a network from reaching production.
+- **`kiro-cli` denials are not detectable.** Refused tool calls cannot be reliably detected from `kiro-cli`'s output, so `tool_denials` is populated by the stub backend only. For a real `kiro-cli` run the record states which tools were **trusted** (`trusted_tools`), and the raw output and stderr are kept as before; it does not state which were denied.
+- **Tool names are not verified end to end.** `fs_read` and `fs_write` come from `kiro-cli chat --help` and `execute_bash` from its tool table. That `read`/`write`/`shell` map to those names, and that `web_search`, `web_fetch`, `subagent` and `todo_list` pass through unchanged, is an assumption that CI cannot check (it cannot run a real model); the argument list is unit-tested only. If `kiro-cli` rejects a bare `@server`, list MCP tools as `@server/tool`. How `kiro-cli` combines `--trust-tools` with an agent's own `allowedTools` is not documented: an override wider than `allowedTools` may still be limited by `kiro-cli` itself.
+- **The fake `gh` is a fake.** It supports a fixed set of commands, does not support `--jq`/`--template`, and is bypassed by an agent that calls `/usr/local/bin/gh` (which is unauthenticated, by design).
+- **Native runs are not contained** (see above).
 
 ### Container Lifecycle
 
 Each evaluation follows this lifecycle:
 
 1. **Base image** - once per run, `EnsureBaseImage` reuses the cached tools-only image or builds it (see [When the base image is rebuilt](#when-the-base-image-is-rebuilt)). Nothing is built or removed per case.
-2. **Workspace** - on the host, build the case's git workspace, staged `.kiro/` and `.eval/` (see [Case Workspaces](#case-workspaces)).
-3. **Create** - create the container from the base image with resource limits, no network, the `sandbox` user and the [mounts](#mounts).
-4. **Execute** - run the selected backend inside the container, wrapped for the open umask, with the prompt on stdin (see [Backends in the Container](#backends-in-the-container)). For `kiro-cli` the harness first checks (read-only) that `kiro-cli` is present.
+2. **Workspace** - on the host, build the case's git workspace, staged `.kiro/`, `.eval/` and the fake `gh` directory (see [Case Workspaces](#case-workspaces)).
+3. **Create** - create the container from the base image with resource limits, no network, a read-only root filesystem with small tmpfs mounts, the `sandbox` user, the [mounts](#mounts) (including the read-only fake-`gh` directory at `/opt/kairon/bin`) and an environment whose `PATH` starts with it.
+4. **Execute** - run the selected backend inside the container, wrapped for the open umask, with the prompt on stdin (see [Backends in the Container](#backends-in-the-container)). For `kiro-cli` the harness first checks (read-only) that `kiro-cli` is present, and the agent is started with `--trust-tools=<per-agent set>` (see [Tool trust](#tool-trust)).
 5. **Score** - score the case while the host workspace still exists.
 6. **Cleanup** - stop and remove the container, then delete the workspace unless `--keep-workspaces` is set.
 
@@ -898,6 +1078,9 @@ newgrp docker
 ```
 
 Permission errors *inside* the workspace (`mkdir: can't create directory … Permission denied`) should not occur: the workspace and `.eval/` are mounted read-write and opened to all users, and `.kiro/` is intentionally read-only. If you see one, check that you are not writing to `.kiro/` and that `KAIRON_EVAL_WORKSPACE_ROOT` points at a path your runtime shares with its VM.
+
+**`Read-only file system`:**
+The container's root filesystem is read-only. Only the workspace, `.eval/`, `/tmp`, `/var/tmp` and `/home/sandbox` are writable (see [Read-only root filesystem](#read-only-root-filesystem)). A tool that writes elsewhere (a cache under `/var/cache`, a file in `/usr/local`, …) fails with this error; point it at `/tmp` or the workspace instead.
 
 **Workspace mount fails (macOS):**
 ```bash
@@ -944,13 +1127,15 @@ Container sandboxing provides multiple security layers:
 
 - **Process isolation** - Containers run in separate namespaces
 - **Resource limits** - CPU and memory usage restricted
-- **Network isolation** - No external network access by default
+- **Network isolation** - No external network access by default (not a containment guarantee; see [Limits](#limits))
 - **User isolation** - Runs as the non-root `sandbox` user (uid 1000)
+- **Read-only root filesystem** - only the workspace, `.eval/` and small tmpfs directories (`/tmp`, `/var/tmp`, `/home/sandbox`) are writable
 - **Read-only agent configuration** - the staged `.kiro/` is mounted read-only, and the live repository is never mounted
-- **No real GitHub access** - `gh` is unauthenticated and the network is off
+- **Fake `gh`, no real GitHub access** - a fake `gh` is first on `PATH` and logs every call; the real `gh` is unauthenticated and GitHub credential variables never reach the container
+- **Whole-tool trust** - `kiro-cli` runs with `--trust-tools=<per-agent set>` instead of `--trust-all-tools`
 - **Temporary containers** - Automatically cleaned up after evaluation
 
-Limits of this layer: the container's root filesystem is still writable, tool trust is unchanged, and the workspace is world-writable on the host while a run is in flight. Tightening these is the containment work (#298).
+Limits of this layer: tool trust is per tool, not per argument; the network is not an enforced boundary, so network side effects are the eval author's responsibility via mocks (guidance for writing them is planned as a separate follow-up, the mock-guidance issue); `kiro-cli`'s own tool denials cannot be detected; Linux capabilities are not dropped and there is no pids limit; and the workspace is world-writable on the host while a run is in flight. See [Limits](#limits) for details.
 
 ## Comparing Runs
 

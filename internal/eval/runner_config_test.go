@@ -26,7 +26,6 @@ func TestCreateContainerConfig_WithSandboxConfig(t *testing.T) {
 			resourceLimits: nil,
 			expectConfig: ContainerConfig{
 				WorkspaceDir: "/app",
-				MockGitHub:   true,
 				Platform:     "", // Will be set by platform detection
 				Environment: map[string]string{
 					"KIRO_CLI_DISABLE_TELEMETRY": "1",
@@ -46,8 +45,7 @@ func TestCreateContainerConfig_WithSandboxConfig(t *testing.T) {
 			resourceLimits: nil,
 			expectConfig: ContainerConfig{
 				WorkspaceDir: "/workspace", // Default
-				MockGitHub:   true,
-				Platform:     "", // Will be set by platform detection
+				Platform:     "",           // Will be set by platform detection
 				Environment: map[string]string{
 					"KIRO_CLI_DISABLE_TELEMETRY": "1",
 				},
@@ -66,8 +64,7 @@ func TestCreateContainerConfig_WithSandboxConfig(t *testing.T) {
 			resourceLimits: nil,
 			expectConfig: ContainerConfig{
 				WorkspaceDir: "/workspace", // Default
-				MockGitHub:   true,
-				Platform:     "", // Will be set by platform detection
+				Platform:     "",           // Will be set by platform detection
 				Environment: map[string]string{
 					"KIRO_CLI_DISABLE_TELEMETRY": "1",
 				},
@@ -87,9 +84,6 @@ func TestCreateContainerConfig_WithSandboxConfig(t *testing.T) {
 			// Compare all fields except Platform (which is dynamically detected)
 			if result.WorkspaceDir != tt.expectConfig.WorkspaceDir {
 				t.Errorf("WorkspaceDir = %s, expected %s", result.WorkspaceDir, tt.expectConfig.WorkspaceDir)
-			}
-			if result.MockGitHub != tt.expectConfig.MockGitHub {
-				t.Errorf("MockGitHub = %v, expected %v", result.MockGitHub, tt.expectConfig.MockGitHub)
 			}
 			if result.ResourceLimits.CPUQuota != tt.expectConfig.ResourceLimits.CPUQuota {
 				t.Errorf("CPUQuota = %d, expected %d", result.ResourceLimits.CPUQuota, tt.expectConfig.ResourceLimits.CPUQuota)
@@ -122,7 +116,6 @@ func TestCreateContainerConfig_NilSandboxConfig(t *testing.T) {
 
 	expectedDefaults := ContainerConfig{
 		WorkspaceDir: "/workspace",
-		MockGitHub:   true,
 		Environment: map[string]string{
 			"KIRO_CLI_DISABLE_TELEMETRY": "1",
 		},
@@ -135,9 +128,6 @@ func TestCreateContainerConfig_NilSandboxConfig(t *testing.T) {
 
 	if result.WorkspaceDir != expectedDefaults.WorkspaceDir {
 		t.Errorf("WorkspaceDir = %s, expected %s", result.WorkspaceDir, expectedDefaults.WorkspaceDir)
-	}
-	if result.MockGitHub != expectedDefaults.MockGitHub {
-		t.Errorf("MockGitHub = %v, expected %v", result.MockGitHub, expectedDefaults.MockGitHub)
 	}
 	if result.ResourceLimits.CPUQuota != expectedDefaults.ResourceLimits.CPUQuota {
 		t.Errorf("CPUQuota = %d, expected %d", result.ResourceLimits.CPUQuota, expectedDefaults.ResourceLimits.CPUQuota)

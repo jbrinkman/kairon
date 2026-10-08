@@ -81,6 +81,13 @@ func RunWithOptions(agent string, testcase string, options RunOptions) error {
 		var sandboxCfg *config.SandboxConfig
 		if cfg, err := config.Load(); err == nil {
 			sandboxCfg = &cfg.Sandbox
+		} else if !errors.Is(err, os.ErrNotExist) {
+			// A missing config file is fine — the sandbox runs with built-in
+			// defaults. But an existing config that fails to load (invalid
+			// workspace_dir, memory_mb, parse error, ...) must not be silently
+			// ignored: falling back to defaults would run with limits the
+			// config did not specify. Fail fast instead.
+			return fmt.Errorf("❌ cannot start sandbox run: %w", err)
 		}
 		cConfig = createContainerConfig(sandboxCfg, options.ResourceLimit, options.Debug)
 	}
@@ -100,12 +107,12 @@ func RunWithOptions(agent string, testcase string, options RunOptions) error {
 
 	// Handle specific test case execution
 	if testcase != "" {
-		return runSingleTestCase(agent, testcase)
+		return runSingleTestCase(agent, testcase, cConfig)
 	}
 
 	// Handle resume
 	if options.Resume {
-		return runWithResume(agent)
+		return runWithResume(agent, cConfig)
 	}
 
 	// Default to original behavior for backward compatibility
@@ -196,7 +203,7 @@ func listTestCases(agent string) error {
 }
 
 // runSingleTestCase executes a single test case for an agent.
-func runSingleTestCase(agent string, testcase string) error {
+func runSingleTestCase(agent string, testcase string, cConfig *ContainerConfig) error {
 	// Start performance profiling for single test
 	StartProfiling()
 	startupTime := MeasureStartupOverhead()
@@ -249,8 +256,18 @@ func runSingleTestCase(agent string, testcase string) error {
 		return fmt.Errorf("failed to create results directory: %w", err)
 	}
 
-	// Run evaluation on single test case (without container config for now)
-	result := evaluate(*rubric, []TestCase{*targetCase}, gitHash, os.Stdout, nil)
+	// Obtain the tools-only base image when containerising, so a
+	// requires_sandbox case run via --testcase has an image to run in.
+	imageManager, err := prepareBaseImage(cConfig)
+	if err != nil {
+		return err
+	}
+	if imageManager != nil {
+		defer imageManager.Close()
+	}
+
+	// Run evaluation on single test case.
+	result := evaluate(*rubric, []TestCase{*targetCase}, gitHash, os.Stdout, cConfig)
 
 	// Write result file
 	resultFile := filepath.Join(resultsDir, agent+".json")
@@ -289,6 +306,38 @@ func runSingleTestCase(agent string, testcase string) error {
 	return nil
 }
 
+// prepareBaseImage obtains the tools-only base image once per run and records
+// the image manager and cached image name on cConfig for the case executions.
+// It is shared by every entry point that may containerise (full run, single
+// case, resume). The returned *sandbox.ImageManager is owned by the caller,
+// which must defer Close() on it; it is nil (with a nil error) for a native
+// run where cConfig is nil.
+func prepareBaseImage(cConfig *ContainerConfig) (*sandbox.ImageManager, error) {
+	if cConfig == nil {
+		return nil, nil
+	}
+	imageManager, err := sandbox.NewImageManager("", cConfig.Debug)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create image manager: %w", err)
+	}
+
+	tag, built, err := imageManager.EnsureBaseImage(context.Background(), cConfig.Platform)
+	if err != nil {
+		imageManager.Close()
+		return nil, fmt.Errorf("preparing base image: %w", err)
+	}
+	if built {
+		fmt.Printf("🔨 Base image built: %s\n", tag)
+	} else {
+		fmt.Printf("✅ Base image reused: %s\n", tag)
+	}
+
+	// Add image manager and cached image name to config for test cases
+	cConfig.ImageManager = imageManager
+	cConfig.CachedImageName = tag
+	return imageManager, nil
+}
+
 // Run executes the evaluation for all agents (or a specific agent) and writes results.
 func Run(agent string, cConfig *ContainerConfig) error {
 	// Start performance profiling
@@ -298,26 +347,12 @@ func Run(agent string, cConfig *ContainerConfig) error {
 
 	// Obtain the tools-only base image once per run. It is cached by content
 	// hash and persistent: nothing builds or removes an image per call.
-	if cConfig != nil {
-		imageManager, err := sandbox.NewImageManager("", cConfig.Debug)
-		if err != nil {
-			return fmt.Errorf("failed to create image manager: %w", err)
-		}
+	imageManager, err := prepareBaseImage(cConfig)
+	if err != nil {
+		return err
+	}
+	if imageManager != nil {
 		defer imageManager.Close()
-
-		tag, built, err := imageManager.EnsureBaseImage(context.Background(), cConfig.Platform)
-		if err != nil {
-			return fmt.Errorf("preparing base image: %w", err)
-		}
-		if built {
-			fmt.Printf("🔨 Base image built: %s\n", tag)
-		} else {
-			fmt.Printf("✅ Base image reused: %s\n", tag)
-		}
-
-		// Add image manager and cached image name to config for test cases
-		cConfig.ImageManager = imageManager
-		cConfig.CachedImageName = tag
 	}
 
 	// Measure startup overhead
@@ -481,6 +516,16 @@ func invokeAgent(agent, prompt string, cConfig *ContainerConfig, opts callOpts) 
 		// mount of the host workspace), not a host path.
 		req.WorkDir = cConfig.WorkspaceDir
 
+		// Whole-tool trust replaces --trust-all-tools in the container.
+		// Resolution failure fails the call (fail closed).
+		trust, err := resolveTrustSet(agent)
+		if err != nil {
+			err = fmt.Errorf("tool trust: %w", err)
+			start := time.Now()
+			return completeAgentCall(req, inference.Response{}, err, time.Since(start), nil)
+		}
+		req.ToolTrust = trust
+
 		start := time.Now()
 		resp, baseEC, err := invokeInContainer(req, cConfig, opts.Workspace)
 		return completeAgentCall(req, resp, err, time.Since(start), baseEC)
@@ -614,7 +659,6 @@ func createContainerConfig(sandboxCfg *config.SandboxConfig, resourceLimits map[
 
 	config := &ContainerConfig{
 		WorkspaceDir: workspaceDir,
-		MockGitHub:   true,
 		Platform:     platform,
 		Debug:        debug,
 		ImageManager: nil,
@@ -655,6 +699,25 @@ func createContainerConfig(sandboxCfg *config.SandboxConfig, resourceLimits map[
 // into the running container.
 const containerHelperPath = "/opt/kairon/kairon"
 
+// containerBinDir is where the per-case bin directory (holding the fake gh) is
+// bind-mounted read-only. It is first on the container PATH.
+const containerBinDir = "/opt/kairon/bin"
+
+// containerPath is the container PATH: the fake-gh directory first, then the
+// base image's default PATH (where the real, unauthenticated gh lives).
+const containerPath = containerBinDir + ":/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+
+// blockedContainerEnv are GitHub credential/host variables that never reach
+// the container, even if a caller puts them in ContainerConfig.Environment, so
+// the real gh stays unauthenticated.
+var blockedContainerEnv = map[string]bool{
+	"GH_TOKEN":                true,
+	"GITHUB_TOKEN":            true,
+	"GH_ENTERPRISE_TOKEN":     true,
+	"GITHUB_ENTERPRISE_TOKEN": true,
+	"GH_HOST":                 true,
+}
+
 // containerUser is the unprivileged user every container runs as.
 const containerUser = "sandbox"
 
@@ -667,8 +730,9 @@ const containerHome = "/home/sandbox"
 const helperExecGrace = 10 * time.Second
 
 // buildContainerMounts returns the bind mounts for one case: the staged
-// .kiro read-only, the workspace and its .eval/ read-write, and, for
-// non-kiro-cli backends, the kairon helper read-only. There is deliberately
+// .kiro read-only, the workspace and its .eval/ read-write, the fake-gh bin
+// directory read-only, and, for non-kiro-cli backends, the kairon helper
+// read-only. There is deliberately
 // no tmpfs at the workspace path.
 func buildContainerMounts(ws *caseWorkspace, cConfig *ContainerConfig, backendName string) ([]sandbox.Mount, error) {
 	if ws == nil {
@@ -679,6 +743,7 @@ func buildContainerMounts(ws *caseWorkspace, cConfig *ContainerConfig, backendNa
 		{HostPath: ws.KiroDir, ContainerPath: path.Join(dir, ".kiro"), ReadOnly: true},
 		{HostPath: ws.Dir, ContainerPath: dir},
 		{HostPath: ws.EvalDir, ContainerPath: path.Join(dir, ".eval")},
+		{HostPath: ws.BinDir, ContainerPath: containerBinDir, ReadOnly: true},
 	}
 	if backendName != inference.NameKiroCLI {
 		bin, err := resolveLinuxBinary(cConfig.Platform)
@@ -699,7 +764,9 @@ func buildContainerMounts(ws *caseWorkspace, cConfig *ContainerConfig, backendNa
 }
 
 // containerEnv returns the container environment: the configured variables
-// (sorted for determinism), then HOME and the git safe.directory setting. The
+// (sorted for determinism, GitHub credential variables dropped), then PATH
+// with the fake gh first, KAIRON_EVAL_DIR, gh prompt/update suppression, HOME
+// and the git safe.directory setting. The
 // latter is required because the mounted repository is owned by a different
 // uid than the sandbox user, and git refuses it ("dubious ownership")
 // otherwise. It is environment, not a file operation.
@@ -711,9 +778,20 @@ func containerEnv(cConfig *ContainerConfig) []string {
 	}
 	sort.Strings(keys)
 	for _, k := range keys {
+		switch k {
+		case "PATH", "KAIRON_EVAL_DIR", "HOME":
+			continue // harness-owned; set below
+		}
+		if blockedContainerEnv[k] {
+			continue
+		}
 		env = append(env, fmt.Sprintf("%s=%s", k, cConfig.Environment[k]))
 	}
 	return append(env,
+		"PATH="+containerPath,
+		"KAIRON_EVAL_DIR="+path.Join(cConfig.WorkspaceDir, ".eval"),
+		"GH_PROMPT_DISABLED=1",
+		"GH_NO_UPDATE_NOTIFIER=1",
 		"HOME="+containerHome,
 		"GIT_CONFIG_COUNT=1",
 		"GIT_CONFIG_KEY_0=safe.directory",
@@ -1355,6 +1433,13 @@ func newCallRecord(req inference.Request, resp inference.Response, err error, wa
 		Estimated:    resp.Usage.Source != inference.UsageReported,
 		DurationMS:   resp.Duration.Milliseconds(),
 	}
+	if req.ToolTrust != nil {
+		names := req.ToolTrust.Names()
+		rec.TrustedTools = &names
+	}
+	if len(resp.ToolDenials) > 0 {
+		rec.ToolDenials = append([]inference.ToolDenial(nil), resp.ToolDenials...)
+	}
 	if rec.Model == "" {
 		rec.Model = req.Model
 	}
@@ -1463,6 +1548,9 @@ func loadCases(agent string) ([]TestCase, error) {
 		}
 
 		tc.Agent = agent
+		if tc.GHIssue != nil && tc.GHIssue.Number == 0 {
+			tc.GHIssue.Number = sandbox.DefaultGHIssueNumber
+		}
 		if err := validateCaseFields(tc, e.Name()); err != nil {
 			return nil, err
 		}
@@ -1494,7 +1582,7 @@ func getGitShortHash() (string, error) {
 }
 
 // runWithResume finds the most recent incomplete evaluation and resumes it.
-func runWithResume(agent string) error {
+func runWithResume(agent string, cConfig *ContainerConfig) error {
 	fmt.Println("🔄 Scanning for incomplete evaluations...")
 
 	resultsBaseDir := evalsPath("results")
@@ -1524,11 +1612,21 @@ func runWithResume(agent string) error {
 
 	if latestDir == "" {
 		fmt.Println("📄 No incomplete evaluations found, starting fresh...")
-		return Run(agent, nil)
+		return Run(agent, cConfig)
+	}
+
+	// Obtain the tools-only base image when containerising, so a
+	// requires_sandbox case resumed under --sandbox has an image to run in.
+	imageManager, err := prepareBaseImage(cConfig)
+	if err != nil {
+		return err
+	}
+	if imageManager != nil {
+		defer imageManager.Close()
 	}
 
 	fmt.Printf("📂 Resuming evaluation from: %s\n", latestDir)
-	return runProgressiveEvaluation(agent, latestDir, true, nil)
+	return runProgressiveEvaluation(agent, latestDir, true, cConfig)
 }
 
 // runProgressiveEvaluation runs evaluation with progressive result saving.
@@ -1564,7 +1662,7 @@ func runProgressiveEvaluation(agent, resultsDir string, isResume bool, cConfig *
 		}
 
 		if isResume {
-			if err := checkResumeIntegrity(resultsDir, rubric.Agent); err != nil {
+			if err := checkResumeIntegrity(resultsDir, rubric.Agent, cConfig != nil); err != nil {
 				return err
 			}
 		}
@@ -1589,12 +1687,34 @@ func runProgressiveEvaluation(agent, resultsDir string, isResume bool, cConfig *
 }
 
 // checkResumeIntegrity refuses to resume into a result file that was written
-// with a different prompt or different models, so one file never mixes two
-// prompt/model versions. A legacy file (no recorded prompt_sha256) is refused
-// when it already holds saved cases, since resuming would stamp the current
-// models/hash onto scores produced under unknown inputs; an empty legacy file,
-// and unpinned runs, are not checked.
-func checkResumeIntegrity(resultsDir, agent string) error {
+// with a different prompt, different models, or a different sandbox mode, so
+// one file never mixes two execution configurations. A legacy file (no
+// recorded prompt_sha256) is refused when it already holds saved cases, since
+// resuming would stamp the current models/hash onto scores produced under
+// unknown inputs; an empty legacy file, and unpinned runs, are not
+// prompt/model-checked. The sandbox-mode check applies regardless of pinning,
+// because resuming with the wrong mode scores requires_sandbox cases wrongly
+// and marks them completed, which a correct later resume would then skip.
+func checkResumeIntegrity(resultsDir, agent string, sandbox bool) error {
+	// Sandbox mode is checked before the pin guard: a mode change corrupts the
+	// results regardless of whether the run is pinned.
+	if data, err := os.ReadFile(filepath.Join(resultsDir, agent+".json")); err == nil {
+		var existing AgentResult
+		if json.Unmarshal(data, &existing) == nil && len(existing.Cases) > 0 {
+			switch {
+			case existing.Sandbox == nil:
+				// Legacy file predating sandbox-mode tracking: its mode is
+				// unknown, so neither a native nor a sandbox resume can be
+				// verified safe. Refuse rather than risk mixing modes.
+				return fmt.Errorf("❌ cannot resume: %s.json predates sandbox-mode tracking and has %d saved case(s); its execution mode cannot be verified — start a fresh run (without --resume)",
+					agent, len(existing.Cases))
+			case *existing.Sandbox != sandbox:
+				return fmt.Errorf("❌ cannot resume: sandbox mode changed since the interrupted run of %s (recorded sandbox=%t; now %t) — resume with the same mode or start a fresh run",
+					agent, *existing.Sandbox, sandbox)
+			}
+		}
+	}
+
 	pin, ok := cfg.pins.pinOf(agent)
 	if !ok {
 		return nil
@@ -1647,9 +1767,11 @@ func checkResumeIntegrity(resultsDir, agent string) error {
 
 // evaluateProgressive runs evaluation with progressive result saving after each test case.
 func evaluateProgressive(rubric Rubric, cases []TestCase, gitHash string, out io.Writer, resultsDir string, isResume bool, cConfig *ContainerConfig) AgentResult {
+	sandboxMode := cConfig != nil
 	result := AgentResult{
 		Agent:   rubric.Agent,
 		GitHash: gitHash,
+		Sandbox: &sandboxMode,
 	}
 	cfg.pins.applyTo(&result)
 
@@ -1662,6 +1784,10 @@ func evaluateProgressive(rubric Rubric, cases []TestCase, gitHash string, out io
 				// Provenance is verified equal by checkResumeIntegrity (or the
 				// file predates provenance); stamp it from the current pins.
 				cfg.pins.applyTo(&result)
+				// Sandbox mode is verified compatible by checkResumeIntegrity.
+				// Record the current mode so a resumed legacy file (nil) gains a
+				// definite mode going forward.
+				result.Sandbox = &sandboxMode
 			}
 		}
 	}

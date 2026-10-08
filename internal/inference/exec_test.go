@@ -109,7 +109,7 @@ func TestRequestResponseJSONRoundTrip(t *testing.T) {
 	if err := json.Unmarshal(data, &gotResp); err != nil {
 		t.Fatal(err)
 	}
-	if gotResp != resp {
+	if !reflect.DeepEqual(gotResp, resp) {
 		t.Errorf("response round trip = %+v, want %+v", gotResp, resp)
 	}
 }
@@ -258,7 +258,7 @@ func TestDecodeExecResult_RoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got != want {
+	if !reflect.DeepEqual(got, want) {
 		t.Errorf("got %+v, want %+v", got, want)
 	}
 }

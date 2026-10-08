@@ -1,0 +1,8 @@
+{
+  "name": "selftest-sandbox-ro",
+  "description": "Minimal read-only agent used only by the sandbox containment self-test fixtures (read-only filesystem, tool trust). Its cases require --sandbox.",
+  "prompt": "file://./selftest-sandbox-ro-prompt.md",
+  "model": "claude-sonnet-5.5",
+  "tools": ["read"],
+  "allowedTools": ["read"]
+}

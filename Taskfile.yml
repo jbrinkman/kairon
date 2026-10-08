@@ -59,7 +59,7 @@ tasks:
     desc: Run the eval self-test and the base-image/workspace checks natively and in a container sandbox and compare the results (needs Podman or Docker; skips with a message when no daemon is reachable)
     cmds:
       - KAIRON_EVAL_SANDBOX_SELFTEST=1 go test ./internal/eval/sandbox -run '^(TestBaseImage_ToolsOnlyNoMounts|TestEnsureBaseImage_ReusesExistingImage)$' -count=1 -v
-      - KAIRON_EVAL_SANDBOX_SELFTEST=1 go test ./internal/eval -run '^(TestSelftestSandbox|TestSandboxWorkspace)$' -count=1 -v
+      - KAIRON_EVAL_SANDBOX_SELFTEST=1 go test ./internal/eval -run '^(TestSelftestSandbox|TestSandboxWorkspace|TestContainmentSandbox|TestContainmentContainerGH)$' -count=1 -v
 
   sync:check:
     desc: Verify template-synchronized files match their live counterparts

@@ -339,3 +339,57 @@ func TestConfigFilesEvalsBlockMatchesDefaults(t *testing.T) {
 		t.Errorf("documented block = %+v, want defaults %+v", got, DefaultEvalsConfig())
 	}
 }
+
+func TestLoadEvals_TrustToolsDefaultsNil(t *testing.T) {
+	writeProjectConfig(t, strPtr("evals:\n  judge_model: claude-sonnet-5.5\n"))
+	got, err := LoadEvals()
+	if err != nil {
+		t.Fatalf("LoadEvals() error = %v", err)
+	}
+	if got.TrustTools != nil {
+		t.Errorf("TrustTools = %#v, want nil", got.TrustTools)
+	}
+	if DefaultEvalsConfig().TrustTools != nil {
+		t.Error("default TrustTools must be nil")
+	}
+}
+
+func TestLoadEvals_TrustToolsParsedAndTrimmed(t *testing.T) {
+	writeProjectConfig(t, strPtr(`evals:
+  trust_tools:
+    " builder ": [" read ", "write", "@srv/tool"]
+    "  ": [read]
+    reviewer: []
+`))
+	got, err := LoadEvals()
+	if err != nil {
+		t.Fatalf("LoadEvals() error = %v", err)
+	}
+	want := map[string][]string{
+		"builder":  {"read", "write", "@srv/tool"},
+		"reviewer": {},
+	}
+	if !reflect.DeepEqual(got.TrustTools, want) {
+		t.Errorf("TrustTools = %#v, want %#v", got.TrustTools, want)
+	}
+}
+
+func TestLoadEvals_TrustToolsRejectsWildcardAndEmpty(t *testing.T) {
+	for name, body := range map[string]string{
+		"wildcard":        `["read", "*"]`,
+		"padded wildcard": `[" * "]`,
+		"empty entry":     `["read", ""]`,
+		"blank entry":     `["  "]`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			writeProjectConfig(t, strPtr("evals:\n  trust_tools:\n    builder: "+body+"\n"))
+			_, err := LoadEvals()
+			if err == nil {
+				t.Fatal("LoadEvals() error = nil, want rejection")
+			}
+			if !strings.Contains(err.Error(), `"builder"`) {
+				t.Errorf("error %q does not name the agent", err)
+			}
+		})
+	}
+}

@@ -1,0 +1,21 @@
+name: stub-write-outside-mounts
+description: "Sandbox self-test: a write outside the mounted paths fails with 'Read-only file system' (read-only root filesystem). Expected to FAIL."
+agent: selftest-sandbox-ro
+requires_sandbox: true
+input: |
+  Write a probe file outside the workspace.
+context:
+  - "This case runs against the deterministic stub backend and only under --sandbox"
+  - "Expected to FAIL: the stub turn command writes to /etc, which is on the read-only root filesystem"
+expected_output: |
+  No output: the stub turn command fails.
+stub:
+  turns:
+    - commands:
+        - "echo x > /etc/kairon-probe"
+      response: |
+        ## Never returned
+
+        ### Details
+
+        The command above fails before this response is produced.
