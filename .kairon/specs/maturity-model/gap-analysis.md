@@ -99,7 +99,7 @@ Stage 3 evaluates prompt design, evaluation infrastructure, and iteration discip
 | Item | What it is | Recommendation |
 |------|-----------|----------------|
 | PR #263 / issue #116 | Improvement tracking (baseline, trend, report; +2,741 lines) | **PR closed 2026-10-05** as superseded by E11. It targeted pre-rename paths and edited `runner.go`/`types.go`, which E1–E7 rewrite. Stage 3 needs *verifiable iteration logs*, not trend reports. The branch is kept. Issue #116 is still open. |
-| PR #194 / issue #192 | Docker sandbox: move file setup to build time | **PR closed 2026-10-05.** It was pre-rename and didn't fix H2 (prompt never sent). Stage 3 uses native isolated workspaces (E4). The branch is kept. Issue #192 is still open. |
+| PR #194 / issue #192 | Docker sandbox: move file setup to build time | An earlier attempt at a container sandbox. **PR closed 2026-10-05.** It was pre-rename and didn't fix H2 (prompt never sent). Both are **superseded by the container sandbox series #296–#300** (prompt and backend routing, tools-only base image and mounts, fake `gh` / read-only filesystem / tool trust, mocks, provenance and scoring parity). The branch is kept. Neither the PR nor the issue is reopened or relabelled by this work. Issue #192 is still **open** (checked 2026-10-08 with `gh issue view 192`; it carries the pre-rename `kiro-krew-done` label). |
 | Issue #115 | "Add context support to eval test cases" | **Closed 2026-10-05 as completed.** It was already implemented (`TestCase.Context`, commit `d93682a`). Its "planner example" AC is covered by P2. |
 | #271, #262/#264, #232, #270 | TUI and planning-tab UX, multi-project support | No file overlap with Stage 3 work. Note that #262 and #264 are duplicate PRs for #211. |
 | Labels | #116, #192, #211, #231, #266 are open with the pre-rename `kiro-krew-done` label | Housekeeping only. |
@@ -117,7 +117,7 @@ Stage 3 evaluates prompt design, evaluation infrastructure, and iteration discip
 4. **Iteration 0 records two scores:** legacy prompt and minimal RTCC skeleton. This proves the rebuilt prompt beats what the pipeline runs today.
 5. **One issue per iteration,** created only after reading the previous iteration's results (the hypothesis depends on them). The minimum is 2 iterations, and at least one must be a Refactor (removing something without a score drop).
 6. **Scoring model.** Each rubric criterion is a set of **pass/fail checks**, either deterministic or a yes/no judge question, and criterion score = passed ÷ total. An agent passes at **≥95%**, and the exit code reflects it. That gives you clear thresholds, and 95% stays meaningful.
-7. **Isolation.** Each case runs in a temp, git-initialized copy of a fixture workspace, with a `gh` shim on PATH and an isolated `GH_CONFIG_DIR`. Nothing runs in the repo root, and Docker isn't required.
+7. **Isolation.** Cases that can cause side effects run under `--sandbox` in a container: read-only root filesystem, a fake `gh` in a read-only mount (the real `gh` is unauthenticated), whole-tool trust per agent, and author-supplied mocks for anything else. Every case still runs in a temp, git-initialized copy of a fixture workspace and never in the repo root. Native runs are not contained, so `requires_sandbox: true` makes a case refuse to run natively. This replaces the earlier convention-based design (E4: `gh` shim on PATH plus an isolated `GH_CONFIG_DIR`); see the superseded E4 record in §S3.6 and the container sandbox series #296–#300.
 8. **Load-bearing proof.** Prompts put one instruction per line under `## Role` / `## Task` / `## Context` / `## Constraints`. `load-bearing.md` maps each line → criterion → case/check, and `kairon eval audit` computes the percentage over the prompt plus engine skills (override hooks excluded). One Refactor iteration does section-level ablation as supporting evidence.
 9. **Anti-fabrication.** Iteration logs cite committed result runs, and `kairon eval verify-log` checks the claimed scores against the results JSON. This matters because lower-end models will be writing these logs.
 10. **Override hooks.** Eval workspaces get `.kiro/` exactly as `kairon init` installs it (embedded templates), so `*-conventions` hooks are empty unless a case fixture supplies one. Each agent gets at least one override case that proves project guidance in the hook is followed.
@@ -128,7 +128,7 @@ Stage 3 evaluates prompt design, evaluation infrastructure, and iteration discip
 
 **Stage 5 compatibility** (direct LLM API; kiro-cli kept as a user option):
 - All agent and judge inference goes through one pluggable backend (E1: `--backend kiro-cli|stub`). kiro-cli is the only model backend in Stage 3, and a direct-API backend (`--backend api`) drops in for Stage 5. The stub backend makes harness behavior verifiable without model calls. The **judge** is plain text in/text out, so it's the cheapest first API backend: exact model pin, temperature 0, real token usage. That's optional as E13 (provider TBD).
-- Checks score **artifacts** (workspace files, git diff, gh-shim log, the final assistant message), never kiro-cli's stdout formatting or tool traces. The same cases then certify both harnesses, which Stage 5's "Stage 3 guarantees maintained" requires.
+- Checks score **artifacts** (workspace files, git diff, fake-`gh` log, the final assistant message), never kiro-cli's stdout formatting or tool traces. The same cases then certify both harnesses, which Stage 5's "Stage 3 guarantees maintained" requires.
 - Multi-turn cases are data (`turns:`). kiro-cli implements them with `--resume`, and the API backend will use message history.
 - Rebuilt prompts should be **self-contained**: put load-bearing generic guidance in the prompt, and describe capabilities ("run a shell command") rather than kiro-cli tool names (`subagent`, `todo_list`). The API harness must reproduce the `resources` semantics: load an engine skill, load an override skill if present, and silently skip a missing override. The audit covers the certified context, and results record a hash of it plus which override hooks were present.
 - Stage 3 certification on the kiro-cli backend is acceptable. Stage 5 re-runs the same suites through the API backend.
@@ -144,12 +144,13 @@ Every prompt follows the "Planner issue standard" (Step 1 below): it states requ
 #### Dependency order
 
 ```
-E1 → E2 → E3 → E4 → E5 → {E6, E7, E9, E10}     E14 after E6 and E9     E11 after E3 and E7     E12 after E11     E8 after E6 and E7
+E1 → E2 → E3 → [container sandbox series #296–#300, supersedes E4] → E5 → {E6, E7, E9, E10}     E14 after E6 and E9     E11 after E3 and E7     E12 after E11     E8 after E6 and E7
 P1, B1 (docs only) can start immediately, in parallel with Step 0
 P2 needs E3–E7, E9, E14      P3 needs P2, E10, E11   P-iter needs P3      P-final needs ≥2 P-iter, E8, E12
 B2 needs E3–E7               B3 needs B2, E10, E11   B-iter needs B3      B-final needs ≥2 B-iter, E8, E12
 ```
-Suggested serial order for a single Kairon runner: E1, E2, E3, E4, E5, E6, E7, E9, E14, E10, E11, E12, E8.
+The container sandbox series (#296–#300) is merged, so E5 is unblocked and E4 is not filed.
+Suggested serial order for a single Kairon runner: E1, E2, E3, <container sandbox series, done>, E5, E6, E7, E9, E14, E10, E11, E12, E8.
 
 #### Step 0 — Eval harness
 
@@ -279,50 +280,40 @@ Stage 3 requires evals to run on mid-tier models. The judge call passes no model
 - E1
 ```
 
-##### E4 — Isolated per-case workspaces and a fake gh
+##### E4 — Isolated per-case workspaces and a fake gh — SUPERSEDED by the container sandbox series (#296–#300)
 
-```
-Create a GitHub issue: "Evals: run every case in an isolated workspace with a fake gh"
+**Status (2026-10-08): not to be filed.** E4 is superseded by the container sandbox series #296–#300 (merged as PRs #303, #305, #306, #309 and #310). Downstream issues that listed E4 as a dependency are satisfied by that series. The original paste-able E4 prompt has been removed so it cannot be filed by mistake.
 
-## Problem
-Native evals run agents with all tools trusted in the repository root, against the real gh CLI. Builder cases can edit the live tree, and planner or krew-lead cases can create real issues and PRs on jbrinkman/kairon. Results also can't be checked against the files and GitHub calls an agent produced.
+**Why E4 was rejected.** E4 relied on convention-based isolation: run the agent in a temp working directory (CWD), put a fake `gh` shim first on `PATH`, and point `GH_CONFIG_DIR` at an empty directory. That is unsound for arbitrary, extensible third-party agents because it cannot enforce a boundary against:
+- **MCP servers and built-in tools** that do their own I/O and never go through `PATH`.
+- **Network access**, which a CWD change does not touch.
+- **Absolute-path writes and binaries** (`/usr/local/bin/gh`, `/etc`, `$HOME`, the live repo checkout), which ignore both CWD and `PATH`.
 
-## Scope
-### In Scope
-- `internal/eval`, including `internal/eval/testdata/evals/`
-- `cmd/kairon/cmd`
-- `.kairon/evals/fixtures/` (fake gh, default empty workspace)
-- Template-sync rules: `Taskfile.yml` (`sync:check`) and the sync commands in `.kiro/skills/builder-conventions/SKILL.md`
-- `docs/evaluation.md`
-### Out of Scope
-- New check types or scoring changes
-- The Docker sandbox, multi-turn cases
+It protects only agents that cooperate, and Kairon's whole premise is that agents are extensible and not all under its control.
 
-## Acceptance Criteria
-1. Every case runs in a fresh temporary directory, never in the repository root. That directory is a git repository whose first commit contains the case's `workspace` fixture (`<evals-dir>/fixtures/workspaces/<name>/`; default: empty).
-   Verify: a self-test case whose stub turn runs `commands: ["echo hi > marker.txt"]` leaves `git status --porcelain` in the repo root unchanged.
-2. Unless the fixture provides its own `.kiro/`, the workspace's `.kiro/` is installed exactly as `kairon init` installs it, plus any agent configs from `<evals-dir>/agents/`. `*-conventions` override skills are therefore absent unless the fixture supplies them.
-   Verify: with `--keep-workspaces`, the kept workspace's `.kiro/agents/` holds every config from `cmd/kairon/templates/kiro/agents/` plus the self-test agent, and no `*-conventions` skill exists.
-3. A stub turn may define `commands`: shell commands the stub backend runs inside the workspace before returning its response, to simulate agent side effects.
-   Verify: the kept workspace from AC 1 contains `marker.txt`.
-4. `gh` inside a case is a fake that never reaches GitHub. It logs every call to `.eval/gh.log`, copies any `--body-file` to `.eval/gh-body-<n>.md`, and answers `gh issue view` from the case's `gh_issue` (number, title, body). The real gh is unauthenticated inside the workspace even if called by absolute path.
-   Verify: a self-test case whose stub turn runs `gh issue create --title t --body-file b.md` → the kept workspace's `.eval/gh.log` has the call and `.eval/gh-body-1.md` equals `b.md`; the real `gh auth status`, run by absolute path from the workspace, reports not logged in.
-5. Git ignores `.eval/` inside the workspace.
-   Verify: `git -C <kept workspace> status --porcelain` doesn't list `.eval/`.
-6. Cases accept `timeout` (Go duration), falling back to `KAIRON_EVAL_TIMEOUT` and then 2m.
-   Verify: a self-test case with `timeout: 1s` whose stub turn runs `sleep 3` is recorded as a timeout failure.
-7. Workspaces are deleted after scoring unless `--keep-workspaces` is given, and results record each case's `workspace_dir`.
-   Verify: without the flag the recorded directory is gone; with it, it exists.
-8. Eval workspace fixtures (`.kairon/evals/fixtures/workspaces/`, `.kairon/evals/fixtures/hidden/`) aren't copied into `cmd/kairon/templates/`. They may contain Go modules and test files that would break the root module's build, tests and `go:embed`.
-   Verify: `task sync:check` passes with a fixture present only under `.kairon/evals/fixtures/workspaces/`.
+**What replaced it.**
 
-## Constraints
-- Names relied on by later issues: case fields `workspace`, `timeout`, `gh_issue`, `stub.turns[].commands`; workspace paths `.eval/gh.log` and `.eval/gh-body-<n>.md`; flag `--keep-workspaces`; fixture roots `fixtures/workspaces/` and `fixtures/hidden/`.
-- Keep `cmd/kairon/templates/` in sync for everything else (`task sync:check`).
+| Concern | E4 (convention) | Now (container sandbox series) |
+|---------|-----------------|--------------------------------|
+| Prompt delivery and backends | Not addressed (H2: the Docker sandbox never sent the prompt) | #296: the prompt is sent and the backend is routed inside the container |
+| Filesystem | Temp CWD only; nothing stops absolute-path writes | #297, #298: tools-only base image with `.kiro`, workspace and outputs mounted in (#297); read-only root filesystem, always on (#298). Writable: the workspace, `<workspace>/.eval`, and tmpfs `/tmp`, `/var/tmp`, `/home/sandbox` |
+| `gh` | `PATH` shim plus `GH_CONFIG_DIR` | #298: fake `gh` in a read-only mount, first on `PATH`; the real `gh` stays unauthenticated by construction |
+| Tools | `--trust-all-tools` | #298: per-agent whole-tool `--trust-tools` (`evals.trust_tools`, else the agent's `allowedTools`, else empty, fail closed) |
+| Network and other CLIs | Nothing | #299: author-supplied mocks (`mocks:` in the case, `requires_sandbox: true`). There is no network gateway |
+| Provenance and scoring | Not addressed | #300: runs record `sandbox` and a per-agent `containment` record; scoring is the same for native and container runs |
 
-## Dependencies
-- E1
-```
+**Retained from E4** (still real, shared by native and sandbox runs):
+- Per-case git workspaces built on the host from `workspace` fixtures (`fixtures/workspaces/<name>/`).
+- Staged `.kiro/`, the `.eval/` outputs directory, per-case `timeout`, and `--keep-workspaces` with the recorded `workspace_dir`.
+- Stub-turn `commands` for simulating side effects.
+- Sync exclusion: `fixtures/workspaces/` and `fixtures/hidden/` are not copied into `cmd/kairon/templates/`, because they may contain Go modules and test files that would break the root module's build, tests and `go:embed`. Other sections point here ("see E4") for this rule.
+
+**Honest limits.**
+- Native runs (no `--sandbox`) remain uncontained: `--trust-all-tools`, the real `gh`, writes anywhere. `requires_sandbox: true` makes a case refuse to run natively; that is the guard.
+- Tool trust is whole-tool only. There is no per-argument or per-tool-call hook in this `kiro-cli` build, so trusting `execute_bash` trusts every shell command.
+- There is no network gateway. Container networking is set to `none`, but that is a setting, not a policy, and is not part of the guarantee. Network side effects (AWS, HTTP, `npm publish`, other CLIs) are the eval author's responsibility via mocks, and a `PATH` mock does not intercept built-in or MCP tools, absolute paths or in-process SDKs.
+
+See the "Containment Model and Extension Seams" section of `docs/evaluation.md` for the consolidated model.
 
 ##### E5 — Deterministic pass/fail checks
 
@@ -365,7 +356,7 @@ Deterministic scoring today is a set of keyword heuristics on agent stdout, chos
   Verify: (manual) evaluating checks needs only those three inputs.
 
 ## Dependencies
-- E4
+- the container sandbox series (#296–#300; supersedes E4)
 ```
 
 ##### E6 — Yes/no judge checks
@@ -554,7 +545,7 @@ Today a prompt iteration means editing .kiro/agents/<agent>-prompt.md. Krew-lead
 - `--prompt-file` and `prompt_file` are relied on by P3, B3 and every iteration issue. Candidate prompts live under `.kairon/iterations/<agent>/`.
 
 ## Dependencies
-- E3, E4
+- E3, the container sandbox series (#296–#300; supersedes E4)
 ```
 
 ##### E11 — Iteration log format and verifier
@@ -856,10 +847,10 @@ The planner eval spec (P1) needs implementing so the current planner prompt can 
    Verify: the README's run ID exists under `.kairon/evals/results/`.
 
 ## Constraints
-- Keep `cmd/kairon/templates/` in sync (`task sync:check`). Workspace fixtures are excluded from sync (see E4).
+- Keep `cmd/kairon/templates/` in sync (`task sync:check`). Workspace fixtures are excluded from sync (see the superseded E4 record, which retains that rule).
 
 ## Dependencies
-- E3, E4, E5, E6, E7, E9, E14, P1
+- E3, the container sandbox series (#296–#300; supersedes E4), E5, E6, E7, E9, E14, P1
 ```
 
 ##### P3 — Planner iteration 00 (minimal RTCC candidate)
@@ -1068,10 +1059,10 @@ The builder eval spec (B1) needs implementing, and the current builder cases nee
    Verify: the README's run ID exists under `.kairon/evals/results/`.
 
 ## Constraints
-- Keep `cmd/kairon/templates/` in sync (`task sync:check`). Workspace and hidden fixtures are excluded from sync (see E4). The fixture module has its own `go.mod`.
+- Keep `cmd/kairon/templates/` in sync (`task sync:check`). Workspace and hidden fixtures are excluded from sync (see the superseded E4 record, which retains that rule). The fixture module has its own `go.mod`.
 
 ## Dependencies
-- E3, E4, E5, E6, E7, B1
+- E3, the container sandbox series (#296–#300; supersedes E4), E5, E6, E7, B1
 ```
 
 ##### B3, B-iter, B-final
@@ -1084,7 +1075,7 @@ Same as P3, P-iter and P-final with `planner` → `builder`, plus:
 
 The pattern is the same (spec → cases + legacy baseline → iteration 00 → iterations → promotion). Notes so they don't get lost:
 - **Validator:** rebuilt as an **adversarial reviewer** (Stage 4 §2, Stage 5 §3) that challenges the builder's output rather than only checking conformance. Fixtures need known-good implementations and seeded defects, including defects the acceptance criteria don't mention (missed edge cases, broken error paths). Each case is labeled with the expected verdict. Criteria: correct_accept, correct_reject, adversarial_detection, evidence_and_feedback. Verdict status is `pass`, `fail` or `blocked-needs-human`. Deterministic command checks (Verify and QA commands) are expected to move to engine guardrails in Stage 4, so the prompt isn't built around running them, or around the 29 KB report-template override. The issue and spec are passed in, not fetched. Move the exit-code contract out of the prompt (it's engine work for Stage 4). The issue's `Verify:` lines are the validator's starting point when present. Constraints are verified the same way implementation criteria are today ("if the issue says use X, verify X"). Issues written without the planner may have none, so cases must also cover criteria pulled out of free-form prose.
-- **Architect:** delete `custom-threshold-test` and `default-threshold-test`, since they test the harness, and move that coverage into Go unit tests. There's a ready-made substantive check: `go run ./cmd/kairon plan parse <spec>` must return `"status":"valid"`. The spec file must exist at `.kairon/specs/issue-<n>-*.md`, and referenced files must exist in the fixture. Cases will likely need a workspace that is a git worktree of Kairon at a pinned commit (an extension of E4). **The architect must not assume the planner wrote the issue:** users file issues by hand. Cases should mix standard-format issues with non-standard ones (free-form prose, user stories, no Scope or Verify lines, design-prescriptive requests, EARS or not). The architect derives the missing scope boundary and verification itself, records those as stated assumptions in the spec, and stays inside In Scope whenever one exists. It honors every Constraint, treats Context as optional guidance, and when a Constraint conflicts with the codebase or another requirement it flags the conflict in the spec rather than silently deviating. Candidate criteria: requirements_coverage (every requirement in the issue maps to a task), scope_adherence, constraint_adherence, plan_validity.
+- **Architect:** delete `custom-threshold-test` and `default-threshold-test`, since they test the harness, and move that coverage into Go unit tests. There's a ready-made substantive check: `go run ./cmd/kairon plan parse <spec>` must return `"status":"valid"`. The spec file must exist at `.kairon/specs/issue-<n>-*.md`, and referenced files must exist in the fixture. Cases will likely need a workspace that is a git worktree of Kairon at a pinned commit (an extension of the workspace fixtures). **The architect must not assume the planner wrote the issue:** users file issues by hand. Cases should mix standard-format issues with non-standard ones (free-form prose, user stories, no Scope or Verify lines, design-prescriptive requests, EARS or not). The architect derives the missing scope boundary and verification itself, records those as stated assumptions in the spec, and stays inside In Scope whenever one exists. It honors every Constraint, treats Context as optional guidance, and when a Constraint conflicts with the codebase or another requirement it flags the conflict in the spec rather than silently deviating. Candidate criteria: requirements_coverage (every requirement in the issue maps to a task), scope_adherence, constraint_adherence, plan_validity.
 - **Documenter:** decide first whether docs should land in PRs, because `app_docs/` is gitignored today.
 - **Krew-lead:** stays in Stage 3, because Stage 4 certification needs all six agents at the Stage 3 bar. It's rebuilt **once, against its Stage 4 role**, designed to be dispatch-only so Stage 5 only swaps the backend.
   - *Agreed split (2026-10-05): the coordinator decides, the engine enforces.* Krew-lead's only tool is a Kairon dispatch tool. On kiro-cli it's served by a Kairon MCP server: the agent config declares `mcpServers`, sets `tools: ["@<server>"]` and `includeMcpJson: false`, a pattern confirmed against a local kiro-cli agent config. The custom harness later provides the tool natively. The tool runs the sub-agent, gates dependency order, checks the sentinel and runs Verify/QA commands after each step, counts retries and forces a punch-out at the limit, and records audit data.
@@ -1099,7 +1090,7 @@ The pattern is the same (spec → cases + legacy baseline → iteration 00 → i
 
 Per agent (all 6):
 - [ ] `.kairon/iterations/<agent>/eval-spec.md` reviewed; rubric has ≥3 distinct criteria, all check-based, `pass_threshold: 95`
-- [ ] Cases run in isolated workspaces; no case touches the repo root or the real GitHub API
+- [ ] Cases with side-effect risk run under `--sandbox` (container; `requires_sandbox: true`); no case touches the repo root or the real GitHub API
 - [ ] Certified with override hooks empty, plus ≥1 override case proving `*-conventions` guidance is honored
 - [ ] `kairon eval <agent> --repeat 3` mean ≥95% on allowlisted mid-tier agent and judge models (recorded in the committed results)
 - [ ] `kairon eval verify-log <agent>` passes (≥2 iterations, chained, scores match results)
@@ -1579,7 +1570,7 @@ Issue prompts and dependencies are in §S3.6. P1 and B1 are docs-only and can st
 - [ ] E1 Pluggable inference backend + stub self-test (Stage 5 seam)
 - [ ] E2 One scoring path (refactor)
 - [ ] E3 Pin and record models and prompt provenance
-- [ ] E4 Isolated per-case workspaces + gh shim
+- [x] E4 superseded by the container sandbox series (#296–#300)
 - [ ] E5 Deterministic pass/fail checks
 - [ ] E6 Yes/no judge checks
 - [ ] E7 Agent-level pass threshold and exit code

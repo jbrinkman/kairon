@@ -993,6 +993,8 @@ Native runs (without `--sandbox`) are **not** contained: they keep `--trust-all-
 
 What a run applied is recorded in its results: `sandbox` and a per-agent `containment` record in `summary.json`, and a native run records no containment. See [Execution mode and containment](#execution-mode-and-containment) (including why the recorded `network` value is `unrestricted`).
 
+For the whole model on one page (layers, owners, limits and extension seams), see [Containment model](#containment-model).
+
 What this does and does not cover, and how to keep a case away from real AWS, `npm publish` and arbitrary HTTP, is the subject of [Preventing Production Side Effects (Containment and Mocking)](#preventing-production-side-effects-containment-and-mocking) below.
 
 #### The fake `gh`
@@ -1265,6 +1267,64 @@ This is a statement about the `PATH` shim, not about `kiro-cli` internals. How `
 - **The self-test shows wiring, not avoidance.** The base image contains no `aws` or `npm`, so `stub-mock-cli` can show which binary a bare `aws` resolves to, what is recorded and that an unsimulated destructive call is not executed. It cannot show a real `aws` being avoided. In a project whose image does contain `aws`, the same wiring is what keeps the call off the real service.
 - **Trade-off against an app gateway.** A gateway would be a mechanical boundary that does not depend on the author remembering to mock. The price is a destination classifier that cannot tell model traffic from exfiltration and that someone has to maintain per environment. Kairon accepts the weaker, simpler convention, and this section is how it is made usable.
 
+### Containment Model and Extension Seams
+
+This section is the one-page map of how a `--sandbox` run is contained: which layers exist, who owns each, whether it is enforced or a convention, where it stops, and where a consuming project can extend it. It links to the detailed sections rather than restating them; if the two ever disagree, the detailed section wins.
+
+#### Why a container, not a convention
+
+Kairon's earlier plan for Stage 3 isolation (item E4 in `.kairon/specs/maturity-model/gap-analysis.md`) was convention-based: run each case in a temporary workspace, put a `gh` shim first on `PATH` and point `GH_CONFIG_DIR` at an empty directory. **That design is superseded by the container sandbox.** A convention only holds for an agent that cooperates. Kairon runs arbitrary, extensible third-party agents (MCP servers, built-in tools that do their own I/O, scripts that call binaries by absolute path such as `/usr/local/bin/gh`, writes outside the current directory), and a working-directory change or a `PATH` shim cannot stop any of them. The container gives a real mount-level boundary (a read-only root filesystem and a short list of bind mounts), and everything the boundary cannot cover is placed in a named layer with a named owner, below. What E4 contributed beyond isolation (per-case git workspaces, staged `.kiro/`, `.eval/`, timeouts, `--keep-workspaces`) is kept and is shared by native and sandbox runs (see [Case Workspaces](#case-workspaces)).
+
+#### Containment model
+
+| Layer | Owner | Mechanism | Enforced? | Honest limit |
+|-------|-------|-----------|-----------|--------------|
+| Filesystem | Kairon | Read-only root filesystem plus bind mounts: staged `.kiro/` read-only, workspace and `.eval/` read-write, `/opt/kairon/bin` read-only. The live repository is never mounted. | **Enforced** (container runtime) | Writable holes are the workspace, `.eval/` and the tmpfs `/tmp`, `/var/tmp` and `/home/sandbox`. The workspace is world-writable on the host while a run is in flight. Linux capabilities are not dropped and there is no pids limit. |
+| `gh` | Kairon | A fake `gh` is first on `PATH` in a read-only mount; the real `gh` at `/usr/local/bin/gh` is unauthenticated (no token variables, fresh `$HOME`). | **Enforced** (mount and environment) | The fake supports a fixed command set and no `--jq`/`--template`. An agent can still run `/usr/local/bin/gh`, which reports "not logged in". |
+| Tool trust | Kairon chooses the set; `kiro-cli` enforces it | `--trust-tools=<per-agent set>` instead of `--trust-all-tools`. | **Enforced, whole-tool only** | There is no per-argument or per-call tool hook in this `kiro-cli` build: trusting `execute_bash` trusts every shell command, and trusting `fs_write` trusts every writable path. `kiro-cli` denials are not detectable (`tool_denials` is populated by the stub backend only). How `--trust-tools` combines with an agent's `allowedTools` is undocumented, and the tool-name mapping is not verified end to end. |
+| Network side effects (AWS, `npm publish`, HTTP, any other CLI) | **Eval author** | Per-case mocks (`mocks:` with `fixtures/mock-cli.sh`) and endpoint config in the workspace fixture. | **Not enforced** (convention) | There is no network gateway. `NetworkMode: none` is a pre-existing setting, not a network policy, and is not part of the guarantee. Network side effects are the eval author's responsibility via mocks. A `PATH` mock misses built-in and MCP tools, absolute paths and in-process SDKs. |
+| Native runs (no `--sandbox`) | Eval author / operator | None. `requires_sandbox: true` makes a case refuse to run natively. | **Not contained** | `--trust-all-tools`, the real `gh`, writes wherever the agent can. |
+| Recording | Kairon | `sandbox` plus a per-agent `containment` record (`tool_trust`, `fake_gh`, `read_only_fs`, `network`) in the results; `eval diff` reports a mode difference. | **Enforced by code** | It records what was applied, not whether it was sufficient. `network: "unrestricted"` records the absence of a guarantee, not the container's network mode. |
+
+Reading the table: **enforced** means a mechanism stops the action whatever the agent does; **convention** means the protection exists only if the eval author wrote it (for example the mock). The model is deliberately not airtight, and the rows marked "not enforced" or "not contained" are the ones to review when you add a case.
+
+##### What the model does not defend against
+
+- Code that runs in-process and talks to the network without going through `PATH` (an SDK called from a script the agent writes or runs).
+- Built-in and MCP tools that are trusted: `use_aws`, `web_fetch`, `web_search` and `@server/tool` do their own I/O, so the `PATH` shim does not intercept them and their network side effects are uncontrolled. Their filesystem writes are still subject to the read-only root filesystem and bind mounts like any other process in the container.
+- Credentials that a consuming project passes into the container environment. Kairon drops the GitHub credential variables; it does not drop others.
+- A trusted `execute_bash` doing anything the container can do inside its writable mounts.
+- Network access the agent itself needs. The agent is its own model client, so a destination filter could not tell model traffic from exfiltration (see [Why Kairon does not network-gateway these](#risk-vectors)).
+
+#### Extension seams
+
+Each seam is what you edit, what it does and where it stops.
+
+- **Add a mock for a CLI (`PATH` shim).** Edit the case YAML (`mocks: [{command, script}]` with `requires_sandbox: true`), use `fixtures/mock-cli.sh`, and ship canned replies under `fixtures/workspaces/<name>/.mocks/<command>/`. For logic the shim cannot express, copy it under a new name in `fixtures/`. The script is staged into `/opt/kairon/bin` (read-only) and is first on `PATH`. It stops at what resolves through `PATH`. See [The mock pattern](#the-mock-pattern).
+- **Point a tool at a stand-in endpoint (workspace config).** Put project config in the workspace fixture, for example a `.npmrc` with `registry=http://127.0.0.1:4873` or a tool's own endpoint override file. The agent's working directory is the workspace, so the file is honoured. It stops at in-process SDKs that ignore config. See [HTTP endpoints and in-process SDKs](#http-endpoints-and-in-process-sdks).
+- **Set per-agent tool trust.** Set `evals.trust_tools.<agent>` in `.kairon/config.yaml` (an explicit override, `[]` trusts nothing) or edit the agent's `allowedTools` (the default). With neither, the set is empty, so the default fails closed; `*` and empty entries are rejected at load. The resolved set is recorded as `trusted_tools` on each call and as `containment.tool_trust` per agent. Leave `use_aws`, `web_fetch`, `web_search` and `@server/tool` out of a case that relies on a `PATH` mock. It stops at whole-tool granularity. See [Tool trust](#tool-trust) and [Mocks and tool trust](#mocks-and-tool-trust).
+
+  ```yaml
+  evals:
+    trust_tools:
+      builder: [read, write]   # narrower than the shipped builder allowedTools
+      validator: []            # trust nothing
+  ```
+
+- **Extend the fake `gh`.** The fake is a script embedded in the `kairon` binary. A `gh` command it does not simulate is logged and exits 1; that is the signal that the fake needs extending. This is a code change to Kairon, not a case-level setting. See [The fake `gh`](#the-fake-gh).
+- **Future: a per-tool-call hook (the preferred fine-grained layer).** **This does not exist in this build.** The `kiro-cli` used here exposes only whole-tool `--trust-tools`, and Kairon has no code for a per-tool-call or per-argument hook; its interface is undefined, and no schema, config key or timeline is committed. If `kiro-cli` gains one, it would plug in next to whole-tool trust: trust is resolved in one place (`resolveTrustSet` in `internal/eval/trust.go`, producing an `inference.ToolTrust`) and applied in the `kiro-cli` argument list built for the container call, and the `containment` record (a field alongside `tool_trust`) is where it would be reported. It would be the preferred way to constrain `execute_bash`, `fs_write` or `use_aws` by argument, and it would reduce, not remove, the reliance on mocks. It would not replace the filesystem layer.
+- **Future: a network gateway.** Also not built. It is not preferred, for the reason given under [Risk vectors](#risk-vectors); it would be the second seam if a deployment needs a mechanical network boundary.
+
+#### Where each concern is documented in detail
+
+- [Sandbox Containment](#sandbox-containment): the layer summary and [Limits](#limits)
+- [The fake `gh`](#the-fake-gh)
+- [Read-only root filesystem](#read-only-root-filesystem)
+- [Tool trust](#tool-trust)
+- [Preventing Production Side Effects (Containment and Mocking)](#preventing-production-side-effects-containment-and-mocking), including [The mock pattern](#the-mock-pattern)
+- [Execution mode and containment](#execution-mode-and-containment): what a run records
+- [Security Considerations](#security-considerations)
+
 ### Container Lifecycle
 
 Each evaluation follows this lifecycle:
@@ -1349,6 +1409,8 @@ Container sandboxing provides multiple security layers:
 - **Case mocks** - a case can place its own mock of any other command (`aws`, `npm`, `curl`, …) in the same read-only directory; this is opt-in per case, not enforced (see [Preventing Production Side Effects](#preventing-production-side-effects-containment-and-mocking))
 - **Whole-tool trust** - `kiro-cli` runs with `--trust-tools=<per-agent set>` instead of `--trust-all-tools`
 - **Temporary containers** - Automatically cleaned up after evaluation
+
+For the layers, owners and extension seams on one page, see [Containment model](#containment-model).
 
 Limits of this layer: tool trust is per tool, not per argument; the network is not an enforced boundary, so network side effects are the eval author's responsibility via mocks (see [Preventing Production Side Effects](#preventing-production-side-effects-containment-and-mocking); mocks are a per-case convention, not an enforcement); `kiro-cli`'s own tool denials cannot be detected; Linux capabilities are not dropped and there is no pids limit; and the workspace is world-writable on the host while a run is in flight. See [Limits](#limits) for details.
 
