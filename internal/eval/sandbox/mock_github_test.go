@@ -2,6 +2,7 @@ package sandbox
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"os"
@@ -11,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -581,3 +583,43 @@ func TestFakeGH_ConcurrentCreatesGetUniqueNumbers(t *testing.T) {
 }
 
 func itoa(i int) string { return strconv.Itoa(i) }
+
+// TestFakeGH_BodyFileUnwritableEvalDirFailsFast verifies that when $EVALDIR
+// cannot be written (here: made read-only), a `gh ... --body-file` call fails
+// with a write error instead of looping forever in the claim helper and
+// hanging until the case timeout. The claim loop distinguishes a name
+// collision (retry) from an unwritable dir (bail), so this returns quickly.
+func TestFakeGH_BodyFileUnwritableEvalDirFailsFast(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("running as root bypasses directory write permissions")
+	}
+	e := newFakeGHEnv(t, []string{"/bin/sh"})
+	e.writeFile("b.md", "body")
+
+	// Pre-create a writable gh.log, then make .eval read-only. The call's log
+	// append (to the existing writable file) still succeeds, so execution
+	// reaches the claim loop — but no new gh-body-<n>.md / gh-seq-<n> can be
+	// created. This is the scenario where the old unbounded loop hung; the
+	// bounded loop must instead fail fast with a write error.
+	require.NoError(t, os.WriteFile(filepath.Join(e.evalDir, "gh.log"), nil, 0o644))
+	require.NoError(t, os.Chmod(e.evalDir, 0o555))
+	t.Cleanup(func() { _ = os.Chmod(e.evalDir, 0o755) }) // let t.TempDir clean up
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	argv := append(append([]string{}, e.shellCmd[1:]...), e.script,
+		"issue", "create", "--title", "t", "--body-file", "b.md")
+	cmd := exec.CommandContext(ctx, e.shellCmd[0], argv...)
+	cmd.Dir = e.scratch
+	cmd.Env = []string{"KAIRON_EVAL_DIR=" + e.evalDir, "PATH=" + e.path, "HOME=" + e.scratch}
+	var out, errb bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &out, &errb
+	runErr := cmd.Run()
+
+	require.NotEqual(t, context.DeadlineExceeded, ctx.Err(),
+		"gh --body-file hung on an unwritable .eval instead of failing fast")
+	require.Error(t, runErr, "expected non-zero exit; stdout=%q stderr=%q", out.String(), errb.String())
+	assert.Empty(t, out.String(), "a failed body capture must not print a success URL")
+	assert.Contains(t, errb.String(), "cannot write", "should report a write failure: %q", errb.String())
+}

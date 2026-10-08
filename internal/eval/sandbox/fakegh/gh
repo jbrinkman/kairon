@@ -77,47 +77,70 @@ else
 	printf '%s\n' 'gh' >>"$LOG" || die "cannot write $LOG"
 fi
 
-# claim_seq atomically claims the next create number and prints it. It mirrors
-# claim_body's noclobber idiom against gh-seq-<n> marker files, so two
-# concurrent `gh issue/pr create` calls can never return the same number (the
-# old `wc -l` of gh.log read the count after a separate append and could race).
-# issue and pr share one number space, as the log-line-count scheme did.
-claim_seq() {
-	_n=1
-	while :; do
+# claimMax bounds the claim loop so a pathological or unwritable $EVALDIR can
+# never spin forever and burn the case timeout.
+claimMax=100000
+
+# _claim atomically claims the next free "$EVALDIR/<prefix><n><suffix>" and
+# prints n on stdout. It mirrors a noclobber create (set -C): on a failed
+# create it tells a name collision (the file exists -> try the next n) from a
+# real write failure (the file does not exist -> $EVALDIR is full, read-only or
+# unwritable). An iteration cap is a final backstop. On failure it writes a
+# message to stderr and returns non-zero WITHOUT exiting, so that when it runs
+# in a `$(...)` command substitution the status propagates to the caller (an
+# `exit`/`fail` here would only leave the subshell and the script would carry
+# on with an empty number). Callers MUST use `|| die ...`.
+_claim() {
+	_cl_prefix=$1
+	_cl_suffix=$2
+	_cl_n=1
+	while [ "$_cl_n" -le "$claimMax" ]; do
+		_cl_path="$EVALDIR/$_cl_prefix$_cl_n$_cl_suffix"
 		if (
 			set -C
-			: >"$EVALDIR/gh-seq-$_n"
+			: >"$_cl_path"
 		) 2>/dev/null; then
-			printf '%s\n' "$_n"
+			printf '%s\n' "$_cl_n"
 			return 0
 		fi
-		_n=$((_n + 1))
+		if [ ! -e "$_cl_path" ]; then
+			# Create failed but the file does not exist: not a collision, so
+			# $EVALDIR cannot be written (full, read-only or no permission).
+			printf '%s: cannot write %s (is %s full or read-only?)\n' \
+				"$prog" "$_cl_path" "$EVALDIR" >&2
+			return 1
+		fi
+		_cl_n=$((_cl_n + 1))
 	done
+	printf '%s: exhausted %s attempts to claim %s*%s in %s\n' \
+		"$prog" "$claimMax" "$_cl_prefix" "$_cl_suffix" "$EVALDIR" >&2
+	return 1
+}
+
+# claim_seq atomically claims the next create number and prints it. issue and
+# pr share one number space, as the old log-line-count scheme did (replacing a
+# `wc -l` of gh.log read after a separate append, which could race between two
+# concurrent `gh issue/pr create` calls).
+claim_seq() {
+	_claim gh-seq- ''
 }
 
 # claim_body atomically creates the next free gh-body-<n>.md and prints n.
 claim_body() {
-	_n=1
-	while :; do
-		if (
-			set -C
-			: >"$EVALDIR/gh-body-$_n.md"
-		) 2>/dev/null; then
-			printf '%s\n' "$_n"
-			return 0
-		fi
-		_n=$((_n + 1))
-	done
+	_claim gh-body- .md
 }
 
 # copy_body copies the body source $1 (a path, or - for stdin) to the next
-# gh-body-<n>.md. Failures mimic real gh's open errors.
+# gh-body-<n>.md. Failures mimic real gh's open errors. A failed claim or a
+# failed copy aborts the whole call (die) rather than being swallowed, so an
+# incomplete capture never accompanies a success URL.
 copy_body() {
 	_src=$1
 	if [ "$_src" = - ]; then
-		_n=$(claim_body)
-		cat >"$EVALDIR/gh-body-$_n.md"
+		_n=$(claim_body) || die 'cannot capture body from stdin'
+		if ! cat >"$EVALDIR/gh-body-$_n.md"; then
+			die "cannot write $EVALDIR/gh-body-$_n.md"
+		fi
 		return 0
 	fi
 	if [ ! -e "$_src" ]; then
@@ -129,8 +152,10 @@ copy_body() {
 	if [ ! -r "$_src" ]; then
 		fail "open $_src: permission denied"
 	fi
-	_n=$(claim_body)
-	cat <"$_src" >"$EVALDIR/gh-body-$_n.md"
+	_n=$(claim_body) || die "cannot capture body from $_src"
+	if ! cat <"$_src" >"$EVALDIR/gh-body-$_n.md"; then
+		die "cannot write $EVALDIR/gh-body-$_n.md"
+	fi
 }
 
 # copy_bodies finds --body-file/-F/--body-file=<path> in the arguments (values
@@ -281,7 +306,8 @@ case $1 in
 issue)
 	case $2 in
 	create)
-		printf 'https://github.com/fake-owner/fake-repo/issues/%s\n' "$(claim_seq)"
+		_num=$(claim_seq) || die 'cannot allocate issue number'
+		printf 'https://github.com/fake-owner/fake-repo/issues/%s\n' "$_num"
 		exit 0
 		;;
 	view)
@@ -295,7 +321,8 @@ issue)
 pr)
 	case $2 in
 	create)
-		printf 'https://github.com/fake-owner/fake-repo/pull/%s\n' "$(claim_seq)"
+		_num=$(claim_seq) || die 'cannot allocate pr number'
+		printf 'https://github.com/fake-owner/fake-repo/pull/%s\n' "$_num"
 		exit 0
 		;;
 	list | view | comment | edit) exit 0 ;;
