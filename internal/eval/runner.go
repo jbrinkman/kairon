@@ -100,12 +100,12 @@ func RunWithOptions(agent string, testcase string, options RunOptions) error {
 
 	// Handle specific test case execution
 	if testcase != "" {
-		return runSingleTestCase(agent, testcase)
+		return runSingleTestCase(agent, testcase, cConfig)
 	}
 
 	// Handle resume
 	if options.Resume {
-		return runWithResume(agent)
+		return runWithResume(agent, cConfig)
 	}
 
 	// Default to original behavior for backward compatibility
@@ -196,7 +196,7 @@ func listTestCases(agent string) error {
 }
 
 // runSingleTestCase executes a single test case for an agent.
-func runSingleTestCase(agent string, testcase string) error {
+func runSingleTestCase(agent string, testcase string, cConfig *ContainerConfig) error {
 	// Start performance profiling for single test
 	StartProfiling()
 	startupTime := MeasureStartupOverhead()
@@ -249,8 +249,18 @@ func runSingleTestCase(agent string, testcase string) error {
 		return fmt.Errorf("failed to create results directory: %w", err)
 	}
 
-	// Run evaluation on single test case (without container config for now)
-	result := evaluate(*rubric, []TestCase{*targetCase}, gitHash, os.Stdout, nil)
+	// Obtain the tools-only base image when containerising, so a
+	// requires_sandbox case run via --testcase has an image to run in.
+	imageManager, err := prepareBaseImage(cConfig)
+	if err != nil {
+		return err
+	}
+	if imageManager != nil {
+		defer imageManager.Close()
+	}
+
+	// Run evaluation on single test case.
+	result := evaluate(*rubric, []TestCase{*targetCase}, gitHash, os.Stdout, cConfig)
 
 	// Write result file
 	resultFile := filepath.Join(resultsDir, agent+".json")
@@ -289,6 +299,38 @@ func runSingleTestCase(agent string, testcase string) error {
 	return nil
 }
 
+// prepareBaseImage obtains the tools-only base image once per run and records
+// the image manager and cached image name on cConfig for the case executions.
+// It is shared by every entry point that may containerise (full run, single
+// case, resume). The returned *sandbox.ImageManager is owned by the caller,
+// which must defer Close() on it; it is nil (with a nil error) for a native
+// run where cConfig is nil.
+func prepareBaseImage(cConfig *ContainerConfig) (*sandbox.ImageManager, error) {
+	if cConfig == nil {
+		return nil, nil
+	}
+	imageManager, err := sandbox.NewImageManager("", cConfig.Debug)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create image manager: %w", err)
+	}
+
+	tag, built, err := imageManager.EnsureBaseImage(context.Background(), cConfig.Platform)
+	if err != nil {
+		imageManager.Close()
+		return nil, fmt.Errorf("preparing base image: %w", err)
+	}
+	if built {
+		fmt.Printf("🔨 Base image built: %s\n", tag)
+	} else {
+		fmt.Printf("✅ Base image reused: %s\n", tag)
+	}
+
+	// Add image manager and cached image name to config for test cases
+	cConfig.ImageManager = imageManager
+	cConfig.CachedImageName = tag
+	return imageManager, nil
+}
+
 // Run executes the evaluation for all agents (or a specific agent) and writes results.
 func Run(agent string, cConfig *ContainerConfig) error {
 	// Start performance profiling
@@ -298,26 +340,12 @@ func Run(agent string, cConfig *ContainerConfig) error {
 
 	// Obtain the tools-only base image once per run. It is cached by content
 	// hash and persistent: nothing builds or removes an image per call.
-	if cConfig != nil {
-		imageManager, err := sandbox.NewImageManager("", cConfig.Debug)
-		if err != nil {
-			return fmt.Errorf("failed to create image manager: %w", err)
-		}
+	imageManager, err := prepareBaseImage(cConfig)
+	if err != nil {
+		return err
+	}
+	if imageManager != nil {
 		defer imageManager.Close()
-
-		tag, built, err := imageManager.EnsureBaseImage(context.Background(), cConfig.Platform)
-		if err != nil {
-			return fmt.Errorf("preparing base image: %w", err)
-		}
-		if built {
-			fmt.Printf("🔨 Base image built: %s\n", tag)
-		} else {
-			fmt.Printf("✅ Base image reused: %s\n", tag)
-		}
-
-		// Add image manager and cached image name to config for test cases
-		cConfig.ImageManager = imageManager
-		cConfig.CachedImageName = tag
 	}
 
 	// Measure startup overhead
@@ -1547,7 +1575,7 @@ func getGitShortHash() (string, error) {
 }
 
 // runWithResume finds the most recent incomplete evaluation and resumes it.
-func runWithResume(agent string) error {
+func runWithResume(agent string, cConfig *ContainerConfig) error {
 	fmt.Println("🔄 Scanning for incomplete evaluations...")
 
 	resultsBaseDir := evalsPath("results")
@@ -1577,11 +1605,21 @@ func runWithResume(agent string) error {
 
 	if latestDir == "" {
 		fmt.Println("📄 No incomplete evaluations found, starting fresh...")
-		return Run(agent, nil)
+		return Run(agent, cConfig)
+	}
+
+	// Obtain the tools-only base image when containerising, so a
+	// requires_sandbox case resumed under --sandbox has an image to run in.
+	imageManager, err := prepareBaseImage(cConfig)
+	if err != nil {
+		return err
+	}
+	if imageManager != nil {
+		defer imageManager.Close()
 	}
 
 	fmt.Printf("📂 Resuming evaluation from: %s\n", latestDir)
-	return runProgressiveEvaluation(agent, latestDir, true, nil)
+	return runProgressiveEvaluation(agent, latestDir, true, cConfig)
 }
 
 // runProgressiveEvaluation runs evaluation with progressive result saving.

@@ -252,7 +252,7 @@ func TestRunWithResumeUsesEvalsDir(t *testing.T) {
 	if err := configure(RunOptions{EvalsDir: "alt"}); err != nil {
 		t.Fatal(err)
 	}
-	err := runWithResume("a1")
+	err := runWithResume("a1", nil)
 	if err == nil || !strings.Contains(err.Error(), "results directory") {
 		t.Fatalf("expected results-directory read error, got %v", err)
 	}
