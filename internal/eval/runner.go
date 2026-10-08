@@ -1453,11 +1453,11 @@ func loadCases(agent string) ([]TestCase, error) {
 			return nil, fmt.Errorf("failed to parse case %s: %w", e.Name(), err)
 		}
 
+		tc.Agent = agent
 		if err := validateCaseFields(tc, e.Name()); err != nil {
 			return nil, err
 		}
 
-		tc.Agent = agent
 		cases = append(cases, tc)
 	}
 

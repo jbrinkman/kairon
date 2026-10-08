@@ -203,6 +203,32 @@ func TestLoadCasesValidatesWorkspaceAndTimeout(t *testing.T) {
 	}
 }
 
+// TestLoadCasesRejectsFixtureAgentOverride verifies that a workspace fixture
+// providing the case's own agent config is refused at load, because provenance
+// is pinned from <evals-dir>/agents or .kiro/agents and would not describe the
+// fixture-provided config that actually ran.
+func TestLoadCasesRejectsFixtureAgentOverride(t *testing.T) {
+	wsEnv(t)
+	// Fixture that overrides the agent config for agent "agent-fixoverride".
+	writeCfgFile(t, "evals/fixtures/workspaces/ovr/.kiro/agents/agent-fixoverride.json", `{"name":"x"}`)
+	writeCfgFile(t, filepath.Join("evals", "cases", "agent-fixoverride", "c.yaml"),
+		"name: ovr-case\nworkspace: ovr\ninput: x\n")
+
+	_, err := loadCases("agent-fixoverride")
+	if err == nil || !strings.Contains(err.Error(), "ovr-case") {
+		t.Fatalf("error = %v, want it to reject the fixture agent override and name the case", err)
+	}
+
+	// A fixture overriding a DIFFERENT agent's config (not the case's agent) or
+	// non-agent .kiro content is fine.
+	writeCfgFile(t, "evals/fixtures/workspaces/ok2/.kiro/agents/some-other.json", `{"name":"y"}`)
+	writeCfgFile(t, filepath.Join("evals", "cases", "agent-fixok", "c.yaml"),
+		"name: ok-case\nworkspace: ok2\ninput: x\n")
+	if _, err := loadCases("agent-fixok"); err != nil {
+		t.Fatalf("fixture overriding a different agent should be allowed, got: %v", err)
+	}
+}
+
 func TestWorkspaceExcludesHarnessPathsFromStatus(t *testing.T) {
 	wsEnv(t)
 	ws := newWS(t, TestCase{Name: "c"})

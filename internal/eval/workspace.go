@@ -71,6 +71,18 @@ func validateCaseFields(tc TestCase, file string) error {
 		if err != nil || !info.IsDir() {
 			return fmt.Errorf("case %q (%s): workspace fixture %q not found at %s", tc.Name, file, tc.Workspace, dir)
 		}
+		// A fixture may override .kiro content (skills, *-conventions), but NOT
+		// the case's own agent config: provenance (prompt_sha256, resources) is
+		// computed from <evals-dir>/agents or project .kiro, never the fixture,
+		// so a fixture-provided agent config would run one prompt and record
+		// another. Refuse it at load; put agent config in <evals-dir>/agents/.
+		if tc.Agent != "" {
+			agentCfg := filepath.Join(dir, kiroDirName, "agents", tc.Agent+".json")
+			if _, err := os.Stat(agentCfg); err == nil {
+				return fmt.Errorf("case %q (%s): workspace fixture %q provides %s, which would not match the pinned provenance; put the agent config in <evals-dir>/agents/ instead",
+					tc.Name, file, tc.Workspace, filepath.Join(kiroDirName, "agents", tc.Agent+".json"))
+			}
+		}
 	}
 	if tc.Timeout != "" {
 		d, err := time.ParseDuration(tc.Timeout)
