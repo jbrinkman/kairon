@@ -1546,7 +1546,7 @@ func loadCases(agent string) ([]TestCase, error) {
 		dec := yaml.NewDecoder(bytes.NewReader(data))
 		dec.KnownFields(true)
 		if err := dec.Decode(&tc); err != nil {
-			return nil, fmt.Errorf("failed to parse case %s: %w", e.Name(), err)
+			return nil, fmt.Errorf("%w: %s: %w", errMalformedCase, e.Name(), err)
 		}
 
 		tc.Agent = agent
@@ -1671,9 +1671,9 @@ func runProgressiveEvaluation(agent, resultsDir string, isResume bool, cConfig *
 		fmt.Printf("\n📋 Agent: %s\n", rubric.Agent)
 
 		cases, err := loadCases(rubric.Agent)
-		if errors.Is(err, errInvalidChecks) {
-			// An invalid checks block must not silently drop the agent's
-			// cases (and exit 0): fail the run.
+		if errors.Is(err, errInvalidChecks) || errors.Is(err, errMalformedCase) {
+			// An invalid checks block or a malformed case file must not
+			// silently drop the agent's cases (and exit 0): fail the run.
 			return err
 		}
 		if err != nil {

@@ -480,6 +480,30 @@ func TestChecksRunProgressiveEvaluationInvalidChecksIsFatal(t *testing.T) {
 	}
 }
 
+func TestChecksRunProgressiveEvaluationMalformedCaseIsFatal(t *testing.T) {
+	checksEnv(t)
+	initGitRepoHere(t)
+	// A malformed value (expect_exit wants an int) fails during YAML decode in
+	// loadCases, before ValidateChecks can wrap it with errInvalidChecks. The
+	// run must still fail rather than skip the agent's cases and exit 0.
+	writeChecksCase(t, "chk", "bad.yaml", "name: bad\ninput: x\nchecks:\n  - criterion: clarity\n    type: command\n    run: \"true\"\n    expect_exit: abc\n")
+
+	if err := os.MkdirAll(filepath.Join("evals", "results", "rm"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	err := runProgressiveEvaluation("chk", filepath.Join("evals", "results", "rm"), false, nil)
+	if err == nil {
+		t.Fatal("a malformed case file must fail the run, got nil")
+	}
+	if !errors.Is(err, errMalformedCase) {
+		t.Fatalf("error does not wrap errMalformedCase: %v", err)
+	}
+	if !strings.Contains(err.Error(), "bad.yaml") {
+		t.Errorf("error does not name the case file: %v", err)
+	}
+}
+
 func TestChecksRunProgressiveEvaluationMissingCasesDirIsWarning(t *testing.T) {
 	checksEnv(t)
 	initGitRepoHere(t)

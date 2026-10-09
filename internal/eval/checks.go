@@ -13,6 +13,12 @@ import (
 // can tell an invalid `checks` block (fatal) from other case-loading errors.
 var errInvalidChecks = errors.New("invalid checks")
 
+// errMalformedCase is wrapped by a case-file YAML decode failure so callers can
+// tell a malformed case file (fatal: the author wrote something the loader
+// could not decode, e.g. expect_exit: abc or a misspelled key) from a
+// genuinely absent/empty cases directory (skippable).
+var errMalformedCase = errors.New("malformed case file")
+
 // CheckType names one kind of deterministic pass/fail check.
 type CheckType string
 
