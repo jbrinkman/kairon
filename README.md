@@ -211,6 +211,34 @@ Fallbacks:
 
 Issues with `kairon-done` or `kairon-failed` labels are excluded from polling. The done/failed labels are derived from the configured label (e.g., if label is `my-label`, done becomes `my-label-done`).
 
+### Issue Dependencies
+
+The watcher can hold an issue back until the issues it depends on are **closed**, enforcing a serial order across a chain of related work. Dependencies are declared in the issue body and parsed by [`internal/watcher/dependencies.go`](internal/watcher/dependencies.go).
+
+Parsing is **format-sensitive** — only the following patterns are recognized (all case-insensitive, and every reference must use `#<number>`):
+
+| Format | Example |
+|--------|---------|
+| `Depends on Issue #N` | `Depends on Issue #314` |
+| `Blocked by: #N` | `Blocked by: #314` |
+| `Depends on [Issue #N]` | `Depends on [Issue #314]` |
+| `Dependencies: #N, #M, ...` | `Dependencies: #315, #317` |
+
+The `Dependencies:` form must be a **single line** — the numbers have to follow the `Dependencies:` keyword on the same line, comma-separated, each prefixed with `#`. A markdown bullet list under a `## Dependencies` header is **not** parsed:
+
+```markdown
+<!-- NOT parsed — the watcher sees zero dependencies and schedules immediately -->
+## Dependencies
+- #314 must merge first
+- #317 must merge first
+
+<!-- Parsed correctly -->
+## Dependencies
+Dependencies: #314, #317
+```
+
+A dependency is satisfied only once the referenced issue is **closed**. Any dependency that is still open — or that cannot be fetched — marks the dependent issue as blocked, so it stays out of the processing queue until every prerequisite closes.
+
 ### Retry Logic
 
 The system has two layers of retry:
