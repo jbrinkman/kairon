@@ -1,0 +1,29 @@
+name: check-partial
+description: "Self-test (fail): one passing and one failing check on a criterion record exactly 1/2"
+agent: selftest-fail
+input: |
+  Create the marker file and report that you did.
+context:
+  - "This case runs against the deterministic stub backend"
+  - "Expected to score 1/2: marker.txt exists (passes) but missing.txt does not (fails)"
+expected_output: |
+  A short report with a top-level section and at least one subsection.
+stub:
+  turns:
+    - commands:
+        - "echo hi > marker.txt"
+      response: |
+        ## Checks
+
+        The stub turn finished and reported output marker alpha.
+
+        ### Details
+
+        This response carries the headings the report format expects.
+checks:
+  - criterion: structural_completeness
+    type: file_exists
+    path: marker.txt
+  - criterion: structural_completeness
+    type: file_exists
+    path: missing.txt

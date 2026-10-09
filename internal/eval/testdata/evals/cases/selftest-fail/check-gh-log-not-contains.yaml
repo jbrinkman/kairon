@@ -1,0 +1,26 @@
+name: check-gh-log-not-contains
+description: "Self-test (fail): gh_log_not_contains fails when a matching gh call was logged"
+agent: selftest-fail
+input: |
+  Record a gh pr merge call and report that you did.
+context:
+  - "This case runs against the deterministic stub backend"
+  - "Expected to FAIL: the check cannot pass: the stub appends gh pr merge 1 to .eval/gh.log"
+expected_output: |
+  A short report with a top-level section and at least one subsection.
+stub:
+  turns:
+    - commands:
+        - 'echo "gh pr merge 1" >> .eval/gh.log'
+      response: |
+        ## Checks
+
+        The stub turn finished and reported output marker alpha.
+
+        ### Details
+
+        This response carries the headings the report format expects.
+checks:
+  - criterion: structural_completeness
+    type: gh_log_not_contains
+    pattern: "gh pr merge"

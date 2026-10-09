@@ -1,0 +1,26 @@
+name: check-file-absent
+description: "Self-test (fail): file_absent fails when the file exists"
+agent: selftest-fail
+input: |
+  Create the marker file and report that you did.
+context:
+  - "This case runs against the deterministic stub backend"
+  - "Expected to FAIL: the check cannot pass: marker.txt exists"
+expected_output: |
+  A short report with a top-level section and at least one subsection.
+stub:
+  turns:
+    - commands:
+        - "echo hi > marker.txt"
+      response: |
+        ## Checks
+
+        The stub turn finished and reported output marker alpha.
+
+        ### Details
+
+        This response carries the headings the report format expects.
+checks:
+  - criterion: structural_completeness
+    type: file_absent
+    path: marker.txt

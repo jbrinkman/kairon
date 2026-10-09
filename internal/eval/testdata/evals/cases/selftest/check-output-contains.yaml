@@ -1,0 +1,24 @@
+name: check-output-contains
+description: "Self-test: output_contains passes when the agent output matches the pattern"
+agent: selftest
+input: |
+  Report with the expected marker phrase.
+context:
+  - "This case runs against the deterministic stub backend"
+  - "Passes: the response contains output marker alpha"
+expected_output: |
+  A short report with a top-level section and at least one subsection.
+stub:
+  turns:
+    - response: |
+        ## Checks
+
+        The stub turn finished and reported output marker alpha.
+
+        ### Details
+
+        This response carries the headings the report format expects.
+checks:
+  - criterion: structural_completeness
+    type: output_contains
+    pattern: "output marker alpha"
