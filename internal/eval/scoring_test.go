@@ -32,21 +32,24 @@ func TestPrintCaseResultStatuses(t *testing.T) {
 			want: " ⚠️  no scored criteria\n",
 		},
 		{
-			name: "no scored criteria when all skipped",
+			name: "all skipped criteria score 0 and are listed in the breakdown",
 			tc:   TestCase{Name: "c"},
 			cr: CaseResult{ActualOutput: "out", Scores: []CriterionScore{
 				{Name: "a", Score: 0, MaxScore: 5, Skipped: true},
 				{Name: "b", Score: 0, MaxScore: 5, Skipped: true},
 			}},
-			want: " ⚠️  no scored criteria\n",
+			want: " ❌ 0% (threshold: 95%)\n      a: 0/5\n      b: 0/5\n",
 		},
 		{
-			name: "pass at default threshold",
+			name: "pass exactly at default threshold of 95%",
 			tc:   TestCase{Name: "c"},
 			cr: CaseResult{ActualOutput: "out", Scores: []CriterionScore{
-				{Name: "a", Score: 4, MaxScore: 5},
+				{Name: "a", Score: 5, MaxScore: 5},
+				{Name: "b", Score: 5, MaxScore: 5},
+				{Name: "c", Score: 5, MaxScore: 5},
+				{Name: "d", Score: 4, MaxScore: 5},
 			}},
-			want: " ✅ 80% (threshold: 80%)\n",
+			want: " ✅ 95% (threshold: 95%)\n",
 		},
 		{
 			name: "warn between 60 and threshold",
@@ -55,7 +58,7 @@ func TestPrintCaseResultStatuses(t *testing.T) {
 				{Name: "a", Score: 4, MaxScore: 5},
 				{Name: "b", Score: 2, MaxScore: 5},
 			}},
-			want: " ⚠️  60% (threshold: 80%)\n      b: 2/5\n",
+			want: " ⚠️  60% (threshold: 95%)\n      b: 2/5\n",
 		},
 		{
 			name: "fail below 60",
@@ -63,7 +66,7 @@ func TestPrintCaseResultStatuses(t *testing.T) {
 			cr: CaseResult{ActualOutput: "out", Scores: []CriterionScore{
 				{Name: "a", Score: 2, MaxScore: 5},
 			}},
-			want: " ❌ 40% (threshold: 80%)\n      a: 2/5\n",
+			want: " ❌ 40% (threshold: 95%)\n      a: 2/5\n",
 		},
 		{
 			name: "custom min_score lowers threshold so 40% passes",
@@ -87,7 +90,7 @@ func TestPrintCaseResultStatuses(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			var sb strings.Builder
-			printCaseResult(&sb, tt.tc, tt.cr)
+			printCaseResult(&sb, tt.tc, Rubric{}, tt.cr)
 			if got := sb.String(); got != tt.want {
 				t.Errorf("output = %q, want %q", got, tt.want)
 			}
@@ -100,21 +103,21 @@ func TestPrintCaseResultBreakdownOnlyBelowThreshold(t *testing.T) {
 		{Name: "low", Score: 1, MaxScore: 5},                        // 1 < 3 => shown
 		{Name: "edge", Score: 3, MaxScore: 5},                       // 3 < 5*3/4=3 false => omitted
 		{Name: "high", Score: 5, MaxScore: 5},                       // omitted
-		{Name: "skipped-low", Score: 0, MaxScore: 5, Skipped: true}, // skipped => omitted
+		{Name: "skipped-low", Score: 0, MaxScore: 5, Skipped: true}, // skipped counts as 0/5 => shown
 		{Name: "just-under", Score: 2, MaxScore: 5},                 // 2 < 3 => shown
 	}
-	// total = 1+3+5+2 = 11 / 20 = 55% (skipped excluded) -> fail, below threshold.
+	// total = 1+3+5+0+2 = 11 / 25 = 44% (skipped counted as 0/5) -> fail, below threshold.
 	cr := CaseResult{ActualOutput: "out", Scores: scores}
 
 	var sb strings.Builder
-	printCaseResult(&sb, TestCase{Name: "c"}, cr)
+	printCaseResult(&sb, TestCase{Name: "c"}, Rubric{}, cr)
 	got := sb.String()
 
-	want := " ❌ 55% (threshold: 80%)\n      low: 1/5\n      just-under: 2/5\n"
+	want := " ❌ 44% (threshold: 95%)\n      low: 1/5\n      skipped-low: 0/5\n      just-under: 2/5\n"
 	if got != want {
 		t.Fatalf("output = %q, want %q", got, want)
 	}
-	for _, absent := range []string{"edge", "high", "skipped-low"} {
+	for _, absent := range []string{"edge", "high"} {
 		if strings.Contains(got, absent) {
 			t.Errorf("breakdown unexpectedly contains %q: %q", absent, got)
 		}
@@ -122,7 +125,7 @@ func TestPrintCaseResultBreakdownOnlyBelowThreshold(t *testing.T) {
 }
 
 func TestPrintCaseResultNoBreakdownWhenPassing(t *testing.T) {
-	// 17/20 = 85% >= 80% threshold, even though "weak" is below 3/4 of its max.
+	// 17/20 = 85% >= the rubric's 80% pass_threshold, even though "weak" is below 3/4 of its max.
 	cr := CaseResult{ActualOutput: "out", Scores: []CriterionScore{
 		{Name: "weak", Score: 2, MaxScore: 5},
 		{Name: "strong", Score: 5, MaxScore: 5},
@@ -130,7 +133,7 @@ func TestPrintCaseResultNoBreakdownWhenPassing(t *testing.T) {
 		{Name: "strong3", Score: 5, MaxScore: 5},
 	}}
 	var sb strings.Builder
-	printCaseResult(&sb, TestCase{Name: "c"}, cr)
+	printCaseResult(&sb, TestCase{Name: "c"}, Rubric{PassThreshold: floatPtr(80)}, cr)
 	want := " ✅ 85% (threshold: 80%)\n"
 	if got := sb.String(); got != want {
 		t.Errorf("output = %q, want %q", got, want)
@@ -282,7 +285,7 @@ func TestScoringParityEvaluateVsEvaluateProgressive(t *testing.T) {
 	_, calls := installFakeKiroCLI(t, "")
 	useStubBackend(t)
 
-	rubric := Rubric{Agent: "selftest", Criteria: []Criterion{
+	rubric := Rubric{Agent: "selftest", PassThreshold: floatPtr(80), Criteria: []Criterion{
 		{Name: "structural_completeness", Scoring: "1-5", Deterministic: true},
 		{Name: "clarity", Scoring: "1-5"},
 		{Name: "cost_budget", Scoring: "1-5", Type: "cost"},
@@ -367,23 +370,32 @@ func TestCaseTotals(t *testing.T) {
 			wantMax:   10,
 		},
 		{
-			name: "skipped criteria excluded from numerator and denominator",
+			name: "skipped criteria score 0 and stay in the denominator",
 			cr: CaseResult{Scores: []CriterionScore{
 				{Name: "a", Score: 4, MaxScore: 5},
-				{Name: "b", Score: 5, MaxScore: 5, Skipped: true},
+				{Name: "b", Score: 0, MaxScore: 5, Skipped: true},
 				{Name: "c", Score: 0, MaxScore: 10, Skipped: true},
 			}},
 			wantScore: 4,
-			wantMax:   5,
+			wantMax:   20,
 		},
 		{
-			name: "all skipped gives zero denominator",
+			name: "skipped criterion with a stray score still counts as 0",
+			cr: CaseResult{Scores: []CriterionScore{
+				{Name: "a", Score: 5, MaxScore: 5},
+				{Name: "b", Score: 5, MaxScore: 5, Skipped: true},
+			}},
+			wantScore: 5,
+			wantMax:   10,
+		},
+		{
+			name: "all skipped keeps the full denominator at score 0",
 			cr: CaseResult{Scores: []CriterionScore{
 				{Name: "a", Score: 0, MaxScore: 5, Skipped: true},
 				{Name: "b", Score: 0, MaxScore: 5, Skipped: true},
 			}},
 			wantScore: 0,
-			wantMax:   0,
+			wantMax:   10,
 		},
 		{
 			name: "scored criterion with zero max",
@@ -427,11 +439,11 @@ func TestAgentScoreTotals(t *testing.T) {
 			wantMax:   5,
 		},
 		{
-			name: "skipped criteria excluded across cases",
+			name: "skipped criteria stay in the denominator across cases",
 			ar: AgentResult{Agent: "x", Cases: []CaseResult{
 				{CaseName: "c1", Scores: []CriterionScore{
 					{Name: "a", Score: 5, MaxScore: 5},
-					{Name: "b", Score: 5, MaxScore: 5, Skipped: true},
+					{Name: "b", Score: 0, MaxScore: 5, Skipped: true},
 				}},
 				{CaseName: "c2", Scores: []CriterionScore{
 					{Name: "a", Score: 2, MaxScore: 5},
@@ -439,15 +451,15 @@ func TestAgentScoreTotals(t *testing.T) {
 				}},
 			}},
 			wantScore: 7,
-			wantMax:   10,
+			wantMax:   25,
 		},
 		{
-			name: "everything skipped gives zero denominator",
+			name: "everything skipped scores 0 over the full denominator",
 			ar: AgentResult{Agent: "x", Cases: []CaseResult{
 				{CaseName: "c1", Scores: []CriterionScore{{Name: "a", Score: 0, MaxScore: 5, Skipped: true}}},
 			}},
 			wantScore: 0,
-			wantMax:   0,
+			wantMax:   5,
 		},
 	}
 	for _, tt := range tests {
@@ -460,25 +472,132 @@ func TestAgentScoreTotals(t *testing.T) {
 	}
 }
 
-// A zero denominator must not produce an agent score entry in the summary
-// (previous behaviour: only totalMax > 0 writes AgentScores).
+// A zero denominator (no scored criteria at all) must not produce an agent
+// score entry in the summary. Skipped criteria no longer cause one: they stay in
+// the denominator as 0, so an agent whose every criterion was skipped scores 0.
 func TestBuildSummaryZeroDenominatorOmitsAgentScore(t *testing.T) {
 	results := []AgentResult{
 		{Agent: "zero", Cases: []CaseResult{
-			{CaseName: "c", Scores: []CriterionScore{{Name: "a", Score: 0, MaxScore: 5, Skipped: true}}},
+			{CaseName: "c", Scores: []CriterionScore{{Name: "a", Score: 0, MaxScore: 0}}},
+			{CaseName: "empty"},
 		}},
 		{Agent: "scored", Cases: []CaseResult{
 			{CaseName: "c", Scores: []CriterionScore{
 				{Name: "a", Score: 3, MaxScore: 4},
-				{Name: "b", Score: 5, MaxScore: 5, Skipped: true},
+				{Name: "b", Score: 0, MaxScore: 4, Skipped: true},
 			}},
+		}},
+		{Agent: "all-skipped", Cases: []CaseResult{
+			{CaseName: "c", Scores: []CriterionScore{{Name: "a", Score: 0, MaxScore: 5, Skipped: true}}},
 		}},
 	}
 	s := buildSummary(results, "abc")
 	if _, ok := s.AgentScores["zero"]; ok {
 		t.Errorf("agent with zero denominator should have no score, got %v", s.AgentScores["zero"])
 	}
-	if got := s.AgentScores["scored"]; got != 0.75 {
-		t.Errorf("AgentScores[scored] = %v, want 0.75", got)
+	if got := s.AgentScores["scored"]; got != 0.375 {
+		t.Errorf("AgentScores[scored] = %v, want 0.375 (3/8: the skipped criterion counts as 0/4)", got)
+	}
+	if got, ok := s.AgentScores["all-skipped"]; !ok || got != 0 {
+		t.Errorf("AgentScores[all-skipped] = %v (present %v), want an explicit 0", got, ok)
+	}
+}
+
+// A skipped criterion lowers the agent score rather than raising it.
+func TestBuildSummarySkippedCriterionLowersAgentScore(t *testing.T) {
+	full := AgentResult{Agent: "a", Cases: []CaseResult{
+		{CaseName: "ok", Scores: []CriterionScore{{Name: "x", Score: 5, MaxScore: 5}}},
+	}}
+	withFailure := AgentResult{Agent: "a", Cases: []CaseResult{
+		{CaseName: "ok", Scores: []CriterionScore{{Name: "x", Score: 5, MaxScore: 5}}},
+		{CaseName: "no-output", Scores: []CriterionScore{{Name: "x", Score: 0, MaxScore: 5, Skipped: true}}},
+	}}
+	before := buildSummary([]AgentResult{full}, "h").AgentScores["a"]
+	after := buildSummary([]AgentResult{withFailure}, "h").AgentScores["a"]
+	if before != 1 || after != 0.5 {
+		t.Errorf("agent score before/after a no-output case = %v/%v, want 1/0.5", before, after)
+	}
+}
+
+// emptyOutputRubric has one deterministic and one LLM-judged criterion.
+func emptyOutputRubric() Rubric {
+	return Rubric{Agent: "a", Criteria: []Criterion{
+		{Name: "structural_completeness", Scoring: "1-5", Deterministic: true},
+		{Name: "clarity", Scoring: "1-7"},
+	}}
+}
+
+// requireCountedZero asserts every score is a skipped 0 with a positive
+// MaxScore and that caseTotals counts the full MaxScore in the denominator.
+func requireCountedZero(t *testing.T, cr CaseResult, wantMax int) {
+	t.Helper()
+	for _, s := range cr.Scores {
+		if s.Score != 0 || s.MaxScore <= 0 || !s.Skipped {
+			t.Errorf("score %+v, want a skipped 0 with MaxScore > 0", s)
+		}
+	}
+	if got, gotMax := caseTotals(cr); got != 0 || gotMax != wantMax {
+		t.Errorf("caseTotals = (%d, %d), want (0, %d)", got, gotMax, wantMax)
+	}
+}
+
+func TestCaseTotalsCountsNoOutputCriteria(t *testing.T) {
+	chdirTemp(t)
+	_, calls := installFakeKiroCLI(t, "")
+	useStubBackend(t)
+
+	// Deterministic and LLM-judged criteria with no agent output.
+	cr := CaseResult{}
+	scoreCase(emptyOutputRubric(), TestCase{Name: "c"}, &cr)
+	if len(cr.Scores) != 2 {
+		t.Fatalf("scores = %+v, want 2", cr.Scores)
+	}
+	requireCountedZero(t, cr, 5+7)
+	if got := readCalls(t, calls); len(got) != 0 {
+		t.Errorf("kiro-cli invoked: %q", got)
+	}
+}
+
+func TestCaseTotalsCountsLLMJudgeErrorAndNoUsableJudge(t *testing.T) {
+	rubric := Rubric{Agent: "a", Criteria: []Criterion{{Name: "clarity", Scoring: "1-7"}}}
+	for name, script := range map[string]string{
+		"judge error":                  "cat >/dev/null\nexit 2",
+		"judge returned no JSON block": "cat >/dev/null\nprintf 'no verdict here'",
+	} {
+		t.Run(name, func(t *testing.T) {
+			chdirTemp(t)
+			installFakeKiroCLI(t, script)
+
+			cr := CaseResult{ActualOutput: "some output"}
+			scoreCase(rubric, TestCase{Name: "c", Input: "in"}, &cr)
+			if len(cr.Scores) != 1 {
+				t.Fatalf("scores = %+v, want 1", cr.Scores)
+			}
+			requireCountedZero(t, cr, 7)
+			if cr.Scores[0].Reasoning == "" {
+				t.Error("skipped score lost its reason")
+			}
+		})
+	}
+}
+
+func TestCaseTotalsCountsCheckedCriteriaWithNoOutput(t *testing.T) {
+	chdirTemp(t)
+	useStubBackend(t)
+
+	tc := TestCase{Name: "c", Checks: []Check{
+		{Criterion: "structural_completeness", Type: CheckFileExists, Path: "a.txt"},
+		{Criterion: "structural_completeness", Type: CheckFileExists, Path: "b.txt"},
+	}}
+	cr := CaseResult{WorkspaceDir: t.TempDir()} // empty output: the checks do not run
+	scoreCase(emptyOutputRubric(), tc, &cr)
+
+	checked := scoreByName(t, cr, "structural_completeness")
+	if checked.Score != 0 || checked.MaxScore != 2 {
+		t.Errorf("checked criterion = %+v, want 0/2", checked)
+	}
+	// 0/2 for the checked criterion plus the skipped, uncounted-before clarity 0/7.
+	if got, gotMax := caseTotals(cr); got != 0 || gotMax != 2+7 {
+		t.Errorf("caseTotals = (%d, %d), want (0, 9)", got, gotMax)
 	}
 }

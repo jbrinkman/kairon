@@ -296,6 +296,11 @@ func runSingleTestCase(agent string, testcase string, cConfig *ContainerConfig) 
 
 	fmt.Printf("📂 Results: %s\n", resultsDir)
 
+	// The verdict line and the exit status come last, after everything above
+	// has been written.
+	verdict := agentVerdict(result)
+	printAgentVerdict(os.Stdout, agent, verdict)
+
 	// Display concise performance summary for single test
 	fmt.Printf("\n📊 Performance Summary:\n")
 	fmt.Printf("  Test execution: %v\n", profile.TestCaseTimings[targetCase.Name])
@@ -304,6 +309,9 @@ func runSingleTestCase(agent string, testcase string, cConfig *ContainerConfig) 
 		fmt.Printf("  Bottlenecks: %d identified (see performance.json)\n", len(profile.Bottlenecks))
 	}
 
+	if !verdict.Passed {
+		return thresholdFailure([]AgentFailure{{Agent: agent, Score: verdict.Score, Threshold: verdict.Threshold}}, 1)
+	}
 	return nil
 }
 
@@ -417,8 +425,9 @@ func Run(agent string, cConfig *ContainerConfig) error {
 
 func evaluate(rubric Rubric, cases []TestCase, gitHash string, out io.Writer, cConfig *ContainerConfig) AgentResult {
 	result := AgentResult{
-		Agent:   rubric.Agent,
-		GitHash: gitHash,
+		Agent:     rubric.Agent,
+		GitHash:   gitHash,
+		Threshold: rubric.Threshold(),
 	}
 	applyRunContext(&result, cConfig)
 
@@ -430,9 +439,10 @@ func evaluate(rubric Rubric, cases []TestCase, gitHash string, out io.Writer, cC
 		// Task 4: Structured output - Agent → Case execution (workspace, agent
 		// call and criterion-by-criterion scoring in one shared path).
 		cr := executeCase(rubric, tc, cConfig, out, cfg.keepWorkspaces)
+		stampCase(&cr, tc, rubric)
 
 		// Task 4: Color-coded final status for the case
-		printCaseResult(out, tc, cr)
+		printCaseResult(out, tc, rubric, cr)
 
 		// Track test case completion for performance profiling
 		testDuration := time.Since(testStart)
@@ -1463,14 +1473,10 @@ func buildSummary(results []AgentResult, gitHash string) Summary {
 
 	for _, r := range results {
 		totalScore, totalMax := agentScoreTotals(r)
-		for _, c := range r.Cases {
-			s.TotalCost.TokensIn += c.AgentCost.TokensIn
-			s.TotalCost.TokensOut += c.AgentCost.TokensOut
-			s.TotalCost.EstimatedUSD += c.AgentCost.EstimatedUSD
-		}
 		if totalMax > 0 {
 			s.AgentScores[r.Agent] = totalScore / totalMax
 		}
+		setAgentVerdict(&s, r)
 	}
 
 	return s
@@ -1510,6 +1516,10 @@ func loadRubrics(agentFilter string) ([]Rubric, error) {
 		var r Rubric
 		if err := yaml.Unmarshal(data, &r); err != nil {
 			return nil, fmt.Errorf("failed to parse rubric %s: %w", e.Name(), err)
+		}
+		// Written as a negated range check so NaN (which fails every comparison) is rejected too.
+		if r.PassThreshold != nil && !(*r.PassThreshold > 0 && *r.PassThreshold <= 100) {
+			return nil, fmt.Errorf("invalid rubric %s: pass_threshold must be a percent in (0, 100], got %v", e.Name(), *r.PassThreshold)
 		}
 
 		if agentFilter == "" || r.Agent == agentFilter {
@@ -1580,12 +1590,13 @@ func stripANSISequences(s string) string {
 	return ansiRegex.ReplaceAllString(s, "")
 }
 
-// getThreshold returns the success threshold for a test case (defaults to 80%).
-func getThreshold(tc TestCase) float64 {
+// caseThreshold returns the success threshold (percent) for a test case:
+// the case's min_score when set, otherwise the rubric's pass_threshold.
+func caseThreshold(tc TestCase, r Rubric) float64 {
 	if tc.MinScore != nil {
 		return *tc.MinScore
 	}
-	return 80.0 // Default 80% threshold
+	return r.Threshold()
 }
 
 func getGitShortHash() (string, error) {
@@ -1667,6 +1678,8 @@ func runProgressiveEvaluation(agent, resultsDir string, isResume bool, cConfig *
 		return fmt.Errorf("❌ Fatal: no rubrics found")
 	}
 
+	var failed []AgentFailure
+	evaluated := 0
 	for _, rubric := range rubrics {
 		fmt.Printf("\n📋 Agent: %s\n", rubric.Agent)
 
@@ -1695,6 +1708,13 @@ func runProgressiveEvaluation(agent, resultsDir string, isResume bool, cConfig *
 		}
 
 		fmt.Printf("✅ %s: %d cases completed\n", rubric.Agent, len(result.Cases))
+
+		verdict := agentVerdict(result)
+		printAgentVerdict(os.Stdout, rubric.Agent, verdict)
+		evaluated++
+		if !verdict.Passed {
+			failed = append(failed, AgentFailure{Agent: rubric.Agent, Score: verdict.Score, Threshold: verdict.Threshold})
+		}
 	}
 
 	// Clean up progress file on completion
@@ -1703,7 +1723,7 @@ func runProgressiveEvaluation(agent, resultsDir string, isResume bool, cConfig *
 
 	fmt.Printf("\n🎉 Evaluation complete\n")
 	fmt.Printf("📂 Results: %s\n", resultsDir)
-	return nil
+	return thresholdFailure(failed, evaluated)
 }
 
 // checkResumeIntegrity refuses to resume into a result file that was written
@@ -1857,8 +1877,9 @@ func conflictingSavedMode(resultsDir, agent string, sandbox bool) (bool, bool) {
 // evaluateProgressive runs evaluation with progressive result saving after each test case.
 func evaluateProgressive(rubric Rubric, cases []TestCase, gitHash string, out io.Writer, resultsDir string, isResume bool, cConfig *ContainerConfig) AgentResult {
 	result := AgentResult{
-		Agent:   rubric.Agent,
-		GitHash: gitHash,
+		Agent:     rubric.Agent,
+		GitHash:   gitHash,
+		Threshold: rubric.Threshold(),
 	}
 	applyRunContext(&result, cConfig)
 
@@ -1873,6 +1894,9 @@ func evaluateProgressive(rubric Rubric, cases []TestCase, gitHash string, out io
 				// both from the current run. A resumed legacy file (nil mode)
 				// gains a definite mode, and a stale containment is replaced.
 				applyRunContext(&result, cConfig)
+				// A resumed result may predate verdicts; the threshold is the
+				// current rubric's, like the provenance above.
+				result.Threshold = rubric.Threshold()
 			}
 		}
 	}
@@ -1891,6 +1915,7 @@ func evaluateProgressive(rubric Rubric, cases []TestCase, gitHash string, out io
 
 		// Execute and score the test case (shared per-case path)
 		cr := executeCase(rubric, tc, cConfig, out, cfg.keepWorkspaces)
+		stampCase(&cr, tc, rubric)
 
 		// Add or update the case result
 		found := false
@@ -1915,7 +1940,7 @@ func evaluateProgressive(rubric Rubric, cases []TestCase, gitHash string, out io
 		TrackTestCase(tc.Name, testDuration)
 
 		// Display result
-		printCaseResult(out, tc, cr)
+		printCaseResult(out, tc, rubric, cr)
 	}
 
 	return result
@@ -2017,26 +2042,15 @@ func updateIncrementalSummary(summaryFile string, agentResult AgentResult, gitHa
 		summary.GitHash = gitHash
 	}
 
-	// Calculate and update agent score
+	// Calculate and update agent score (a 0-1 fraction).
 	totalScore, totalMax := agentScoreTotals(agentResult)
-	var agentCost CostInfo
-
-	for _, c := range agentResult.Cases {
-		agentCost.TokensIn += c.AgentCost.TokensIn
-		agentCost.TokensOut += c.AgentCost.TokensOut
-		agentCost.EstimatedUSD += c.AgentCost.EstimatedUSD
-
-		agentCost.TokensIn += c.JudgeCost.TokensIn
-		agentCost.TokensOut += c.JudgeCost.TokensOut
-		agentCost.EstimatedUSD += c.JudgeCost.EstimatedUSD
-	}
-
 	if totalMax > 0 {
 		summary.AgentScores[agentResult.Agent] = totalScore / totalMax
 	}
 
-	// Update total cost (this is cumulative across all agents)
-	summary.TotalCost = agentCost
+	// Record the verdict (percent) and recompute the total cost as the sum of
+	// every agent's cost, so repeated saves of one agent do not change it.
+	setAgentVerdict(&summary, agentResult)
 
 	// Provenance. A multi-agent run cannot carry a single top-level agent
 	// model/hash, so those are set only when exactly one agent is covered.

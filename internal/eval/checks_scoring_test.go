@@ -306,8 +306,8 @@ func TestPrintCaseResultFailedChecksListed(t *testing.T) {
 		},
 	}}}
 	var sb strings.Builder
-	printCaseResult(&sb, TestCase{Name: "c"}, cr)
-	want := " ❌ 50% (threshold: 80%)\n      ✗ #2 file_exists path=missing.txt: file does not exist\n"
+	printCaseResult(&sb, TestCase{Name: "c"}, Rubric{}, cr)
+	want := " ❌ 50% (threshold: 95%)\n      ✗ #2 file_exists path=missing.txt: file does not exist\n"
 	if sb.String() != want {
 		t.Errorf("output = %q, want %q", sb.String(), want)
 	}
@@ -315,7 +315,7 @@ func TestPrintCaseResultFailedChecksListed(t *testing.T) {
 	// Failed-check lines appear even when the percentage meets the threshold.
 	cr.Scores = append(cr.Scores, CriterionScore{Name: "big", Score: 98, MaxScore: 98})
 	sb.Reset()
-	printCaseResult(&sb, TestCase{Name: "c", MinScore: floatPtr(50)}, cr)
+	printCaseResult(&sb, TestCase{Name: "c", MinScore: floatPtr(50)}, Rubric{}, cr)
 	want = " ✅ 99% (threshold: 50%)\n      ✗ #2 file_exists path=missing.txt: file does not exist\n"
 	if sb.String() != want {
 		t.Errorf("output = %q, want %q", sb.String(), want)
@@ -328,7 +328,7 @@ func TestPrintCaseResultFailedCheckWithoutDetail(t *testing.T) {
 		Checks: []CheckResult{{Index: 1, Type: CheckCommand, Label: `#1 command "x"`}},
 	}}}
 	var sb strings.Builder
-	printCaseResult(&sb, TestCase{Name: "c", MinScore: floatPtr(0)}, cr)
+	printCaseResult(&sb, TestCase{Name: "c", MinScore: floatPtr(0)}, Rubric{}, cr)
 	want := " ✅ 0% (threshold: 0%)\n      ✗ #1 command \"x\"\n"
 	if sb.String() != want {
 		t.Errorf("output = %q, want %q", sb.String(), want)
@@ -338,8 +338,8 @@ func TestPrintCaseResultFailedCheckWithoutDetail(t *testing.T) {
 func TestPrintCaseResultNoChecksUnchanged(t *testing.T) {
 	cr := CaseResult{ActualOutput: "out", Scores: []CriterionScore{{Name: "low", Score: 1, MaxScore: 5}}}
 	var sb strings.Builder
-	printCaseResult(&sb, TestCase{Name: "c"}, cr)
-	want := " ❌ 20% (threshold: 80%)\n      low: 1/5\n"
+	printCaseResult(&sb, TestCase{Name: "c"}, Rubric{}, cr)
+	want := " ❌ 20% (threshold: 95%)\n      low: 1/5\n"
 	if sb.String() != want {
 		t.Errorf("output = %q, want %q", sb.String(), want)
 	}

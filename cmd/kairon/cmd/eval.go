@@ -28,6 +28,10 @@ var evalCmd = &cobra.Command{
 	Use:   "eval [agent] [testcase]",
 	Short: "Run evaluations or show diff between runs",
 	RunE: func(cmd *cobra.Command, args []string) error {
+		// Arguments are parsed; from here an error is a run result (for
+		// example an agent below its pass threshold), not a usage mistake.
+		cmd.SilenceUsage = true
+
 		var agent, testcase string
 		if len(args) > 0 {
 			agent = args[0]

@@ -1,12 +1,14 @@
 package cmd
 
 import (
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/jbrinkman/kairon/internal/eval"
 	"github.com/jbrinkman/kairon/internal/inference"
 )
 
@@ -151,5 +153,39 @@ func TestEvalSelfTestSucceedsWithDefaults(t *testing.T) {
 	runs, _ := filepath.Glob(filepath.Join(evalsDir, "results", "*", "summary.json"))
 	if len(runs) != 1 {
 		t.Fatalf("summary.json files = %v, want 1", runs)
+	}
+}
+
+// A failed verdict is a result, not a usage error: the eval command must
+// silence cobra's usage dump (this is set when RunE starts).
+func TestEvalSilencesUsageOnRunError(t *testing.T) {
+	orig := evalCmd.SilenceUsage
+	t.Cleanup(func() { evalCmd.SilenceUsage = orig })
+	evalCmd.SilenceUsage = false
+
+	origBackend := evalBackend
+	t.Cleanup(func() { evalBackend = origBackend })
+	evalBackend = "nope"
+
+	if err := evalCmd.RunE(evalCmd, []string{"selftest"}); err == nil {
+		t.Fatal("expected an error")
+	}
+	if !evalCmd.SilenceUsage {
+		t.Error("eval RunE did not set SilenceUsage")
+	}
+}
+
+func TestEvalSelfTestFailExitsWithThresholdError(t *testing.T) {
+	evalSelfTestProject(t, "")
+	orig := evalCmd.SilenceUsage
+	t.Cleanup(func() { evalCmd.SilenceUsage = orig })
+	evalCmd.SilenceUsage = false
+
+	err := evalCmd.RunE(evalCmd, []string{"selftest-fail"})
+	if !errors.Is(err, eval.ErrThresholdFailed) {
+		t.Fatalf("err = %v, want eval.ErrThresholdFailed", err)
+	}
+	if !evalCmd.SilenceUsage {
+		t.Error("usage would be printed for a threshold failure")
 	}
 }
