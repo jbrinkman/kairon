@@ -1,6 +1,7 @@
 package eval
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -1526,7 +1527,11 @@ func loadCases(agent string) ([]TestCase, error) {
 		return nil, fmt.Errorf("failed to read cases directory for %s: %w", agent, err)
 	}
 
-	var cases []TestCase
+	var (
+		cases        []TestCase
+		rubric       *Rubric // the agent's rubric, loaded lazily for checks
+		rubricLoaded bool
+	)
 	for _, e := range entries {
 		if e.IsDir() || !strings.HasSuffix(e.Name(), ".yaml") {
 			continue
@@ -1538,8 +1543,10 @@ func loadCases(agent string) ([]TestCase, error) {
 		}
 
 		var tc TestCase
-		if err := yaml.Unmarshal(data, &tc); err != nil {
-			return nil, fmt.Errorf("failed to parse case %s: %w", e.Name(), err)
+		dec := yaml.NewDecoder(bytes.NewReader(data))
+		dec.KnownFields(true)
+		if err := dec.Decode(&tc); err != nil {
+			return nil, fmt.Errorf("%w: %s: %w", errMalformedCase, e.Name(), err)
 		}
 
 		tc.Agent = agent
@@ -1548,6 +1555,19 @@ func loadCases(agent string) ([]TestCase, error) {
 		}
 		if err := validateCaseFields(tc, e.Name()); err != nil {
 			return nil, err
+		}
+		if len(tc.Checks) > 0 {
+			if !rubricLoaded {
+				rubricLoaded = true
+				// If the rubric cannot be loaded the criterion cross-check
+				// is skipped; the rubric errors surface elsewhere.
+				if rubrics, err := loadRubrics(agent); err == nil && len(rubrics) > 0 {
+					rubric = &rubrics[0]
+				}
+			}
+			if err := ValidateChecks(e.Name(), tc.Checks, evalsPath("fixtures", "hidden"), rubric); err != nil {
+				return nil, fmt.Errorf("case %q: %w", tc.Name, err)
+			}
 		}
 
 		cases = append(cases, tc)
@@ -1651,6 +1671,11 @@ func runProgressiveEvaluation(agent, resultsDir string, isResume bool, cConfig *
 		fmt.Printf("\n📋 Agent: %s\n", rubric.Agent)
 
 		cases, err := loadCases(rubric.Agent)
+		if errors.Is(err, errInvalidChecks) || errors.Is(err, errMalformedCase) {
+			// An invalid checks block or a malformed case file must not
+			// silently drop the agent's cases (and exit 0): fail the run.
+			return err
+		}
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "⚠️  Warning: no test cases for agent %s: %v\n", rubric.Agent, err)
 			continue

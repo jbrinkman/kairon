@@ -1,0 +1,24 @@
+name: check-gh-log-contains
+description: "Self-test (fail): gh_log_contains fails when the gh log is empty"
+agent: selftest-fail
+input: |
+  Report; the gh log check is expected to fail.
+context:
+  - "This case runs against the deterministic stub backend"
+  - "Expected to FAIL: the check cannot pass: no gh call is logged"
+expected_output: |
+  A short report with a top-level section and at least one subsection.
+stub:
+  turns:
+    - response: |
+        ## Checks
+
+        The stub turn finished and reported output marker alpha.
+
+        ### Details
+
+        This response carries the headings the report format expects.
+checks:
+  - criterion: structural_completeness
+    type: gh_log_contains
+    pattern: "gh issue create"

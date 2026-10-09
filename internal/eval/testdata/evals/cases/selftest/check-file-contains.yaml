@@ -1,0 +1,27 @@
+name: check-file-contains
+description: "Self-test: file_contains passes when the file content matches the pattern"
+agent: selftest
+input: |
+  Create the marker file and report that you did.
+context:
+  - "This case runs against the deterministic stub backend"
+  - "Passes: marker.txt contains the line hi"
+expected_output: |
+  A short report with a top-level section and at least one subsection.
+stub:
+  turns:
+    - commands:
+        - "echo hi > marker.txt"
+      response: |
+        ## Checks
+
+        The stub turn finished and reported output marker alpha.
+
+        ### Details
+
+        This response carries the headings the report format expects.
+checks:
+  - criterion: structural_completeness
+    type: file_contains
+    path: marker.txt
+    pattern: "(?m)^hi$"
