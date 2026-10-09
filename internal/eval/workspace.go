@@ -119,6 +119,16 @@ func validateCaseFields(tc TestCase, file string) error {
 	if err := validateSandboxFields(tc, file); err != nil {
 		return err
 	}
+	if tc.Stub != nil && tc.Stub.Judge != nil {
+		if len(tc.Stub.Judge) == 0 {
+			return fmt.Errorf("case %q (%s): stub.judge must not be empty", tc.Name, file)
+		}
+		for i, a := range tc.Stub.Judge {
+			if strings.TrimSpace(a) == "" {
+				return fmt.Errorf("case %q (%s): stub.judge entry %d must not be blank", tc.Name, file, i+1)
+			}
+		}
+	}
 	if tc.Timeout != "" {
 		d, err := time.ParseDuration(tc.Timeout)
 		if err != nil {

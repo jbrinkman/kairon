@@ -101,12 +101,12 @@ func TestChecksCheckTypeSet(t *testing.T) {
 	want := []CheckType{
 		"command", "file_exists", "file_absent", "file_contains", "file_not_contains",
 		"changed_files", "output_contains", "output_not_contains",
-		"gh_log_contains", "gh_log_not_contains",
+		"gh_log_contains", "gh_log_not_contains", "judge",
 	}
 	got := []CheckType{
 		CheckCommand, CheckFileExists, CheckFileAbsent, CheckFileContains, CheckFileNotContains,
 		CheckChangedFiles, CheckOutputContains, CheckOutputNotContains,
-		CheckGHLogContains, CheckGHLogNotContains,
+		CheckGHLogContains, CheckGHLogNotContains, CheckJudge,
 	}
 	for i := range want {
 		if got[i] != want[i] {
