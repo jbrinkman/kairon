@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -53,6 +54,31 @@ func TestLoadCandidatePrompt(t *testing.T) {
 		_, err := loadCandidatePrompt("a", RunOptions{PromptFile: dir})
 		if err == nil || !strings.Contains(err.Error(), dir) {
 			t.Fatalf("err = %v, want it to name %s", err, dir)
+		}
+	})
+
+	t.Run("named pipe is rejected without hanging", func(t *testing.T) {
+		if runtime.GOOS == "windows" {
+			t.Skip("mkfifo is not available on Windows")
+		}
+		fifo := filepath.Join(t.TempDir(), "fifo")
+		if err := syscall.Mkfifo(fifo, 0o644); err != nil {
+			t.Skipf("mkfifo unsupported here: %v", err)
+		}
+		// A writer-less FIFO would block os.ReadFile forever; run with a
+		// deadline so a regression surfaces as a timeout rather than a hang.
+		done := make(chan error, 1)
+		go func() {
+			_, err := loadCandidatePrompt("a", RunOptions{PromptFile: fifo})
+			done <- err
+		}()
+		select {
+		case err := <-done:
+			if err == nil || !strings.Contains(err.Error(), "regular file") {
+				t.Fatalf("err = %v, want a 'regular file' rejection", err)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("loadCandidatePrompt hung on a named pipe")
 		}
 	})
 

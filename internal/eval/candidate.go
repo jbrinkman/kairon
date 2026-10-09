@@ -53,8 +53,11 @@ func loadCandidatePrompt(agent string, opts RunOptions) (*candidatePrompt, error
 	if err != nil {
 		return nil, fmt.Errorf("--prompt-file %s: %w", opts.PromptFile, err)
 	}
-	if info.IsDir() {
-		return nil, fmt.Errorf("--prompt-file %s: is a directory, want a file", opts.PromptFile)
+	if !info.Mode().IsRegular() {
+		// Rejects directories, FIFOs, devices and sockets. A FIFO in
+		// particular would otherwise block os.ReadFile indefinitely when it
+		// has no writer, hanging the command with no diagnostic.
+		return nil, fmt.Errorf("--prompt-file %s: not a regular file", opts.PromptFile)
 	}
 	content, err := os.ReadFile(opts.PromptFile)
 	if err != nil {
