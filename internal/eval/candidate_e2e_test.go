@@ -281,10 +281,17 @@ func TestCandidateE2EKeptWorkspacesHoldCandidate(t *testing.T) {
 		removeKeptWorkspace(t, c)
 	}
 	// Guard against a vacuous pass: the per-case loop below only proves
-	// anything if the run actually produced cases. The exact count is
-	// deliberately not asserted so adding selftest cases never breaks this.
-	if len(run.agent.Cases) == 0 {
-		t.Fatal("selftest run produced no cases; the per-case checks below would pass vacuously")
+	// anything if the run exercised the self-test cases. Assert completeness
+	// against the fixtures on disk rather than a hard-coded count, so adding
+	// cases never breaks this while a dropped case is still caught.
+	ranCase := map[string]bool{}
+	for _, c := range run.agent.Cases {
+		ranCase[c.CaseName] = true
+	}
+	for _, name := range selftestFixtureCaseNames(t, env.evalsDir) {
+		if !ranCase[name] {
+			t.Errorf("fixture case %q did not run (results have %d cases)", name, len(run.agent.Cases))
+		}
 	}
 
 	for _, c := range run.agent.Cases {
