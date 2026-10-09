@@ -211,6 +211,53 @@ func TestLoadCasesValidatesWorkspaceAndTimeout(t *testing.T) {
 	}
 }
 
+// TestLoadCasesRejectsUnknownKeys verifies that loadCases decodes case files
+// strictly: a misspelled key is a load error instead of being silently
+// dropped. A dropped key inside a check (e.g. `expct_exit:` for `expect_exit:`)
+// would otherwise let the check pass a different assertion than the author
+// wrote, because field-level validation never sees the vanished key.
+func TestLoadCasesRejectsUnknownKeys(t *testing.T) {
+	wsEnv(t)
+
+	cases := []struct {
+		name    string
+		yaml    string
+		wantErr string // empty = success
+	}{
+		{
+			"typo-expect-exit",
+			"name: typo\ninput: x\nchecks:\n  - criterion: clarity\n    type: command\n    run: \"true\"\n    expct_exit: 1\n",
+			"expct_exit",
+		},
+		{
+			"typo-top-level",
+			"name: toptypo\ninput: x\ndescriptio: oops\n",
+			"descriptio",
+		},
+		{
+			"correct-expect-exit",
+			"name: ok\ninput: x\nchecks:\n  - criterion: clarity\n    type: command\n    run: \"true\"\n    expect_exit: 1\n",
+			"",
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			dir := filepath.Join("evals", "cases", "agent-unk-"+c.name)
+			writeCfgFile(t, filepath.Join(dir, "c.yaml"), c.yaml)
+			_, err := loadCases("agent-unk-" + c.name)
+			if c.wantErr == "" {
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), c.wantErr) {
+				t.Fatalf("error = %v, want it to name the unknown key %q", err, c.wantErr)
+			}
+		})
+	}
+}
+
 // TestLoadCasesRejectsFixtureAgentOverride verifies that a workspace fixture
 // providing the case's own agent config is refused at load, because provenance
 // is pinned from <evals-dir>/agents or .kiro/agents and would not describe the

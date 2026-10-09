@@ -1,6 +1,7 @@
 package eval
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -1542,7 +1543,9 @@ func loadCases(agent string) ([]TestCase, error) {
 		}
 
 		var tc TestCase
-		if err := yaml.Unmarshal(data, &tc); err != nil {
+		dec := yaml.NewDecoder(bytes.NewReader(data))
+		dec.KnownFields(true)
+		if err := dec.Decode(&tc); err != nil {
 			return nil, fmt.Errorf("failed to parse case %s: %w", e.Name(), err)
 		}
 
