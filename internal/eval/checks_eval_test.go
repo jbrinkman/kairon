@@ -186,6 +186,46 @@ func TestEvaluateChecks_OutputAndGHLog(t *testing.T) {
 	wantFail(t, evalOne(t, Check{Type: CheckGHLogContains, Pattern: `x`}, empty), "not found")
 }
 
+// TestEvaluateChecks_OversizedGHLogFailsChecks verifies that when the gh log
+// exceeds the read cap, BOTH gh_log check types fail with an explicit message
+// rather than scoring the truncated prefix — a forbidden call past the cap
+// must not make gh_log_not_contains pass incorrectly.
+func TestEvaluateChecks_OversizedGHLogFailsChecks(t *testing.T) {
+	in := CheckInput{GHLog: "gh issue create\n", GHLogOversized: true}
+	wantFail(t, evalOne(t, Check{Type: CheckGHLogContains, Pattern: `gh issue create`}, in), "exceeds 10 MiB")
+	wantFail(t, evalOne(t, Check{Type: CheckGHLogNotContains, Pattern: `gh pr merge`}, in), "exceeds 10 MiB")
+}
+
+// TestReadGHLogDetectsOversize verifies readGHLog flags a log past the cap and
+// returns only the truncated prefix, while an at-cap log is not flagged.
+func TestReadGHLogDetectsOversize(t *testing.T) {
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, ".eval", "gh.log")
+	if err := os.MkdirAll(filepath.Dir(logPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Over the cap by one byte: flagged, content truncated to the cap.
+	if err := os.WriteFile(logPath, make([]byte, maxGHLogBytes+1), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got, oversized := readGHLog(dir)
+	if !oversized {
+		t.Fatal("over-cap log not flagged oversized")
+	}
+	if len(got) != maxGHLogBytes {
+		t.Fatalf("truncated length = %d, want %d", len(got), maxGHLogBytes)
+	}
+
+	// Exactly at the cap: not flagged.
+	if err := os.WriteFile(logPath, make([]byte, maxGHLogBytes), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, oversized := readGHLog(dir); oversized {
+		t.Fatal("at-cap log wrongly flagged oversized")
+	}
+}
+
 func TestEvaluateChecks_InvalidCheckFailsWithDetail(t *testing.T) {
 	in := CheckInput{Dir: t.TempDir(), Output: "x"}
 	for name, c := range map[string]Check{

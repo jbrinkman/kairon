@@ -92,8 +92,14 @@ func runCheck(c Check, in CheckInput) (bool, string) {
 	case CheckOutputNotContains:
 		return evalText(c, in.Output, "output", false)
 	case CheckGHLogContains:
+		if in.GHLogOversized {
+			return false, "gh log exceeds 10 MiB; cannot score reliably"
+		}
 		return evalText(c, in.GHLog, "gh log", true)
 	case CheckGHLogNotContains:
+		if in.GHLogOversized {
+			return false, "gh log exceeds 10 MiB; cannot score reliably"
+		}
 		return evalText(c, in.GHLog, "gh log", false)
 	case CheckChangedFiles:
 		return evalChangedFiles(c, in)

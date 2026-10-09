@@ -40,11 +40,13 @@ func scoreCase(rubric Rubric, tc TestCase, cr *CaseResult) {
 	var results map[string][]CheckResult
 	checksRan := len(tc.Checks) > 0 && cr.ActualOutput != "" && cr.WorkspaceDir != ""
 	if checksRan {
+		ghLog, ghLogOversized := readGHLog(cr.WorkspaceDir)
 		all := EvaluateChecks(tc.Checks, CheckInput{
-			Dir:    cr.WorkspaceDir,
-			Output: cr.ActualOutput,
-			GHLog:  readGHLog(cr.WorkspaceDir),
-			Base:   cr.baseCommit,
+			Dir:            cr.WorkspaceDir,
+			Output:         cr.ActualOutput,
+			GHLog:          ghLog,
+			GHLogOversized: ghLogOversized,
+			Base:           cr.baseCommit,
 		})
 		results = make(map[string][]CheckResult, len(checkTotals))
 		for i, r := range all {
@@ -122,24 +124,32 @@ func scoreCase(rubric Rubric, tc TestCase, cr *CaseResult) {
 	}
 }
 
-// readGHLog returns the contents of <dir>/.eval/gh.log, or "" when it is
-// absent, not a regular file (the agent can write .eval/) or unreadable.
-func readGHLog(dir string) string {
+// readGHLog returns the contents of <dir>/.eval/gh.log and whether it exceeds
+// maxGHLogBytes. It returns "" (and false) when the log is absent, not a
+// regular file (the agent can write .eval/) or unreadable. When the log is
+// larger than the cap it returns the truncated content and oversized=true, so
+// callers fail the gh_log checks rather than scoring incomplete text.
+func readGHLog(dir string) (string, bool) {
 	p := filepath.Join(dir, ".eval", "gh.log")
 	info, err := os.Lstat(p)
 	if err != nil || !info.Mode().IsRegular() {
-		return ""
+		return "", false
 	}
 	f, err := os.Open(p)
 	if err != nil {
-		return ""
+		return "", false
 	}
 	defer f.Close()
-	data, err := io.ReadAll(io.LimitReader(f, maxGHLogBytes))
+	// Read one byte past the cap so an exactly-cap-sized log is not mistaken
+	// for an oversized one.
+	data, err := io.ReadAll(io.LimitReader(f, maxGHLogBytes+1))
 	if err != nil {
-		return ""
+		return "", false
 	}
-	return string(data)
+	if len(data) > maxGHLogBytes {
+		return string(data[:maxGHLogBytes]), true
+	}
+	return string(data), false
 }
 
 // checksReasoning summarizes check results: "3/3 checks passed", or

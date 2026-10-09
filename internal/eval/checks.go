@@ -66,6 +66,11 @@ type CheckInput struct {
 	Output string
 	GHLog  string
 	Base   string
+
+	// GHLogOversized is true when the gh log exceeded the read cap and GHLog
+	// holds only the truncated prefix. The gh_log checks fail explicitly in
+	// that case rather than scoring incomplete text.
+	GHLogOversized bool
 }
 
 // expectedExit is the exit status a command check must produce (default 0).
