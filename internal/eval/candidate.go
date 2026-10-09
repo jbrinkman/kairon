@@ -91,6 +91,12 @@ func candidatePromptDest(configPath, promptRef string) (string, error) {
 	if filepath.IsAbs(ref) || path.IsAbs(filepath.ToSlash(ref)) {
 		return "", fmt.Errorf("--prompt-file: agent config %s references an absolute prompt path %q; only a path relative to the config can be replaced by a candidate", configPath, ref)
 	}
+	// The join base is the literal "agents" segment because both the project
+	// .kiro/agents config and the <evals-dir>/agents overlay are staged into
+	// <workspace>/.kiro/agents/. resolveAgentProvenanceWith (hash) and
+	// stageCandidatePrompt (stage) both resolve the destination through this
+	// helper, so the hashed and staged paths cannot diverge; a future change
+	// to the staged .kiro layout must keep that invariant.
 	dest := path.Join("agents", filepath.ToSlash(ref))
 	if dest == ".." || strings.HasPrefix(dest, "../") {
 		return "", fmt.Errorf("--prompt-file: prompt reference %q in %s escapes .kiro/; only a prompt inside .kiro/ can be replaced by a candidate", ref, configPath)
