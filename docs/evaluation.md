@@ -72,10 +72,13 @@ name: simple-feature-issue
 description: "Evaluate architect output for a simple feature request"
 input: |
   The issue body or spec that the agent receives as input.
+# turns:                   # Optional, instead of `input`: a scripted multi-turn conversation (see Multi-turn cases)
+#   - "First user message"
+#   - "Second user message"
 output: |
   Optional: pre-captured agent output for offline evaluation.
 workspace: seeded         # Optional: workspace fixture name (see Case Workspaces)
-timeout: 30s               # Optional: per-case timeout (Go duration)
+timeout: 30s               # Optional: timeout per agent call, i.e. per turn (Go duration)
 requires_sandbox: true     # Optional: refuse to run without --sandbox (see Sandbox Containment)
 gh_issue:                  # Optional: data for the sandbox's fake `gh issue view` (needs requires_sandbox)
   title: "Add widget"
@@ -96,16 +99,17 @@ stub:                      # Optional: scripted response for `--backend stub`
 Fields:
 - `name` — unique identifier
 - `description` — what this case tests
-- `input` — the input the agent would receive
+- `input` — the input the agent would receive (a single-turn case). Mutually exclusive with `turns`
+- `turns` — (optional) a list of user messages that replaces `input` for a scripted multi-turn conversation: one agent call per entry, all in the same conversation and the same workspace (see [Multi-turn cases](#multi-turn-cases)). A case sets `turns` **or** `input`, never both: a non-blank `input` together with `turns` is a load error naming the case (`turns and input are mutually exclusive; use turns for a multi-turn case`). An empty list (`turns: []`) and a blank entry (`turns[2] is empty`) are load errors too.
 - `output` — (optional) pre-captured output for offline scoring
-- `setup` — (optional) extra prompt context; `type: file` entries read `path` from disk
+- `setup` — (optional) extra prompt context; `type: file` entries read `path` from disk. In a `turns` case the setup context is delivered with **turn 1 only**; later turns are sent verbatim.
 - `workspace` — (optional) name of a fixture under `<evals-dir>/fixtures/workspaces/` that the case's workspace starts from (see [Case Workspaces](#case-workspaces)). Must match `^[A-Za-z0-9._-]+$` (and not be `.` or `..`) and the fixture directory must exist, otherwise loading the cases fails with an error naming the case.
-- `timeout` — (optional) a positive Go duration such as `30s` or `2m`. It overrides the default timeout for this case, natively and under `--sandbox` (see [Case Timeout](#case-timeout)). An invalid or non-positive value is a load error naming the case.
+- `timeout` — (optional) a positive Go duration such as `30s` or `2m`. It overrides the default timeout for this case, natively and under `--sandbox` (see [Case Timeout](#case-timeout)). In a `turns` case it applies to **each turn**, not to the case as a whole. An invalid or non-positive value is a load error naming the case.
 - `requires_sandbox` — (optional, default `false`) when `true`, the case refuses to run without `--sandbox`: a native run records the case as failed with `case "<name>" requires --sandbox` before it creates a workspace or invokes anything (see [Sandbox Containment](#sandbox-containment)).
 - `gh_issue` — (optional) the issue the sandbox's fake `gh issue view` answers with: `number` (default `1`), `title` (required), `body`, `state` (default `OPEN`), `author` (default `fake-user`), `labels`. It is only valid together with `requires_sandbox: true`; otherwise loading the cases fails with an error naming the case, because a native run would call the developer's **real** `gh` (see [The fake `gh`](#the-fake-gh)).
 - `mocks` — (optional) a list of `{command, script}` entries that each place a mock of a command on the container `PATH`, so a bare `aws`, `npm` or `curl` resolves to the author's script instead of a real tool. `command` is the bare command name (it must match `^[A-Za-z0-9][A-Za-z0-9._+-]*$`, must be unique within the case, and cannot be `gh`, which is the harness's fake). `script` is a path relative to the evals directory (no absolute path, no `..`) naming an existing regular file; `fixtures/mock-cli.sh` is the reusable one. Like `gh_issue`, `mocks` is only valid together with `requires_sandbox: true`, because a native run has no such directory on `PATH` and would silently call the **real** tool; otherwise loading the cases fails with an error naming the case. See [Preventing Production Side Effects](#preventing-production-side-effects-containment-and-mocking).
-- `checks` — (optional) a list of deterministic pass/fail checks on the workspace the agent left behind, its final output and the fake `gh` log. A criterion that has checks is scored `passed` out of `total` instead of by a heuristic or the LLM judge. Each entry has a `criterion` (a non-cost criterion of the agent's rubric) and a `type`, plus the fields that type takes. An invalid `checks` block is a **fatal** load error that names the case file, the 1-based check number and the type; it is not downgraded to a warning (see [Checks](#checks)).
-- `stub.turns[]` — (optional) scripted model responses, used only by the `stub` backend (see [Stub Case Fields](#stub-case-fields))
+- `checks` — (optional) a list of deterministic pass/fail checks on the workspace the agent left behind, its output and the fake `gh` log. A criterion that has checks is scored `passed` out of `total` instead of by a heuristic or the LLM judge. Each entry has a `criterion` (a non-cost criterion of the agent's rubric) and a `type`, plus the fields that type takes, including an optional `turn` on the `output_*` and `gh_log_*` types for multi-turn cases. An invalid `checks` block is a **fatal** load error that names the case file, the 1-based check number and the type; it is not downgraded to a warning (see [Checks](#checks)).
+- `stub.turns[]` — (optional) scripted model responses, used only by the `stub` backend. In a `turns` case there is exactly one entry per turn (see [Stub Case Fields](#stub-case-fields))
 
 ## Checks
 
@@ -118,7 +122,7 @@ checks:
     run: "go test ./..."
 ```
 
-Every check has `criterion` and `type`. The other fields depend on the type, and a field that does not belong to the type (for example `path` on a `command`, or `expect_exit` on a `file_exists`) is a load error rather than being ignored. This catches typos such as `expected_exit`.
+Every check has `criterion` and `type`. The other fields depend on the type, and a field that does not belong to the type (for example `path` on a `command`, `expect_exit` on a `file_exists`, or `turn` on a `file_exists`) is a load error rather than being ignored. This catches typos such as `expected_exit`.
 
 | `type` | Required fields | Optional fields | Passes when |
 |--------|-----------------|-----------------|-------------|
@@ -128,10 +132,12 @@ Every check has `criterion` and `type`. The other fields depend on the type, and
 | `file_contains` | `path`, `pattern` | | `path` is a regular file whose content matches the regex |
 | `file_not_contains` | `path`, `pattern` | | `path` is a regular file that exists **and** whose content does not match |
 | `changed_files` | `allow` (list of globs; `[]` is valid) | | no path was added, modified or deleted outside `allow` |
-| `output_contains` | `pattern` | | the agent's final output matches the regex |
-| `output_not_contains` | `pattern` | | the agent's final output does not match the regex |
-| `gh_log_contains` | `pattern` | | the fake `gh` log matches the regex |
-| `gh_log_not_contains` | `pattern` | | the fake `gh` log does not match the regex |
+| `output_contains` | `pattern` | `turn` | the agent's output (default: the last turn's) matches the regex |
+| `output_not_contains` | `pattern` | `turn` | the agent's output (default: the last turn's) does not match the regex |
+| `gh_log_contains` | `pattern` | `turn` | the fake `gh` log (default: the final log) matches the regex |
+| `gh_log_not_contains` | `pattern` | `turn` | the fake `gh` log (default: the final log) does not match the regex |
+
+`turn` is only accepted by the four `output_*` / `gh_log_*` types; see [The `turn` field](#the-turn-field).
 
 ### The ten check types
 
@@ -196,7 +202,7 @@ checks:
       - "**/*_test.go"
 ```
 
-`output_contains` and `output_not_contains` look at the agent's final output (the text recorded as `actual_output`).
+`output_contains` and `output_not_contains` look at the agent's output (the text recorded as `actual_output`, which for a multi-turn case is the last turn's output). With `turn: N` they look at turn N's output instead (see [The `turn` field](#the-turn-field)).
 
 ```yaml
 checks:
@@ -208,7 +214,7 @@ checks:
     pattern: '(?i)as an ai'
 ```
 
-`gh_log_contains` and `gh_log_not_contains` look at the fake `gh` log, `.eval/gh.log`, one line per call such as `gh issue create --title t` (see [The fake `gh`](#the-fake-gh)).
+`gh_log_contains` and `gh_log_not_contains` look at the fake `gh` log, `.eval/gh.log`, one line per call such as `gh issue create --title t` (see [The fake `gh`](#the-fake-gh)). By default they read the final log; with `turn: N` they read the log as it stood at the end of turn N.
 
 ```yaml
 checks:
@@ -220,7 +226,35 @@ checks:
     pattern: 'gh pr merge'
 ```
 
-> **Native runs have no `gh` log.** The fake `gh` exists only under `--sandbox`; a native run calls the real `gh`, which Kairon does not log. Natively the log is empty unless the stub or the agent wrote `.eval/gh.log` itself, so `gh_log_contains` fails and `gh_log_not_contains` passes vacuously. `gh_log_*` checks do not require `requires_sandbox`, so the native self-test can exercise every type, but a case that asserts on real `gh` calls should set `requires_sandbox: true`. The log lives in `.eval/`, which the agent can write: it is evidence from the fake, not tamper-proof.
+> **Native runs have no `gh` log.** The fake `gh` exists only under `--sandbox`; a native run calls the real `gh`, which Kairon does not log. Natively the log is empty unless the stub or the agent wrote `.eval/gh.log` itself, so `gh_log_contains` fails and `gh_log_not_contains` passes vacuously. `gh_log_*` checks do not require `requires_sandbox`, so the native self-test can exercise every type, but a case that asserts on real `gh` calls should set `requires_sandbox: true`. The log lives in `.eval/`, which the agent can write: it is evidence from the fake, not tamper-proof. The same holds for each per-turn snapshot of a `turns` case.
+
+### The `turn` field
+
+In a [multi-turn case](#multi-turn-cases) a check can say *when* something happened: "no `gh issue create` after turn 1, one after turn 3".
+
+```yaml
+checks:
+  - criterion: structural_completeness
+    type: gh_log_not_contains
+    pattern: 'issue create'
+    turn: 1
+  - criterion: structural_completeness
+    type: gh_log_contains
+    pattern: 'issue create'
+    turn: 3
+  - criterion: structural_completeness
+    type: output_contains
+    pattern: 'labels are right'
+    turn: 2
+```
+
+- **Allowed types.** `turn` is accepted only by `output_contains`, `output_not_contains`, `gh_log_contains` and `gh_log_not_contains`. On any other type it is a load error (`turn is not valid for type file_exists`).
+- **Why workspace checks cannot take it.** The workspace is inspected once, at the end of the case, so a `file_*`, `changed_files` or `command` check cannot honestly be pinned to an earlier turn. A `turn: 1` on such a check would silently test the final workspace, so it is rejected loudly instead.
+- **1-based.** `turn` counts from 1, the same numbering as the position in `turns`. `turn: 0` (or a negative value) is a load error.
+- **Default: the last turn.** A check without `turn` reads the last turn's output and the final gh log, which is exactly what a single-turn case has always done.
+- **Range.** `turn` must not exceed the number of turns of the case. A single-turn case has one turn, so `turn: 1` is legal there. An out-of-range `turn` is a load error naming the case, the 1-based check number and the type. A hand-built check passed to `EvaluateChecks` with an out-of-range turn yields a failed result with a detail (`turn 4 is out of range: the case has 3 turn(s)`), never a panic or a silent pass.
+- **gh log per turn.** `.eval/gh.log` is one append-only file, so per-turn visibility is a **snapshot taken after each turn returns and before the next turn starts**. A `gh_log_*` check with `turn: N` reads the snapshot of turn N: the log up to the end of that turn, **cumulative** (calls from earlier turns are in it too). Snapshotting the content, rather than remembering an offset into the final file, means a later turn that rewrites or truncates the log cannot change what an earlier turn saw. The last turn's snapshot equals the final log. Each snapshot is capped at 10 MiB like the final log; an oversized snapshot fails the `gh_log_*` check that reads it.
+- **Labels.** A check with `turn` set shows it in its label (`#3 gh_log_contains pattern=/issue create/ turn=3`), so `reasoning`, `checks[].label` and the printed `✗` lines show which turn failed.
 
 ### Regex dialect
 
@@ -251,7 +285,7 @@ The workspace is a git repository whose only commit is the fixture (see [Case Wo
 
 ### Evaluation order
 
-All checks of a case are evaluated **once**, after the agent finishes and while the workspace still exists:
+All checks of a case are evaluated **once**, after the last turn finishes and while the workspace still exists. (The per-turn outputs and gh log snapshots that `turn` checks read were recorded during the run; the checks themselves still run only at the end.)
 
 1. Every non-`command` check (`file_*`, `changed_files`, `output_*`, `gh_log_*`) is evaluated first, against the workspace exactly as the agent left it.
 2. `command` checks then run, in the order they are listed.
@@ -330,7 +364,7 @@ A checked criterion carries a `checks` array in `<agent>.json`, one entry per ch
 
 ### When the agent failed
 
-Checks assert on what the agent did. If the agent produced no output (the call failed, timed out or the sandbox refused the case) or there is no workspace, the checks are **not evaluated** and no command runs. Each criterion that has checks records `0/<total>`, is **not** skipped, and carries the reasoning `agent produced no output; checks not run`. A skipped criterion would be left out of the aggregate and make a failed run look better. Criteria without checks keep their existing "skipped" behavior in this situation.
+Checks assert on what the agent did. If the agent produced no output (the call failed, timed out or the sandbox refused the case) or there is no workspace, the checks are **not evaluated** and no command runs. In a multi-turn case a failure in any turn counts: the case has no output (see [Failure semantics](#failure-semantics)). Each criterion that has checks records `0/<total>`, is **not** skipped, and carries the reasoning `agent produced no output; checks not run`. A skipped criterion would be left out of the aggregate and make a failed run look better. Criteria without checks keep their existing "skipped" behavior in this situation.
 
 A check that names a criterion missing from the scored rubric (only possible for a case that bypassed the loader) is never dropped: it records `0/<count>` with the reasoning `criterion "<name>" is not in the rubric`.
 
@@ -344,10 +378,183 @@ results := eval.EvaluateChecks(checks, eval.CheckInput{
     Output: agentOutput,  // text for output_contains / output_not_contains
     GHLog:  ghLogText,    // text for gh_log_contains / gh_log_not_contains
     Base:   "",           // optional git revision for changed_files; default HEAD
+    Turns:  nil,          // optional per-turn evidence: Turns[i] is turn i+1 (see below)
 })
 ```
 
 `EvaluateChecks` never reads the config, the case or the rubric, and returns one `CheckResult` per check in list order. A hand-built check is validated lazily: an invalid one yields a failed result with an explanation, never a panic and never a silent pass. `eval.ValidateChecks` validates and compiles checks loaded from a case file. In a normal run `Base` is the fixture commit of the case workspace, so a change the agent committed is still detected.
+
+`Turns` is a `[]eval.TurnEvidence{Output, GHLog, GHLogOversized}`, one entry per turn, and is what `turn` checks read. When `Turns` is empty (a single-turn case) every `output_*` / `gh_log_*` check reads `Output` / `GHLog` exactly as above. When it is set, a check that names a `turn` reads `Turns[turn-1]` and a check without `turn` reads the last entry; the harness fills `Turns` for `turns` cases only.
+
+## Multi-turn cases
+
+Some agent behaviour depends on the user's answers: the planner, for example, is a gated conversation (draft, approval, label confirmation, creation). A case with `turns` scripts that conversation: the harness sends one user message per entry, in order, and the agent's replies are never fed back by the harness. Turns are scripted, not simulated.
+
+```yaml
+name: planner-gates
+agent: planner
+setup:                     # delivered with turn 1 ONLY
+  - type: text
+    label: "Context"
+    content: "The project exports reports."
+turns:                     # replaces `input`
+  - "I want a feature that exports reports as CSV"
+  - "Looks good, go on"
+  - "Yes, those labels are right"
+stub:
+  turns:                   # exactly one entry per turn, same order (stub backend only)
+    - response: "…draft…"
+    - response: "…label confirmation…"
+    - commands: ["echo 'gh issue create --title t' >> .eval/gh.log"]
+      response: "…created…"
+checks:
+  - criterion: structural_completeness
+    type: gh_log_not_contains
+    pattern: 'issue create'
+    turn: 1
+  - criterion: structural_completeness
+    type: gh_log_contains
+    pattern: 'issue create'
+    turn: 3
+```
+
+What a `turns` case does:
+
+- **One agent call per turn**, all against the **same workspace** (natively the same host directory, under `--sandbox` the same bind mounts). A file written in turn 1 is there in turn 2, and a stub turn's `commands` see the files of earlier turns.
+- **The prompt of a turn is only that turn's message.** Turn 1 carries the `setup` context plus `turns[0]`; turns 2..n are sent verbatim. The harness never re-sends earlier turns or earlier answers and never passes a transcript or a "resume" flag: the backend owns conversation continuity (see [Backend contract](#backend-contract-for-turns)).
+- **`stub.turns` has exactly one entry per turn**, in the same order. For a `turns` case with a `stub`, a different number of entries is a load error naming the case and both counts. A `turns` case with no `stub` is fine for the `kiro-cli` backend.
+- **`timeout` is per turn**, not for the case: every turn gets the full case (or sandbox) timeout.
+- **Checks** run once at the end, and `output_*` / `gh_log_*` checks may name the `turn` they apply to (see [The `turn` field](#the-turn-field)). A check without `turn` applies to the last turn.
+- **A single-turn case is unchanged.** `input` cases behave as before, and their result files have no `turn_outputs` and no `calls[].turn`. A `turns` case with one entry is legal and is recorded like any other `turns` case.
+
+### Turn numbering
+
+There are two conventions, and the harness converts between them in exactly one place (where the agent request is built):
+
+| Where | Numbering | Example |
+|-------|-----------|---------|
+| Case YAML (`checks[].turn`), results (`calls[].turn`, position in `turn_outputs`), printed `turn k/n`, error messages | **1-based** | the first user message is turn 1 |
+| `inference.Request.Turn` and the index into `stub.turns[]` | **0-based** | the first user message is `Turn == 0` |
+
+So `turn: 3` in a check, the third entry of `turns`, the third entry of `stub.turns` and `Request.Turn == 2` all describe the same turn.
+
+### Failure semantics
+
+If turn *k* of *n* fails (a backend error, a timeout, a tool-trust resolution failure or a non-zero exit):
+
+- turns *k+1* … *n* are **not run**;
+- `actual_output` is `""`, so the usual "agent produced no output; checks not run" rule applies: every criterion that has checks records `0/<total>` and no check runs (see [When the agent failed](#when-the-agent-failed));
+- `turn_outputs` holds the outputs of turns 1 … *k−1*, which is useful evidence of how far the conversation got;
+- `calls[]` holds an agent record for turns 1 … *k*, the failed one carrying its `error`, and `error_context` is the failing turn's;
+- the printed error is prefixed with the turn: `Error: turn 2/3: …`.
+
+`agent_cost` is the sum of the cost of every agent call that was made, including the failed one (see [Result JSON](#result-json-for-multi-turn-cases)).
+
+### Judge input
+
+The judge prompt template is unchanged. For a `turns` case the `INPUT` section is rendered from the scripted user messages, one labelled block per turn, and `ACTUAL OUTPUT` is the **last** turn's output:
+
+```
+Turn 1 (user): I want a feature that exports reports as CSV
+
+Turn 2 (user): Looks good, go on
+
+Turn 3 (user): Yes, those labels are right
+```
+
+A single-turn case still passes its `input` verbatim. This is a known limitation: the judge sees what the user said and the final answer, not the agent's earlier replies. A transcript-aware judge is a separate piece of work. To assert on an earlier turn's output, use `output_*` checks with `turn`, which do not involve the judge.
+
+### Result JSON for multi-turn cases
+
+A `turns` case adds two things to the result file (a single-turn case's JSON shape does not change):
+
+- `turn_outputs` on the case: the agent's output for every turn, in order. `actual_output` is the last entry.
+- `turn` on each agent record in `calls[]`: the 1-based turn of that call. Judge records carry no `turn`.
+
+```json
+{
+  "case_name": "multi-turn-gh-log",
+  "actual_output": "## Created\n\nTURN-THREE-MARKER: …",
+  "turn_outputs": [
+    "## Draft\n\nTURN-ONE-MARKER: …",
+    "## Labels\n\nTURN-TWO-MARKER: …",
+    "## Created\n\nTURN-THREE-MARKER: …"
+  ],
+  "calls": [
+    { "role": "agent", "agent": "selftest", "turn": 1, "model": "stub-model", "…": "…" },
+    { "role": "agent", "agent": "selftest", "turn": 2, "model": "stub-model", "…": "…" },
+    { "role": "agent", "agent": "selftest", "turn": 3, "model": "stub-model", "…": "…" }
+  ]
+}
+```
+
+`agent_cost` is the sum of the per-turn costs; its `usage_source` is `reported` only if every turn's usage was `reported`, otherwise `estimated`. Older result files without these fields still load.
+
+### Conversation continuity
+
+**Native `kiro-cli`.** Turn 1 runs `kiro-cli chat --agent <agent> --no-interactive …` exactly as a single-turn case does. Turns 2..n add `--resume`, directly after `--no-interactive`, in the same workspace directory: `kiro-cli chat --agent <agent> --no-interactive --resume --trust-all-tools [--model <model>]`. `--resume` continues the most recent conversation in the working directory, and the workspace is unique per case, so that conversation is this case's. Each call receives only that turn's message on stdin. Two consequences: native runs write their conversations into your real `kiro-cli` conversation store (one per case workspace directory), and turns 2..n pass the same `--agent`, trust and `--model` arguments as turn 1.
+
+**`--sandbox`: one container per case.** A single-turn case gets a fresh container for its one agent call. A `turns` case gets **one container for all its turns**. `kiro-cli` keeps its conversation state under `$HOME`, which in the container is a tmpfs (see [Read-only root filesystem](#read-only-root-filesystem)); a fresh container per turn would lose it and `--resume` could not work. The container is created and started when the first turn runs (so a turn that fails before reaching it, such as a tool-trust resolution failure, creates none), `kiro-cli` is validated once, every turn then runs in it, and it is removed after the last turn (or, in `--debug` mode, preserved if the case failed). The timeout, tool-trust set and `WorkDir` are applied to each turn exactly as for a single call. A case with a single turn, and every `input` case, keeps the one-shot container path.
+
+**Stub.** The stub backend is stateless: it answers with `stub.turns[Request.Turn]`, so it needs nothing from the container beyond the transport.
+
+### Backend contract for turns
+
+The harness is the only thing that knows the script; the backend owns the conversation. `inference.Request.Turn` is the **0-based position of this user message in the conversation**, and:
+
+- `Prompt` carries **only that turn's user message** (turn 1 additionally carries the setup context). It never carries earlier turns or earlier answers.
+- The harness passes no `Resume` flag and no transcript. A backend must continue the conversation itself when `Turn > 0`, and decides how.
+- `Turn == 0` (the zero value, and what every request that does not set it carries) starts a new conversation.
+
+How each backend honours it:
+
+| Backend | `Turn > 0` |
+|---------|------------|
+| `kiro-cli` | adds `--resume` (continues the previous conversation in the same working directory) |
+| `stub` | answers with `Stub.Turns[Turn]` |
+| a future direct-API backend | keeps a message list keyed by the conversation (the per-case `WorkDir`) and appends each prompt and reply; `Turn == 0` starts a new list |
+
+This is why `Request` has no `Resume bool`: "resume" is a `kiro-cli` mechanism, "turn" is the harness concept. A direct-API backend needs no change to the harness or to case YAML, because `turns` and `turn` are backend-neutral.
+
+**Known limit under `--sandbox`.** Non-`kiro-cli` backends run in the container as a fresh `kairon inference-exec` process per call (see [Backends in the Container](#backends-in-the-container)), so a future backend that holds the conversation **in memory** cannot keep that history inside the container across turns. It would have to run on the host, as the judge does. The stub is not affected because it is index-based and stateless. Keeping one container per case is what lets `kiro-cli`'s on-disk state survive; it does not give an in-process backend a long-lived process.
+
+### Verifying `--resume` against a real `kiro-cli`
+
+Conversation continuity with a real model cannot run in CI (it needs an authenticated `kiro-cli`). Automated tests cover the arguments (`--resume` only for `Turn > 0`, directly after `--no-interactive`) and that each call receives only its own message, using a fake `kiro-cli`. Verify the real behaviour by hand:
+
+Step 1: copy the evals directory.
+
+```bash
+cp -r .kairon/evals /tmp/evals317
+```
+
+Step 2: add a case that asks the agent to remember a word in turn 1 and repeat it in turn 2.
+
+```yaml
+# /tmp/evals317/cases/planner/remember-word.yaml
+name: remember-word
+description: "Manual check that turn 2 continues the conversation of turn 1"
+agent: planner
+turns:
+  - "Remember the word PINEAPPLE. Reply only OK."
+  - "What was the word? Reply with the word only."
+checks:
+  - criterion: requirement_clarity   # any non-cost criterion of the agent's rubric
+    type: output_contains
+    pattern: 'PINEAPPLE'
+    turn: 2
+```
+
+Step 3: run it natively and under the sandbox.
+
+```bash
+kairon eval --evals-dir /tmp/evals317 planner remember-word
+kairon eval --evals-dir /tmp/evals317 --sandbox planner remember-word
+```
+
+Step 4: in both runs, `turn_outputs[1]` in the result file must contain `PINEAPPLE` and the check must pass.
+
+If it does not, the `--resume` call is not reaching the same conversation. The `--resume` position and its combination with `--agent <name>` (which the harness always passes) is the thing to adjust in `KiroCLIAgentCommand`; turn 1 and every single-turn case must stay unchanged.
 
 ## Running Evaluations
 
@@ -378,7 +585,7 @@ kairon eval --evals-dir path/to/evals architect
 ## Adding Test Cases
 
 1. Create a YAML file in `.kairon/evals/cases/<agent>/`
-2. Provide an `input` field with representative agent input
+2. Provide an `input` field with representative agent input, or a `turns` list for a scripted multi-turn conversation (see [Multi-turn cases](#multi-turn-cases))
 3. Optionally capture real agent output in the `output` field for offline evaluation
 
 ## How Scoring Works
@@ -415,7 +622,7 @@ Every "send a prompt to a model, get text back" call made by the harness (the ag
 
 | Backend | Behaviour |
 |---------|-----------|
-| `kiro-cli` (default) | Shells out to `kiro-cli`. Agent (native run): `kiro-cli chat --agent <agent> --no-interactive --trust-all-tools [--model <model>]`; under `--sandbox` the agent call uses `--trust-tools=<per-agent set>` instead of `--trust-all-tools` (see [Tool trust](#tool-trust)); judge: `kiro-cli chat --no-interactive [--model <model>]`; prompt on stdin. `--model` is appended when the request carries a model, which is always the case in a normal `kairon eval` run (see [Model Pinning and Run Provenance](#model-pinning-and-run-provenance)). Usage is always **estimated**. Requires `kiro-cli` on `PATH`. |
+| `kiro-cli` (default) | Shells out to `kiro-cli`. Agent (native run): `kiro-cli chat --agent <agent> --no-interactive --trust-all-tools [--model <model>]`, with `--resume` added directly after `--no-interactive` for turns 2..n of a [multi-turn case](#multi-turn-cases) (`Request.Turn > 0`); under `--sandbox` the agent call uses `--trust-tools=<per-agent set>` instead of `--trust-all-tools` (see [Tool trust](#tool-trust)); judge: `kiro-cli chat --no-interactive [--model <model>]`; prompt on stdin. `--model` is appended when the request carries a model, which is always the case in a normal `kairon eval` run (see [Model Pinning and Run Provenance](#model-pinning-and-run-provenance)). Usage is always **estimated**. Requires `kiro-cli` on `PATH`. |
 | `stub` | Deterministic and in-process. Never starts a process or touches the network, and does not require `kiro-cli`. The agent's output comes from the case's `stub.turns`; every judge call returns score 5 (the maximum of the judge scale) with `pass: true`. |
 
 ```bash
@@ -453,10 +660,10 @@ stub:
 | `stub.turns[].response` | yes | Text returned as the agent output. |
 | `stub.turns[].model` | no | Model name recorded in `agent_cost.model`. |
 | `stub.turns[].usage.input_tokens` / `output_tokens` | no | If present, these counts are used verbatim and marked `reported`. If absent, usage is estimated from text length. |
-| `stub.turns[].commands` | no | Shell commands, each run with `sh -c` in the case workspace (the request's `WorkDir`), in order, before the response is returned. This lets a stub case simulate an agent that edits files. They are scripted environment actions, **not** tool calls, so the trust gate never applies to them. |
+| `stub.turns[].commands` | no | Shell commands, each run with `sh -c` in the case workspace (the request's `WorkDir`), in order, before the response is returned. This lets a stub case simulate an agent that edits files. In a multi-turn case the workspace is shared, so a later turn's commands see the files of earlier turns. They are scripted environment actions, **not** tool calls, so the trust gate never applies to them. |
 | `stub.turns[].tool_calls[]` | no | Scripted tool calls, each `{tool, command}`. They run after `commands`, in order. Each runs `sh -c <command>` in the workspace only if the tool is in the request's trust set; otherwise the command is skipped and a denial is recorded (see [Tool trust](#tool-trust)). With no trust set (every native run) every tool call runs. |
 
-Only `turns[0]` is used today. A case with no `stub`, empty `turns`, or an empty `response` fails with `case has no stub.turns[0].response` rather than silently producing empty output. The `kiro-cli` backend ignores `stub`.
+The stub answers a request with `stub.turns[Request.Turn]` (0-based). In a single-turn (`input`) case only `turns[0]` is used; the other entries are ignored and not validated. In a `turns` case every user turn consumes its own entry: turn *k* (1-based) uses `stub.turns[k-1]`, including its `response`, `commands` and `tool_calls`, and the number of entries must equal the number of turns (otherwise the case fails to load). A case with no `stub`, a missing entry for the turn, or an empty `response` fails with `case has no stub.turns[<index>].response` (0-based index) rather than silently producing empty output. The `kiro-cli` backend ignores `stub`. See [Multi-turn cases](#multi-turn-cases).
 
 How `commands` behave:
 - They run in the case workspace: natively the host workspace directory, under `--sandbox` the container's workspace path, as the `sandbox` user. Commands with no workspace directory are an error and run nothing, so a test cannot write into the repository root by accident.
@@ -579,6 +786,7 @@ Each case in `<agent>.json` carries a `calls` array with one record per agent ca
 | `role` | `agent` or `judge`. |
 | `model` | The model that served the call when the backend reports one, otherwise the pinned (requested) model. `kiro-cli` cannot report the served model, so its records carry the pinned model; the stub records `stub` / `stub-model`. |
 | `agent` | Agent name (agent calls only). |
+| `turn` | 1-based user turn of the call. Present only on agent calls of a `turns` case (see [Multi-turn cases](#multi-turn-cases)); omitted for single-turn cases and judge calls. |
 | `criterion` | Rubric criterion being judged (judge calls only). |
 | `input_tokens` / `output_tokens` | Token counts for the call. |
 | `cost_usd` | Cost of the call, using the same fixed $3 / $15 per million tokens estimate as `agent_cost` / `judge_cost`. |
@@ -591,7 +799,7 @@ Each case in `<agent>.json` carries a `calls` array with one record per agent ca
 
 Details:
 - `agent_cost` and `judge_cost` are unchanged; `calls` is the per-call breakdown behind them.
-- No agent record is written when prompt assembly failed, because no call was made.
+- No agent record is written when prompt assembly failed, because no call was made. A `turns` case writes one agent record per turn that ran (the failed turn included), each with its `turn`.
 - A judge call is recorded even when its output could not be parsed (the tokens were spent). Its cost appears in that call's `calls[]` record but **not** in the case's `judge_cost`, which keeps a zero cost for a failed or unparseable judge call — so for such a case the sum of `calls[].cost_usd` can exceed `judge_cost`.
 - A `--sandbox` run builds its agent record exactly like a native one, from the same request and the same completion logic: the cost comes from the backend's reported or estimated usage, `model` is the served model when the backend reports one (the stub) or the pinned model (`kiro-cli`), and `estimated` is `true` unless the usage was `reported`. For the same case the sandboxed and native `output`, `agent_cost`, call record `model` and `prompt_sha256` match. The sandboxed agent record additionally carries `trusted_tools`; the only other differences between a native and a container run are the run-level `sandbox` and `containment` fields (see [Execution mode and containment](#execution-mode-and-containment) and [Parity between native and container runs](#parity-between-native-and-container-runs)).
 
@@ -909,8 +1117,11 @@ internal/eval/testdata/evals/
   cases/selftest/stub-marker.yaml   # stub turn command 'echo hi > marker.txt' leaves marker.txt in the case workspace
   cases/selftest/stub-seeded-workspace.yaml  # workspace: seeded; the stub appends to README.md -> ' M README.md'
   cases/selftest/check-*.yaml       # 11 passing check cases, one per check type (see below)
+  cases/selftest/multi-turn-gh-log.yaml      # 3 turns, one scripted stub turn each; turn-scoped gh_log / output checks plus default-last checks
+  cases/selftest/multi-turn-workspace.yaml   # 2 turns plus a setup text entry; turn 2 needs the file turn 1 wrote (shared workspace)
   cases/selftest-fail/stub-timeout.yaml      # timeout: 1s, stub turn command 'sleep 3' -> timeout failure
   cases/selftest-fail/check-*.yaml  # 10 per-type failing check cases plus check-partial (see below)
+  cases/selftest-fail/multi-turn-wrong-turn.yaml  # turn-1 gh_log_contains for a call made in turn 3 (expected to FAIL)
   agents/selftest-sandbox.json      # containment agent, allowedTools [read, write]; its cases are all requires_sandbox
   agents/selftest-sandbox-prompt.md
   agents/selftest-sandbox-ro.json   # containment agent, allowedTools [read]
@@ -932,7 +1143,7 @@ internal/eval/testdata/evals/
 
 `selftest.json` declares a `model` so the self-test passes the model-pinning pre-flight, and lists a `skill://.kiro/skills/selftest-conventions/SKILL.md` resource that intentionally does not exist. It exercises the "missing resources are normal" rule: the run succeeds and the recorded `resources_present` is `[]`.
 
-The `selftest` agent has sixteen cases and all of them pass (`task eval:selftest`): the five original `stub-*` cases, which carry no `checks` and keep their pinned scores, and eleven `check-*` cases that exercise [checks](#checks). The `selftest-fail` agent is deliberately separate, so `selftest` keeps meaning "everything passes". It has twelve cases, all **expected to fail**: ten `check-*` cases plus `check-partial` built so that checks fail, and `stub-timeout`, which records a timeout failure (empty `actual_output`, `error_context.stderr` containing `timeout after 1s`) in about a second. Run it with:
+The `selftest` agent has eighteen cases and all of them pass (`task eval:selftest`): the five original `stub-*` cases, which carry no `checks` and keep their pinned scores, eleven `check-*` cases that exercise [checks](#checks), and two [multi-turn](#multi-turn-cases) cases (`multi-turn-gh-log`, `multi-turn-workspace`). The `selftest-fail` agent is deliberately separate, so `selftest` keeps meaning "everything passes". It has thirteen cases, all **expected to fail**: ten `check-*` cases plus `check-partial` built so that checks fail, `stub-timeout`, which records a timeout failure (empty `actual_output`, `error_context.stderr` containing `timeout after 1s`) in about a second, and `multi-turn-wrong-turn`, described below. Run it with:
 
 ```bash
 go run ./cmd/kairon eval --backend stub --no-sandbox --evals-dir internal/eval/testdata/evals selftest-fail
@@ -955,12 +1166,15 @@ All check cases score the `structural_completeness` criterion (present in both r
 | `gh_log_contains` | `check-gh-log-contains`: the stub writes a `gh issue create` line to `.eval/gh.log` | `check-gh-log-contains`: the log is empty |
 | `gh_log_not_contains` | `check-gh-log-not-contains` | `check-gh-log-not-contains`: the stub writes a `gh pr merge 1` line |
 
-Two further `selftest` / `selftest-fail` cases pin behavior you may rely on:
+Further `selftest` / `selftest-fail` cases pin behavior you may rely on:
 
 - `selftest/check-command-inject` shows that an injected file stays hidden. The stub writes the workspace listing to `.eval/seen.txt` before the checks run; the `command` check then injects `fixtures/hidden/hidden_test.go` and passes only if the file is present; `file_not_contains` on `.eval/seen.txt` proves the agent never saw it, and `file_absent` on `hidden_test.go` proves it was removed afterwards.
 - `selftest-fail/check-partial` has one passing and one failing `file_exists` check on one criterion, so it records exactly `1/2` with the reasoning `1/2 checks passed; failed: #2 file_exists path=missing.txt (file does not exist)`.
+- `selftest/multi-turn-gh-log` has three `turns` and one scripted stub turn each, with distinct markers (`TURN-ONE-MARKER`, `TURN-TWO-MARKER`, `TURN-THREE-MARKER`). Only turn 3's stub turn appends `gh issue create --title t` to `.eval/gh.log`. Its checks show the `turn` field: `gh_log_not_contains 'issue create'` at turn 1 and turn 2, `gh_log_contains 'issue create'` at turn 3 (and, with no `turn`, defaulting to the last turn), `output_contains` of each marker at its own turn, and an unscoped `output_not_contains TURN-ONE-MARKER` that passes because it reads the last turn. Its result has `turn_outputs` with the three scripted responses and three agent `calls[]` numbered `turn` 1..3.
+- `selftest/multi-turn-workspace` has two `turns` and a `setup` text entry. Turn 2's stub command is `test -f turn1.txt && echo second > turn2.txt`, so the case fails if the workspace were not shared between turns; `file_exists` and `file_contains` workspace checks (which take no `turn`) confirm both files.
+- `selftest-fail/multi-turn-wrong-turn` has the same shape as `multi-turn-gh-log` but asserts `gh_log_contains 'issue create'` with `turn: 1` for a call made in turn 3. It fails (the reasoning names the check with `turn=1`), which proves turn scoping is real: the check would pass if it saw the final log.
 
-The native self-test has no real `gh`, so the two `gh_log_*` cases write `.eval/gh.log` from a stub command (see the [native caveat](#checks)).
+The native self-test has no real `gh`, so the `gh_log_*` cases, `multi-turn-gh-log` and `multi-turn-wrong-turn` write `.eval/gh.log` from a stub command (see the [native caveat](#checks)).
 
 The `selftest-sandbox` and `selftest-sandbox-ro` agents exercise [Sandbox Containment](#sandbox-containment) with the stub backend (`selftest-sandbox` includes `stub-mock-cli`, the working example of [the mock pattern](#preventing-production-side-effects-containment-and-mocking)). Every one of their cases is `requires_sandbox: true`, so a native run records each as failed with `requires --sandbox` and starts nothing. `stub-write-outside-mounts` is, like `selftest-fail`, **expected to fail** under `--sandbox`: that failure is the proof that the root filesystem is read-only. Run them under the sandbox with:
 
@@ -989,7 +1203,7 @@ task eval:selftest:sandbox
 go run ./cmd/kairon eval --backend stub --sandbox --evals-dir internal/eval/testdata/evals selftest
 ```
 
-`TestSelftestSandbox` runs `selftest` natively and then again with `--sandbox --backend stub`, and requires the sandboxed run to match the native one for every case: non-empty and identical `actual_output`, identical `agent_cost`, and the same model on the recorded agent call. It also applies the same self-test expectations to the sandboxed results. The `stub-quoted-input` case checks that shell metacharacters in the input arrive intact.
+`TestSelftestSandbox` runs `selftest` natively and then again with `--sandbox --backend stub`, and requires the sandboxed run to match the native one for every case: non-empty and identical `actual_output`, identical `agent_cost`, and the same model on the recorded agent call. It also applies the same self-test expectations to the sandboxed results. For the two multi-turn cases, which run in one container per case under `--sandbox`, it additionally requires identical `turn_outputs`, identical agent call `turn` numbers and identical criterion scores. The `stub-quoted-input` case checks that shell metacharacters in the input arrive intact.
 
 The other gated tests cover the sandbox layering:
 - `TestProvenanceParitySandbox` runs `selftest` and `selftest-fail` natively and with `--sandbox` and checks provenance and scoring parity and the `eval diff` mode report (see [Parity between native and container runs](#parity-between-native-and-container-runs)).
@@ -1023,6 +1237,7 @@ The direct `go run ... --sandbox` command has no skip: without a reachable daemo
    - Set `Response.Model` when known.
    - Populate `Command`, `Stderr`, `ExitCode` and `Duration` even when returning an error, since the harness builds `error_context` from them.
    - Wrap `inference.ErrTimeout` on timeouts so `errors.Is(err, inference.ErrTimeout)` holds.
+   - Honour `Request.Turn`, the 0-based position of this user message in the conversation. `Prompt` carries **only that turn's** user message, and the harness passes no resume flag or transcript, so a backend must continue the conversation itself when `Turn > 0` (`kiro-cli` adds `--resume`, the stub answers `Stub.Turns[Turn]`, a direct-API backend keeps a message list keyed by `WorkDir`, starting a new one at `Turn == 0`). A backend with no notion of conversation can ignore it, but then a `turns` case cannot work on it. See [Backend contract for turns](#backend-contract-for-turns), including its limit under `--sandbox`.
    - A judge response must contain `===JSON_START===` ... `===JSON_END===` with `{"score": <1-5>, "reasoning": "...", "pass": <bool>}`.
 4. Keep the package stdlib-only and do not import `internal/eval`.
 5. Add unit tests next to it (see `stub_test.go` and `kirocli_test.go`), and verify with `go test ./internal/inference/...`.
@@ -1213,7 +1428,7 @@ The container is a transport: whichever backend `--backend` selects runs inside 
 
 | Backend | What runs in the container | Needs |
 |---------|----------------------------|-------|
-| `kiro-cli` | `kiro-cli` directly: `kiro-cli chat --agent <agent> --no-interactive --trust-tools=<per-agent set> [--model <model>]`, prompt on stdin. The argument list and the output handling (ANSI stripped, usage estimated, model = the pinned `--model`) are the same code the native backend uses; the only difference is that the native backend passes `--trust-all-tools` where the container passes `--trust-tools=…` (see [Tool trust](#tool-trust)). | `kiro-cli` in the image (baked at image build). The harness only verifies it is present (`ValidateKiroCLI`); it installs nothing. |
+| `kiro-cli` | `kiro-cli` directly: `kiro-cli chat --agent <agent> --no-interactive --trust-tools=<per-agent set> [--model <model>]`, prompt on stdin (turns 2..n of a multi-turn case add `--resume` after `--no-interactive`, in the same container). The argument list and the output handling (ANSI stripped, usage estimated, model = the pinned `--model`) are the same code the native backend uses; the only difference is that the native backend passes `--trust-all-tools` where the container passes `--trust-tools=…` (see [Tool trust](#tool-trust)). | `kiro-cli` in the image (baked at image build). The harness only verifies it is present (`ValidateKiroCLI`); it installs nothing. |
 | `stub` (and any other non-`kiro-cli` backend) | The backend runs in-process in the container through a hidden helper command, `kairon inference-exec --backend <name>`. The host mounts a linux `kairon` binary read-only at `/opt/kairon/kairon`, sends the request as one JSON document on stdin, and reads one JSON result on stdout. The stub reads its script (`stub.turns`, including `commands` and `tool_calls`) from that request, and `WorkDir` is the container workspace path. The request carries the trust set and the result carries any tool denials, so the stub's trust gate runs inside the container. | A static linux `kairon` binary for the container's platform (see below). `kiro-cli` is not validated. |
 
 `kairon inference-exec` is an internal protocol between the harness and its own binary; it is hidden from `kairon --help` and is not meant to be run by hand.
@@ -1608,9 +1823,9 @@ Each evaluation follows this lifecycle:
 1. **Base image** - once per run, `EnsureBaseImage` reuses the cached tools-only image or builds it (see [When the base image is rebuilt](#when-the-base-image-is-rebuilt)). Nothing is built or removed per case.
 2. **Workspace** - on the host, build the case's git workspace, staged `.kiro/`, `.eval/` and the `bin/` directory with the fake `gh` and any case mocks (see [Case Workspaces](#case-workspaces)).
 3. **Create** - create the container from the base image with resource limits, no network, a read-only root filesystem with small tmpfs mounts, the `sandbox` user, the [mounts](#mounts) (including the read-only directory at `/opt/kairon/bin` that holds the fake `gh` and any case mocks) and an environment whose `PATH` starts with it.
-4. **Execute** - run the selected backend inside the container, wrapped for the open umask, with the prompt on stdin (see [Backends in the Container](#backends-in-the-container)). For `kiro-cli` the harness first checks (read-only) that `kiro-cli` is present, and the agent is started with `--trust-tools=<per-agent set>` (see [Tool trust](#tool-trust)).
+4. **Execute** - run the selected backend inside the container, wrapped for the open umask, with the prompt on stdin (see [Backends in the Container](#backends-in-the-container)). For `kiro-cli` the harness first checks (read-only) that `kiro-cli` is present, and the agent is started with `--trust-tools=<per-agent set>` (see [Tool trust](#tool-trust)). A [multi-turn case](#multi-turn-cases) repeats this step once per turn **in the same container** (turns 2..n add `--resume`); the container is created and validated once, when the first turn runs.
 5. **Score** - score the case while the host workspace still exists.
-6. **Cleanup** - stop and remove the container, then delete the workspace unless `--keep-workspaces` is set.
+6. **Cleanup** - stop and remove the container, then delete the workspace unless `--keep-workspaces` is set. A multi-turn case has one container, removed after its last turn.
 
 ### Troubleshooting Container Issues
 

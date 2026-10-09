@@ -105,7 +105,21 @@ type Request struct {
 	Model string `json:"Model"`
 	// Stub is used only by the stub backend.
 	Stub *StubScript `json:"Stub"`
-	// Turn is the stub turn index to answer with (0 for now).
+	// Turn is the 0-based position of this user message in the conversation.
+	// 0 (the zero value) starts a new conversation; every request that does not
+	// set it is a one-message conversation.
+	//
+	// Contract: Prompt carries ONLY this turn's user message. It never carries
+	// earlier turns or earlier answers, and callers pass no "resume" flag or
+	// transcript. The backend owns conversation continuity and must continue
+	// the conversation itself when Turn > 0, in whatever way suits it:
+	//
+	//   - kiro-cli: adds --resume (continues the previous conversation in the
+	//     same working directory).
+	//   - stub: answers with Stub.Turns[Turn].
+	//   - a future direct-API backend: keeps a message list keyed by the
+	//     conversation (e.g. WorkDir), starts a new list at Turn 0 and appends
+	//     each Prompt and reply for later turns.
 	Turn int `json:"Turn"`
 	// ToolTrust restricts which tools the agent may use without prompting. nil
 	// means unrestricted (kiro-cli --trust-all-tools, the historical behaviour);

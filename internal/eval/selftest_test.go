@@ -93,6 +93,62 @@ func pathWithoutKiroCLI(t *testing.T) string {
 	return strings.Join(kept, string(os.PathListSeparator))
 }
 
+// The multi-turn self-test cases and the scripted responses of multi-turn-gh-log.
+const (
+	multiTurnGHLogCase     = "multi-turn-gh-log"
+	multiTurnWorkspaceCase = "multi-turn-workspace"
+	multiTurnWrongTurnCase = "multi-turn-wrong-turn"
+)
+
+var multiTurnGHLogMarkers = []string{"TURN-ONE-MARKER", "TURN-TWO-MARKER", "TURN-THREE-MARKER"}
+
+// assertMultiTurnGHLogResult checks the recorded evidence of the 3-turn case
+// (AC 4, AC 5): turn_outputs lists one output per turn, each carrying its own
+// scripted marker, ActualOutput is the last one, and calls[] holds one agent
+// record per turn numbered 1..3. It round-trips through JSON so the written
+// field names are what is asserted.
+func assertMultiTurnGHLogResult(t *testing.T, c CaseResult) {
+	t.Helper()
+	data, err := json.Marshal(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var raw struct {
+		TurnOutputs  []string `json:"turn_outputs"`
+		ActualOutput string   `json:"actual_output"`
+		Calls        []struct {
+			Role string `json:"role"`
+			Turn int    `json:"turn"`
+		} `json:"calls"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		t.Fatal(err)
+	}
+	if len(raw.TurnOutputs) != len(multiTurnGHLogMarkers) {
+		t.Fatalf("%s turn_outputs has %d entries, want %d: %q",
+			c.CaseName, len(raw.TurnOutputs), len(multiTurnGHLogMarkers), raw.TurnOutputs)
+	}
+	for i, marker := range multiTurnGHLogMarkers {
+		for j, out := range raw.TurnOutputs {
+			if has := strings.Contains(out, marker); has != (i == j) {
+				t.Errorf("turn_outputs[%d] contains %s = %v, want %v\n%q", j, marker, has, i == j, out)
+			}
+		}
+	}
+	if last := raw.TurnOutputs[len(raw.TurnOutputs)-1]; raw.ActualOutput != last {
+		t.Errorf("actual_output = %q, want the last turn's output %q", raw.ActualOutput, last)
+	}
+	var agentTurns []int
+	for _, call := range raw.Calls {
+		if call.Role == "agent" {
+			agentTurns = append(agentTurns, call.Turn)
+		}
+	}
+	if len(agentTurns) != 3 || agentTurns[0] != 1 || agentTurns[1] != 2 || agentTurns[2] != 3 {
+		t.Errorf("%s agent call turns = %v, want [1 2 3]", c.CaseName, agentTurns)
+	}
+}
+
 func readSelfTestResult(t *testing.T, path string) AgentResult {
 	t.Helper()
 	data, err := os.ReadFile(path)
@@ -138,8 +194,12 @@ func assertSelfTestResults(t *testing.T, res AgentResult) {
 			t.Errorf("%s usage_source = %q, want estimated", name, got)
 		}
 	}
-	if len(res.Cases) != 5+11 {
-		t.Errorf("selftest has %d cases, want 16", len(res.Cases))
+	if len(res.Cases) != 5+11+2 {
+		t.Errorf("selftest has %d cases, want 18", len(res.Cases))
+	}
+	assertMultiTurnGHLogResult(t, byName[multiTurnGHLogCase])
+	if got := byName[multiTurnWorkspaceCase].TurnOutputs; len(got) != 2 {
+		t.Errorf("%s turn_outputs = %q, want 2 entries", multiTurnWorkspaceCase, got)
 	}
 	if out := byName["stub-quoted-input"].ActualOutput; !strings.Contains(out, "arrived verbatim") {
 		t.Errorf("stub-quoted-input output = %q, want the scripted stub response", out)

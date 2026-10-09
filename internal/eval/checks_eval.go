@@ -87,26 +87,44 @@ func runCheck(c Check, in CheckInput) (bool, string) {
 		return evalFileContains(c, in.Dir, true)
 	case CheckFileNotContains:
 		return evalFileContains(c, in.Dir, false)
-	case CheckOutputContains:
-		return evalText(c, in.Output, "output", true)
-	case CheckOutputNotContains:
-		return evalText(c, in.Output, "output", false)
-	case CheckGHLogContains:
-		if in.GHLogOversized {
+	case CheckOutputContains, CheckOutputNotContains:
+		ev, detail := turnEvidence(c, in)
+		if detail != "" {
+			return false, detail
+		}
+		return evalText(c, ev.Output, "output", c.Type == CheckOutputContains)
+	case CheckGHLogContains, CheckGHLogNotContains:
+		ev, detail := turnEvidence(c, in)
+		if detail != "" {
+			return false, detail
+		}
+		if ev.GHLogOversized {
 			return false, "gh log exceeds 10 MiB; cannot score reliably"
 		}
-		return evalText(c, in.GHLog, "gh log", true)
-	case CheckGHLogNotContains:
-		if in.GHLogOversized {
-			return false, "gh log exceeds 10 MiB; cannot score reliably"
-		}
-		return evalText(c, in.GHLog, "gh log", false)
+		return evalText(c, ev.GHLog, "gh log", c.Type == CheckGHLogContains)
 	case CheckChangedFiles:
 		return evalChangedFiles(c, in)
 	case CheckCommand:
 		return evalCommand(c, in.Dir)
 	}
 	return false, fmt.Sprintf("unknown check type %q", c.Type)
+}
+
+// turnEvidence picks the output / gh log a text check reads. Without per-turn
+// evidence (a classic case) it is the top-level Output / GHLog. With it, a
+// check reads its own turn, or the last turn when it names none. A non-empty
+// detail means the check cannot be evaluated (turn out of range).
+func turnEvidence(c Check, in CheckInput) (TurnEvidence, string) {
+	if len(in.Turns) == 0 {
+		return TurnEvidence{Output: in.Output, GHLog: in.GHLog, GHLogOversized: in.GHLogOversized}, ""
+	}
+	if c.Turn == nil {
+		return in.Turns[len(in.Turns)-1], ""
+	}
+	if *c.Turn < 1 || *c.Turn > len(in.Turns) {
+		return TurnEvidence{}, fmt.Sprintf("turn %d is out of range: the case has %d turn(s)", *c.Turn, len(in.Turns))
+	}
+	return in.Turns[*c.Turn-1], ""
 }
 
 // checkDir requires dir to be an existing directory.
@@ -271,6 +289,9 @@ func checkLabel(index int, c Check) string {
 		if c.Pattern != "" {
 			fmt.Fprintf(&b, " pattern=/%s/", shorten(c.Pattern, 80))
 		}
+	}
+	if c.Turn != nil {
+		fmt.Fprintf(&b, " turn=%d", *c.Turn)
 	}
 	return b.String()
 }

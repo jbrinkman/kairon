@@ -47,6 +47,7 @@ func scoreCase(rubric Rubric, tc TestCase, cr *CaseResult) {
 			GHLog:          ghLog,
 			GHLogOversized: ghLogOversized,
 			Base:           cr.baseCommit,
+			Turns:          caseTurnEvidence(cr),
 		})
 		results = make(map[string][]CheckResult, len(checkTotals))
 		for i, r := range all {
@@ -122,6 +123,25 @@ func scoreCase(rubric Rubric, tc TestCase, cr *CaseResult) {
 		score.Reasoning = fmt.Sprintf("criterion %q is not in the rubric", name)
 		cr.Scores = append(cr.Scores, score)
 	}
+}
+
+// caseTurnEvidence builds the per-turn check evidence of a multi-turn case from the
+// recorded outputs and the gh-log snapshots taken at the end of each turn. It
+// returns nil for a classic case (or when the snapshots are missing), so
+// checks fall back to the final Output/GHLog.
+func caseTurnEvidence(cr *CaseResult) []TurnEvidence {
+	if len(cr.TurnOutputs) == 0 || len(cr.turnGHLogs) != len(cr.TurnOutputs) {
+		return nil
+	}
+	ev := make([]TurnEvidence, len(cr.TurnOutputs))
+	for i, out := range cr.TurnOutputs {
+		ev[i] = TurnEvidence{
+			Output:         out,
+			GHLog:          cr.turnGHLogs[i].Content,
+			GHLogOversized: cr.turnGHLogs[i].Oversized,
+		}
+	}
+	return ev
 }
 
 // readGHLog returns the contents of <dir>/.eval/gh.log and whether it exceeds

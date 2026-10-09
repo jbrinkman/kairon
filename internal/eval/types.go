@@ -32,9 +32,12 @@ type SetupEntry struct {
 
 // TestCase defines input and expected characteristics for an agent evaluation.
 type TestCase struct {
-	Name           string       `yaml:"name" json:"name"`
-	Description    string       `yaml:"description" json:"description"`
-	Input          string       `yaml:"input" json:"input"`
+	Name        string `yaml:"name" json:"name"`
+	Description string `yaml:"description" json:"description"`
+	Input       string `yaml:"input" json:"input"`
+	// Turns scripts a multi-turn case: one user message per turn. It replaces
+	// Input (the two are mutually exclusive).
+	Turns          []string     `yaml:"turns,omitempty" json:"turns,omitempty"`
 	ExpectedOutput string       `yaml:"expected_output,omitempty" json:"expected_output,omitempty"`
 	Context        []string     `yaml:"context,omitempty" json:"context,omitempty"`
 	Setup          []SetupEntry `yaml:"setup,omitempty" json:"setup,omitempty"`
@@ -149,8 +152,11 @@ type CriterionScore struct {
 
 // CaseResult holds scores and cost for one test case.
 type CaseResult struct {
-	CaseName     string           `json:"case_name"`
-	ActualOutput string           `json:"actual_output"`
+	CaseName     string `json:"case_name"`
+	ActualOutput string `json:"actual_output"`
+	// TurnOutputs lists the agent's output for every turn, in order. It is set
+	// only for cases declared with turns; ActualOutput is the last entry.
+	TurnOutputs  []string         `json:"turn_outputs,omitempty"`
 	Scores       []CriterionScore `json:"scores"`
 	AgentCost    CostInfo         `json:"agent_cost"`
 	JudgeCost    CostInfo         `json:"judge_cost"`
@@ -166,6 +172,9 @@ type CaseResult struct {
 	// baseCommit is the workspace's fixture commit; changed_files diffs
 	// against it so a change the agent committed is still seen. Not serialized.
 	baseCommit string
+	// turnGHLogs holds .eval/gh.log as it stood at the end of each turn
+	// (index i is turn i+1) for a turns case. Not serialized.
+	turnGHLogs []ghLogSnapshot
 	// Calls holds one record per agent call and per judge call, in execution order.
 	Calls []inference.CallRecord `json:"calls,omitempty"`
 }
@@ -325,4 +334,20 @@ type ProjectDetection struct {
 	ProjectType  string            `json:"project_type"`
 	ConfigFiles  []string          `json:"config_files"`
 	Dependencies map[string]string `json:"dependencies"`
+}
+
+// userTurns returns the user messages of the case in order: Turns for a
+// multi-turn case, otherwise the single Input (a classic case is a case with
+// one turn).
+func (tc TestCase) userTurns() []string {
+	if tc.Turns != nil {
+		return tc.Turns
+	}
+	return []string{tc.Input}
+}
+
+// ghLogSnapshot is a copy of .eval/gh.log taken at the end of one turn.
+type ghLogSnapshot struct {
+	Content   string
+	Oversized bool
 }
