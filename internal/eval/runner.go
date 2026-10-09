@@ -40,11 +40,21 @@ func checkDockerAvailability() error {
 
 // RunWithOptions executes evaluation with extended CLI options.
 func RunWithOptions(agent string, testcase string, options RunOptions) error {
+	// Validate the candidate prompt first: --prompt-file problems (no agent,
+	// unusable file, incompatible mode) are reported before any state is
+	// changed or any case runs.
+	candidate, err := loadCandidatePrompt(agent, options)
+	if err != nil {
+		return err
+	}
+
 	// Apply backend / evals-dir configuration before doing any work so that
 	// an unknown backend is rejected up front.
 	if err := configure(options); err != nil {
 		return err
 	}
+	// configure resets cfg, so a candidate never leaks between runs.
+	cfg.candidate = candidate
 
 	// Handle cleanup operation early
 	if options.Cleanup {
@@ -1786,13 +1796,27 @@ func checkResumeIntegrity(resultsDir, agent string, sandbox bool) error {
 		return nil
 	}
 	if existing.PromptSHA256 != pin.Provenance.PromptSHA256 ||
+		existing.PromptFile != pin.Provenance.PromptFile ||
 		existing.AgentModel != pin.Model ||
 		existing.JudgeModel != cfg.pins.Judge {
-		return fmt.Errorf("❌ cannot resume: prompt or models changed since the interrupted run of %s (recorded agent_model=%s judge_model=%s prompt_sha256=%s; now agent_model=%s judge_model=%s prompt_sha256=%s)",
-			agent, existing.AgentModel, existing.JudgeModel, existing.PromptSHA256,
-			pin.Model, cfg.pins.Judge, pin.Provenance.PromptSHA256)
+		// prompt_file is compared as well as the hash: a candidate run resumed
+		// without the candidate (or with a different file that happens to hash
+		// identically) must not mix provenance. A file without prompt_file
+		// compares equal to "no candidate".
+		return fmt.Errorf("❌ cannot resume: prompt or models changed since the interrupted run of %s (recorded agent_model=%s judge_model=%s prompt_sha256=%s prompt_file=%s; now agent_model=%s judge_model=%s prompt_sha256=%s prompt_file=%s)",
+			agent, existing.AgentModel, existing.JudgeModel, existing.PromptSHA256, promptFileLabel(existing.PromptFile),
+			pin.Model, cfg.pins.Judge, pin.Provenance.PromptSHA256, promptFileLabel(pin.Provenance.PromptFile))
 	}
 	return nil
+}
+
+// promptFileLabel renders a prompt_file for messages: "(none)" when the run
+// used the live prompt rather than a --prompt-file candidate.
+func promptFileLabel(p string) string {
+	if p == "" {
+		return "(none)"
+	}
+	return p
 }
 
 // conflictingSavedMode scans the sibling <agent>.json result files in
@@ -2025,14 +2049,16 @@ func updateIncrementalSummary(summaryFile string, agentResult AgentResult, gitHa
 		summary.Agents[agentResult.Agent] = AgentProvenance{
 			AgentModel:       agentResult.AgentModel,
 			PromptSHA256:     agentResult.PromptSHA256,
+			PromptFile:       agentResult.PromptFile,
 			ResourcesPresent: append([]string{}, agentResult.ResourcesPresent...),
 		}
 	}
-	summary.AgentModel, summary.PromptSHA256, summary.ResourcesPresent = "", "", nil
+	summary.AgentModel, summary.PromptSHA256, summary.PromptFile, summary.ResourcesPresent = "", "", "", nil
 	if len(summary.Agents) == 1 {
 		for _, p := range summary.Agents {
 			summary.AgentModel = p.AgentModel
 			summary.PromptSHA256 = p.PromptSHA256
+			summary.PromptFile = p.PromptFile
 			summary.ResourcesPresent = p.ResourcesPresent
 		}
 	}

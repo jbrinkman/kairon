@@ -27,6 +27,9 @@ type agentProvenance struct {
 	ConfigPath string
 	// PromptSHA256 is the lowercase hex SHA-256 described on hashParts.
 	PromptSHA256 string
+	// PromptFile is the candidate prompt path (--prompt-file) the hash was
+	// computed with; empty when the live prompt was used.
+	PromptFile string
 	// ResourcesPresent lists existing resource entries exactly as written in
 	// the config, in config order. Never nil.
 	ResourcesPresent []string
@@ -65,6 +68,18 @@ func locateAgentConfig(agent string, ignoreOverlay bool) (string, error) {
 // ignoreOverlay is true only the latter is considered: a kiro-cli container
 // cannot see the evals-dir overlay.
 func resolveAgentProvenance(agent string, ignoreOverlay bool) (agentProvenance, error) {
+	return resolveAgentProvenanceWith(agent, ignoreOverlay, cfg.candidate)
+}
+
+// resolveAgentProvenanceWith is resolveAgentProvenance with an explicit
+// candidate prompt. A candidate for this agent replaces the live prompt file
+// bytes in the "prompt" hash part (the live file need not exist); the config
+// and resource parts are unchanged. A candidate for another agent is ignored.
+func resolveAgentProvenanceWith(agent string, ignoreOverlay bool, cand *candidatePrompt) (agentProvenance, error) {
+	if cand != nil && cand.Agent != agent {
+		cand = nil
+	}
+
 	path, err := locateAgentConfig(agent, ignoreOverlay)
 	if err != nil {
 		return agentProvenance{}, err
@@ -83,8 +98,14 @@ func resolveAgentProvenance(agent string, ignoreOverlay bool) (agentProvenance, 
 	writeHashPart(h, "config", configBytes)
 
 	// Prompt: a file:// reference is read (and required); an inline prompt is
-	// already covered by the config bytes.
-	if ref, ok := strings.CutPrefix(conf.Prompt, "file://"); ok {
+	// already covered by the config bytes. With a candidate, its bytes stand
+	// in for the file and the live file is not read.
+	if cand != nil {
+		if _, err := candidatePromptDest(path, conf.Prompt); err != nil {
+			return agentProvenance{}, err
+		}
+		writeHashPart(h, "prompt", cand.Content)
+	} else if ref, ok := strings.CutPrefix(conf.Prompt, "file://"); ok {
 		promptPath := ref
 		if !filepath.IsAbs(promptPath) {
 			promptPath = filepath.Join(filepath.Dir(path), promptPath)
@@ -119,12 +140,16 @@ func resolveAgentProvenance(agent string, ignoreOverlay bool) (agentProvenance, 
 		present = append(present, entry)
 	}
 
-	return agentProvenance{
+	prov := agentProvenance{
 		Model:            strings.TrimSpace(conf.Model),
 		ConfigPath:       path,
 		PromptSHA256:     hex.EncodeToString(h.Sum(nil)),
 		ResourcesPresent: present,
-	}, nil
+	}
+	if cand != nil {
+		prov.PromptFile = cand.Path
+	}
+	return prov, nil
 }
 
 // hashWriter is the subset of hash.Hash used for framing.
@@ -266,6 +291,7 @@ func (p *runPins) applyTo(r *AgentResult) {
 	r.AgentModel = pin.Model
 	r.JudgeModel = p.Judge
 	r.PromptSHA256 = pin.Provenance.PromptSHA256
+	r.PromptFile = pin.Provenance.PromptFile
 	r.ResourcesPresent = append([]string{}, pin.Provenance.ResourcesPresent...)
 }
 

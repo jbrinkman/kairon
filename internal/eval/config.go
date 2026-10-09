@@ -27,6 +27,9 @@ type runConfig struct {
 	// nil means unpinned (direct calls that bypass RunWithOptions): empty
 	// Request.Model and no provenance fields.
 	pins *runPins
+	// candidate is the --prompt-file candidate prompt under evaluation, set by
+	// RunWithOptions after configure. nil means the live prompt is evaluated.
+	candidate *candidatePrompt
 	// keepWorkspaces keeps per-case workspaces after the run (--keep-workspaces).
 	keepWorkspaces bool
 }

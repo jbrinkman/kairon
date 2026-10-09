@@ -427,7 +427,8 @@ func hermeticGitEnv() []string {
 
 // stageKiro builds Dir/.kiro on the host with precedence
 // fixture > <evals-dir>/agents > project .kiro. The project's own .kiro is
-// only read.
+// only read. A candidate prompt (cfg.candidate) is written last, over all of
+// them, and is the one exception to the fixture precedence.
 func (w *caseWorkspace) stageKiro(fixtureFiles map[string]bool) error {
 	if err := os.MkdirAll(w.KiroDir, 0o755); err != nil {
 		return err
@@ -443,6 +444,11 @@ func (w *caseWorkspace) stageKiro(fixtureFiles map[string]bool) error {
 		return fixtureKiro(filepath.Join("agents", rel))
 	}, nil); err != nil {
 		return fmt.Errorf("staging eval agents: %w", err)
+	}
+	// A --prompt-file candidate replaces the agent's prompt in this workspace
+	// copy only, over every lower layer and any fixture file.
+	if err := stageCandidatePrompt(w, cfg.candidate); err != nil {
+		return err
 	}
 	return nil
 }
