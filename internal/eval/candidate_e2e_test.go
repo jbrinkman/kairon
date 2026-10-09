@@ -280,8 +280,11 @@ func TestCandidateE2EKeptWorkspacesHoldCandidate(t *testing.T) {
 	for _, c := range run.agent.Cases {
 		removeKeptWorkspace(t, c)
 	}
-	if len(run.agent.Cases) != 5 {
-		t.Fatalf("selftest.json has %d cases, want 5", len(run.agent.Cases))
+	// Guard against a vacuous pass: the per-case loop below only proves
+	// anything if the run actually produced cases. The exact count is
+	// deliberately not asserted so adding selftest cases never breaks this.
+	if len(run.agent.Cases) == 0 {
+		t.Fatal("selftest run produced no cases; the per-case checks below would pass vacuously")
 	}
 
 	for _, c := range run.agent.Cases {

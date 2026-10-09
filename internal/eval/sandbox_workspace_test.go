@@ -385,8 +385,8 @@ func TestSandboxWorkspace(t *testing.T) {
 	editedOut := captureStdout(t, func() {
 		edited = runEvalIn(t, evalsDir, "selftest", RunOptions{Sandbox: true})
 	})
-	if len(edited.Cases) != 5 {
-		t.Errorf("edited run has %d cases, want 5", len(edited.Cases))
+	if len(edited.Cases) == 0 {
+		t.Error("edited run produced no cases")
 	}
 	if strings.Contains(editedOut, "Base image built") {
 		t.Errorf("editing an agent config and a case rebuilt the base image:\n%s", editedOut)
