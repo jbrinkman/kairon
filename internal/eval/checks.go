@@ -45,6 +45,7 @@ type Check struct {
 	Path       string    `yaml:"path,omitempty" json:"path,omitempty"`
 	Pattern    string    `yaml:"pattern,omitempty" json:"pattern,omitempty"`
 	Allow      []string  `yaml:"allow,omitempty" json:"allow,omitempty"`
+	Turn       *int      `yaml:"turn,omitempty" json:"turn,omitempty"`
 
 	re        *regexp.Regexp
 	globs     []glob
@@ -71,6 +72,17 @@ type CheckInput struct {
 	// holds only the truncated prefix. The gh_log checks fail explicitly in
 	// that case rather than scoring incomplete text.
 	GHLogOversized bool
+
+	// Turns is per-turn evidence for multi-turn cases; Turns[i] is turn i+1.
+	// Empty for classic cases, whose checks read Output and GHLog.
+	Turns []TurnEvidence
+}
+
+// TurnEvidence is what output_* and gh_log_* checks may inspect for one turn.
+type TurnEvidence struct {
+	Output         string // the agent's output for the turn
+	GHLog          string // .eval/gh.log as it stood at the end of the turn (cumulative)
+	GHLogOversized bool
 }
 
 // expectedExit is the exit status a command check must produce (default 0).
@@ -83,7 +95,7 @@ func (c Check) expectedExit() int {
 
 // checkFields is the set of optional schema fields a check may carry.
 type checkFields struct {
-	run, expectExit, inject, path, pattern, allow bool
+	run, expectExit, inject, path, pattern, allow, turn bool
 }
 
 // checkSpecs lists, per type, the fields it requires and the fields it
@@ -99,10 +111,10 @@ var checkSpecs = map[CheckType]struct{ required, allowed checkFields }{
 	CheckFileContains:      {checkFields{path: true, pattern: true}, checkFields{path: true, pattern: true}},
 	CheckFileNotContains:   {checkFields{path: true, pattern: true}, checkFields{path: true, pattern: true}},
 	CheckChangedFiles:      {checkFields{allow: true}, checkFields{allow: true}},
-	CheckOutputContains:    {checkFields{pattern: true}, checkFields{pattern: true}},
-	CheckOutputNotContains: {checkFields{pattern: true}, checkFields{pattern: true}},
-	CheckGHLogContains:     {checkFields{pattern: true}, checkFields{pattern: true}},
-	CheckGHLogNotContains:  {checkFields{pattern: true}, checkFields{pattern: true}},
+	CheckOutputContains:    {checkFields{pattern: true}, checkFields{pattern: true, turn: true}},
+	CheckOutputNotContains: {checkFields{pattern: true}, checkFields{pattern: true, turn: true}},
+	CheckGHLogContains:     {checkFields{pattern: true}, checkFields{pattern: true, turn: true}},
+	CheckGHLogNotContains:  {checkFields{pattern: true}, checkFields{pattern: true, turn: true}},
 }
 
 // present reports which fields the check actually sets. Empty strings, a nil
@@ -115,6 +127,7 @@ func (c Check) present() checkFields {
 		path:       c.Path != "",
 		pattern:    c.Pattern != "",
 		allow:      c.Allow != nil,
+		turn:       c.Turn != nil,
 	}
 }
 
@@ -160,6 +173,7 @@ func validateCheck(c *Check, hiddenDir string, rubric *Rubric) error {
 		{"path", have.path, spec.required.path, spec.allowed.path},
 		{"pattern", have.pattern, spec.required.pattern, spec.allowed.pattern},
 		{"allow", have.allow, spec.required.allow, spec.allowed.allow},
+		{"turn", have.turn, spec.required.turn, spec.allowed.turn},
 	} {
 		switch {
 		case f.have && !f.ok:
@@ -175,6 +189,9 @@ func validateCheck(c *Check, hiddenDir string, rubric *Rubric) error {
 		}
 	}
 
+	if have.turn && *c.Turn < 1 {
+		return fmt.Errorf("turn %d must be >= 1 (turns are numbered from 1)", *c.Turn)
+	}
 	if have.path {
 		if !filepath.IsLocal(c.Path) {
 			return fmt.Errorf("path %q must be relative and stay inside the workspace (no absolute path, no '..')", c.Path)

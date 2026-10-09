@@ -94,6 +94,9 @@ func workspaceFixtureDir(name string) string {
 // validateCaseFields validates the workspace and timeout fields of a loaded
 // case. file is the case file name, used in error messages.
 func validateCaseFields(tc TestCase, file string) error {
+	if err := validateTurnFields(tc, file); err != nil {
+		return err
+	}
 	if err := validateWorkspaceName(tc.Workspace); err != nil {
 		return fmt.Errorf("case %q (%s): %w", tc.Name, file, err)
 	}
@@ -126,6 +129,39 @@ func validateCaseFields(tc TestCase, file string) error {
 		}
 		if d <= 0 {
 			return fmt.Errorf("case %q (%s): invalid timeout %q: must be a positive duration", tc.Name, file, tc.Timeout)
+		}
+	}
+	return nil
+}
+
+// validateTurnFields validates the multi-turn shape of a case: turns and input
+// are mutually exclusive, a turns list is non-empty with no blank entries, a
+// stub scripts exactly one entry per turn, and every check turn is within the
+// number of turns (a classic input case has one turn). Classic cases keep
+// their existing stub behaviour (only entry 0 is used), so nothing about them
+// is rejected here beyond an out-of-range check turn.
+func validateTurnFields(tc TestCase, file string) error {
+	if tc.Turns != nil {
+		if strings.TrimSpace(tc.Input) != "" {
+			return fmt.Errorf("case %q (%s): turns and input are mutually exclusive; use turns for a multi-turn case", tc.Name, file)
+		}
+		if len(tc.Turns) == 0 {
+			return fmt.Errorf("case %q (%s): turns must list at least one user message", tc.Name, file)
+		}
+		for i, turn := range tc.Turns {
+			if strings.TrimSpace(turn) == "" {
+				return fmt.Errorf("case %q (%s): turns[%d] is empty", tc.Name, file, i)
+			}
+		}
+		if tc.Stub != nil && len(tc.Stub.Turns) != len(tc.Turns) {
+			return fmt.Errorf("case %q (%s): stub.turns has %d entries but the case has %d turns; script exactly one stub turn per turn",
+				tc.Name, file, len(tc.Stub.Turns), len(tc.Turns))
+		}
+	}
+	n := len(tc.userTurns())
+	for i, c := range tc.Checks {
+		if c.Turn != nil && *c.Turn > n {
+			return fmt.Errorf("case %q (%s): check %d (%s): turn %d is beyond the case's %d turn(s)", tc.Name, file, i+1, c.Type, *c.Turn, n)
 		}
 	}
 	return nil

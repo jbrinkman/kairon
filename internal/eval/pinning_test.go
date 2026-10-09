@@ -363,8 +363,10 @@ func TestCallRecordsSelfTestProvenance(t *testing.T) {
 				}
 			}
 		}
-		if agents != 1 || judges != 1 {
-			t.Errorf("case %s: agent=%d judge=%d records, want 1 each", c.CaseName, agents, judges)
+		// A multi-turn case records one agent call per turn.
+		wantAgents := max(len(c.TurnOutputs), 1)
+		if agents != wantAgents || judges != 1 {
+			t.Errorf("case %s: agent=%d judge=%d records, want %d agent and 1 judge", c.CaseName, agents, judges, wantAgents)
 		}
 	}
 	rawCalls := string(raw)

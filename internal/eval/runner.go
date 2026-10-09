@@ -499,6 +499,7 @@ func assemblePrompt(setup []SetupEntry, input string) (string, error) {
 // The returned CallRecord describes the call (also when it failed).
 func invokeAgent(agent, prompt string, cConfig *ContainerConfig, opts callOpts) (string, CostInfo, inference.CallRecord, *ErrorContext, error) {
 	req := newAgentRequest(agent, prompt, opts.Stub)
+	req.Turn = requestTurn(opts.Turn)
 
 	if cConfig != nil {
 		// The container exec is bounded by the sandbox timeout, and the
@@ -528,7 +529,16 @@ func invokeAgent(agent, prompt string, cConfig *ContainerConfig, opts callOpts) 
 		req.ToolTrust = trust
 
 		start := time.Now()
-		resp, baseEC, err := invokeInContainer(req, cConfig, opts.Workspace)
+		var (
+			resp   inference.Response
+			baseEC *ErrorContext
+		)
+		if opts.Session != nil {
+			// A multi-turn case: every turn runs in the case's one container.
+			resp, baseEC, err = opts.Session.Run(req)
+		} else {
+			resp, baseEC, err = invokeInContainer(req, cConfig, opts.Workspace)
+		}
 		return completeAgentCall(req, resp, err, time.Since(start), baseEC)
 	}
 
@@ -579,9 +589,18 @@ func newAgentRequest(agent, prompt string, stub *inference.StubScript) inference
 		AgentConfigDir: agentConfigDir(agent),
 		Model:          cfg.pins.agentModel(agent),
 		Stub:           stub,
-		// Turn is left 0: multi-turn stub selection lands with E9 (multi-turn
-		// cases). StubScript.Turns is a slice for that future, not yet wired.
+		// Turn is set by invokeAgent from callOpts.Turn (see requestTurn).
 	}
+}
+
+// requestTurn converts a 1-based turn number (callOpts.Turn, as used in case
+// YAML and results) to the 0-based inference.Request.Turn. It is the one place
+// the two numbering conventions meet. Zero (no turn given) is the first turn.
+func requestTurn(turn int) int {
+	if turn < 1 {
+		return 0
+	}
+	return turn - 1
 }
 
 // completeAgentCall turns a backend result into invokeAgent's return values:
@@ -831,47 +850,67 @@ func ensureBaseImageName(ctx context.Context, cConfig *ContainerConfig) (string,
 	return tag, nil
 }
 
-// invokeAgentInContainer runs one agent request inside a container created
-// from the cached base image. Everything the agent sees is bind-mounted from
-// the host-built case workspace; nothing is copied or installed in the running
-// container. The container is only a transport: the backend selected by
-// cfg.backend runs inside it (see runAgentInContainer) and the result is
-// completed by the same logic as a native call.
-func invokeAgentInContainer(req inference.Request, cConfig *ContainerConfig, ws *caseWorkspace) (inference.Response, *ErrorContext, error) {
+// containerSession is one container kept open across the turns of a case, so
+// state the agent keeps under the container's $HOME tmpfs (kiro-cli's
+// conversation) survives from one turn to the next.
+type containerSession interface {
+	// Run executes one agent request in the open container.
+	Run(req inference.Request) (inference.Response, *ErrorContext, error)
+	// Close removes the container. failed reports that the case failed, which
+	// in debug mode preserves the container for inspection.
+	Close(failed bool)
+}
+
+// openContainerSession is a seam so tests can observe the session lifecycle
+// of a multi-turn case without a container daemon.
+var openContainerSession = openAgentContainerSession
+
+// agentContainerSession is the real containerSession: a started container
+// created from the cached base image.
+type agentContainerSession struct {
+	ctx     context.Context
+	c       *sandbox.Container
+	cConfig *ContainerConfig
+}
+
+// openAgentContainerSession creates and starts a container for one case and
+// validates kiro-cli once. Everything the agent sees is bind-mounted from the
+// host-built case workspace; nothing is copied or installed in the running
+// container. req supplies only the agent name for debug bookkeeping.
+func openAgentContainerSession(req inference.Request, cConfig *ContainerConfig, ws *caseWorkspace) (containerSession, error) {
 	ctx := context.Background()
 	backendName := cfg.backend.Name()
 
 	mounts, err := buildContainerMounts(ws, cConfig, backendName)
 	if err != nil {
-		return inference.Response{}, nil, err
+		return nil, err
 	}
 	hostConfig, err := sandbox.NewHostConfigWithMounts(cConfig.ResourceLimits, mounts)
 	if err != nil {
-		return inference.Response{}, nil, fmt.Errorf("preparing container mounts: %w", err)
+		return nil, fmt.Errorf("preparing container mounts: %w", err)
 	}
 
 	c, err := sandbox.NewContainerWithDebug("", cConfig.Debug)
 	if err != nil {
-		return inference.Response{}, nil, fmt.Errorf("creating container: %w", err)
+		return nil, fmt.Errorf("creating container: %w", err)
 	}
-	defer c.Close()
 
 	imageName, err := ensureBaseImageName(ctx, cConfig)
 	if err != nil {
-		return inference.Response{}, nil, err
+		c.Close()
+		return nil, err
 	}
 
 	createStart := time.Now()
 	if err := c.CreateWithPlatform(ctx, newContainerConfig(imageName, cConfig), hostConfig, cConfig.Platform); err != nil {
-		return inference.Response{}, nil, fmt.Errorf("creating container: %w", err)
+		c.Close()
+		return nil, fmt.Errorf("creating container: %w", err)
 	}
-	containerFailed := false
-	defer func() {
-		c.CleanupWithDebugInfo(ctx, containerFailed)
-	}()
+	s := &agentContainerSession{ctx: ctx, c: c, cConfig: cConfig}
 
 	if err := c.Start(ctx); err != nil {
-		return inference.Response{}, nil, fmt.Errorf("starting container: %w", err)
+		s.Close(false)
+		return nil, fmt.Errorf("starting container: %w", err)
 	}
 
 	c.LogStartup(cConfig.ResourceLimits)
@@ -889,25 +928,73 @@ func invokeAgentInContainer(req inference.Request, cConfig *ContainerConfig, ws 
 	setupStart := time.Now()
 	if backendName == inference.NameKiroCLI {
 		if err := c.ValidateKiroCLI(ctx, cConfig.Platform); err != nil {
-			return inference.Response{}, nil, fmt.Errorf("validating kiro-cli: %w", err)
+			s.Close(false)
+			return nil, fmt.Errorf("validating kiro-cli: %w", err)
 		}
 	}
 	fmt.Printf("  Container setup: %v\n", time.Since(setupStart))
+	return s, nil
+}
 
+// Run executes one request in the session's container. The container is only
+// a transport: the backend selected by cfg.backend runs inside it (see
+// runAgentInContainer) and the result is completed by the same logic as a
+// native call.
+func (s *agentContainerSession) Run(req inference.Request) (inference.Response, *ErrorContext, error) {
 	executionStart := time.Now()
-	resp, ec, err := runAgentInContainer(ctx, c, req, cConfig)
-	executionDuration := time.Since(executionStart)
-
+	resp, ec, err := runAgentInContainer(s.ctx, s.c, req, s.cConfig)
 	if err != nil {
-		// In debug mode, preserve the failed container
-		if cConfig.Debug {
-			containerFailed = true
-		}
 		return resp, ec, err
 	}
-
-	fmt.Printf("  Execution time: %v\n", executionDuration)
+	fmt.Printf("  Execution time: %v\n", time.Since(executionStart))
 	return resp, ec, nil
+}
+
+// Close removes the container. Only in debug mode does a failure preserve it.
+func (s *agentContainerSession) Close(failed bool) {
+	s.c.CleanupWithDebugInfo(s.ctx, failed && s.cConfig.Debug)
+	s.c.Close()
+}
+
+// invokeAgentInContainer runs one agent request in a container of its own:
+// open, run, close.
+func invokeAgentInContainer(req inference.Request, cConfig *ContainerConfig, ws *caseWorkspace) (inference.Response, *ErrorContext, error) {
+	s, err := openAgentContainerSession(req, cConfig, ws)
+	if err != nil {
+		return inference.Response{}, nil, err
+	}
+	resp, ec, err := s.Run(req)
+	s.Close(err != nil)
+	return resp, ec, err
+}
+
+// lazyContainerSession opens the case's container session on the first Run,
+// from that turn's fully prepared request, through the openContainerSession
+// seam. A call that fails before reaching the container (tool-trust
+// resolution fails closed) therefore never creates one, and an open failure
+// surfaces as that turn's failure. Close before any Run does nothing.
+type lazyContainerSession struct {
+	cConfig *ContainerConfig
+	ws      *caseWorkspace
+	s       containerSession
+}
+
+func (l *lazyContainerSession) Run(req inference.Request) (inference.Response, *ErrorContext, error) {
+	if l.s == nil {
+		s, err := openContainerSession(req, l.cConfig, l.ws)
+		if err != nil {
+			return inference.Response{}, nil, err
+		}
+		l.s = s
+	}
+	return l.s.Run(req)
+}
+
+func (l *lazyContainerSession) Close(failed bool) {
+	if l.s != nil {
+		l.s.Close(failed)
+		l.s = nil
+	}
 }
 
 // invokeInContainer is a seam so tests can run invokeAgent's container branch
@@ -1342,6 +1429,17 @@ func scoreDeterministic(criterion Criterion, tc TestCase, actualOutput, workspac
 	}
 }
 
+// renderJudgeTurns renders the scripted user messages of a multi-turn case as
+// the judge's INPUT, one labelled block per turn. The judge template itself is
+// unchanged; a classic case still passes its Input verbatim.
+func renderJudgeTurns(turns []string) string {
+	parts := make([]string, len(turns))
+	for i, turn := range turns {
+		parts[i] = fmt.Sprintf("Turn %d (user): %s", i+1, turn)
+	}
+	return strings.Join(parts, "\n\n")
+}
+
 // The returned CallRecord describes the judge call (also when it failed or
 // its output could not be parsed, since tokens were spent).
 func scoreLLMJudge(criterion Criterion, tc TestCase, actualOutput string) (CostInfo, int, string, bool, inference.CallRecord) {
@@ -1353,6 +1451,11 @@ func scoreLLMJudge(criterion Criterion, tc TestCase, actualOutput string) (CostI
 	expectedSection := ""
 	if tc.ExpectedOutput != "" {
 		expectedSection = fmt.Sprintf("\nEXPECTED OUTPUT (compare similarity and completeness):\n%s\n", tc.ExpectedOutput)
+	}
+
+	judgeInput := tc.Input
+	if tc.Turns != nil {
+		judgeInput = renderJudgeTurns(tc.Turns)
 	}
 
 	prompt := fmt.Sprintf(`Evaluate this output against the criterion.
@@ -1374,7 +1477,7 @@ INPUT:
 %s
 
 ACTUAL OUTPUT TO EVALUATE:
-%s`, criterion.Name, criterion.Description, contextSection, expectedSection, tc.Input, actualOutput)
+%s`, criterion.Name, criterion.Description, contextSection, expectedSection, judgeInput, actualOutput)
 
 	req := inference.Request{
 		Role:    inference.RoleJudge,
@@ -2149,7 +2252,10 @@ func RunPerformanceInvestigation(agent string) error {
 			break
 		}
 
-		promptSize := len(tc.Input)
+		promptSize := 0
+		for _, turn := range tc.userTurns() {
+			promptSize += len(turn)
+		}
 		if len(tc.Setup) > 0 {
 			for _, setup := range tc.Setup {
 				promptSize += len(setup.Content)

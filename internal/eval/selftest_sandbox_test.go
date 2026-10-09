@@ -1,9 +1,11 @@
 package eval
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"testing"
 
 	"github.com/jbrinkman/kairon/internal/eval/sandbox"
@@ -123,6 +125,42 @@ func TestSelftestSandbox(t *testing.T) {
 				t.Errorf("agent call model = %q, want %q (native)", got, want)
 			}
 		})
+	}
+
+	// The multi-turn cases run in one container per case under --sandbox:
+	// every turn's output, the call records and the check results must match
+	// the native run.
+	for _, name := range []string{multiTurnGHLogCase, multiTurnWorkspaceCase} {
+		n, s := nativeCases[name], sandboxCases[name]
+		if len(n.TurnOutputs) == 0 {
+			t.Errorf("native %s has no turn_outputs", name)
+		}
+		if strings.Join(n.TurnOutputs, "\x00") != strings.Join(s.TurnOutputs, "\x00") {
+			t.Errorf("%s turn_outputs differ\n native: %q\nsandbox: %q", name, n.TurnOutputs, s.TurnOutputs)
+		}
+		var nTurns, sTurns []int
+		for _, c := range n.Calls {
+			if c.Role == "agent" {
+				nTurns = append(nTurns, c.Turn)
+			}
+		}
+		for _, c := range s.Calls {
+			if c.Role == "agent" {
+				sTurns = append(sTurns, c.Turn)
+			}
+		}
+		if fmt.Sprint(nTurns) != fmt.Sprint(sTurns) {
+			t.Errorf("%s agent call turns differ: native %v, sandbox %v", name, nTurns, sTurns)
+		}
+		if len(n.Scores) != len(s.Scores) {
+			t.Fatalf("%s has %d native scores, %d sandbox scores", name, len(n.Scores), len(s.Scores))
+		}
+		for i := range n.Scores {
+			if n.Scores[i].Score != s.Scores[i].Score || n.Scores[i].MaxScore != s.Scores[i].MaxScore {
+				t.Errorf("%s criterion %s: native %d/%d, sandbox %d/%d", name, n.Scores[i].Name,
+					n.Scores[i].Score, n.Scores[i].MaxScore, s.Scores[i].Score, s.Scores[i].MaxScore)
+			}
+		}
 	}
 
 	// The sandbox run must satisfy the same expectations as the native one.

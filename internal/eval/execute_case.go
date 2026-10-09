@@ -22,6 +22,13 @@ type callOpts struct {
 	// environment/default (native) and the sandbox resource limit
 	// (container). Zero leaves the existing precedence unchanged.
 	Timeout time.Duration
+	// Turn is the 1-based number of the user turn being sent (the numbering of
+	// case YAML and results). It becomes the 0-based inference.Request.Turn.
+	// Zero means the first turn.
+	Turn int
+	// Session, when set together with a container config, runs the call in
+	// the case's open container session instead of a one-shot container.
+	Session containerSession
 }
 
 // scoreCaseFn is the scoring step of executeCase; tests replace it to observe
@@ -64,7 +71,11 @@ func executeCase(rubric Rubric, tc TestCase, cConfig *ContainerConfig, out io.Wr
 		return cr
 	}
 
-	prompt, err := assemblePrompt(tc.Setup, tc.Input)
+	// A classic case is a case with one turn. Setup context is part of the
+	// first turn's prompt only; later turns are sent verbatim.
+	turns := tc.userTurns()
+	multi := tc.Turns != nil // only turns cases record per-turn results
+	prompt, err := assemblePrompt(tc.Setup, turns[0])
 	if err != nil {
 		fmt.Fprintf(out, " ❌ (prompt error)\n")
 		fmt.Fprintf(out, "      Error: %v\n", err)
@@ -95,21 +106,58 @@ func executeCase(rubric Rubric, tc TestCase, cConfig *ContainerConfig, out io.Wr
 		defer ws.Remove() // after scoring; Remove never fails the run
 	}
 
-	fmt.Fprintf(out, " → running agent...")
-	actualOutput, cost, rec, errorContext, err := invokeAgent(rubric.Agent, prompt, cConfig,
-		callOpts{Stub: tc.Stub, Workspace: ws, Timeout: caseTimeout(tc)})
-	cr.Calls = append(cr.Calls, rec)
-	if err != nil {
-		fmt.Fprintf(out, " ❌ (agent failed)\n")
-		fmt.Fprintf(out, "      Error: %v\n", err)
-		cr.ActualOutput = ""
-		cr.ErrorContext = errorContext
-	} else {
-		cr.ActualOutput = actualOutput
-		cr.AgentCost = cost
-		cr.ErrorContext = errorContext
-		fmt.Fprintf(out, " → evaluating...")
+	// A multi-turn sandbox case keeps one container for all its turns, so the
+	// agent's conversation state under the container's $HOME survives between
+	// turns. One-turn and classic cases keep the one-shot container path.
+	var session containerSession
+	failed := false
+	if cConfig != nil && len(turns) > 1 {
+		session = &lazyContainerSession{cConfig: cConfig, ws: ws}
+		defer func() { session.Close(failed) }()
 	}
+
+	// Every turn runs against the same workspace; the backend owns
+	// conversation continuity (Request.Turn > 0 continues it).
+	for i, userTurn := range turns {
+		k := i + 1
+		if i > 0 {
+			prompt = userTurn
+		}
+		if multi {
+			fmt.Fprintf(out, " → turn %d/%d...", k, len(turns))
+		} else {
+			fmt.Fprintf(out, " → running agent...")
+		}
+		actualOutput, cost, rec, errorContext, err := invokeAgent(rubric.Agent, prompt, cConfig,
+			callOpts{Stub: tc.Stub, Workspace: ws, Timeout: caseTimeout(tc), Turn: k, Session: session})
+		if multi {
+			rec.Turn = k
+		}
+		cr.Calls = append(cr.Calls, rec)
+		cr.AgentCost.Add(cost)
+		if err != nil {
+			failed = true
+			fmt.Fprintf(out, " ❌ (agent failed)\n")
+			if multi {
+				fmt.Fprintf(out, "      Error: turn %d/%d: %v\n", k, len(turns), err)
+			} else {
+				fmt.Fprintf(out, "      Error: %v\n", err)
+			}
+			cr.ActualOutput = ""
+			cr.ErrorContext = errorContext
+			scoreCaseFn(rubric, tc, &cr)
+			return cr
+		}
+		cr.ActualOutput = actualOutput
+		cr.ErrorContext = errorContext
+		if multi {
+			// Snapshot the cumulative gh log before the next turn can change it.
+			cr.TurnOutputs = append(cr.TurnOutputs, actualOutput)
+			ghLog, oversized := readGHLog(ws.Dir)
+			cr.turnGHLogs = append(cr.turnGHLogs, ghLogSnapshot{Content: ghLog, Oversized: oversized})
+		}
+	}
+	fmt.Fprintf(out, " → evaluating...")
 
 	scoreCaseFn(rubric, tc, &cr)
 	return cr

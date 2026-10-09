@@ -14,7 +14,12 @@ import (
 // KiroCLIAgentCommand returns the kiro-cli arguments (without the program name)
 // and the human-readable command line for an agent request:
 //
-//	chat --agent <agent> --no-interactive --trust-all-tools [--model <m>]
+//	chat --agent <agent> --no-interactive [--resume] --trust-all-tools [--model <m>]
+//
+// --resume is added, directly after --no-interactive, only when req.Turn > 0:
+// kiro-cli then continues the most recent conversation in the working
+// directory instead of starting a new one. Turn 0 (and every request that does
+// not set Turn) produces exactly the historical arguments.
 //
 // When req.ToolTrust is non-nil, --trust-all-tools is replaced by the single
 // argument --trust-tools=<csv> (--trust-tools= when the set is empty). A nil
@@ -31,8 +36,14 @@ func KiroCLIAgentCommand(req Request) (args []string, command string) {
 	if req.ToolTrust != nil {
 		trustArg = "--trust-tools=" + req.ToolTrust.CSV()
 	}
-	args = []string{"chat", "--agent", req.Agent, "--no-interactive", trustArg}
-	command = fmt.Sprintf("kiro-cli chat --agent %s --no-interactive %s", req.Agent, trustArg)
+	args = []string{"chat", "--agent", req.Agent, "--no-interactive"}
+	command = fmt.Sprintf("kiro-cli chat --agent %s --no-interactive", req.Agent)
+	if req.Turn > 0 {
+		args = append(args, "--resume")
+		command += " --resume"
+	}
+	args = append(args, trustArg)
+	command += " " + trustArg
 	if req.Model != "" {
 		args = append(args, "--model", req.Model)
 		command += " --model " + req.Model

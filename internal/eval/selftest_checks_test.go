@@ -61,8 +61,8 @@ func checkedScore(t *testing.T, c CaseResult) CriterionScore {
 func TestSelfTestChecksPassingCases(t *testing.T) {
 	res := runSelfTestAgent(t, "selftest")
 
-	if got, want := len(res.Cases), 5+11; got != want {
-		t.Errorf("selftest has %d cases, want %d (5 legacy + 11 check cases)", got, want)
+	if got, want := len(res.Cases), 5+11+2; got != want {
+		t.Errorf("selftest has %d cases, want %d (5 legacy + 11 check cases + 2 multi-turn)", got, want)
 	}
 
 	seen := map[CheckType]bool{}
@@ -104,6 +104,38 @@ func TestSelfTestChecksPassingCases(t *testing.T) {
 		}
 	}
 
+	// The multi-turn cases pass every turn-scoped and default-last check.
+	for _, name := range []string{multiTurnGHLogCase, multiTurnWorkspaceCase} {
+		c := caseByName(t, res, name)
+		if c.ErrorContext != nil {
+			t.Errorf("%s: unexpected ErrorContext %+v", name, c.ErrorContext)
+		}
+		sc := checkedScore(t, c)
+		if len(sc.Checks) == 0 || sc.Score != sc.MaxScore || sc.MaxScore != len(sc.Checks) {
+			t.Errorf("%s: score = %d/%d (checks %d), want N/N: %s", name, sc.Score, sc.MaxScore, len(sc.Checks), sc.Reasoning)
+		}
+		for _, cr := range sc.Checks {
+			if !cr.Passed {
+				t.Errorf("%s: check %s failed: %s", name, cr.Label, cr.Detail)
+			}
+		}
+	}
+	gh := caseByName(t, res, multiTurnGHLogCase)
+	assertMultiTurnGHLogResult(t, gh)
+	var scoped int
+	for _, cr := range checkedScore(t, gh).Checks {
+		if strings.Contains(cr.Label, "turn=") {
+			scoped++
+		}
+	}
+	if scoped != 5 {
+		t.Errorf("%s has %d turn-scoped checks, want 5", multiTurnGHLogCase, scoped)
+	}
+	ws := caseByName(t, res, multiTurnWorkspaceCase)
+	if len(ws.Calls) < 2 {
+		t.Errorf("%s has %d calls, want at least 2 agent calls", multiTurnWorkspaceCase, len(ws.Calls))
+	}
+
 	// check-command also covers a non-zero expect_exit.
 	cmd := checkedScore(t, caseByName(t, res, "check-command"))
 	if len(cmd.Checks) != 2 {
@@ -114,8 +146,8 @@ func TestSelfTestChecksPassingCases(t *testing.T) {
 func TestSelfTestChecksFailingCases(t *testing.T) {
 	res := runSelfTestAgent(t, "selftest-fail")
 
-	if got, want := len(res.Cases), 10+1+1; got != want {
-		t.Errorf("selftest-fail has %d cases, want %d (10 per-type + check-partial + stub-timeout)", got, want)
+	if got, want := len(res.Cases), 10+1+1+1; got != want {
+		t.Errorf("selftest-fail has %d cases, want %d (10 per-type + check-partial + stub-timeout + multi-turn-wrong-turn)", got, want)
 	}
 
 	for _, tt := range selftestCheckTypes {
@@ -145,6 +177,40 @@ func TestSelfTestChecksFailingCases(t *testing.T) {
 				t.Errorf("%s: reasoning %q does not mention %q", c.CaseName, sc.Reasoning, want)
 			}
 		}
+	}
+}
+
+// TestSelfTestChecksWrongTurnFails proves turn scoping is real: the turn-1
+// gh_log_contains check names a call made in turn 3, so it fails even though
+// the final log contains it.
+func TestSelfTestChecksWrongTurnFails(t *testing.T) {
+	res := runSelfTestAgent(t, "selftest-fail")
+	c := caseByName(t, res, multiTurnWrongTurnCase)
+	if len(c.TurnOutputs) != 3 {
+		t.Errorf("turn_outputs = %q, want 3 entries", c.TurnOutputs)
+	}
+	sc := checkedScore(t, c)
+	if sc.Score >= sc.MaxScore || sc.MaxScore == 0 {
+		t.Fatalf("score = %d/%d, want a failed case: %s", sc.Score, sc.MaxScore, sc.Reasoning)
+	}
+	var failed int
+	for _, cr := range sc.Checks {
+		if cr.Passed {
+			continue
+		}
+		failed++
+		if cr.Type != CheckGHLogContains || !strings.Contains(cr.Label, "turn=1") {
+			t.Errorf("failed check %q (%s), want the gh_log_contains turn=1 check", cr.Label, cr.Type)
+		}
+		if !strings.Contains(sc.Reasoning, cr.Label) {
+			t.Errorf("reasoning %q does not name failed check %q", sc.Reasoning, cr.Label)
+		}
+	}
+	if failed != 1 {
+		t.Errorf("%d checks failed, want exactly 1: %+v", failed, sc.Checks)
+	}
+	if !strings.Contains(sc.Reasoning, "gh_log_contains") || !strings.Contains(sc.Reasoning, "turn=1") {
+		t.Errorf("reasoning %q must name the gh_log_contains check with turn=1", sc.Reasoning)
 	}
 }
 
