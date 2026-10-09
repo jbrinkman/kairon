@@ -11,6 +11,19 @@ import (
 type Rubric struct {
 	Agent    string      `yaml:"agent" json:"agent"`
 	Criteria []Criterion `yaml:"criteria" json:"criteria"`
+	// PassThreshold is the percent (0-100] a case must reach to pass; nil means DefaultPassThreshold.
+	PassThreshold *float64 `yaml:"pass_threshold,omitempty" json:"pass_threshold,omitempty"`
+}
+
+// DefaultPassThreshold is the pass threshold (percent) used when a rubric sets no pass_threshold.
+const DefaultPassThreshold = 95.0
+
+// Threshold returns the rubric's pass threshold in percent.
+func (r Rubric) Threshold() float64 {
+	if r.PassThreshold != nil {
+		return *r.PassThreshold
+	}
+	return DefaultPassThreshold
 }
 
 // Criterion is a single scoring dimension within a rubric.
@@ -39,7 +52,7 @@ type TestCase struct {
 	Context        []string     `yaml:"context,omitempty" json:"context,omitempty"`
 	Setup          []SetupEntry `yaml:"setup,omitempty" json:"setup,omitempty"`
 	Agent          string       `yaml:"agent" json:"agent"`
-	MinScore       *float64     `yaml:"min_score,omitempty" json:"min_score,omitempty"` // Success threshold (0-100), defaults to 80%
+	MinScore       *float64     `yaml:"min_score,omitempty" json:"min_score,omitempty"` // Success threshold (0-100); overrides the rubric pass_threshold for this case
 
 	// Stub scripts the agent's response for the stub inference backend.
 	// Other backends ignore it.
@@ -154,7 +167,12 @@ type CaseResult struct {
 	Scores       []CriterionScore `json:"scores"`
 	AgentCost    CostInfo         `json:"agent_cost"`
 	JudgeCost    CostInfo         `json:"judge_cost"`
-	ErrorContext *ErrorContext    `json:"error_context,omitempty"`
+	// Threshold is the case's pass threshold (percent) and Passed whether it
+	// was met. Passed is a pointer so a result written before verdicts
+	// existed (field absent) is distinguishable from an explicit false.
+	Threshold    float64       `json:"threshold,omitempty"`
+	Passed       *bool         `json:"passed,omitempty"`
+	ErrorContext *ErrorContext `json:"error_context,omitempty"`
 	// WorkspaceDir is the host path of the case's workspace. It is recorded
 	// whether or not the directory is removed after the case.
 	WorkspaceDir string `json:"workspace_dir,omitempty"`
@@ -190,6 +208,9 @@ type AgentResult struct {
 	AgentModel   string `json:"agent_model,omitempty"`
 	JudgeModel   string `json:"judge_model,omitempty"`
 	PromptSHA256 string `json:"prompt_sha256,omitempty"`
+	// Threshold is the agent's pass threshold (percent), taken from its
+	// rubric. Zero means the result predates verdicts.
+	Threshold float64 `json:"threshold,omitempty"`
 	// Sandbox records whether the run was containerised (--sandbox). It is a
 	// pointer so a result written before sandbox-mode tracking (legacy, field
 	// absent) is distinguishable (nil) from an explicitly native run (false):
@@ -231,7 +252,12 @@ type RunOptions struct {
 type Summary struct {
 	GitHash     string             `json:"git_hash"`
 	TotalCost   CostInfo           `json:"total_cost"`
-	AgentScores map[string]float64 `json:"agent_scores"` // agent -> average score
+	AgentScores map[string]float64 `json:"agent_scores"` // agent -> score as a 0-1 fraction
+
+	// AgentVerdicts is the per-agent pass/fail verdict, keyed by agent. Unlike
+	// AgentScores its score and threshold are percent (0-100). TotalCost is the
+	// sum of the verdicts' costs.
+	AgentVerdicts map[string]AgentVerdict `json:"agent_verdicts,omitempty"`
 
 	// Provenance. JudgeModel and Agents are always set for a pinned run; the
 	// top-level agent fields are populated only when the run covers exactly

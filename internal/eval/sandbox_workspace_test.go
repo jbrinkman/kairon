@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io/fs"
 	"os"
 	"os/exec"
@@ -58,7 +59,12 @@ func runEvalIn(t *testing.T, evalsDir, agent string, opts RunOptions) AgentResul
 
 	opts.Backend = "stub"
 	opts.EvalsDir = evalsDir
-	if err := RunWithOptions(agent, "", opts); err != nil {
+	err := RunWithOptions(agent, "", opts)
+	if wantThresholdFailure(agent, opts) {
+		if !errors.Is(err, ErrThresholdFailed) {
+			t.Fatalf("run of %s (sandbox=%v, keep=%v) = %v, want ErrThresholdFailed", agent, opts.Sandbox, opts.KeepWorkspaces, err)
+		}
+	} else if err != nil {
 		t.Fatalf("run of %s (sandbox=%v, keep=%v) failed: %v", agent, opts.Sandbox, opts.KeepWorkspaces, err)
 	}
 	added := newRunDirs(t, resultsDir, before)
@@ -66,6 +72,20 @@ func runEvalIn(t *testing.T, evalsDir, agent string, opts RunOptions) AgentResul
 		t.Fatalf("run of %s created %d result dirs, want 1: %v", agent, len(added), added)
 	}
 	return readSelfTestResult(t, filepath.Join(resultsDir, added[0], agent+".json"))
+}
+
+// wantThresholdFailure reports whether a self-test run of agent is expected to
+// finish below its pass threshold: selftest-fail always does, and the
+// containment agents do when run natively (every case is refused with
+// "requires --sandbox"). Everything else must pass.
+func wantThresholdFailure(agent string, opts RunOptions) bool {
+	switch agent {
+	case "selftest-fail":
+		return true
+	case "selftest-sandbox", "selftest-sandbox-ro":
+		return !opts.Sandbox
+	}
+	return false
 }
 
 func caseByName(t *testing.T, res AgentResult, name string) CaseResult {

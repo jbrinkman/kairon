@@ -433,9 +433,10 @@ func TestRunFixturesShapes(t *testing.T) {
 		t.Errorf("native-pinned agent file shape wrong: %+v", pa)
 	}
 
-	// Skipped criteria are excluded by the shared totals: legacy 6/8, pinned 7/8.
-	if s, m := agentScoreTotals(la); s != 6 || m != 8 {
-		t.Errorf("legacy totals = %v/%v, want 6/8", s, m)
+	// Skipped criteria count as 0 in the shared totals: legacy 6/12 (its skipped
+	// criterion keeps its max in the denominator), pinned 7/8.
+	if s, m := agentScoreTotals(la); s != 6 || m != 12 {
+		t.Errorf("legacy totals = %v/%v, want 6/12", s, m)
 	}
 	if s, m := agentScoreTotals(pa); s != 7 || m != 8 {
 		t.Errorf("native-pinned totals = %v/%v, want 7/8", s, m)

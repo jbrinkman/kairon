@@ -228,9 +228,14 @@ func assertScoringParity(t *testing.T, evalsDir, agent string, native, container
 	if err != nil {
 		t.Fatal(err)
 	}
+	rubrics, err := loadRubrics(agent)
+	if err != nil || len(rubrics) != 1 {
+		t.Fatalf("loadRubrics(%q) = %d rubrics, err %v", agent, len(rubrics), err)
+	}
+	rubric := rubrics[0]
 	thresholds := map[string]float64{}
 	for _, tc := range cases {
-		thresholds[tc.Name] = getThreshold(tc)
+		thresholds[tc.Name] = caseThreshold(tc, rubric)
 	}
 
 	index := func(r AgentResult) map[string]CaseResult {
