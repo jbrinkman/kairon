@@ -1,0 +1,26 @@
+name: check-judge-missing-file
+description: "Self-test (fail): a judge check listing a file the agent did not produce fails before any model call"
+agent: selftest-fail
+input: |
+  Review the work and report what you found.
+context:
+  - "This case runs against the deterministic stub backend"
+  - "Fails: .eval/absent.md does not exist; stub.judge yes must not rescue it"
+expected_output: |
+  A short report with a top-level section and at least one subsection.
+stub:
+  judge: yes
+  turns:
+    - response: |
+        ## Checks
+
+        The stub turn finished and reported output marker alpha.
+
+        ### Details
+
+        This response carries the headings the report format expects.
+checks:
+  - criterion: structural_completeness
+    type: judge
+    question: "Does the report describe what the stub turn finished?"
+    files: [.eval/absent.md]

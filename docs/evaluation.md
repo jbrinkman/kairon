@@ -106,6 +106,7 @@ Fields:
 - `mocks` — (optional) a list of `{command, script}` entries that each place a mock of a command on the container `PATH`, so a bare `aws`, `npm` or `curl` resolves to the author's script instead of a real tool. `command` is the bare command name (it must match `^[A-Za-z0-9][A-Za-z0-9._+-]*$`, must be unique within the case, and cannot be `gh`, which is the harness's fake). `script` is a path relative to the evals directory (no absolute path, no `..`) naming an existing regular file; `fixtures/mock-cli.sh` is the reusable one. Like `gh_issue`, `mocks` is only valid together with `requires_sandbox: true`, because a native run has no such directory on `PATH` and would silently call the **real** tool; otherwise loading the cases fails with an error naming the case. See [Preventing Production Side Effects](#preventing-production-side-effects-containment-and-mocking).
 - `checks` — (optional) a list of deterministic pass/fail checks on the workspace the agent left behind, its final output and the fake `gh` log. A criterion that has checks is scored `passed` out of `total` instead of by a heuristic or the LLM judge. Each entry has a `criterion` (a non-cost criterion of the agent's rubric) and a `type`, plus the fields that type takes. An invalid `checks` block is a **fatal** load error that names the case file, the 1-based check number and the type; it is not downgraded to a warning (see [Checks](#checks)).
 - `stub.turns[]` — (optional) scripted model responses, used only by the `stub` backend (see [Stub Case Fields](#stub-case-fields))
+- `stub.judge` — (optional) scripted yes/no answers for `judge` checks, a single value or a list, used only by the `stub` backend (see [Stub Case Fields](#stub-case-fields))
 
 ## Checks
 
@@ -114,7 +115,7 @@ A case can declare `checks`: small, deterministic assertions about what the agen
 ```yaml
 checks:
   - criterion: structural_completeness   # required: a non-cost criterion of the agent's rubric
-    type: command                         # required: one of the ten types below
+    type: command                         # required: one of the eleven types below
     run: "go test ./..."
 ```
 
@@ -132,8 +133,9 @@ Every check has `criterion` and `type`. The other fields depend on the type, and
 | `output_not_contains` | `pattern` | | the agent's final output does not match the regex |
 | `gh_log_contains` | `pattern` | | the fake `gh` log matches the regex |
 | `gh_log_not_contains` | `pattern` | | the fake `gh` log does not match the regex |
+| `judge` | `question` | `files` | the judge model answers the yes/no `question` with `yes` |
 
-### The ten check types
+### The eleven check types
 
 `command` runs a shell command in the workspace root and compares its exit status. `expect_exit` (0–255, default `0`) lets a case assert a specific non-zero status. `inject` copies files from `fixtures/hidden/` into the workspace for the duration of the command (see [Hidden files and `inject`](#hidden-files-and-inject)).
 
@@ -222,6 +224,30 @@ checks:
 
 > **Native runs have no `gh` log.** The fake `gh` exists only under `--sandbox`; a native run calls the real `gh`, which Kairon does not log. Natively the log is empty unless the stub or the agent wrote `.eval/gh.log` itself, so `gh_log_contains` fails and `gh_log_not_contains` passes vacuously. `gh_log_*` checks do not require `requires_sandbox`, so the native self-test can exercise every type, but a case that asserts on real `gh` calls should set `requires_sandbox: true`. The log lives in `.eval/`, which the agent can write: it is evidence from the fake, not tamper-proof.
 
+### The `judge` check
+
+`judge` asks the judge model one yes/no `question`. It is the check to use when the property cannot be expressed as a regex or a command, for example "does the issue body state a testable acceptance criterion for each requirement?". It counts toward its criterion exactly like the deterministic checks (`passed` out of `total`).
+
+```yaml
+checks:
+  - criterion: structural_completeness
+    type: judge
+    question: "Does the issue body file state a testable acceptance criterion for each requirement?"
+    files: [.eval/issue-body.md]   # optional: workspace files the judge may read
+```
+
+- **Verdict.** The judge replies with `{"reasoning": "...", "answer": "yes" | "no"}`. `yes` passes and `no` fails. The judge's reasoning is recorded in `checks[].detail` for both outcomes: `judge answered yes: <reasoning>` or `judge answered no: <reasoning>`. The answer is matched case-insensitively with surrounding whitespace ignored; anything else is not a verdict.
+- **What the judge sees.** The `question`, the case `input`, the agent's final output and the content of each listed file, every one fenced with `BEGIN`/`END` markers. The case's `expected_output` and `context` are not included, so make the question self-contained.
+- **`files`.** Optional. Entries are workspace-relative literal paths (no globs): no absolute path, no `..`, nothing inside `.git`, no duplicates. `.eval/` is allowed, which is where an agent typically leaves an issue body. At run time only a regular, non-symlink file is read, and a symlink in any directory component is refused. A missing file, a symlink or a file below a symlinked directory fails the check with `file does not exist: <path>` (or a similar message) **before** any model call, so an agent that did not produce the artifact is not rescued by the judge and no tokens are spent. Files are read as the agent left the workspace, before any `command` check runs or injects.
+- **Caps.** Each file is capped at 64 KiB and the files together at 256 KiB. Excess is cut, the prompt carries an explicit `[truncated: showing first N of M bytes]` marker and the file's header says `[truncated]`. Non-UTF-8 bytes are replaced.
+- **Judge model.** The call runs on the host through the inference backend, pinned to `evals.judge_model` (see [Model Pinning and Run Provenance](#model-pinning-and-run-provenance)), with a 2-minute timeout. This holds under `--sandbox` too: judge calls never run in the container.
+- **Fail closed.** A `judge` check never passes by default and is never skipped. An unparseable answer (`judge parse error: …`), a backend error (`judge call failed: …`), a missing or unreadable file, and a check evaluated with no judge configured (`no judge configured`) all **fail** the check. This differs from the legacy 1–5 judge, whose parse failures mark the criterion *skipped* (see [Skipped Criteria](#skipped-criteria)). The reply is parsed from the **last** `===JSON_START===` to the next `===JSON_END===`, so a judge that quotes the delimiters while explaining cannot confuse the parse.
+- **Order.** `judge` checks are evaluated in the first pass with the other non-`command` checks, in the order they are written (see [Evaluation order](#evaluation-order)). One call is made per check; there is no batching. With the stub backend, `stub.judge` answers are consumed in that order.
+- **Cost accounting.** Each call appends a `calls[]` record with `role: judge` and the `criterion` of the check, and a successful call's cost is added to the case's `judge_cost`. A call whose reply could not be parsed, or that failed, still has its `calls[]` record but adds nothing to `judge_cost` (see [Per-call records](#per-call-records-calls)).
+- **No call when the agent produced nothing.** If the agent produced no output the checks are not evaluated (see [When the agent failed](#when-the-agent-failed)), so no judge call is made.
+- **`--debug`.** With `kairon eval --debug`, each judge check prints `🔧 Debug: judge prompt (criterion=<name>, judge check #<n>)` followed by the full prompt to **stderr**, before the call. That is how to confirm that the judge was shown a listed file. The output contains the case input, the agent's output and file contents, so do not share it where they are sensitive. The legacy judge's output is not affected.
+- **Untrusted input.** The agent's output and the files are written by the agent under test, and may contain text that tries to steer the judge. The prompt tells the judge to treat them as data and not to follow instructions in them, but a hostile output can still sway a model. A `judge` verdict is evidence, not proof; prefer a deterministic check where one can express the property.
+
 ### Regex dialect
 
 `pattern` is a Go (RE2) regular expression. It is **unanchored** and matched against the **whole** text (the file, the output or the log), not line by line. `^` and `$` therefore match the start and end of the text unless you add `(?m)`, and `.` does not match a newline unless you add `(?s)`. Flags go inline: `(?m)`, `(?s)`, `(?i)`. Use single-quoted YAML strings so backslashes survive (`'hidden_test\.go'`). A pattern that does not compile is a load error. There are no lookaheads or backreferences.
@@ -253,7 +279,7 @@ The workspace is a git repository whose only commit is the fixture (see [Case Wo
 
 All checks of a case are evaluated **once**, after the agent finishes and while the workspace still exists:
 
-1. Every non-`command` check (`file_*`, `changed_files`, `output_*`, `gh_log_*`) is evaluated first, against the workspace exactly as the agent left it.
+1. Every non-`command` check (`file_*`, `changed_files`, `output_*`, `gh_log_*`, `judge`) is evaluated first, against the workspace exactly as the agent left it.
 2. `command` checks then run, in the order they are listed.
 3. Results are reported in the order the checks are written in the case.
 
@@ -292,7 +318,7 @@ What the evaluator does to limit the damage: the command runs with `sh -c` in th
 A criterion with at least one check in a case is scored by those checks:
 
 - `score` is the number of checks that passed and `max_score` is the number of checks, so the criterion is **passed out of total** (`2/3`), not a 1–5 value. `deterministic` is `true`.
-- The rubric's `scoring` range, its `deterministic` flag and any LLM judge are not used for that criterion in that case, and no judge call is made for it.
+- The rubric's `scoring` range, its `deterministic` flag and the legacy 1–5 LLM judge are not used for that criterion in that case, so no legacy judge call is made for it. A [`judge` check](#the-judge-check) is still a check, so it is scored `passed`/`total` like the others, but it does make one yes/no judge call per check.
 - Every failed check is named in `reasoning` with its 1-based position, type and key fields, then its detail in parentheses (each detail is shortened to 200 characters there; the full text, up to 2 KiB, stays in `checks[].detail`).
 
 ```
@@ -344,8 +370,12 @@ results := eval.EvaluateChecks(checks, eval.CheckInput{
     Output: agentOutput,  // text for output_contains / output_not_contains
     GHLog:  ghLogText,    // text for gh_log_contains / gh_log_not_contains
     Base:   "",           // optional git revision for changed_files; default HEAD
+    Input:  caseInput,    // optional: the case input shown to judge checks
+    Judge:  judgeFn,      // optional: eval.JudgeFunc that answers judge checks
 })
 ```
+
+`Input` and `Judge` are only used by `judge` checks. `Judge` is a `JudgeFunc`, `func(JudgeQuery) (JudgeVerdict, error)`: it receives the criterion, question, input, output and the loaded `Files` (`Path`, `Content`, `Truncated`, `Size`) and returns `JudgeVerdict{Yes, Reasoning}`. Return an error for a failed call; it fails the check as `judge call failed: <error>`. (Inside the package an error wrapping `errJudgeParse` is reported as `judge parse error` instead.) A `judge` check evaluated with `Judge == nil` **fails** with `no judge configured`; it is never skipped and never passes silently, so callers that use no `judge` checks are unaffected. In a normal run, `scoreCase` builds the `JudgeFunc`: it calls the configured backend on the pinned judge model and records the call and its cost.
 
 `EvaluateChecks` never reads the config, the case or the rubric, and returns one `CheckResult` per check in list order. A hand-built check is validated lazily: an invalid one yields a failed result with an explanation, never a panic and never a silent pass. `eval.ValidateChecks` validates and compiles checks loaded from a case file. In a normal run `Base` is the fixture commit of the case workspace, so a change the agent committed is still detected.
 
@@ -383,7 +413,7 @@ kairon eval --evals-dir path/to/evals architect
 
 ## How Scoring Works
 
-- **Check-scored criteria** — a criterion that has [`checks`](#checks) in the case is scored `passed` out of `total` checks, with the failed checks named in the reasoning. Checks take precedence over everything below for that criterion in that case: the rubric's `scoring`, its `deterministic` flag and the LLM judge are not used, and no judge call is made.
+- **Check-scored criteria** — a criterion that has [`checks`](#checks) in the case is scored `passed` out of `total` checks, with the failed checks named in the reasoning. Checks take precedence over everything below for that criterion in that case: the rubric's `scoring`, its `deterministic` flag and the legacy 1–5 LLM judge are not used, so no legacy judge call is made. Only a [`judge` check](#the-judge-check) in the list calls the judge model, once per check.
 - **Deterministic criteria** — criteria without checks that the rubric marks `deterministic` are scored by the legacy heuristics (code checks on the agent's output, such as structural completeness)
 - **LLM-judged criteria** — criteria without checks that are not deterministic are scored by an LLM evaluator using the rubric description (requires output and a configured judge)
 - **Cost criteria** — tracked automatically from token usage
@@ -416,7 +446,7 @@ Every "send a prompt to a model, get text back" call made by the harness (the ag
 | Backend | Behaviour |
 |---------|-----------|
 | `kiro-cli` (default) | Shells out to `kiro-cli`. Agent (native run): `kiro-cli chat --agent <agent> --no-interactive --trust-all-tools [--model <model>]`; under `--sandbox` the agent call uses `--trust-tools=<per-agent set>` instead of `--trust-all-tools` (see [Tool trust](#tool-trust)); judge: `kiro-cli chat --no-interactive [--model <model>]`; prompt on stdin. `--model` is appended when the request carries a model, which is always the case in a normal `kairon eval` run (see [Model Pinning and Run Provenance](#model-pinning-and-run-provenance)). Usage is always **estimated**. Requires `kiro-cli` on `PATH`. |
-| `stub` | Deterministic and in-process. Never starts a process or touches the network, and does not require `kiro-cli`. The agent's output comes from the case's `stub.turns`; every judge call returns score 5 (the maximum of the judge scale) with `pass: true`. |
+| `stub` | Deterministic and in-process. Never starts a process or touches the network, and does not require `kiro-cli`. The agent's output comes from the case's `stub.turns`; every judge call returns score 5 (the maximum of the judge scale) with `pass: true`, except yes/no judge calls made by [`judge` checks](#the-judge-check), which are answered from the case's `stub.judge` (see [Stub Case Fields](#stub-case-fields)). |
 
 ```bash
 kairon eval --backend stub --evals-dir internal/eval/testdata/evals selftest
@@ -446,6 +476,7 @@ stub:
       tool_calls:          # optional: scripted tool calls, gated by the tool trust set (see Tool trust)
         - tool: fs_write
           command: "echo x > tool-marker.txt"
+  judge: [yes, no]         # optional: answers to yes/no `judge` checks (a single value is allowed: `judge: yes`)
 ```
 
 | Field | Required | Description |
@@ -455,8 +486,18 @@ stub:
 | `stub.turns[].usage.input_tokens` / `output_tokens` | no | If present, these counts are used verbatim and marked `reported`. If absent, usage is estimated from text length. |
 | `stub.turns[].commands` | no | Shell commands, each run with `sh -c` in the case workspace (the request's `WorkDir`), in order, before the response is returned. This lets a stub case simulate an agent that edits files. They are scripted environment actions, **not** tool calls, so the trust gate never applies to them. |
 | `stub.turns[].tool_calls[]` | no | Scripted tool calls, each `{tool, command}`. They run after `commands`, in order. Each runs `sh -c <command>` in the workspace only if the tool is in the request's trust set; otherwise the command is skipped and a denial is recorded (see [Tool trust](#tool-trust)). With no trust set (every native run) every tool call runs. |
+| `stub.judge` | no | Scripted answers to the yes/no calls made by [`judge` checks](#the-judge-check): a single value (`judge: yes`) or a list (`judge: [yes, no]`). See below. |
 
 Only `turns[0]` is used today. A case with no `stub`, empty `turns`, or an empty `response` fails with `case has no stub.turns[0].response` rather than silently producing empty output. The `kiro-cli` backend ignores `stub`.
+
+How `stub.judge` behaves:
+- It answers only the yes/no calls of [`judge` checks](#the-judge-check). The legacy 1-5 judge calls are unchanged and still always return score 5.
+- It is a single value (`judge: yes`, the same as a one-element list) or a list (`judge: [yes, no]`). `yes` and `no` are matched case-insensitively with surrounding whitespace ignored and are rendered as a well-formed judge reply whose reasoning is `stub judge: yes` or `stub judge: no`. Any other value is returned **verbatim**, so `judge: garbage` exercises the `judge parse error` path.
+- Answers are consumed **in order**, one per judge call, in the order the judge checks are evaluated (see [Evaluation order](#evaluation-order)), and **cycled**: with `[yes, no]` the calls get `yes`, `no`, `yes`, `no`, and so on.
+- The position lives on the loaded case, so it **continues across repeats** of the same loaded case instead of restarting. A script of three answers against two judge checks per run gives `[yes, no]`, then `[yes, yes]`, then `[no, yes]`. Loading the cases again starts a fresh position, and each case has its own.
+- `stub.judge` must not be empty and must not contain a blank entry; either is a load error naming the case.
+- A case with a `judge` check but no `stub.judge` fails that check with `judge call failed: case has no stub.judge`. The check is never skipped and never passes by default.
+- The `kiro-cli` backend ignores `stub.judge`.
 
 How `commands` behave:
 - They run in the case workspace: natively the host workspace directory, under `--sandbox` the container's workspace path, as the `sandbox` user. Commands with no workspace directory are an error and run nothing, so a test cannot write into the repository root by accident.
@@ -908,9 +949,9 @@ internal/eval/testdata/evals/
   cases/selftest/stub-quoted-input.yaml  # input with quotes, newlines, $(...) and backticks; must reach the backend verbatim
   cases/selftest/stub-marker.yaml   # stub turn command 'echo hi > marker.txt' leaves marker.txt in the case workspace
   cases/selftest/stub-seeded-workspace.yaml  # workspace: seeded; the stub appends to README.md -> ' M README.md'
-  cases/selftest/check-*.yaml       # 11 passing check cases, one per check type (see below)
+  cases/selftest/check-*.yaml       # 14 passing check cases: one per deterministic check type plus 3 check-judge-* (see below)
   cases/selftest-fail/stub-timeout.yaml      # timeout: 1s, stub turn command 'sleep 3' -> timeout failure
-  cases/selftest-fail/check-*.yaml  # 10 per-type failing check cases plus check-partial (see below)
+  cases/selftest-fail/check-*.yaml  # 10 per-type failing check cases, 5 check-judge-* cases and check-partial (see below)
   agents/selftest-sandbox.json      # containment agent, allowedTools [read, write]; its cases are all requires_sandbox
   agents/selftest-sandbox-prompt.md
   agents/selftest-sandbox-ro.json   # containment agent, allowedTools [read]
@@ -932,7 +973,7 @@ internal/eval/testdata/evals/
 
 `selftest.json` declares a `model` so the self-test passes the model-pinning pre-flight, and lists a `skill://.kiro/skills/selftest-conventions/SKILL.md` resource that intentionally does not exist. It exercises the "missing resources are normal" rule: the run succeeds and the recorded `resources_present` is `[]`.
 
-The `selftest` agent has sixteen cases and all of them pass (`task eval:selftest`): the five original `stub-*` cases, which carry no `checks` and keep their pinned scores, and eleven `check-*` cases that exercise [checks](#checks). The `selftest-fail` agent is deliberately separate, so `selftest` keeps meaning "everything passes". It has twelve cases, all **expected to fail**: ten `check-*` cases plus `check-partial` built so that checks fail, and `stub-timeout`, which records a timeout failure (empty `actual_output`, `error_context.stderr` containing `timeout after 1s`) in about a second. Run it with:
+The `selftest` agent has nineteen cases and all of them pass (`task eval:selftest`): the five original `stub-*` cases, which carry no `checks` and keep their pinned scores, and fourteen `check-*` cases that exercise [checks](#checks) (ten per-type cases, `check-command-inject`, and three `judge` cases: `check-judge-yes`, `check-judge-files` and `check-judge-mixed`). The `selftest-fail` agent is deliberately separate, so `selftest` keeps meaning "everything passes". It has seventeen cases, all **expected to fail**: fifteen `check-*` cases (ten per-type cases and five `check-judge-*` cases) plus `check-partial`, all built so that checks fail, and `stub-timeout`, which records a timeout failure (empty `actual_output`, `error_context.stderr` containing `timeout after 1s`) in about a second. Run it with:
 
 ```bash
 go run ./cmd/kairon eval --backend stub --no-sandbox --evals-dir internal/eval/testdata/evals selftest-fail
@@ -954,6 +995,9 @@ All check cases score the `structural_completeness` criterion (present in both r
 | `output_not_contains` | `check-output-not-contains` | `check-output-not-contains` |
 | `gh_log_contains` | `check-gh-log-contains`: the stub writes a `gh issue create` line to `.eval/gh.log` | `check-gh-log-contains`: the log is empty |
 | `gh_log_not_contains` | `check-gh-log-not-contains` | `check-gh-log-not-contains`: the stub writes a `gh pr merge 1` line |
+| `judge` | `check-judge-yes`: `stub.judge: yes` | `check-judge-no`: `stub.judge: no` fails with `judge answered no: stub judge: no` |
+
+The `judge` check has further cases. In `selftest`: `check-judge-files` has the stub turn write `.eval/issue-body.md` and the check list it in `files`, so the whole file path runs end to end; `check-judge-mixed` puts a `file_exists` check and a `judge` check on one criterion and scores `2/2`. In `selftest-fail`: `check-judge-garbage` (`stub.judge: garbage`) fails with `judge parse error`; `check-judge-no-script` (no `stub.judge`) fails with `judge call failed: case has no stub.judge`; `check-judge-missing-file` (`files: [.eval/absent.md]`) fails with `file does not exist` and makes no judge call; `check-judge-list` (`stub.judge: [yes, no]`, two `judge` checks) passes the first and fails the second, so it records exactly `1/2`. None of them is skipped.
 
 Two further `selftest` / `selftest-fail` cases pin behavior you may rely on:
 

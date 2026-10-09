@@ -25,6 +25,7 @@ var allCheckTypes = []CheckType{
 	CheckOutputNotContains,
 	CheckGHLogContains,
 	CheckGHLogNotContains,
+	CheckJudge,
 }
 
 var yamlFence = regexp.MustCompile("(?s)```yaml\n(.*?)\n```")

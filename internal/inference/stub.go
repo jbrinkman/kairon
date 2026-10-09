@@ -3,6 +3,7 @@ package inference
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os/exec"
@@ -35,6 +36,9 @@ func (*stubBackend) Invoke(ctx context.Context, req Request) (Response, error) {
 
 	switch req.Role {
 	case RoleJudge:
+		if req.YesNo {
+			return stubYesNoJudge(req)
+		}
 		return Response{
 			Text:    stubJudgeOutput,
 			Model:   NameStub,
@@ -81,6 +85,38 @@ func (*stubBackend) Invoke(ctx context.Context, req Request) (Response, error) {
 	default:
 		return Response{}, fmt.Errorf("stub backend: unsupported role %q", req.Role)
 	}
+}
+
+// stubYesNoJudge answers a yes/no judge request from req.Stub.Judge. A yes/no
+// answer (trimmed, case-insensitive) is rendered as delimited JSON; any other
+// value is returned verbatim so scripts can exercise the harness's parse-error
+// path. A missing script or empty Judge list is an error.
+func stubYesNoJudge(req Request) (Response, error) {
+	const cmd = "stub judge"
+	if req.Stub == nil {
+		return Response{Command: cmd}, errors.New("case has no stub.judge")
+	}
+	raw, ok := req.Stub.NextJudgeAnswer()
+	if !ok {
+		return Response{Command: cmd}, errors.New("case has no stub.judge")
+	}
+	text := raw
+	if answer := strings.ToLower(strings.TrimSpace(raw)); answer == "yes" || answer == "no" {
+		body, err := json.Marshal(struct {
+			Reasoning string `json:"reasoning"`
+			Answer    string `json:"answer"`
+		}{Reasoning: "stub judge: " + answer, Answer: answer})
+		if err != nil {
+			return Response{Command: cmd}, err
+		}
+		text = "===JSON_START===\n" + string(body) + "\n===JSON_END==="
+	}
+	return Response{
+		Text:    text,
+		Model:   NameStub,
+		Usage:   EstimateUsage(req.Prompt, text),
+		Command: cmd,
+	}, nil
 }
 
 // stubCommandWaitDelay bounds how long Wait lingers for output pipes to close
