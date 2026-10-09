@@ -156,18 +156,24 @@ func (inj *injection) backupFile(path string) (string, error) {
 // restore undoes the injection: injected files are removed, overwritten files
 // are put back and directories created for the injection are removed. Paths
 // are re-resolved so a command that swapped something for a symlink cannot
-// redirect the restore.
+// redirect the restore. The overwritten file is restored to its COMPLETE
+// destination (recreating any parent directory the command removed), not to
+// whatever prefix resolveInDir stops at — otherwise a removed parent would make
+// writeNewFile create a regular file named after the parent. Backups are
+// retained (not deleted) when any restoration fails, so nothing is lost.
 func (inj *injection) restore() error {
 	var errs []error
 	for i := len(inj.files) - 1; i >= 0; i-- {
 		f := inj.files[i]
-		dst, info, err := resolveInDir(inj.dir, f.rel)
+		// Remove the injected file via a re-resolved path so a symlink the
+		// command swapped in cannot redirect the delete.
+		cur, info, err := resolveInDir(inj.dir, f.rel)
 		if err != nil {
 			errs = append(errs, fmt.Errorf("restore %q: %w", f.rel, err))
 			continue
 		}
 		if info != nil {
-			if err := os.Remove(dst); err != nil {
+			if err := os.Remove(cur); err != nil {
 				errs = append(errs, fmt.Errorf("restore %q: %w", f.rel, err))
 				continue
 			}
@@ -175,6 +181,13 @@ func (inj *injection) restore() error {
 		if f.backup == "" {
 			continue
 		}
+		// Restore the overwritten file to its COMPLETE path, recreating any
+		// parent directories the command removed (refusing symlinked parents).
+		if err := recreateParents(inj.dir, f.rel); err != nil {
+			errs = append(errs, fmt.Errorf("restore %q: %w", f.rel, err))
+			continue
+		}
+		dst := filepath.Join(inj.dir, f.rel)
 		data, err := os.ReadFile(f.backup)
 		if err == nil {
 			err = writeNewFile(dst, data, f.mode)
@@ -189,9 +202,42 @@ func (inj *injection) restore() error {
 			os.Remove(p) // only succeeds when empty; a non-empty dir is the command's own output
 		}
 	}
+	inj.files, inj.createdDs = nil, nil
+	// Retain backups when any restoration failed so nothing is lost; only clear
+	// backupDir on a clean restore.
 	if inj.backupDir != "" {
-		os.RemoveAll(inj.backupDir)
+		if len(errs) == 0 {
+			os.RemoveAll(inj.backupDir)
+			inj.backupDir = ""
+		} else {
+			errs = append(errs, fmt.Errorf("backups retained at %s", inj.backupDir))
+		}
 	}
-	inj.files, inj.createdDs, inj.backupDir = nil, nil, ""
 	return errors.Join(errs...)
+}
+
+// recreateParents ensures every parent directory of rel exists below dir,
+// creating missing ones and refusing to traverse a symlink or a non-directory.
+// It mirrors the parent-walk in add so a command that removed a parent during
+// the case does not prevent restoring the overwritten file.
+func recreateParents(dir, rel string) error {
+	parts := strings.Split(filepath.ToSlash(filepath.Clean(rel)), "/")
+	cur := dir
+	for i, p := range parts[:len(parts)-1] {
+		cur = filepath.Join(cur, p)
+		info, err := os.Lstat(cur)
+		switch {
+		case errors.Is(err, os.ErrNotExist):
+			if err := os.Mkdir(cur, 0o755); err != nil {
+				return err
+			}
+		case err != nil:
+			return err
+		case info.Mode()&os.ModeSymlink != 0:
+			return fmt.Errorf("%w: %s", errPathSymlink, filepath.Join(parts[:i+1]...))
+		case !info.IsDir():
+			return fmt.Errorf("%s is not a directory", filepath.Join(parts[:i+1]...))
+		}
+	}
+	return nil
 }

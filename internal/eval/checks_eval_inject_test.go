@@ -133,6 +133,37 @@ func TestEvaluateChecks_InjectRefusesSymlinkDestinations(t *testing.T) {
 	}
 }
 
+// TestEvaluateChecks_InjectRestoresWhenCommandRemovesParent reproduces the
+// restore-writes-the-wrong-file defect: inject sub/h.txt over a pre-existing
+// sub/h.txt, then have the command remove the whole sub/ directory. On restore
+// the destination's parent is gone, so resolving to the first missing component
+// would yield dir/sub and write the backup as a regular file NAMED sub.
+// Restore must instead recreate the parent and put the file back at
+// sub/h.txt with its original content.
+func TestEvaluateChecks_InjectRestoresWhenCommandRemovesParent(t *testing.T) {
+	dir, hidden := t.TempDir(), t.TempDir()
+	writeEvalFile(t, hidden, "sub/h.txt", "FIXTURE\n")
+	// A pre-existing sub/h.txt the injection overwrites (so a backup is taken).
+	writeEvalFile(t, dir, "sub/h.txt", "original\n")
+
+	wantPass(t, evalOne(t, injectCheck(hidden,
+		`test "$(cat sub/h.txt)" = FIXTURE && rm sub/h.txt && rmdir sub`, "sub/h.txt"),
+		CheckInput{Dir: dir}))
+
+	// sub must be a directory again, holding the restored original file.
+	subPath := filepath.Join(dir, "sub")
+	fi, err := os.Lstat(subPath)
+	if err != nil {
+		t.Fatalf("sub not restored: %v", err)
+	}
+	if !fi.IsDir() {
+		t.Fatalf("sub was restored as a non-directory (mode %v) — backup written to the wrong path", fi.Mode())
+	}
+	if got := readInjT(t, filepath.Join(dir, "sub", "h.txt")); got != "original\n" {
+		t.Fatalf("restored content = %q, want original", got)
+	}
+}
+
 func TestEvaluateChecks_InjectRefusesBadSources(t *testing.T) {
 	dir, hidden := t.TempDir(), t.TempDir()
 	writeEvalFile(t, hidden, ".git/config", "x")
