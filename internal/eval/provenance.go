@@ -100,11 +100,20 @@ func resolveAgentProvenanceWith(agent string, ignoreOverlay bool, cand *candidat
 	// Prompt: a file:// reference is read (and required); an inline prompt is
 	// already covered by the config bytes. With a candidate, its bytes stand
 	// in for the file and the live file is not read.
+	//
+	// promptAlias is the cleaned on-disk path the candidate replaces, used
+	// below so a resource entry that resolves to the same file is hashed from
+	// the candidate too (both read the candidate in the staged workspace, so
+	// hashing the untouched live file there would make an edit to it block
+	// --resume even though the agent saw identical content). It is empty when
+	// there is no candidate.
+	promptAlias := ""
 	if cand != nil {
 		if _, err := candidatePromptDest(path, conf.Prompt); err != nil {
 			return agentProvenance{}, err
 		}
 		writeHashPart(h, "prompt", cand.Content)
+		promptAlias = resolvePromptPath(path, conf.Prompt)
 	} else if ref, ok := strings.CutPrefix(conf.Prompt, "file://"); ok {
 		promptPath := ref
 		if !filepath.IsAbs(promptPath) {
@@ -131,6 +140,12 @@ func resolveAgentProvenanceWith(agent string, ignoreOverlay bool, cand *candidat
 			continue // missing resources are normal (e.g. *-conventions overrides)
 		}
 		for _, f := range files {
+			if promptAlias != "" && filepath.Clean(f) == promptAlias {
+				// This resource is the file the candidate replaces; hash the
+				// candidate bytes the staged workspace actually serves.
+				writeHashPart(h, "resource", cand.Content)
+				continue
+			}
 			b, err := os.ReadFile(f)
 			if err != nil {
 				return agentProvenance{}, fmt.Errorf("resource %q in %s: %w", entry, path, err)
@@ -150,6 +165,22 @@ func resolveAgentProvenanceWith(agent string, ignoreOverlay bool, cand *candidat
 		prov.PromptFile = cand.Path
 	}
 	return prov, nil
+}
+
+// resolvePromptPath returns the cleaned on-disk path a config's file:// prompt
+// reference resolves to, using the same rule as the live-prompt branch of
+// resolveAgentProvenanceWith (relative refs resolve against the config's
+// directory). It returns "" when the prompt is not a file:// reference. The
+// result is for path comparison only; the file need not exist.
+func resolvePromptPath(configPath, promptRef string) string {
+	ref, ok := strings.CutPrefix(promptRef, "file://")
+	if !ok || ref == "" {
+		return ""
+	}
+	if !filepath.IsAbs(ref) {
+		ref = filepath.Join(filepath.Dir(configPath), ref)
+	}
+	return filepath.Clean(ref)
 }
 
 // hashWriter is the subset of hash.Hash used for framing.

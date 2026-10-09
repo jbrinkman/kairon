@@ -217,6 +217,60 @@ func TestProvenanceCandidateHash(t *testing.T) {
 	})
 }
 
+// TestProvenanceCandidateResourceAliasUsesCandidateBytes covers the case where
+// a resources entry resolves to the very file --prompt-file replaces. The
+// staged workspace serves the candidate for both the prompt and that resource,
+// so provenance must hash the candidate for the aliasing resource too;
+// otherwise editing the untouched live file changes prompt_sha256 and blocks
+// --resume even though the agent saw identical content.
+func TestProvenanceCandidateResourceAliasUsesCandidateBytes(t *testing.T) {
+	// prompt file://./a-prompt.md and a resource that resolves to the same
+	// on-disk file (.kiro/agents/a-prompt.md).
+	setup := func(t *testing.T) {
+		t.Helper()
+		chdirTemp(t)
+		writeProvFile(t, ".kiro/agents/a-prompt.md", "live prompt v1")
+		writeProvFile(t, ".kiro/agents/a.json",
+			`{"name":"a","model":"m","prompt":"file://./a-prompt.md","resources":["file://.kiro/agents/a-prompt.md"]}`)
+	}
+
+	t.Run("aliasing resource ignores live edits", func(t *testing.T) {
+		setup(t)
+		cfg.candidate = &candidatePrompt{Agent: "a", Path: "cand.md", Content: []byte("candidate bytes")}
+		t.Cleanup(func() { cfg.candidate = nil })
+
+		before := mustProv(t, "a", false).PromptSHA256
+		// Edit the live file the candidate replaces: the hash must not move,
+		// because both the prompt and the aliasing resource hash the candidate.
+		writeProvFile(t, ".kiro/agents/a-prompt.md", "live prompt v2 (totally different)")
+		after := mustProv(t, "a", false).PromptSHA256
+		if before != after {
+			t.Errorf("editing the replaced live file changed the hash: %s -> %s", before, after)
+		}
+		// And the hash must reflect the candidate content, not the live bytes.
+		cfg.candidate = &candidatePrompt{Agent: "a", Path: "cand.md", Content: []byte("other candidate")}
+		if other := mustProv(t, "a", false).PromptSHA256; other == after {
+			t.Error("changing candidate content did not change the hash")
+		}
+	})
+
+	t.Run("non-aliasing resource still reads the live file", func(t *testing.T) {
+		chdirTemp(t)
+		writeProvFile(t, ".kiro/agents/a-prompt.md", "live prompt")
+		writeProvFile(t, "res.md", "res v1")
+		writeProvFile(t, ".kiro/agents/a.json",
+			`{"name":"a","model":"m","prompt":"file://./a-prompt.md","resources":["file://res.md"]}`)
+		cfg.candidate = &candidatePrompt{Agent: "a", Path: "cand.md", Content: []byte("candidate bytes")}
+		t.Cleanup(func() { cfg.candidate = nil })
+
+		before := mustProv(t, "a", false).PromptSHA256
+		writeProvFile(t, "res.md", "res v2")
+		if after := mustProv(t, "a", false).PromptSHA256; after == before {
+			t.Error("editing a non-aliasing resource must still change the hash")
+		}
+	})
+}
+
 func TestProvenanceCandidateRejectsUnsubstitutablePrompt(t *testing.T) {
 	cases := map[string]struct {
 		prompt string
