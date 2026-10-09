@@ -66,6 +66,10 @@ type TestCase struct {
 	// RequiresSandbox: a native run has no such directory on PATH and would
 	// call the real tool.
 	Mocks []CaseMock `yaml:"mocks,omitempty" json:"mocks,omitempty"`
+
+	// Checks are deterministic pass/fail assertions on the workspace, the
+	// agent output and the gh log. A criterion with checks is scored from them.
+	Checks []Check `yaml:"checks,omitempty" json:"checks,omitempty"`
 }
 
 // CaseMock declares one mocked command for a case.
@@ -138,6 +142,9 @@ type CriterionScore struct {
 	Deterministic bool   `json:"deterministic"`
 	Skipped       bool   `json:"skipped,omitempty"`
 	Reasoning     string `json:"reasoning,omitempty"`
+
+	// Checks holds the per-check results when the criterion is scored by checks.
+	Checks []CheckResult `json:"checks,omitempty"`
 }
 
 // CaseResult holds scores and cost for one test case.
@@ -156,6 +163,9 @@ type CaseResult struct {
 	// deterministic scoring rewrite an absolute path the agent reported from
 	// inside the container back to the host workspace. Not serialized.
 	containerWorkspaceDir string
+	// baseCommit is the workspace's fixture commit; changed_files diffs
+	// against it so a change the agent committed is still seen. Not serialized.
+	baseCommit string
 	// Calls holds one record per agent call and per judge call, in execution order.
 	Calls []inference.CallRecord `json:"calls,omitempty"`
 }

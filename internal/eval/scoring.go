@@ -3,15 +3,83 @@ package eval
 import (
 	"fmt"
 	"io"
+	"os"
+	"path/filepath"
+	"strings"
 )
+
+// noOutputChecksReasoning is recorded for checked criteria when the agent
+// produced no output or there is no workspace, so the checks were not run.
+const noOutputChecksReasoning = "agent produced no output; checks not run"
+
+// maxGHLogBytes caps how much of .eval/gh.log is read.
+const maxGHLogBytes = 10 << 20
+
+// maxReasoningDetail is the length a check's detail is truncated to in reasoning.
+const maxReasoningDetail = 200
 
 // scoreCase runs every non-cost rubric criterion against cr.ActualOutput and
 // appends the CriterionScores to cr.Scores, adding LLM-judge cost to cr.JudgeCost.
 // cr.Scores stays nil when the rubric has no non-cost criteria.
+//
+// A criterion that has checks in tc is scored from them (passed out of total)
+// instead of by the heuristic or the judge; the checks are evaluated once for
+// the whole case. Criteria without checks are scored as before.
 func scoreCase(rubric Rubric, tc TestCase, cr *CaseResult) {
+	checkTotals := map[string]int{}
+	var checkOrder []string // criteria named by checks, first-seen order
+	for _, c := range tc.Checks {
+		if _, ok := checkTotals[c.Criterion]; !ok {
+			checkOrder = append(checkOrder, c.Criterion)
+		}
+		checkTotals[c.Criterion]++
+	}
+
+	// results holds the per-criterion check results; nil when checks did not
+	// run because the agent produced nothing to check.
+	var results map[string][]CheckResult
+	checksRan := len(tc.Checks) > 0 && cr.ActualOutput != "" && cr.WorkspaceDir != ""
+	if checksRan {
+		all := EvaluateChecks(tc.Checks, CheckInput{
+			Dir:    cr.WorkspaceDir,
+			Output: cr.ActualOutput,
+			GHLog:  readGHLog(cr.WorkspaceDir),
+			Base:   cr.baseCommit,
+		})
+		results = make(map[string][]CheckResult, len(checkTotals))
+		for i, r := range all {
+			name := tc.Checks[i].Criterion
+			results[name] = append(results[name], r)
+		}
+	}
+	// checkedScore builds the score of a criterion that has checks.
+	checkedScore := func(name string) CriterionScore {
+		total := checkTotals[name]
+		score := CriterionScore{Name: name, MaxScore: total, Deterministic: true}
+		if !checksRan {
+			score.Reasoning = noOutputChecksReasoning
+			return score
+		}
+		score.Checks = results[name]
+		for _, r := range score.Checks {
+			if r.Passed {
+				score.Score++
+			}
+		}
+		score.Reasoning = checksReasoning(score.Checks)
+		return score
+	}
+
+	scored := map[string]bool{}
 	for _, criterion := range rubric.Criteria {
 		if criterion.Type == "cost" {
 			continue // cost is tracked separately
+		}
+		scored[criterion.Name] = true
+
+		if checkTotals[criterion.Name] > 0 {
+			cr.Scores = append(cr.Scores, checkedScore(criterion.Name))
+			continue
 		}
 
 		score := CriterionScore{
@@ -40,6 +108,61 @@ func scoreCase(rubric Rubric, tc TestCase, cr *CaseResult) {
 
 		cr.Scores = append(cr.Scores, score)
 	}
+
+	// A check naming a criterion that is not scored above (a hand-built case
+	// that bypassed the loader's validation) is never dropped silently.
+	for _, name := range checkOrder {
+		if scored[name] {
+			continue
+		}
+		score := checkedScore(name)
+		score.Score = 0
+		score.Reasoning = fmt.Sprintf("criterion %q is not in the rubric", name)
+		cr.Scores = append(cr.Scores, score)
+	}
+}
+
+// readGHLog returns the contents of <dir>/.eval/gh.log, or "" when it is
+// absent, not a regular file (the agent can write .eval/) or unreadable.
+func readGHLog(dir string) string {
+	p := filepath.Join(dir, ".eval", "gh.log")
+	info, err := os.Lstat(p)
+	if err != nil || !info.Mode().IsRegular() {
+		return ""
+	}
+	f, err := os.Open(p)
+	if err != nil {
+		return ""
+	}
+	defer f.Close()
+	data, err := io.ReadAll(io.LimitReader(f, maxGHLogBytes))
+	if err != nil {
+		return ""
+	}
+	return string(data)
+}
+
+// checksReasoning summarizes check results: "3/3 checks passed", or
+// "1/2 checks passed; failed: <label> (<detail>); ..." naming every failed check.
+func checksReasoning(results []CheckResult) string {
+	passed := 0
+	var failed []string
+	for _, r := range results {
+		if r.Passed {
+			passed++
+			continue
+		}
+		f := r.Label
+		if r.Detail != "" {
+			f += " (" + shorten(r.Detail, maxReasoningDetail) + ")"
+		}
+		failed = append(failed, f)
+	}
+	reasoning := fmt.Sprintf("%d/%d checks passed", passed, len(results))
+	if len(failed) > 0 {
+		reasoning += "; failed: " + strings.Join(failed, "; ")
+	}
+	return reasoning
 }
 
 // caseTotals returns the summed score and maximum score of a case's criteria.
@@ -94,6 +217,20 @@ func printCaseResult(out io.Writer, tc TestCase, cr CaseResult) {
 					if !s.Skipped && s.Score < s.MaxScore*3/4 {
 						fmt.Fprintf(out, "      %s: %d/%d\n", s.Name, s.Score, s.MaxScore)
 					}
+				}
+			}
+		}
+
+		// Failed checks are listed whatever the percentage.
+		for _, s := range cr.Scores {
+			for _, c := range s.Checks {
+				if c.Passed {
+					continue
+				}
+				if c.Detail != "" {
+					fmt.Fprintf(out, "      ✗ %s: %s\n", c.Label, c.Detail)
+				} else {
+					fmt.Fprintf(out, "      ✗ %s\n", c.Label)
 				}
 			}
 		}

@@ -66,6 +66,9 @@ type caseWorkspace struct {
 	KiroDir string // Dir/.kiro
 	BinDir  string // <root>/bin: holds the fake gh and case mocks, mounted read-only at /opt/kairon/bin
 
+	// BaseCommit is the sha of the single fixture commit, set by gitInit.
+	BaseCommit string
+
 	// root is the private (0700) parent that holds Dir. It keeps other local
 	// users from traversing into the world-writable workspace.
 	root string
@@ -398,6 +401,14 @@ func (w *caseWorkspace) gitInit() error {
 			return fmt.Errorf("git %s in %s: %w: %s", args[0], w.Dir, err, strings.TrimSpace(string(out)))
 		}
 	}
+	cmd := exec.Command("git", "rev-parse", "HEAD")
+	cmd.Dir = w.Dir
+	cmd.Env = hermeticGitEnv()
+	out, err := cmd.Output()
+	if err != nil {
+		return fmt.Errorf("git rev-parse HEAD in %s: %w", w.Dir, err)
+	}
+	w.BaseCommit = strings.TrimSpace(string(out))
 	return nil
 }
 

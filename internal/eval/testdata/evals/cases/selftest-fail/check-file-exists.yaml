@@ -1,0 +1,24 @@
+name: check-file-exists
+description: "Self-test (fail): file_exists fails when the file was never created"
+agent: selftest-fail
+input: |
+  Report; the file check is expected to fail.
+context:
+  - "This case runs against the deterministic stub backend"
+  - "Expected to FAIL: the check cannot pass: missing.txt is never created"
+expected_output: |
+  A short report with a top-level section and at least one subsection.
+stub:
+  turns:
+    - response: |
+        ## Checks
+
+        The stub turn finished and reported output marker alpha.
+
+        ### Details
+
+        This response carries the headings the report format expects.
+checks:
+  - criterion: structural_completeness
+    type: file_exists
+    path: missing.txt

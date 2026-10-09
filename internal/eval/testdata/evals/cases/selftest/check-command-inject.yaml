@@ -1,0 +1,35 @@
+name: check-command-inject
+description: "Self-test: an injected hidden file is present for the command check only; the agent never sees it and it is removed afterwards"
+agent: selftest
+input: |
+  List the workspace files and report what you saw.
+context:
+  - "This case runs against the deterministic stub backend"
+  - "Passes: the stub lists the workspace into .eval/seen.txt before the check injects fixtures/hidden/hidden_test.go"
+expected_output: |
+  A short report with a top-level section and at least one subsection.
+stub:
+  turns:
+    - commands:
+        - "echo ready > ready.txt"
+        - "ls -R > .eval/seen.txt"
+      response: |
+        ## Checks
+
+        The stub turn finished and reported output marker alpha.
+
+        ### Details
+
+        This response carries the headings the report format expects.
+checks:
+  - criterion: structural_completeness
+    type: command
+    run: "test -f hidden_test.go && grep -q hidden hidden_test.go"
+    inject: [hidden_test.go]
+  - criterion: structural_completeness
+    type: file_not_contains
+    path: ".eval/seen.txt"
+    pattern: 'hidden_test\.go'
+  - criterion: structural_completeness
+    type: file_absent
+    path: hidden_test.go

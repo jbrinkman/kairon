@@ -1,0 +1,24 @@
+name: check-command
+description: "Self-test (fail): a command check fails when the exit code differs from the default expect_exit 0"
+agent: selftest-fail
+input: |
+  Report; the command check is expected to fail.
+context:
+  - "This case runs against the deterministic stub backend"
+  - "Expected to FAIL: the check cannot pass: 'exit 3' does not exit 0"
+expected_output: |
+  A short report with a top-level section and at least one subsection.
+stub:
+  turns:
+    - response: |
+        ## Checks
+
+        The stub turn finished and reported output marker alpha.
+
+        ### Details
+
+        This response carries the headings the report format expects.
+checks:
+  - criterion: structural_completeness
+    type: command
+    run: "exit 3"

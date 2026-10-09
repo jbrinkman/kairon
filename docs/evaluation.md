@@ -26,6 +26,7 @@ Kairon's evaluation framework measures agent quality and cost, enabling data-dri
   fixtures/          # Files referenced by cases
     mock-cli.sh      # Reusable stand-in for any CLI (aws, npm, curl, ...); see Preventing Production Side Effects
     workspaces/      # Optional per-case workspace fixtures: workspaces/<name>/ (see Case Workspaces)
+    hidden/          # Optional files a `command` check injects while it runs; the agent never sees them (see Checks)
   results/           # One directory per run: <timestamp>-<git-short-hash>
     <timestamp>-<git-short-hash>/
       architect.json
@@ -81,6 +82,10 @@ gh_issue:                  # Optional: data for the sandbox's fake `gh issue vie
 mocks:                     # Optional: author-supplied command mocks placed first on PATH (needs requires_sandbox)
   - command: aws
     script: fixtures/mock-cli.sh
+checks:                    # Optional: deterministic pass/fail checks (see Checks)
+  - criterion: completeness
+    type: file_exists
+    path: docs/summary.md
 stub:                      # Optional: scripted response for `--backend stub`
   turns:
     - response: |
@@ -99,7 +104,250 @@ Fields:
 - `requires_sandbox` — (optional, default `false`) when `true`, the case refuses to run without `--sandbox`: a native run records the case as failed with `case "<name>" requires --sandbox` before it creates a workspace or invokes anything (see [Sandbox Containment](#sandbox-containment)).
 - `gh_issue` — (optional) the issue the sandbox's fake `gh issue view` answers with: `number` (default `1`), `title` (required), `body`, `state` (default `OPEN`), `author` (default `fake-user`), `labels`. It is only valid together with `requires_sandbox: true`; otherwise loading the cases fails with an error naming the case, because a native run would call the developer's **real** `gh` (see [The fake `gh`](#the-fake-gh)).
 - `mocks` — (optional) a list of `{command, script}` entries that each place a mock of a command on the container `PATH`, so a bare `aws`, `npm` or `curl` resolves to the author's script instead of a real tool. `command` is the bare command name (it must match `^[A-Za-z0-9][A-Za-z0-9._+-]*$`, must be unique within the case, and cannot be `gh`, which is the harness's fake). `script` is a path relative to the evals directory (no absolute path, no `..`) naming an existing regular file; `fixtures/mock-cli.sh` is the reusable one. Like `gh_issue`, `mocks` is only valid together with `requires_sandbox: true`, because a native run has no such directory on `PATH` and would silently call the **real** tool; otherwise loading the cases fails with an error naming the case. See [Preventing Production Side Effects](#preventing-production-side-effects-containment-and-mocking).
+- `checks` — (optional) a list of deterministic pass/fail checks on the workspace the agent left behind, its final output and the fake `gh` log. A criterion that has checks is scored `passed` out of `total` instead of by a heuristic or the LLM judge. Each entry has a `criterion` (a non-cost criterion of the agent's rubric) and a `type`, plus the fields that type takes. An invalid `checks` block is a **fatal** load error that names the case file, the 1-based check number and the type; it is not downgraded to a warning (see [Checks](#checks)).
 - `stub.turns[]` — (optional) scripted model responses, used only by the `stub` backend (see [Stub Case Fields](#stub-case-fields))
+
+## Checks
+
+A case can declare `checks`: small, deterministic assertions about what the agent actually *did*, not only what it said. They are the way to score file edits, scope of change, hidden tests and `gh` calls without an LLM judge.
+
+```yaml
+checks:
+  - criterion: structural_completeness   # required: a non-cost criterion of the agent's rubric
+    type: command                         # required: one of the ten types below
+    run: "go test ./..."
+```
+
+Every check has `criterion` and `type`. The other fields depend on the type, and a field that does not belong to the type (for example `path` on a `command`, or `expect_exit` on a `file_exists`) is a load error rather than being ignored. This catches typos such as `expected_exit`.
+
+| `type` | Required fields | Optional fields | Passes when |
+|--------|-----------------|-----------------|-------------|
+| `command` | `run` | `expect_exit` (default `0`), `inject` | `sh -c <run>` in the workspace exits with `expect_exit` |
+| `file_exists` | `path` | | `path` exists in the workspace (file, directory or symlink) |
+| `file_absent` | `path` | | `path` does not exist |
+| `file_contains` | `path`, `pattern` | | `path` is a regular file whose content matches the regex |
+| `file_not_contains` | `path`, `pattern` | | `path` is a regular file that exists **and** whose content does not match |
+| `changed_files` | `allow` (list of globs; `[]` is valid) | | no path was added, modified or deleted outside `allow` |
+| `output_contains` | `pattern` | | the agent's final output matches the regex |
+| `output_not_contains` | `pattern` | | the agent's final output does not match the regex |
+| `gh_log_contains` | `pattern` | | the fake `gh` log matches the regex |
+| `gh_log_not_contains` | `pattern` | | the fake `gh` log does not match the regex |
+
+### The ten check types
+
+`command` runs a shell command in the workspace root and compares its exit status. `expect_exit` (0–255, default `0`) lets a case assert a specific non-zero status. `inject` copies files from `fixtures/hidden/` into the workspace for the duration of the command (see [Hidden files and `inject`](#hidden-files-and-inject)).
+
+```yaml
+checks:
+  - criterion: structural_completeness
+    type: command
+    run: "go test ./..."
+    expect_exit: 0
+    inject: [hidden_test.go]
+```
+
+`file_exists` passes when the path exists in the workspace. Any entry type counts, including a directory or a symlink (the final component is not followed).
+
+```yaml
+checks:
+  - criterion: structural_completeness
+    type: file_exists
+    path: docs/summary.md
+```
+
+`file_absent` passes when the path does not exist.
+
+```yaml
+checks:
+  - criterion: structural_completeness
+    type: file_absent
+    path: scratch/debug.log
+```
+
+`file_contains` passes when the file exists, is a regular file and its content matches `pattern`.
+
+```yaml
+checks:
+  - criterion: structural_completeness
+    type: file_contains
+    path: README.md
+    pattern: '(?m)^## Usage$'
+```
+
+`file_not_contains` passes when the file exists, is a regular file and its content does **not** match `pattern`. A missing file fails: "the file is absent" is not the same as "the file does not contain the text", so use `file_absent` for that.
+
+```yaml
+checks:
+  - criterion: structural_completeness
+    type: file_not_contains
+    path: main.go
+    pattern: 'TODO|FIXME'
+```
+
+`changed_files` passes when every path that differs from the starting state matches at least one `allow` glob. Added, modified, deleted and untracked paths all count. `allow: []` is valid and means "nothing may change"; a missing `allow` is an error.
+
+```yaml
+checks:
+  - criterion: structural_completeness
+    type: changed_files
+    allow:
+      - README.md
+      - "docs/**"
+      - "**/*_test.go"
+```
+
+`output_contains` and `output_not_contains` look at the agent's final output (the text recorded as `actual_output`).
+
+```yaml
+checks:
+  - criterion: structural_completeness
+    type: output_contains
+    pattern: '(?m)^## Summary'
+  - criterion: structural_completeness
+    type: output_not_contains
+    pattern: '(?i)as an ai'
+```
+
+`gh_log_contains` and `gh_log_not_contains` look at the fake `gh` log, `.eval/gh.log`, one line per call such as `gh issue create --title t` (see [The fake `gh`](#the-fake-gh)).
+
+```yaml
+checks:
+  - criterion: structural_completeness
+    type: gh_log_contains
+    pattern: '(?m)^gh issue create'
+  - criterion: structural_completeness
+    type: gh_log_not_contains
+    pattern: 'gh pr merge'
+```
+
+> **Native runs have no `gh` log.** The fake `gh` exists only under `--sandbox`; a native run calls the real `gh`, which Kairon does not log. Natively the log is empty unless the stub or the agent wrote `.eval/gh.log` itself, so `gh_log_contains` fails and `gh_log_not_contains` passes vacuously. `gh_log_*` checks do not require `requires_sandbox`, so the native self-test can exercise every type, but a case that asserts on real `gh` calls should set `requires_sandbox: true`. The log lives in `.eval/`, which the agent can write: it is evidence from the fake, not tamper-proof.
+
+### Regex dialect
+
+`pattern` is a Go (RE2) regular expression. It is **unanchored** and matched against the **whole** text (the file, the output or the log), not line by line. `^` and `$` therefore match the start and end of the text unless you add `(?m)`, and `.` does not match a newline unless you add `(?s)`. Flags go inline: `(?m)`, `(?s)`, `(?i)`. Use single-quoted YAML strings so backslashes survive (`'hidden_test\.go'`). A pattern that does not compile is a load error. There are no lookaheads or backreferences.
+
+### Glob dialect
+
+`changed_files.allow` entries are matched against the whole, slash-separated path relative to the workspace root (for example `docs/guide/intro.md`):
+
+| Syntax | Matches |
+|--------|---------|
+| `*` | any run of characters except `/` |
+| `?` | exactly one character except `/` |
+| `[abc]`, `[a-z]`, `[!x]` | one character from the class; never `/` |
+| `**` | any run of characters including `/`; as a whole segment (`a/**/b`, `**/x`) it also matches zero directories |
+| `\c` | the character `c` literally |
+
+A pattern without `/` therefore matches only a top-level path: `README.md` matches `README.md` but not `docs/README.md`, and `*.md` does not match `docs/a.md`. `docs/**` matches everything below `docs/`, and `**/*.go` matches a `.go` file at any depth. An empty pattern, a leading `/` or an unterminated `[` is a load error.
+
+### How `changed_files` sees changes
+
+The workspace is a git repository whose only commit is the fixture (see [Case Workspaces](#case-workspaces)). `changed_files` compares the working tree to that commit, so it sees staged, unstaged and untracked changes, and an agent that ran `git commit` cannot hide a change. Details:
+
+- Paths under `.eval/` (the harness outputs directory) are ignored.
+- Paths that git ignores are invisible. That includes anything in `.gitignore` and `.git/info/exclude`, which is how `.kiro/` and `.eval/` are kept out of `git status`.
+- Offending paths are listed in the failure detail with their kind (`added`, `modified` or `deleted`).
+- If the directory is not a git repository, or git fails, the check fails with the error.
+
+### Evaluation order
+
+All checks of a case are evaluated **once**, after the agent finishes and while the workspace still exists:
+
+1. Every non-`command` check (`file_*`, `changed_files`, `output_*`, `gh_log_*`) is evaluated first, against the workspace exactly as the agent left it.
+2. `command` checks then run, in the order they are listed.
+3. Results are reported in the order the checks are written in the case.
+
+This makes `file_*` and `changed_files` independent of what a command does to the workspace and of `inject`.
+
+### Hidden files and `inject`
+
+`fixtures/hidden/` holds files the agent must not see, such as hidden tests. A `command` check can list them in `inject`:
+
+```yaml
+checks:
+  - criterion: structural_completeness
+    type: command
+    run: "go test ./..."
+    inject: [hidden_test.go]
+```
+
+- Each entry is a path relative to `<evals-dir>/fixtures/hidden/`. It must be a relative, non-escaping path to an existing regular file; symlinks are rejected. The file is copied to the same relative path in the workspace.
+- Injection happens only **after** the agent has finished, immediately before the command runs, and the workspace is restored right after it. Files that did not exist are removed again (and directories the injection created); a file the agent had already written at that path is overwritten for the run and put back afterwards. The agent therefore never sees an injected file, and later checks and `--keep-workspaces` see the workspace as the agent left it.
+- The destination must not be under `.git`, `.eval` or `.kiro`.
+- `fixtures/hidden/` is excluded from the `task sync:check` comparison with the shipped templates, like `fixtures/workspaces/`.
+
+### Command checks run on the host
+
+> **Warning: `command` checks execute on the host, including in `--sandbox` runs.**
+> The sandbox base image carries no language toolchains, and the evaluator must work on any directory, so `command` checks do not run in the container. A command such as `go test ./...` therefore runs code **the agent wrote** with **your** privileges, which weakens the containment of `--sandbox` for those cases. Only use `command` checks in cases whose agent output you are prepared to run, and review what an agent can change before you add one.
+
+What the evaluator does to limit the damage: the command runs with `sh -c` in the workspace directory with stdin closed; GitHub credential variables (`GH_TOKEN`, `GITHUB_TOKEN`, `GH_ENTERPRISE_TOKEN`, `GITHUB_ENTERPRISE_TOKEN`, `GH_HOST`) are removed from its environment; it runs in its own process group that is killed on timeout (5 minutes per command); and file paths and `inject` destinations are not followed through symlinks. None of this is a sandbox. File-based checks (`file_*`, `changed_files`) and `output_*` / `gh_log_*` checks only read, and never execute anything.
+
+### Path rules
+
+`path` must be relative and stay inside the workspace: an absolute path or one with `..` is a load error. At run time the evaluator also refuses to follow a symlink in any directory component, and `file_contains` / `file_not_contains` refuse a symlink as the file itself, so an agent cannot point `out.txt` at a host file. Reads are capped at 10 MiB; a larger file fails the check with a message.
+
+### Scoring and reasoning
+
+A criterion with at least one check in a case is scored by those checks:
+
+- `score` is the number of checks that passed and `max_score` is the number of checks, so the criterion is **passed out of total** (`2/3`), not a 1–5 value. `deterministic` is `true`.
+- The rubric's `scoring` range, its `deterministic` flag and any LLM judge are not used for that criterion in that case, and no judge call is made for it.
+- Every failed check is named in `reasoning` with its 1-based position, type and key fields, then its detail in parentheses (each detail is shortened to 200 characters there; the full text, up to 2 KiB, stays in `checks[].detail`).
+
+```
+3/3 checks passed
+1/2 checks passed; failed: #2 file_exists path=missing.txt (file does not exist)
+```
+
+The key fields in a label are `command "<run>"`, `path=<path>`, `pattern=/<regex>/` or `allow=[<globs>]`.
+
+**Criteria without checks keep the legacy heuristics.** A criterion that no check names is scored exactly as before: deterministic criteria use the keyword heuristics on the agent's output, other criteria go to the LLM judge. A case can mix both, for example checks on `structural_completeness` and the judge for `clarity`. Cost criteria cannot have checks. Skipped criteria stay excluded from the totals (see [Skipped Criteria](#skipped-criteria)).
+
+When the case prints, every failed check is listed on its own line whatever the percentage:
+
+```
+      ✗ #2 file_exists path=missing.txt: file does not exist
+```
+
+### Result JSON
+
+A checked criterion carries a `checks` array in `<agent>.json`, one entry per check in the order they were written. Older result files without it still load.
+
+```json
+{
+  "name": "structural_completeness",
+  "score": 1,
+  "max_score": 2,
+  "deterministic": true,
+  "reasoning": "1/2 checks passed; failed: #2 file_exists path=missing.txt (file does not exist)",
+  "checks": [
+    { "index": 1, "type": "file_exists", "label": "#1 file_exists path=marker.txt", "passed": true },
+    { "index": 2, "type": "file_exists", "label": "#2 file_exists path=missing.txt", "passed": false, "detail": "file does not exist" }
+  ]
+}
+```
+
+### When the agent failed
+
+Checks assert on what the agent did. If the agent produced no output (the call failed, timed out or the sandbox refused the case) or there is no workspace, the checks are **not evaluated** and no command runs. Each criterion that has checks records `0/<total>`, is **not** skipped, and carries the reasoning `agent produced no output; checks not run`. A skipped criterion would be left out of the aggregate and make a failed run look better. Criteria without checks keep their existing "skipped" behavior in this situation.
+
+A check that names a criterion missing from the scored rubric (only possible for a case that bypassed the loader) is never dropped: it records `0/<count>` with the reasoning `criterion "<name>" is not in the rubric`.
+
+### Using the evaluator elsewhere
+
+The evaluator is a plain function in `internal/eval` with no knowledge of the harness, so it can score any directory:
+
+```go
+results := eval.EvaluateChecks(checks, eval.CheckInput{
+    Dir:    workspaceDir, // directory the file_*, changed_files and command checks look at
+    Output: agentOutput,  // text for output_contains / output_not_contains
+    GHLog:  ghLogText,    // text for gh_log_contains / gh_log_not_contains
+    Base:   "",           // optional git revision for changed_files; default HEAD
+})
+```
+
+`EvaluateChecks` never reads the config, the case or the rubric, and returns one `CheckResult` per check in list order. A hand-built check is validated lazily: an invalid one yields a failed result with an explanation, never a panic and never a silent pass. `eval.ValidateChecks` validates and compiles checks loaded from a case file. In a normal run `Base` is the fixture commit of the case workspace, so a change the agent committed is still detected.
 
 ## Running Evaluations
 
@@ -135,9 +383,12 @@ kairon eval --evals-dir path/to/evals architect
 
 ## How Scoring Works
 
-- **Deterministic criteria** — scored by code checks (file existence, structural completeness)
-- **LLM-judged criteria** — scored by an LLM evaluator using the rubric description (requires output and a configured judge)
+- **Check-scored criteria** — a criterion that has [`checks`](#checks) in the case is scored `passed` out of `total` checks, with the failed checks named in the reasoning. Checks take precedence over everything below for that criterion in that case: the rubric's `scoring`, its `deterministic` flag and the LLM judge are not used, and no judge call is made.
+- **Deterministic criteria** — criteria without checks that the rubric marks `deterministic` are scored by the legacy heuristics (code checks on the agent's output, such as structural completeness)
+- **LLM-judged criteria** — criteria without checks that are not deterministic are scored by an LLM evaluator using the rubric description (requires output and a configured judge)
 - **Cost criteria** — tracked automatically from token usage
+
+A criterion without checks is scored exactly as it was before checks existed, so adding checks to one criterion never changes how the others are scored.
 
 ### Skipped Criteria
 
@@ -614,7 +865,7 @@ By default a workspace is deleted once its case has been scored. With `--keep-wo
 
 The single-case (`kairon eval <agent> <case>`) and `--resume` paths go through the same code, so `workspace_dir` and `--keep-workspaces` behave identically there.
 
-> The `file_exists` and `changed_files` check types are **not** part of this change. Workspace scoring today means the data those checks will read; when they land they read `workspace_dir` and need no container-specific code.
+> Workspace scoring reads the workspace on the host. The [`file_exists`, `changed_files` and the other check types](#checks) read `workspace_dir` (as the agent left it, compared with the fixture commit) and need no container-specific code, so they behave identically natively and under `--sandbox`. `command` checks also run on the host, even under `--sandbox` (see [Command checks run on the host](#command-checks-run-on-the-host)).
 
 ### Outputs: `.eval/`
 
@@ -648,16 +899,18 @@ internal/eval/testdata/evals/
   agents/selftest.json              # minimal agent config (model: claude-sonnet-5.5; prompt: file://./selftest-prompt.md;
                                     #   resources: a non-existent selftest-conventions skill, so resources_present is [])
   agents/selftest-prompt.md
-  agents/selftest-fail.json         # separate agent whose case is expected to FAIL (see below)
+  agents/selftest-fail.json         # separate agent whose cases are expected to FAIL (see below)
   agents/selftest-fail-prompt.md
   rubrics/selftest.yaml             # structural_completeness (deterministic), clarity (LLM-judged), cost_efficiency (cost)
-  rubrics/selftest-fail.yaml
+  rubrics/selftest-fail.yaml        # structural_completeness (deterministic), cost_efficiency (cost)
   cases/selftest/stub-basic.yaml    # no stub usage -> estimated; setup file exercises path rebasing
   cases/selftest/stub-usage.yaml    # stub model + usage 123/45 -> reported
   cases/selftest/stub-quoted-input.yaml  # input with quotes, newlines, $(...) and backticks; must reach the backend verbatim
   cases/selftest/stub-marker.yaml   # stub turn command 'echo hi > marker.txt' leaves marker.txt in the case workspace
   cases/selftest/stub-seeded-workspace.yaml  # workspace: seeded; the stub appends to README.md -> ' M README.md'
+  cases/selftest/check-*.yaml       # 11 passing check cases, one per check type (see below)
   cases/selftest-fail/stub-timeout.yaml      # timeout: 1s, stub turn command 'sleep 3' -> timeout failure
+  cases/selftest-fail/check-*.yaml  # 10 per-type failing check cases plus check-partial (see below)
   agents/selftest-sandbox.json      # containment agent, allowedTools [read, write]; its cases are all requires_sandbox
   agents/selftest-sandbox-prompt.md
   agents/selftest-sandbox-ro.json   # containment agent, allowedTools [read]
@@ -672,19 +925,42 @@ internal/eval/testdata/evals/
   cases/selftest-sandbox-ro/stub-tool-denied.yaml     # fs_write tool call is denied and recorded (only fs_read is trusted)
   fixtures/selftest-input.md        # referenced as .kairon/evals/fixtures/selftest-input.md
   fixtures/mock-cli.sh              # byte-identical copy of .kairon/evals/fixtures/mock-cli.sh (this evals dir resolves case scripts here)
+  fixtures/hidden/hidden_test.go    # file injected by the check-command-inject case (see Checks); the agent never sees it
   fixtures/workspaces/seeded/       # README.md plus docs/notes.txt: the seeded workspace fixture
   fixtures/workspaces/mock-aws/     # report.txt plus .mocks/aws/s3-cp.out: canned reply for the mocked aws
 ```
 
 `selftest.json` declares a `model` so the self-test passes the model-pinning pre-flight, and lists a `skill://.kiro/skills/selftest-conventions/SKILL.md` resource that intentionally does not exist. It exercises the "missing resources are normal" rule: the run succeeds and the recorded `resources_present` is `[]`.
 
-The `selftest` agent has five cases and all of them pass (`task eval:selftest`). The `selftest-fail` agent is deliberately separate, so `selftest` keeps meaning "everything passes". Its one case, `stub-timeout`, is **expected to fail**: it records a timeout failure (empty `actual_output`, `error_context.stderr` containing `timeout after 1s`) in about a second. Run it with:
+The `selftest` agent has sixteen cases and all of them pass (`task eval:selftest`): the five original `stub-*` cases, which carry no `checks` and keep their pinned scores, and eleven `check-*` cases that exercise [checks](#checks). The `selftest-fail` agent is deliberately separate, so `selftest` keeps meaning "everything passes". It has twelve cases, all **expected to fail**: ten `check-*` cases plus `check-partial` built so that checks fail, and `stub-timeout`, which records a timeout failure (empty `actual_output`, `error_context.stderr` containing `timeout after 1s`) in about a second. Run it with:
 
 ```bash
 go run ./cmd/kairon eval --backend stub --no-sandbox --evals-dir internal/eval/testdata/evals selftest-fail
 ```
 
-The run itself exits 0; the failure is the recorded result for that case.
+The run itself exits 0; the failures are the recorded results, and each failed check is printed on its own `✗` line.
+
+All check cases score the `structural_completeness` criterion (present in both rubrics, so the rubrics and the five original cases are unchanged), use only POSIX stub commands, and have no model or `kiro-cli` dependency.
+
+| Check type | `selftest` case (passes) | `selftest-fail` case (fails) |
+|------------|--------------------------|------------------------------|
+| `command` | `check-command`: `test -f built.txt` exits 0, plus `exit 3` with `expect_exit: 3` | `check-command`: `exit 3` with the default `expect_exit: 0` |
+| `file_exists` | `check-file-exists` | `check-file-exists`: `missing.txt` |
+| `file_absent` | `check-file-absent` | `check-file-absent`: `marker.txt` exists |
+| `file_contains` | `check-file-contains` | `check-file-contains`: pattern not in the file |
+| `file_not_contains` | `check-file-not-contains` | `check-file-not-contains`: pattern is in the file |
+| `changed_files` | `check-changed-files`: README.md changes, `.eval/note.txt` is ignored, `allow: [README.md]` | `check-changed-files`: deletes `docs/notes.txt` and adds `extra.txt`; the reasoning names both |
+| `output_contains` | `check-output-contains` | `check-output-contains` |
+| `output_not_contains` | `check-output-not-contains` | `check-output-not-contains` |
+| `gh_log_contains` | `check-gh-log-contains`: the stub writes a `gh issue create` line to `.eval/gh.log` | `check-gh-log-contains`: the log is empty |
+| `gh_log_not_contains` | `check-gh-log-not-contains` | `check-gh-log-not-contains`: the stub writes a `gh pr merge 1` line |
+
+Two further `selftest` / `selftest-fail` cases pin behavior you may rely on:
+
+- `selftest/check-command-inject` shows that an injected file stays hidden. The stub writes the workspace listing to `.eval/seen.txt` before the checks run; the `command` check then injects `fixtures/hidden/hidden_test.go` and passes only if the file is present; `file_not_contains` on `.eval/seen.txt` proves the agent never saw it, and `file_absent` on `hidden_test.go` proves it was removed afterwards.
+- `selftest-fail/check-partial` has one passing and one failing `file_exists` check on one criterion, so it records exactly `1/2` with the reasoning `1/2 checks passed; failed: #2 file_exists path=missing.txt (file does not exist)`.
+
+The native self-test has no real `gh`, so the two `gh_log_*` cases write `.eval/gh.log` from a stub command (see the [native caveat](#checks)).
 
 The `selftest-sandbox` and `selftest-sandbox-ro` agents exercise [Sandbox Containment](#sandbox-containment) with the stub backend (`selftest-sandbox` includes `stub-mock-cli`, the working example of [the mock pattern](#preventing-production-side-effects-containment-and-mocking)). Every one of their cases is `requires_sandbox: true`, so a native run records each as failed with `requires --sandbox` and starts nothing. `stub-write-outside-mounts` is, like `selftest-fail`, **expected to fail** under `--sandbox`: that failure is the proof that the root filesystem is read-only. Run them under the sandbox with:
 
@@ -1239,7 +1515,7 @@ Kairon does not run a mock HTTP server: the base image has none, and a case that
 
 An SDK called in-process by code the agent writes or runs (a Python script using `boto3`, a Node script using `fetch`) does not look up a command on `PATH`, so a `PATH` mock never sees it. It is covered only by the config route (endpoint overrides the SDK honours), by not running such code in the case, or by trusting fewer tools (below).
 
-**Inspecting and scoring.** Everything the mock recorded is on the host the moment it is written, because `.eval/` lives in the host workspace. Run with `--keep-workspaces` and read `<workspace_dir>/.eval/mock-<command>.log`. Scoring of the recorded interaction today is host-side: the daemon-gated `TestContainmentSandbox` (subtest `mocked cli`) reads the kept workspace and asserts the exact log, the resolution of `aws` to `/opt/kairon/bin/aws`, the canned reply, the `is not simulated` message and the `git status` of the workspace. There is no rubric check type that reads the log: `file_exists`, `changed_files` and similar checks do not exist yet (see [Case Workspaces](#keeping-workspaces-and-workspace_dir)). When file-based checks land, they read the same host files (`<workspace_dir>/.eval/mock-<command>.log`); no schema for them is defined here.
+**Inspecting and scoring.** Everything the mock recorded is on the host the moment it is written, because `.eval/` lives in the host workspace. Run with `--keep-workspaces` and read `<workspace_dir>/.eval/mock-<command>.log`. A case can score the recorded interaction with [`checks`](#checks): `file_contains` / `file_not_contains` on `.eval/mock-<command>.log` read the same host file (for example `type: file_contains`, `path: .eval/mock-aws.log`, `pattern: 's3 cp'`). The daemon-gated `TestContainmentSandbox` (subtest `mocked cli`) also reads the kept workspace and asserts the exact log, the resolution of `aws` to `/opt/kairon/bin/aws`, the canned reply, the `is not simulated` message and the `git status` of the workspace.
 
 #### Mocks and tool trust
 

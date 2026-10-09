@@ -1,0 +1,24 @@
+name: check-output-not-contains
+description: "Self-test: output_not_contains passes when the agent output does not match the pattern"
+agent: selftest
+input: |
+  Report without the forbidden phrase.
+context:
+  - "This case runs against the deterministic stub backend"
+  - "Passes: the response never mentions forbidden-token"
+expected_output: |
+  A short report with a top-level section and at least one subsection.
+stub:
+  turns:
+    - response: |
+        ## Checks
+
+        The stub turn finished and reported output marker alpha.
+
+        ### Details
+
+        This response carries the headings the report format expects.
+checks:
+  - criterion: structural_completeness
+    type: output_not_contains
+    pattern: "forbidden-token"
