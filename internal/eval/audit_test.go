@@ -149,6 +149,8 @@ func TestAuditExtractInstructions(t *testing.T) {
 		{"shorter closer does not close", "````\nx\n```\nstill\n````\nafter\n", []auditInstruction{{"f", 6, "after"}}},
 		{"other char does not close", "```\nx\n~~~\nstill\n```\nafter\n", []auditInstruction{{"f", 6, "after"}}},
 		{"unclosed fence runs to EOF", "a\n```\nx\ny\n", []auditInstruction{{"f", 1, "a"}}},
+		{"inline backtick span is not a fence opener", "```foo```\nb\n", []auditInstruction{{"f", 1, "```foo```"}, {"f", 2, "b"}}},
+		{"backtick opener with backtick in info string is not a fence", "```go `x`\ninside\n", []auditInstruction{{"f", 1, "```go `x`"}, {"f", 2, "inside"}}},
 		{"indented fence", "  ```\nx\n  ```\nafter\n", []auditInstruction{{"f", 4, "after"}}},
 		{"front-matter skipped", "---\nname: x\ndescription: y\n---\nbody\n", []auditInstruction{{"f", 5, "body"}}},
 		{"unclosed front-matter is ordinary lines", "---\nname: x\nbody\n", []auditInstruction{{"f", 1, "---"}, {"f", 2, "name: x"}, {"f", 3, "body"}}},
