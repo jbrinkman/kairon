@@ -504,6 +504,36 @@ func TestChecksRunProgressiveEvaluationMalformedCaseIsFatal(t *testing.T) {
 	}
 }
 
+func TestChecksRunProgressiveEvaluationBadStubJudgeIsFatal(t *testing.T) {
+	// A bad stub.judge (empty list or blank entry) must fail the run, not be
+	// downgraded to a "no test cases for agent" warning that drops every case
+	// and exits 0. validateCaseFields rejects it, so the error must wrap
+	// errMalformedCase for the runner.go fatal gate to re-raise it.
+	for name, stub := range map[string]string{
+		"empty list":  "stub:\n  judge: []\n",
+		"blank entry": "stub:\n  judge: [yes, \"  \"]\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			checksEnv(t)
+			initGitRepoHere(t)
+			writeChecksCase(t, "chk", "bad.yaml", "name: bad\ninput: x\n"+stub)
+			if err := os.MkdirAll(filepath.Join("evals", "results", "rj"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			err := runProgressiveEvaluation("chk", filepath.Join("evals", "results", "rj"), false, nil)
+			if err == nil {
+				t.Fatal("a bad stub.judge must fail the run, got nil")
+			}
+			if !errors.Is(err, errMalformedCase) {
+				t.Fatalf("error does not wrap errMalformedCase: %v", err)
+			}
+			if !strings.Contains(err.Error(), "bad.yaml") {
+				t.Errorf("error does not name the case file: %v", err)
+			}
+		})
+	}
+}
+
 func TestChecksRunProgressiveEvaluationMissingCasesDirIsWarning(t *testing.T) {
 	checksEnv(t)
 	initGitRepoHere(t)

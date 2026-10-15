@@ -121,11 +121,11 @@ func validateCaseFields(tc TestCase, file string) error {
 	}
 	if tc.Stub != nil && tc.Stub.Judge != nil {
 		if len(tc.Stub.Judge) == 0 {
-			return fmt.Errorf("case %q (%s): stub.judge must not be empty", tc.Name, file)
+			return fmt.Errorf("%w: case %q (%s): stub.judge must not be empty", errMalformedCase, tc.Name, file)
 		}
 		for i, a := range tc.Stub.Judge {
 			if strings.TrimSpace(a) == "" {
-				return fmt.Errorf("case %q (%s): stub.judge entry %d must not be blank", tc.Name, file, i+1)
+				return fmt.Errorf("%w: case %q (%s): stub.judge entry %d must not be blank", errMalformedCase, tc.Name, file, i+1)
 			}
 		}
 	}
