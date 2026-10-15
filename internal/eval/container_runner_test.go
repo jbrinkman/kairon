@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -216,6 +217,31 @@ func TestContainerConfigUserEnvAndWorkdir(t *testing.T) {
 	// Deterministic order for the configured variables.
 	if strings.Index(env, "A=1") > strings.Index(env, "B=2") {
 		t.Errorf("configured env not sorted: %v", cfgC.Env)
+	}
+}
+
+// TestContainerConfigKeepAliveIsEffectivelyUnbounded pins the F2 fix: the
+// container's keep-alive command must not impose a ~1h wall. A multi-turn
+// case opens one container for the whole case (one Run per turn), so a fixed
+// `sleep 3600` could exit mid-case even though no single per-turn timeout was
+// exceeded. The container is always torn down explicitly by session.Close, so
+// the keep-alive just has to outlast any real case. BusyBox sleep (alpine base
+// image) takes a numeric argument only — `sleep infinity` is rejected — so the
+// value is a large integer.
+func TestContainerConfigKeepAliveIsEffectivelyUnbounded(t *testing.T) {
+	cfgC := newContainerConfig("kairon-eval-base:x", testContainerConfig())
+
+	if len(cfgC.Cmd) != 2 || cfgC.Cmd[0] != "sleep" {
+		t.Fatalf("Cmd = %v, want [sleep <seconds>]", cfgC.Cmd)
+	}
+	secs, err := strconv.Atoi(cfgC.Cmd[1])
+	if err != nil {
+		t.Fatalf("keep-alive sleep argument %q is not a plain integer (BusyBox sleep needs one): %v", cfgC.Cmd[1], err)
+	}
+	// Must dwarf any plausible sum-of-per-turn-timeouts case. The old fixed
+	// 3600 (one hour) is the regression this guards against.
+	if secs < 2147483647 {
+		t.Errorf("keep-alive sleep = %d s, want an effectively-unbounded value (>= 2147483647); a short wall can exit a long multi-turn case mid-run", secs)
 	}
 }
 

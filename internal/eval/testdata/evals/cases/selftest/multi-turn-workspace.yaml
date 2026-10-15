@@ -1,0 +1,48 @@
+name: multi-turn-workspace
+description: "Self-test: a two-turn case with a setup text entry; both turns run in the same case workspace, so turn 2 sees the file turn 1 wrote"
+agent: selftest
+turns:
+  - "Write the first file and report that you did."
+  - "Write the second file and report that you did."
+setup:
+  - type: text
+    label: "Self-test Context"
+    content: "Setup context is delivered with turn 1 only."
+context:
+  - "This case runs against the deterministic stub backend"
+  - "Turn 2 runs 'test -f turn1.txt', which fails the stub (and so the case) if the workspace were not shared between turns"
+expected_output: |
+  A short report with a top-level section and at least one subsection.
+stub:
+  turns:
+    - commands:
+        - "echo first > turn1.txt"
+      response: |
+        ## First turn
+
+        turn1.txt was written to the case workspace.
+
+        ### Details
+
+        The first turn created one file.
+    - commands:
+        - "test -f turn1.txt && echo second > turn2.txt"
+      response: |
+        ## Second turn
+
+        turn2.txt was written after finding turn1.txt in the same workspace.
+
+        ### Details
+
+        The second turn saw the file from the first turn.
+checks:
+  - criterion: structural_completeness
+    type: file_exists
+    path: turn1.txt
+  - criterion: structural_completeness
+    type: file_exists
+    path: turn2.txt
+  - criterion: structural_completeness
+    type: file_contains
+    path: turn2.txt
+    pattern: "second"

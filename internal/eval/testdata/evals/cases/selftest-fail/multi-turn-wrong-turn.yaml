@@ -1,0 +1,45 @@
+name: multi-turn-wrong-turn
+description: "Self-test (fail): a turn-1 gh_log_contains check for a call made in turn 3 fails, proving checks are scoped to their turn"
+agent: selftest-fail
+turns:
+  - "Draft the report and wait for approval."
+  - "Looks good, go on."
+  - "Yes, those labels are right."
+context:
+  - "This case runs against the deterministic stub backend"
+  - "Expected to FAIL: the gh issue create call happens in turn 3, so the turn-1 check cannot pass even though the final log contains it"
+expected_output: |
+  A short report with a top-level section and at least one subsection.
+stub:
+  turns:
+    - response: |
+        ## Draft
+
+        The draft is ready and nothing has been created yet.
+
+        ### Details
+
+        Waiting for approval before any gh call.
+    - response: |
+        ## Labels
+
+        The draft was approved; asking for label confirmation.
+
+        ### Details
+
+        Still no gh call at this point.
+    - commands:
+        - 'echo "gh issue create --title t" >> .eval/gh.log'
+      response: |
+        ## Created
+
+        The issue was created after the labels were confirmed.
+
+        ### Details
+
+        One gh issue create call was recorded in turn 3.
+checks:
+  - criterion: structural_completeness
+    type: gh_log_contains
+    pattern: "issue create"
+    turn: 1

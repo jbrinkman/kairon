@@ -275,7 +275,7 @@ func InvestigateParallelExecution(agent string) (*ParallelBenchmark, error) {
 	// Sequential execution
 	startSeq := time.Now()
 	for _, tc := range testCases {
-		prompt, err := assemblePrompt(tc.Setup, tc.Input)
+		prompt, err := assemblePrompt(tc.Setup, tc.userTurns()[0])
 		if err != nil {
 			continue
 		}
@@ -295,7 +295,7 @@ func InvestigateParallelExecution(agent string) (*ParallelBenchmark, error) {
 		wg.Add(1)
 		go func(testCase TestCase) {
 			defer wg.Done()
-			prompt, err := assemblePrompt(testCase.Setup, testCase.Input)
+			prompt, err := assemblePrompt(testCase.Setup, testCase.userTurns()[0])
 			if err != nil {
 				return
 			}

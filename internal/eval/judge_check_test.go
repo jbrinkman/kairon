@@ -101,6 +101,29 @@ func TestJudgeCheckRequestAndPrompt(t *testing.T) {
 	}
 }
 
+func TestJudgeCheckMultiTurnRendersTurnsAsInput(t *testing.T) {
+	b := yesBackend()
+	useRecording(t, b)
+
+	stub := &inference.StubScript{Turns: []inference.StubTurn{{Response: "r1"}, {Response: "r2"}}, Judge: inference.StubJudge{"yes"}}
+	// A multi-turn case carries its user messages in Turns; Input is empty.
+	tc := TestCase{Name: "c", Turns: []string{"TURN-ONE-MESSAGE", "TURN-TWO-MESSAGE"}, Stub: stub, Checks: []Check{
+		{Criterion: "clarity", Type: CheckJudge, Question: "Does it meet the requirements?"},
+	}}
+	cr := CaseResult{ActualOutput: "out", WorkspaceDir: t.TempDir()}
+	scoreCase(checkedRubric(), tc, &cr)
+
+	if len(b.reqs) != 1 {
+		t.Fatalf("backend got %d requests, want 1", len(b.reqs))
+	}
+	prompt := b.reqs[0].Prompt
+	for _, want := range []string{"TURN-ONE-MESSAGE", "TURN-TWO-MESSAGE", "Turn 1 (user):", "Turn 2 (user):"} {
+		if !strings.Contains(prompt, want) {
+			t.Errorf("judge prompt lacks %q (multi-turn input not rendered):\n%s", want, prompt)
+		}
+	}
+}
+
 func TestJudgeCheckAccountingSuccess(t *testing.T) {
 	useRecording(t, yesBackend())
 	tc := TestCase{Name: "c", Input: "in", Checks: []Check{

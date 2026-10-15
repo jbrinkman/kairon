@@ -3,10 +3,13 @@ package inference
 // CallRecord is one inference call, in the shape shared by eval runs and
 // (Stage 4) production workflow audit trails.
 type CallRecord struct {
-	Role         string  `json:"role"`                // "agent" | "judge"
-	Model        string  `json:"model"`               // served model when the backend reports one, else the pinned (requested) model
-	Agent        string  `json:"agent,omitempty"`     // agent calls
-	Criterion    string  `json:"criterion,omitempty"` // judge calls
+	Role      string `json:"role"`                // "agent" | "judge"
+	Model     string `json:"model"`               // served model when the backend reports one, else the pinned (requested) model
+	Agent     string `json:"agent,omitempty"`     // agent calls
+	Criterion string `json:"criterion,omitempty"` // judge calls
+	// Turn is the 1-based user turn of a multi-turn agent call (Request.Turn+1).
+	// Zero, and therefore omitted, for single-turn calls and judge calls.
+	Turn         int     `json:"turn,omitempty"`
 	InputTokens  int     `json:"input_tokens"`
 	OutputTokens int     `json:"output_tokens"`
 	CostUSD      float64 `json:"cost_usd"`

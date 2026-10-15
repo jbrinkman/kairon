@@ -1,0 +1,70 @@
+name: multi-turn-gh-log
+description: "Self-test: a three-turn case; gh and output checks are scoped to the turn they name (no gh issue create after turn 1 or 2, one after turn 3) and unscoped checks default to the last turn"
+agent: selftest
+turns:
+  - "Draft the report and wait for approval."
+  - "Looks good, go on."
+  - "Yes, those labels are right."
+context:
+  - "This case runs against the deterministic stub backend"
+  - "Each turn has its own scripted stub response; only the third turn records a gh issue create call"
+expected_output: |
+  A short report with a top-level section and at least one subsection.
+stub:
+  turns:
+    - response: |
+        ## Draft
+
+        TURN-ONE-MARKER: the draft is ready and nothing has been created yet.
+
+        ### Details
+
+        Waiting for approval before any gh call.
+    - response: |
+        ## Labels
+
+        TURN-TWO-MARKER: the draft was approved; asking for label confirmation.
+
+        ### Details
+
+        Still no gh call at this point.
+    - commands:
+        - 'echo "gh issue create --title t" >> .eval/gh.log'
+      response: |
+        ## Created
+
+        TURN-THREE-MARKER: the issue was created after the labels were confirmed.
+
+        ### Details
+
+        One gh issue create call was recorded in turn 3.
+checks:
+  - criterion: structural_completeness
+    type: gh_log_not_contains
+    pattern: "issue create"
+    turn: 1
+  - criterion: structural_completeness
+    type: gh_log_not_contains
+    pattern: "issue create"
+    turn: 2
+  - criterion: structural_completeness
+    type: gh_log_contains
+    pattern: "issue create"
+    turn: 3
+  - criterion: structural_completeness
+    type: gh_log_contains
+    pattern: "issue create"
+  - criterion: structural_completeness
+    type: output_contains
+    pattern: "TURN-ONE-MARKER"
+    turn: 1
+  - criterion: structural_completeness
+    type: output_contains
+    pattern: "TURN-TWO-MARKER"
+    turn: 2
+  - criterion: structural_completeness
+    type: output_contains
+    pattern: "TURN-THREE-MARKER"
+  - criterion: structural_completeness
+    type: output_not_contains
+    pattern: "TURN-ONE-MARKER"
