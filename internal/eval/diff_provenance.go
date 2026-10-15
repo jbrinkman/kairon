@@ -20,6 +20,7 @@ const notRecorded = "(not recorded)"
 type agentProv struct {
 	model       string
 	sha         string
+	promptFile  string // candidate prompt path (--prompt-file); empty when not a candidate run
 	containment *Containment
 }
 
@@ -45,7 +46,7 @@ func loadRunInfo(summary Summary, dir string) runInfo {
 
 	for name, p := range summary.Agents {
 		ap := info.agents[name]
-		ap.model, ap.sha = p.AgentModel, p.PromptSHA256
+		ap.model, ap.sha, ap.promptFile = p.AgentModel, p.PromptSHA256, p.PromptFile
 		info.agents[name] = ap
 	}
 	for name, c := range summary.Containment {
@@ -74,6 +75,9 @@ func loadRunInfo(summary Summary, dir string) runInfo {
 		}
 		if ap.sha == "" {
 			ap.sha = res.PromptSHA256
+		}
+		if ap.promptFile == "" {
+			ap.promptFile = res.PromptFile
 		}
 		if ap.containment == nil && res.Containment != nil {
 			c := *res.Containment
@@ -109,8 +113,8 @@ func deriveMode(summaryMode string, agentModes []*bool) string {
 }
 
 // printProvenance writes the "Run Provenance" block: each run's mode, then
-// every difference in sandbox, containment, judge_model, agent_model and
-// prompt_sha256. It only reports; it never fails the diff.
+// every difference in sandbox, containment, judge_model, agent_model,
+// prompt_sha256 and prompt_file. It only reports; it never fails the diff.
 func printProvenance(w io.Writer, runA, runB string, a, b runInfo) {
 	fmt.Fprintf(w, "\nRun Provenance:\n")
 	fmt.Fprintf(w, "  %s: mode %s\n", runA, a.mode)
@@ -146,6 +150,9 @@ func printProvenance(w io.Writer, runA, runB string, a, b runInfo) {
 		}
 		if pa.sha != pb.sha {
 			diff("%s prompt_sha256: %s → %s", agent, show(pa.sha), show(pb.sha))
+		}
+		if pa.promptFile != pb.promptFile {
+			diff("%s prompt_file: %s → %s", agent, show(pa.promptFile), show(pb.promptFile))
 		}
 	}
 

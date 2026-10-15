@@ -1,0 +1,25 @@
+name: check-judge-garbage
+description: "Self-test (fail): an unparseable judge answer fails the check (never skipped)"
+agent: selftest-fail
+input: |
+  Review the work and report what you found.
+context:
+  - "This case runs against the deterministic stub backend"
+  - "Fails: stub.judge returns text without the JSON delimiters"
+expected_output: |
+  A short report with a top-level section and at least one subsection.
+stub:
+  judge: garbage
+  turns:
+    - response: |
+        ## Checks
+
+        The stub turn finished and reported output marker alpha.
+
+        ### Details
+
+        This response carries the headings the report format expects.
+checks:
+  - criterion: structural_completeness
+    type: judge
+    question: "Does the report describe what the stub turn finished?"

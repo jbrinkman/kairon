@@ -47,6 +47,8 @@ func scoreCase(rubric Rubric, tc TestCase, cr *CaseResult) {
 			GHLog:          ghLog,
 			GHLogOversized: ghLogOversized,
 			Base:           cr.baseCommit,
+			Input:          tc.Input,
+			Judge:          newCheckJudge(tc, cr),
 		})
 		results = make(map[string][]CheckResult, len(checkTotals))
 		for i, r := range all {

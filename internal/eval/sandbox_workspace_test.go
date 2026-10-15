@@ -264,7 +264,7 @@ func TestSelfTestWorkspaceCasesNative(t *testing.T) {
 	rootStatusBefore := gitIn(t, ".", "status", "--porcelain")
 
 	start := time.Now()
-	agentRes, _ := runEvalCopy(t, "selftest", RunOptions{NoSandbox: true, KeepWorkspaces: true})
+	agentRes, agentEvals := runEvalCopy(t, "selftest", RunOptions{NoSandbox: true, KeepWorkspaces: true})
 	failRes, _ := runEvalCopy(t, "selftest-fail", RunOptions{NoSandbox: true, KeepWorkspaces: true})
 	for _, res := range []AgentResult{agentRes, failRes} {
 		for _, c := range res.Cases {
@@ -276,7 +276,7 @@ func TestSelfTestWorkspaceCasesNative(t *testing.T) {
 	}
 
 	assertWorkspaceCases(t, "native", agentRes, failRes)
-	assertSelfTestResults(t, agentRes)
+	assertSelfTestResults(t, agentEvals, agentRes)
 
 	if _, err := os.Stat("marker.txt"); err == nil {
 		t.Error("marker.txt appeared in the repository root")
@@ -347,8 +347,9 @@ func TestSandboxWorkspace(t *testing.T) {
 
 	// Sandbox runs, kept.
 	var sandboxAgent, sandboxFail AgentResult
+	var sandboxEvals string
 	sandboxOut := captureStdout(t, func() {
-		sandboxAgent, _ = runEvalCopy(t, "selftest", RunOptions{Sandbox: true, KeepWorkspaces: true})
+		sandboxAgent, sandboxEvals = runEvalCopy(t, "selftest", RunOptions{Sandbox: true, KeepWorkspaces: true})
 	})
 	failStart := time.Now()
 	sandboxFail, _ = runEvalCopy(t, "selftest-fail", RunOptions{Sandbox: true, KeepWorkspaces: true})
@@ -366,7 +367,7 @@ func TestSandboxWorkspace(t *testing.T) {
 
 	assertWorkspaceCases(t, "native", nativeAgent, nativeFail)
 	assertWorkspaceCases(t, "sandbox", sandboxAgent, sandboxFail)
-	assertSelfTestResults(t, sandboxAgent)
+	assertSelfTestResults(t, sandboxEvals, sandboxAgent)
 
 	// Native and sandbox host workspaces are identical for all three cases.
 	pairs := []struct {
@@ -439,8 +440,14 @@ func TestSandboxWorkspace(t *testing.T) {
 	editedOut := captureStdout(t, func() {
 		edited = runEvalIn(t, evalsDir, "selftest", RunOptions{Sandbox: true})
 	})
-	if len(edited.Cases) != 16 {
-		t.Errorf("edited run has %d cases, want 16", len(edited.Cases))
+	editedByName := map[string]bool{}
+	for _, c := range edited.Cases {
+		editedByName[c.CaseName] = true
+	}
+	for _, name := range selftestFixtureCaseNames(t, evalsDir) {
+		if !editedByName[name] {
+			t.Errorf("edited run did not exercise fixture case %q", name)
+		}
 	}
 	if strings.Contains(editedOut, "Base image built") {
 		t.Errorf("editing an agent config and a case rebuilt the base image:\n%s", editedOut)

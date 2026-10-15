@@ -211,6 +211,9 @@ type AgentResult struct {
 	// Threshold is the agent's pass threshold (percent), taken from its
 	// rubric. Zero means the result predates verdicts.
 	Threshold float64 `json:"threshold,omitempty"`
+	// PromptFile is the candidate prompt path given via --prompt-file; absent
+	// when the live prompt was evaluated.
+	PromptFile string `json:"prompt_file,omitempty"`
 	// Sandbox records whether the run was containerised (--sandbox). It is a
 	// pointer so a result written before sandbox-mode tracking (legacy, field
 	// absent) is distinguishable (nil) from an explicitly native run (false):
@@ -242,6 +245,7 @@ type RunOptions struct {
 	Backend       string            // Inference backend name (default "kiro-cli")
 	EvalsDir      string            // Evals directory (default ".kairon/evals")
 	Perf          bool              // Run performance investigation
+	PromptFile    string            // Candidate prompt file to evaluate instead of the live prompt (requires an agent)
 
 	// KeepWorkspaces keeps per-case workspaces after the run instead of
 	// removing them.
@@ -266,6 +270,7 @@ type Summary struct {
 	JudgeModel       string                     `json:"judge_model,omitempty"`
 	AgentModel       string                     `json:"agent_model,omitempty"`
 	PromptSHA256     string                     `json:"prompt_sha256,omitempty"`
+	PromptFile       string                     `json:"prompt_file,omitempty"`
 	ResourcesPresent []string                   `json:"resources_present,omitempty"`
 	Agents           map[string]AgentProvenance `json:"agents,omitempty"`
 
@@ -332,6 +337,7 @@ func (s Summary) MarshalJSON() ([]byte, error) {
 type AgentProvenance struct {
 	AgentModel       string   `json:"agent_model"`
 	PromptSHA256     string   `json:"prompt_sha256"`
+	PromptFile       string   `json:"prompt_file,omitempty"`
 	ResourcesPresent []string `json:"resources_present"`
 }
 

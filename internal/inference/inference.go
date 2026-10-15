@@ -17,7 +17,10 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"sync"
 	"time"
+
+	"gopkg.in/yaml.v3"
 )
 
 // Role identifies what a request is for.
@@ -50,6 +53,53 @@ type Usage struct {
 // StubScript is test-double data carried on a Request; real backends ignore it.
 type StubScript struct {
 	Turns []StubTurn `yaml:"turns" json:"turns"`
+	// Judge scripts the answers to yes/no judge requests (Request.YesNo).
+	Judge StubJudge `yaml:"judge,omitempty" json:"judge,omitempty"`
+
+	judgeNext int // cursor into Judge; guarded by judgeMu
+}
+
+// StubJudge is the scripted list of yes/no judge answers. In YAML it is either
+// a single scalar ("judge: yes") or a sequence ("judge: [yes, no]").
+type StubJudge []string
+
+// UnmarshalYAML accepts a scalar (one answer) or a sequence of scalars.
+func (j *StubJudge) UnmarshalYAML(node *yaml.Node) error {
+	switch node.Kind {
+	case yaml.ScalarNode:
+		var s string
+		if err := node.Decode(&s); err != nil {
+			return err
+		}
+		*j = StubJudge{s}
+		return nil
+	case yaml.SequenceNode:
+		var list []string
+		if err := node.Decode(&list); err != nil {
+			return err
+		}
+		*j = StubJudge(list)
+		return nil
+	default:
+		return fmt.Errorf("line %d: stub judge must be a string or a list of strings", node.Line)
+	}
+}
+
+// judgeMu guards every StubScript's judgeNext cursor.
+var judgeMu sync.Mutex
+
+// NextJudgeAnswer returns the next scripted judge answer, cycling through
+// Judge. It reports false when Judge is empty. The cursor lives on the script,
+// so it persists across Invoke calls and is independent per script.
+func (s *StubScript) NextJudgeAnswer() (string, bool) {
+	judgeMu.Lock()
+	defer judgeMu.Unlock()
+	if len(s.Judge) == 0 {
+		return "", false
+	}
+	answer := s.Judge[s.judgeNext%len(s.Judge)]
+	s.judgeNext = (s.judgeNext + 1) % len(s.Judge)
+	return answer, true
 }
 
 // StubTurn is one scripted model response.
@@ -107,6 +157,9 @@ type Request struct {
 	Stub *StubScript `json:"Stub"`
 	// Turn is the stub turn index to answer with (0 for now).
 	Turn int `json:"Turn"`
+	// YesNo marks a RoleJudge request as a yes/no question (as opposed to the
+	// legacy 1-5 scoring call). The stub backend answers it from Stub.Judge.
+	YesNo bool `json:"YesNo"`
 	// ToolTrust restricts which tools the agent may use without prompting. nil
 	// means unrestricted (kiro-cli --trust-all-tools, the historical behaviour);
 	// non-nil, even with zero tools, means restricted to exactly that set

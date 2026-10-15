@@ -110,6 +110,7 @@ Fields:
 - `mocks` — (optional) a list of `{command, script}` entries that each place a mock of a command on the container `PATH`, so a bare `aws`, `npm` or `curl` resolves to the author's script instead of a real tool. `command` is the bare command name (it must match `^[A-Za-z0-9][A-Za-z0-9._+-]*$`, must be unique within the case, and cannot be `gh`, which is the harness's fake). `script` is a path relative to the evals directory (no absolute path, no `..`) naming an existing regular file; `fixtures/mock-cli.sh` is the reusable one. Like `gh_issue`, `mocks` is only valid together with `requires_sandbox: true`, because a native run has no such directory on `PATH` and would silently call the **real** tool; otherwise loading the cases fails with an error naming the case. See [Preventing Production Side Effects](#preventing-production-side-effects-containment-and-mocking).
 - `checks` — (optional) a list of deterministic pass/fail checks on the workspace the agent left behind, its final output and the fake `gh` log. A criterion that has checks is scored `passed` out of `total` instead of by a heuristic or the LLM judge. Each entry has a `criterion` (a non-cost criterion of the agent's rubric) and a `type`, plus the fields that type takes. An invalid `checks` block is a **fatal** load error that names the case file, the 1-based check number and the type; it is not downgraded to a warning (see [Checks](#checks)).
 - `stub.turns[]` — (optional) scripted model responses, used only by the `stub` backend (see [Stub Case Fields](#stub-case-fields))
+- `stub.judge` — (optional) scripted yes/no answers for `judge` checks, a single value or a list, used only by the `stub` backend (see [Stub Case Fields](#stub-case-fields))
 
 ## Checks
 
@@ -118,7 +119,7 @@ A case can declare `checks`: small, deterministic assertions about what the agen
 ```yaml
 checks:
   - criterion: structural_completeness   # required: a non-cost criterion of the agent's rubric
-    type: command                         # required: one of the ten types below
+    type: command                         # required: one of the eleven types below
     run: "go test ./..."
 ```
 
@@ -136,8 +137,9 @@ Every check has `criterion` and `type`. The other fields depend on the type, and
 | `output_not_contains` | `pattern` | | the agent's final output does not match the regex |
 | `gh_log_contains` | `pattern` | | the fake `gh` log matches the regex |
 | `gh_log_not_contains` | `pattern` | | the fake `gh` log does not match the regex |
+| `judge` | `question` | `files` | the judge model answers the yes/no `question` with `yes` |
 
-### The ten check types
+### The eleven check types
 
 `command` runs a shell command in the workspace root and compares its exit status. `expect_exit` (0–255, default `0`) lets a case assert a specific non-zero status. `inject` copies files from `fixtures/hidden/` into the workspace for the duration of the command (see [Hidden files and `inject`](#hidden-files-and-inject)).
 
@@ -226,6 +228,30 @@ checks:
 
 > **Native runs have no `gh` log.** The fake `gh` exists only under `--sandbox`; a native run calls the real `gh`, which Kairon does not log. Natively the log is empty unless the stub or the agent wrote `.eval/gh.log` itself, so `gh_log_contains` fails and `gh_log_not_contains` passes vacuously. `gh_log_*` checks do not require `requires_sandbox`, so the native self-test can exercise every type, but a case that asserts on real `gh` calls should set `requires_sandbox: true`. The log lives in `.eval/`, which the agent can write: it is evidence from the fake, not tamper-proof.
 
+### The `judge` check
+
+`judge` asks the judge model one yes/no `question`. It is the check to use when the property cannot be expressed as a regex or a command, for example "does the issue body state a testable acceptance criterion for each requirement?". It counts toward its criterion exactly like the deterministic checks (`passed` out of `total`).
+
+```yaml
+checks:
+  - criterion: structural_completeness
+    type: judge
+    question: "Does the issue body file state a testable acceptance criterion for each requirement?"
+    files: [.eval/issue-body.md]   # optional: workspace files the judge may read
+```
+
+- **Verdict.** The judge replies with `{"reasoning": "...", "answer": "yes" | "no"}`. `yes` passes and `no` fails. The judge's reasoning is recorded in `checks[].detail` for both outcomes: `judge answered yes: <reasoning>` or `judge answered no: <reasoning>`. The answer is matched case-insensitively with surrounding whitespace ignored; anything else is not a verdict.
+- **What the judge sees.** The `question`, the case `input`, the agent's final output and the content of each listed file, every one fenced with `BEGIN`/`END` markers. The case's `expected_output` and `context` are not included, so make the question self-contained.
+- **`files`.** Optional. Entries are workspace-relative literal paths (no globs): no absolute path, no `..`, nothing inside `.git`, no duplicates. `.eval/` is allowed, which is where an agent typically leaves an issue body. At run time only a regular, non-symlink file is read, and a symlink in any directory component is refused. A missing file, a symlink or a file below a symlinked directory fails the check with `file does not exist: <path>` (or a similar message) **before** any model call, so an agent that did not produce the artifact is not rescued by the judge and no tokens are spent. Files are read as the agent left the workspace, before any `command` check runs or injects.
+- **Caps.** Each file is capped at 64 KiB and the files together at 256 KiB. Excess is cut, the prompt carries an explicit `[truncated: showing first N of M bytes]` marker and the file's header says `[truncated]`. Non-UTF-8 bytes are replaced.
+- **Judge model.** The call runs on the host through the inference backend, pinned to `evals.judge_model` (see [Model Pinning and Run Provenance](#model-pinning-and-run-provenance)), with a 2-minute timeout. This holds under `--sandbox` too: judge calls never run in the container.
+- **Fail closed.** A `judge` check never passes by default and is never skipped. An unparseable answer (`judge parse error: …`), a backend error (`judge call failed: …`), a missing or unreadable file, and a check evaluated with no judge configured (`no judge configured`) all **fail** the check. This differs from the legacy 1–5 judge, whose parse failures mark the criterion *skipped* (see [Skipped Criteria](#skipped-criteria)). The reply is parsed from the **last** `===JSON_START===` to the next `===JSON_END===`, so a judge that quotes the delimiters while explaining cannot confuse the parse.
+- **Order.** `judge` checks are evaluated in the first pass with the other non-`command` checks, in the order they are written (see [Evaluation order](#evaluation-order)). One call is made per check; there is no batching. With the stub backend, `stub.judge` answers are consumed in that order.
+- **Cost accounting.** Each call appends a `calls[]` record with `role: judge` and the `criterion` of the check, and a successful call's cost is added to the case's `judge_cost`. A call whose reply could not be parsed, or that failed, still has its `calls[]` record but adds nothing to `judge_cost` (see [Per-call records](#per-call-records-calls)).
+- **No call when the agent produced nothing.** If the agent produced no output the checks are not evaluated (see [When the agent failed](#when-the-agent-failed)), so no judge call is made.
+- **`--debug`.** With `kairon eval --debug`, each judge check prints `🔧 Debug: judge prompt (criterion=<name>, judge check #<n>)` followed by the full prompt to **stderr**, before the call. That is how to confirm that the judge was shown a listed file. The output contains the case input, the agent's output and file contents, so do not share it where they are sensitive. The legacy judge's output is not affected.
+- **Untrusted input.** The agent's output and the files are written by the agent under test, and may contain text that tries to steer the judge. The prompt tells the judge to treat them as data and not to follow instructions in them, but a hostile output can still sway a model. A `judge` verdict is evidence, not proof; prefer a deterministic check where one can express the property.
+
 ### Regex dialect
 
 `pattern` is a Go (RE2) regular expression. It is **unanchored** and matched against the **whole** text (the file, the output or the log), not line by line. `^` and `$` therefore match the start and end of the text unless you add `(?m)`, and `.` does not match a newline unless you add `(?s)`. Flags go inline: `(?m)`, `(?s)`, `(?i)`. Use single-quoted YAML strings so backslashes survive (`'hidden_test\.go'`). A pattern that does not compile is a load error. There are no lookaheads or backreferences.
@@ -257,7 +283,7 @@ The workspace is a git repository whose only commit is the fixture (see [Case Wo
 
 All checks of a case are evaluated **once**, after the agent finishes and while the workspace still exists:
 
-1. Every non-`command` check (`file_*`, `changed_files`, `output_*`, `gh_log_*`) is evaluated first, against the workspace exactly as the agent left it.
+1. Every non-`command` check (`file_*`, `changed_files`, `output_*`, `gh_log_*`, `judge`) is evaluated first, against the workspace exactly as the agent left it.
 2. `command` checks then run, in the order they are listed.
 3. Results are reported in the order the checks are written in the case.
 
@@ -296,7 +322,7 @@ What the evaluator does to limit the damage: the command runs with `sh -c` in th
 A criterion with at least one check in a case is scored by those checks:
 
 - `score` is the number of checks that passed and `max_score` is the number of checks, so the criterion is **passed out of total** (`2/3`), not a 1–5 value. `deterministic` is `true`.
-- The rubric's `scoring` range, its `deterministic` flag and any LLM judge are not used for that criterion in that case, and no judge call is made for it.
+- The rubric's `scoring` range, its `deterministic` flag and the legacy 1–5 LLM judge are not used for that criterion in that case, so no legacy judge call is made for it. A [`judge` check](#the-judge-check) is still a check, so it is scored `passed`/`total` like the others, but it does make one yes/no judge call per check.
 - Every failed check is named in `reasoning` with its 1-based position, type and key fields, then its detail in parentheses (each detail is shortened to 200 characters there; the full text, up to 2 KiB, stays in `checks[].detail`).
 
 ```
@@ -348,8 +374,12 @@ results := eval.EvaluateChecks(checks, eval.CheckInput{
     Output: agentOutput,  // text for output_contains / output_not_contains
     GHLog:  ghLogText,    // text for gh_log_contains / gh_log_not_contains
     Base:   "",           // optional git revision for changed_files; default HEAD
+    Input:  caseInput,    // optional: the case input shown to judge checks
+    Judge:  judgeFn,      // optional: eval.JudgeFunc that answers judge checks
 })
 ```
+
+`Input` and `Judge` are only used by `judge` checks. `Judge` is a `JudgeFunc`, `func(JudgeQuery) (JudgeVerdict, error)`: it receives the criterion, question, input, output and the loaded `Files` (`Path`, `Content`, `Truncated`, `Size`) and returns `JudgeVerdict{Yes, Reasoning}`. Return an error for a failed call; it fails the check as `judge call failed: <error>`. (Inside the package an error wrapping `errJudgeParse` is reported as `judge parse error` instead.) A `judge` check evaluated with `Judge == nil` **fails** with `no judge configured`; it is never skipped and never passes silently, so callers that use no `judge` checks are unaffected. In a normal run, `scoreCase` builds the `JudgeFunc`: it calls the configured backend on the pinned judge model and records the call and its cost.
 
 `EvaluateChecks` never reads the config, the case or the rubric, and returns one `CheckResult` per check in list order. A hand-built check is validated lazily: an invalid one yields a failed result with an explanation, never a panic and never a silent pass. `eval.ValidateChecks` validates and compiles checks loaded from a case file. In a normal run `Base` is the fixture commit of the case workspace, so a change the agent committed is still detected.
 
@@ -371,6 +401,9 @@ kairon eval --backend stub --evals-dir internal/eval/testdata/evals selftest
 
 # Use a different evals directory
 kairon eval --evals-dir path/to/evals architect
+
+# Evaluate a candidate prompt without touching the live agent
+kairon eval architect --prompt-file .kairon/iterations/architect/v2.md
 ```
 
 | Flag | Default | Description |
@@ -378,6 +411,7 @@ kairon eval --evals-dir path/to/evals architect
 | `--backend` | `kiro-cli` | Inference backend for agent and judge calls. Valid values: `kiro-cli`, `stub`. An unknown value fails immediately and lists the valid backends. |
 | `--evals-dir` | `.kairon/evals` | Directory holding `rubrics/`, `cases/`, `fixtures/`, optional `agents/`, and `results/`. Persistent flag, so `kairon eval diff` honours it too. |
 | `--keep-workspaces` | off | Keep each case's workspace after the run instead of deleting it. The path is printed on the case line and recorded as `workspace_dir` in the results (see [Case Workspaces](#case-workspaces)). Combine with `--debug` to inspect both the preserved container and its workspace. |
+| `--prompt-file` | none | Evaluate this file as the agent's prompt instead of the live one, in the per-case workspaces only. Requires an agent (`kairon eval <agent> --prompt-file <path>`); nothing under `.kiro/agents/` is modified. Local to `kairon eval` (not available on `eval diff`). See [Evaluating a candidate prompt](#evaluating-a-candidate-prompt---prompt-file). |
 
 ## Adding Test Cases
 
@@ -387,7 +421,7 @@ kairon eval --evals-dir path/to/evals architect
 
 ## How Scoring Works
 
-- **Check-scored criteria** — a criterion that has [`checks`](#checks) in the case is scored `passed` out of `total` checks, with the failed checks named in the reasoning. Checks take precedence over everything below for that criterion in that case: the rubric's `scoring`, its `deterministic` flag and the LLM judge are not used, and no judge call is made.
+- **Check-scored criteria** — a criterion that has [`checks`](#checks) in the case is scored `passed` out of `total` checks, with the failed checks named in the reasoning. Checks take precedence over everything below for that criterion in that case: the rubric's `scoring`, its `deterministic` flag and the legacy 1–5 LLM judge are not used, so no legacy judge call is made. Only a [`judge` check](#the-judge-check) in the list calls the judge model, once per check.
 - **Deterministic criteria** — criteria without checks that the rubric marks `deterministic` are scored by the legacy heuristics (code checks on the agent's output, such as structural completeness)
 - **LLM-judged criteria** — criteria without checks that are not deterministic are scored by an LLM evaluator using the rubric description (requires output and a configured judge)
 - **Cost criteria** — tracked automatically from token usage
@@ -497,7 +531,7 @@ Every "send a prompt to a model, get text back" call made by the harness (the ag
 | Backend | Behaviour |
 |---------|-----------|
 | `kiro-cli` (default) | Shells out to `kiro-cli`. Agent (native run): `kiro-cli chat --agent <agent> --no-interactive --trust-all-tools [--model <model>]`; under `--sandbox` the agent call uses `--trust-tools=<per-agent set>` instead of `--trust-all-tools` (see [Tool trust](#tool-trust)); judge: `kiro-cli chat --no-interactive [--model <model>]`; prompt on stdin. `--model` is appended when the request carries a model, which is always the case in a normal `kairon eval` run (see [Model Pinning and Run Provenance](#model-pinning-and-run-provenance)). Usage is always **estimated**. Requires `kiro-cli` on `PATH`. |
-| `stub` | Deterministic and in-process. Never starts a process or touches the network, and does not require `kiro-cli`. The agent's output comes from the case's `stub.turns`; every judge call returns score 5 (the maximum of the judge scale) with `pass: true`. |
+| `stub` | Deterministic and in-process. Never starts a process or touches the network, and does not require `kiro-cli`. The agent's output comes from the case's `stub.turns`; every judge call returns score 5 (the maximum of the judge scale) with `pass: true`, except yes/no judge calls made by [`judge` checks](#the-judge-check), which are answered from the case's `stub.judge` (see [Stub Case Fields](#stub-case-fields)). |
 
 ```bash
 kairon eval --backend stub --evals-dir internal/eval/testdata/evals selftest
@@ -527,6 +561,7 @@ stub:
       tool_calls:          # optional: scripted tool calls, gated by the tool trust set (see Tool trust)
         - tool: fs_write
           command: "echo x > tool-marker.txt"
+  judge: [yes, no]         # optional: answers to yes/no `judge` checks (a single value is allowed: `judge: yes`)
 ```
 
 | Field | Required | Description |
@@ -536,8 +571,18 @@ stub:
 | `stub.turns[].usage.input_tokens` / `output_tokens` | no | If present, these counts are used verbatim and marked `reported`. If absent, usage is estimated from text length. |
 | `stub.turns[].commands` | no | Shell commands, each run with `sh -c` in the case workspace (the request's `WorkDir`), in order, before the response is returned. This lets a stub case simulate an agent that edits files. They are scripted environment actions, **not** tool calls, so the trust gate never applies to them. |
 | `stub.turns[].tool_calls[]` | no | Scripted tool calls, each `{tool, command}`. They run after `commands`, in order. Each runs `sh -c <command>` in the workspace only if the tool is in the request's trust set; otherwise the command is skipped and a denial is recorded (see [Tool trust](#tool-trust)). With no trust set (every native run) every tool call runs. |
+| `stub.judge` | no | Scripted answers to the yes/no calls made by [`judge` checks](#the-judge-check): a single value (`judge: yes`) or a list (`judge: [yes, no]`). See below. |
 
 Only `turns[0]` is used today. A case with no `stub`, empty `turns`, or an empty `response` fails with `case has no stub.turns[0].response` rather than silently producing empty output. The `kiro-cli` backend ignores `stub`.
+
+How `stub.judge` behaves:
+- It answers only the yes/no calls of [`judge` checks](#the-judge-check). The legacy 1-5 judge calls are unchanged and still always return score 5.
+- It is a single value (`judge: yes`, the same as a one-element list) or a list (`judge: [yes, no]`). `yes` and `no` are matched case-insensitively with surrounding whitespace ignored and are rendered as a well-formed judge reply whose reasoning is `stub judge: yes` or `stub judge: no`. Any other value is returned **verbatim**, so `judge: garbage` exercises the `judge parse error` path.
+- Answers are consumed **in order**, one per judge call, in the order the judge checks are evaluated (see [Evaluation order](#evaluation-order)), and **cycled**: with `[yes, no]` the calls get `yes`, `no`, `yes`, `no`, and so on.
+- The position lives on the loaded case, so it **continues across repeats** of the same loaded case instead of restarting. A script of three answers against two judge checks per run gives `[yes, no]`, then `[yes, yes]`, then `[no, yes]`. Loading the cases again starts a fresh position, and each case has its own.
+- `stub.judge` must not be empty and must not contain a blank entry; either is a load error naming the case.
+- A case with a `judge` check but no `stub.judge` fails that check with `judge call failed: case has no stub.judge`. The check is never skipped and never passes by default.
+- The `kiro-cli` backend ignores `stub.judge`.
 
 How `commands` behave:
 - They run in the case workspace: natively the host workspace directory, under `--sandbox` the container's workspace path, as the `sandbox` user. Commands with no workspace directory are an error and run nothing, so a test cannot write into the repository root by accident.
@@ -715,7 +760,8 @@ The per-agent result file always carries:
 |-------|-------------|
 | `agent_model` | The effective model the agent ran on (`evals.agent_model`, else the agent config's `model`), the same with and without `--sandbox`. |
 | `judge_model` | The model used for judge calls. |
-| `prompt_sha256` | Hash of everything that shapes the agent's prompt (see below). |
+| `prompt_sha256` | Hash of everything that shapes the agent's prompt (see below). With `--prompt-file`, the prompt part of the hash is computed from the candidate file's bytes. |
+| `prompt_file` | The `--prompt-file` path of a [candidate prompt run](#evaluating-a-candidate-prompt---prompt-file), as given on the command line and normalised with `filepath.Clean` and `filepath.ToSlash` (a relative path stays relative, an absolute path stays absolute). Omitted (the key is absent) for runs without `--prompt-file`. It is the path text only, not a content identity: key on `prompt_sha256` for that. |
 | `resources_present` | The agent-config `resources` entries that existed when the hash was computed. Always written; an empty list serialises as `[]`. |
 | `sandbox` | Execution mode as a **boolean**: `true` for a `--sandbox` (container) run, `false` for a native run. Written by every run, including single-case (`--testcase`) runs. Absent in files written before mode tracking. Note that `summary.json` spells the same fact as a string (`"native"` / `"container"`); see below. |
 | `containment` | What contained this agent's cases (see [Execution mode and containment](#execution-mode-and-containment)). Present for container runs only; absent for native runs. |
@@ -733,9 +779,11 @@ The per-agent result file always carries:
 }
 ```
 
+A `--prompt-file` run additionally carries `"prompt_file": "<path>"` (and a `prompt_sha256` computed from the candidate), for example `"prompt_file": ".kairon/iterations/selftest/v2.md"`.
+
 #### Run summary (`summary.json`)
 
-`summary.json` always carries `judge_model` and an `agents` map with `agent_model`, `prompt_sha256` and `resources_present` per agent. It also records the run's execution mode in `sandbox` and, for container runs, a per-agent `containment` map. The example below is a `--sandbox` (container) run (the `tool_trust` values are illustrative; they follow each agent's trust set, see [Tool trust](#tool-trust)):
+`summary.json` always carries `judge_model` and an `agents` map with `agent_model`, `prompt_sha256` and `resources_present` per agent (plus `prompt_file` for a [candidate prompt run](#evaluating-a-candidate-prompt---prompt-file)). It also records the run's execution mode in `sandbox` and, for container runs, a per-agent `containment` map. The example below is a `--sandbox` (container) run (the `tool_trust` values are illustrative; they follow each agent's trust set, see [Tool trust](#tool-trust)):
 
 ```json
 {
@@ -765,6 +813,7 @@ The per-agent result file always carries:
 | `total_cost` | Sum of the `cost` of every entry in `agent_verdicts` (`tokens_in`, `tokens_out`, `estimated_usd`; `model` and `usage_source` are not aggregated). It accumulates across agents and is recomputed from the verdicts on every save, so repeated progressive saves of the same agent and `--resume` do not double count it. |
 | `agent_verdicts` | Map of agent name to its pass/fail verdict (fields below). One entry per evaluated agent. Absent in a `summary.json` written before verdicts existed. |
 | `judge_model`, `agents` | Run-level provenance, as described above. |
+| `prompt_file` | The `--prompt-file` path of a candidate prompt run, normalised as in `<agent>.json`. Written at the top level only under the single-agent rule below (a `--prompt-file` run always names one agent, so it is always present for such a run), and per agent as `agents.<agent>.prompt_file`. Omitted entirely when no `--prompt-file` was used. |
 | `sandbox` | Execution mode of the whole run: `"native"` or `"container"`. Absent in a `summary.json` written before mode tracking. |
 | `containment` | Map of agent name to its containment record (see [Execution mode and containment](#execution-mode-and-containment)). Present for `container` runs; **absent** for `native` runs. |
 
@@ -797,7 +846,7 @@ Both are optional on read: a result file written before verdicts existed has nei
 
 **Two spellings of one fact.** `summary.json` records the mode as a string (`"native"` / `"container"`), while each `<agent>.json` keeps `sandbox` as a boolean (`true` = container, `false` = native). Both come from the same run, and `eval diff` and `--resume` read both. A summary never mixes modes: one run is entirely native or entirely container.
 
-**Single-agent rule.** A run can cover several agents (`kairon eval` with no agent), each with its own model and prompt hash, so one top-level value would be ambiguous. The top-level `agent_model`, `prompt_sha256` and `resources_present` are therefore written **only when the run covers exactly one agent** (`kairon eval <agent>`, a single-case run, or the self-test) and are omitted otherwise. Use the `agents` map, or the per-agent `<agent>.json`, for multi-agent runs. Single-case runs also write a `summary.json`, with the same provenance fields.
+**Single-agent rule.** A run can cover several agents (`kairon eval` with no agent), each with its own model and prompt hash, so one top-level value would be ambiguous. The top-level `agent_model`, `prompt_sha256`, `resources_present` and `prompt_file` are therefore written **only when the run covers exactly one agent** (`kairon eval <agent>`, a single-case run, or the self-test) and are omitted otherwise. Use the `agents` map, or the per-agent `<agent>.json`, for multi-agent runs. Single-case runs also write a `summary.json`, with the same provenance fields.
 
 #### Execution mode and containment
 
@@ -841,6 +890,13 @@ The daemon-gated test `TestProvenanceParitySandbox` (run by `task eval:selftest:
 
 Each part is framed as `<kind>\x00<decimal length>\x00<bytes>` (`kind` is `config`, `prompt` or `resource`), so parts cannot run together ambiguously. File paths are not hashed, so the same contents give the same hash on any machine.
 
+**With `--prompt-file`.** The **prompt** part uses the candidate file's bytes instead of the live prompt file's bytes; the live prompt file is not read, so it does not even need to exist. The **config** and **resource** parts are unchanged. Consequences:
+
+- `prompt_sha256` differs from the baseline hash exactly when the candidate's content differs from the live prompt's content.
+- A candidate that is byte-identical to the live prompt gets the baseline `prompt_sha256` (a handy no-op check); `prompt_file` is still recorded, so the run is identifiable as a candidate run.
+- The candidate's path is not hashed (paths never are), so the same candidate content gives the same hash wherever the file lives.
+- The hash is computed once for the run and copied into every `calls[]` record, so agent call records carry the candidate-based hash too. Judge calls carry no prompt hash.
+
 Consequently, editing the prompt file, the config, or any present resource changes the hash, and so does reordering resources. Running the same inputs twice gives an identical hash, which makes a before/after comparison of two runs a check that only the intended thing changed.
 
 Resource handling:
@@ -855,11 +911,13 @@ When an `<evals-dir>/agents/` overlay is used, the agent runs in its case worksp
 
 ### Resume refusal
 
-`kairon eval --resume` refuses to continue into a result file that was written under a different prompt or different models, so one `<agent>.json` never mixes two versions. If the existing file has a `prompt_sha256` and that value, its `agent_model` or its `judge_model` differs from what the resumed run is now pinned to, the run stops with an error:
+`kairon eval --resume` refuses to continue into a result file that was written under a different prompt or different models, so one `<agent>.json` never mixes two versions. If the existing file has a `prompt_sha256` and that value, its `prompt_file`, its `agent_model` or its `judge_model` differs from what the resumed run is now pinned to, the run stops with an error:
 
 ```
-❌ cannot resume: prompt or models changed since the interrupted run of architect (recorded agent_model=… judge_model=… prompt_sha256=…; now agent_model=… judge_model=… prompt_sha256=…)
+❌ cannot resume: prompt or models changed since the interrupted run of architect (recorded agent_model=… judge_model=… prompt_sha256=… prompt_file=…; now agent_model=… judge_model=… prompt_sha256=… prompt_file=…)
 ```
+
+`prompt_file` is shown as `(none)` when the run used the live prompt. A result file without a `prompt_file` compares equal to "no candidate", so resuming a candidate run without `--prompt-file` (or with a different file, even one that happens to hash identically) is refused, while resuming with the same file works as usual. See [Resume and diff](#resume-and-diff).
 
 Start a fresh run (without `--resume`) after changing a prompt, a resource or `evals`. A result file written before provenance existed (no `prompt_sha256`) is **refused when it already holds saved cases** — resuming would attribute those scores to the current prompt and models, which were unknown when they were produced; an empty legacy file is allowed. An unchanged resume continues as before.
 
@@ -902,6 +960,91 @@ If `<evals-dir>/agents/<agent>.json` exists, the agent under test is run with th
 - Only the agent-under-test call is affected; judge calls always run in the normal working directory.
 - The `stub` backend does not run an agent, so it ignores `agents/` (it still runs `stub.turns[].commands` in the workspace).
 - The temporary-directory overlay in the `kiro-cli` backend (copy `agents/` to `<tmp>/.kiro/agents/` and run there) is now only used by callers that provide no workspace directory; `kairon eval` always provides one.
+
+## Evaluating a candidate prompt (`--prompt-file`)
+
+Iterating on a prompt used to mean editing `.kiro/agents/<agent>-prompt.md`. That edit is live: krew-lead spawns the builder and validator from the worktree's `.kiro/agents/`, so a mid-iteration edit changes the pipeline that is building your PR, and an edited planner prompt degrades the planner you use day to day. `--prompt-file` scores a candidate prompt while the live agent stays untouched.
+
+```bash
+kairon eval architect --prompt-file .kairon/iterations/architect/v2.md
+```
+
+The candidate is injected **only into the per-case workspaces** the harness already builds for every case (see [Case Workspaces](#case-workspaces)). Nothing in the repository is written: the live `.kiro/agents/` files (config and prompt) are never modified, and neither is the `<evals-dir>/agents/` overlay.
+
+### Where to put candidates
+
+By convention candidates live under `.kairon/iterations/<agent>/` (for example `.kairon/iterations/architect/v2.md`). This is a convention only: Kairon does not create, require or scan that directory, and any readable file path works. A relative path is resolved against the process working directory (the repository root for a normal run).
+
+### What is substituted, and what is not
+
+| | |
+|---|---|
+| **Substituted** | Only the one file that the agent config's `prompt` field points at (`"prompt": "file://./architect-prompt.md"`), and only in the workspace copy: `<workspace>/.kiro/agents/<ref>`. |
+| **Not substituted** | Everything else about the agent is the live agent: the config (model, tools, `allowedTools`, `toolsSettings`), `resources` and skills, and MCP settings. A candidate cannot change them. |
+
+Details of how the workspace copy is written:
+
+- The agent config is located exactly as for [`prompt_sha256`](#how-prompt_sha256-is-computed): `<evals-dir>/agents/<agent>.json` if it exists, else `.kiro/agents/<agent>.json`. The `prompt` reference is resolved relative to the config's directory, which in the workspace is always `<workspace>/.kiro/agents/`. The same helper computes the destination for the hash pre-flight and for staging, so the two cannot disagree.
+- The candidate is written after the project `.kiro/` is copied and the `<evals-dir>/agents/` overlay is applied, so it **wins over both and over a workspace fixture** that provides a file at the same path.
+- Any existing file, symlink or hard link at the destination is removed first, then the candidate is written as a new file. A link there is replaced, never written through to its target.
+- The staged file is then given the same permissions as the rest of the staged `.kiro/` (not group- or other-writable).
+- The staged config is not rewritten; only the prompt file's contents change.
+
+The candidate is used for every path that builds case workspaces: a full run, a single case (`--case` or `<agent> <testcase>`), `--resume`, native and `--sandbox`, and every backend. The `stub` backend does not run an agent, so with `--backend stub` the observable effects are the staged file, `prompt_file` and `prompt_sha256` (the pieces you can verify without a model).
+
+### What is recorded
+
+- `prompt_file` is recorded in `<agent>.json`, in `summary.json` under `agents.<agent>`, and at the top level of `summary.json` (a `--prompt-file` run always covers exactly one agent, so the [single-agent rule](#run-summary-summaryjson) is always met). The value is the path as given on the command line, normalised with `filepath.Clean` and `filepath.ToSlash`: `./.kairon/iterations/a/../a/v2.md` is recorded as `.kairon/iterations/a/v2.md`, a relative path stays relative and an absolute path stays absolute. The key is omitted for runs without `--prompt-file`, so their result files are unchanged.
+- `prompt_sha256` is computed with the candidate's bytes as the **prompt** part (see [How `prompt_sha256` is computed](#how-prompt_sha256-is-computed)). It differs from the baseline when the candidate's content differs from the live prompt, and equals it for byte-identical content.
+- Each agent call record in `calls[]` carries the candidate-based `prompt_sha256` (the shared call-record type has no `prompt_file` field).
+- The `🔒 Models:` pre-flight line shows the candidate-based hash prefix.
+
+`prompt_file` is the path text, not a content identity. Two different files can hold the same bytes and one path can hold different bytes over time; compare runs by `prompt_sha256`.
+
+### Rejected combinations
+
+`--prompt-file` is validated before anything else happens: before the backend and evals directory are configured, before the model-pinning pre-flight, before any case runs, and without creating a results directory. A rejected invocation exits non-zero.
+
+| Condition | Error |
+|-----------|-------|
+| No agent given (`kairon eval --prompt-file x.md`) | `--prompt-file: an agent is required (usage: kairon eval <agent> --prompt-file <path>)` |
+| Combined with `--list`, `--perf` or `--cleanup` | `--prompt-file cannot be combined with --list` (or `--perf` / `--cleanup`). Those modes never build a case workspace, so the flag would be silently ignored. |
+| File missing or unreadable | `--prompt-file <path>: <OS error>`, for example `no such file or directory` |
+| Path is a directory | `--prompt-file <path>: is a directory, want a file` |
+| File is empty | `--prompt-file <path>: file is empty` (an empty prompt is almost certainly a mistake) |
+
+Two further conditions depend on the agent's config, so they are found in the pre-flight (together with the model-pinning checks, listed as `agent "<name>": …` in the same `❌ eval model pinning refused the run before any case started` message), still before any case runs:
+
+| Agent config | Error |
+|--------------|-------|
+| Inline `prompt` (no `file://`) | `--prompt-file: agent config <config> has an inline prompt; only a file:// prompt can be replaced by a candidate` |
+| `file://` with nothing after it | `--prompt-file: agent config <config> has an empty file:// prompt reference` |
+| Absolute `file://` path | `--prompt-file: agent config <config> references an absolute prompt path "<ref>"; only a path relative to the config can be replaced by a candidate`. It would not resolve inside a workspace or container. |
+| Reference that escapes `.kiro/` once cleaned (for example `file://../../x.md`) | `--prompt-file: prompt reference "<ref>" in <config> escapes .kiro/; only a prompt inside .kiro/ can be replaced by a candidate` |
+| Reference that does not name a file | `--prompt-file: prompt reference "<ref>" in <config> does not name a file` |
+
+A reference such as `file://../skills/x.md` stays inside `.kiro/` and is accepted.
+
+### Resume and diff
+
+- **`--resume`** refuses a changed `prompt_file` as well as a changed `prompt_sha256`, so a candidate run is never continued without the candidate (or with a different file that happens to hash the same). Resuming with the same file works. A result file without `prompt_file` counts as "no candidate", so a normal resume of an old or non-candidate run is unchanged. See [Resume refusal](#resume-refusal).
+- **`eval diff`** shows `prompt_file` differences in the Run Provenance block next to `prompt_sha256`, for example `architect prompt_file: (not recorded) → .kairon/iterations/architect/v2.md`. It only reports; it never fails the diff, and runs written before this field existed show `(not recorded)`. `prompt_file` is read from `summary.json`'s `agents.<agent>`, falling back to `<agent>.json`. See [Run Provenance](#run-provenance).
+
+### Verifying with `--keep-workspaces`
+
+Keep the workspaces and look at the prompt the agent was given:
+
+```bash
+kairon eval --backend stub --evals-dir internal/eval/testdata/evals --keep-workspaces \
+  selftest --prompt-file /tmp/candidate.md
+
+# workspace_dir is printed on each case line and recorded in selftest.json
+diff <workspace_dir>/.kiro/agents/selftest-prompt.md /tmp/candidate.md   # no output: identical
+```
+
+Every case's `<workspace_dir>/.kiro/agents/<prompt-ref>` holds the candidate's bytes, while the live `.kiro/agents/` (and `<evals-dir>/agents/`) files are unchanged. To confirm that the live files are untouched, compare `git status --porcelain .kiro/agents` and a checksum of the files before and after the run. Remove the kept workspaces yourself when you are done.
+
+For a no-op check, evaluate a copy of the live prompt: `prompt_sha256` equals the baseline and `prompt_file` is still recorded.
 
 ## Case Workspaces
 
@@ -1022,10 +1165,10 @@ internal/eval/testdata/evals/
   cases/selftest/stub-quoted-input.yaml  # input with quotes, newlines, $(...) and backticks; must reach the backend verbatim
   cases/selftest/stub-marker.yaml   # stub turn command 'echo hi > marker.txt' leaves marker.txt in the case workspace
   cases/selftest/stub-seeded-workspace.yaml  # workspace: seeded; the stub appends to README.md -> ' M README.md'
-  cases/selftest/check-*.yaml       # 11 passing check cases, one per check type (see below)
+  cases/selftest/check-*.yaml       # 14 passing check cases: one per deterministic check type plus 3 check-judge-* (see below)
   cases/selftest-fail/stub-timeout.yaml      # timeout: 1s, stub turn command 'sleep 3' -> timeout failure
   cases/selftest-fail/stub-empty-response.yaml  # empty stub response -> no output; every criterion scores 0 and is counted
-  cases/selftest-fail/check-*.yaml  # 10 per-type failing check cases plus check-partial (see below)
+  cases/selftest-fail/check-*.yaml  # 10 per-type failing check cases, 5 check-judge-* cases and check-partial (see below)
   agents/selftest-sandbox.json      # containment agent, allowedTools [read, write]; its cases are all requires_sandbox
   agents/selftest-sandbox-prompt.md
   agents/selftest-sandbox-ro.json   # containment agent, allowedTools [read]
@@ -1047,7 +1190,7 @@ internal/eval/testdata/evals/
 
 `selftest.json` declares a `model` so the self-test passes the model-pinning pre-flight, and lists a `skill://.kiro/skills/selftest-conventions/SKILL.md` resource that intentionally does not exist. It exercises the "missing resources are normal" rule: the run succeeds and the recorded `resources_present` is `[]`.
 
-The `selftest` agent has sixteen cases and all of them pass (`task eval:selftest`): the five original `stub-*` cases, which carry no `checks` and keep their pinned scores, and eleven `check-*` cases that exercise [checks](#checks). The `selftest-fail` agent is deliberately separate, so `selftest` keeps meaning "everything passes". It has thirteen cases, all **expected to fail**: ten `check-*` cases plus `check-partial` built so that checks fail, `stub-timeout`, which records a timeout failure (empty `actual_output`, `error_context.stderr` containing `timeout after 1s`) in about a second, and `stub-empty-response`, whose stub returns an empty response: the case has no output, so every criterion scores 0 out of its maximum and still counts toward the agent's score. Run it with:
+The `selftest` agent has nineteen cases and all of them pass (`task eval:selftest`): the five original `stub-*` cases, which carry no `checks` and keep their pinned scores, and fourteen `check-*` cases that exercise [checks](#checks) (ten per-type cases, `check-command-inject`, and three `judge` cases: `check-judge-yes`, `check-judge-files` and `check-judge-mixed`). The `selftest-fail` agent is deliberately separate, so `selftest` keeps meaning "everything passes". It has eighteen cases, all **expected to fail**: fifteen `check-*` cases (ten per-type cases and five `check-judge-*` cases) plus `check-partial`, all built so that checks fail; `stub-timeout`, which records a timeout failure (empty `actual_output`, `error_context.stderr` containing `timeout after 1s`) in about a second; and `stub-empty-response`, whose stub returns an empty response, so the case has no output, every criterion scores 0 out of its maximum, and it still counts toward the agent's score. Run it with:
 
 ```bash
 go run ./cmd/kairon eval --backend stub --no-sandbox --evals-dir internal/eval/testdata/evals selftest-fail
@@ -1069,6 +1212,9 @@ All check cases score the `structural_completeness` criterion (present in both r
 | `output_not_contains` | `check-output-not-contains` | `check-output-not-contains` |
 | `gh_log_contains` | `check-gh-log-contains`: the stub writes a `gh issue create` line to `.eval/gh.log` | `check-gh-log-contains`: the log is empty |
 | `gh_log_not_contains` | `check-gh-log-not-contains` | `check-gh-log-not-contains`: the stub writes a `gh pr merge 1` line |
+| `judge` | `check-judge-yes`: `stub.judge: yes` | `check-judge-no`: `stub.judge: no` fails with `judge answered no: stub judge: no` |
+
+The `judge` check has further cases. In `selftest`: `check-judge-files` has the stub turn write `.eval/issue-body.md` and the check list it in `files`, so the whole file path runs end to end; `check-judge-mixed` puts a `file_exists` check and a `judge` check on one criterion and scores `2/2`. In `selftest-fail`: `check-judge-garbage` (`stub.judge: garbage`) fails with `judge parse error`; `check-judge-no-script` (no `stub.judge`) fails with `judge call failed: case has no stub.judge`; `check-judge-missing-file` (`files: [.eval/absent.md]`) fails with `file does not exist` and makes no judge call; `check-judge-list` (`stub.judge: [yes, no]`, two `judge` checks) passes the first and fails the second, so it records exactly `1/2`. None of them is skipped.
 
 Two further `selftest` / `selftest-fail` cases pin behavior you may rely on:
 
@@ -1157,7 +1303,9 @@ All six shipped agents have rubrics and test cases:
 
 ## Evaluation Workflow
 
-The evaluation framework serves as unit testing for prompt engineering. Follow this workflow when modifying agent prompts or configurations:
+The evaluation framework serves as unit testing for prompt engineering. Follow this workflow when modifying agent prompts or configurations.
+
+**Iterate on a candidate, not on the live prompt.** Do not edit `.kiro/agents/<agent>-prompt.md` to try an idea. That file is live: krew-lead spawns the builder and validator from the worktree's `.kiro/agents/`, so an edit made mid-iteration changes the pipeline that is building your PR (and an edited planner prompt changes the planner you use every day). Write each candidate to its own file, conventionally `.kairon/iterations/<agent>/vN.md`, and score it with `--prompt-file` (see [Evaluating a candidate prompt](#evaluating-a-candidate-prompt---prompt-file)). The candidate is used only in the per-case eval workspaces, so the live agent is never modified. Copy the winning candidate over the live prompt only once, when you are done iterating.
 
 ### Before Making Changes (Baseline)
 
@@ -1172,15 +1320,20 @@ This creates a results snapshot at `.kairon/evals/results/<timestamp>-<git-hash>
 
 ### After Making Changes (Verification)
 
-**Required**: Run `kairon eval` after prompt changes to verify improvements:
+**Required**: Run `kairon eval` after prompt changes to verify improvements. For a candidate prompt, run the agent with `--prompt-file`; for any other change, run `kairon eval` as before:
 
 ```bash
-# Test modified behavior
+# Test a candidate prompt for one agent (the live prompt is not touched)
+kairon eval architect --prompt-file .kairon/iterations/architect/v2.md
+
+# Test other modified behavior
 kairon eval
 
 # Compare with baseline
 kairon eval diff <baseline-hash> <current-hash>
 ```
+
+`eval diff` lists the differing `prompt_sha256` and `prompt_file` in its Run Provenance block, so you can confirm which prompt each run used.
 
 ### Creating Test Cases for Behavioral Changes
 
@@ -1199,12 +1352,17 @@ kairon eval architect
 # 2. Add test case for complex decomposition scenario
 # Edit .kairon/evals/cases/architect/complex-decomposition.yaml
 
-# 3. Modify architect prompt
-# Edit .kairon/agents/architect-prompt.md
+# 3. Write a candidate prompt (a copy of .kiro/agents/architect-prompt.md with your
+#    changes). Do not edit the live prompt while iterating.
+mkdir -p .kairon/iterations/architect
+cp .kiro/agents/architect-prompt.md .kairon/iterations/architect/v2.md
+# Edit .kairon/iterations/architect/v2.md
 
-# 4. Verify improvement
-kairon eval architect
+# 4. Verify improvement with the candidate
+kairon eval architect --prompt-file .kairon/iterations/architect/v2.md
 kairon eval diff <baseline> <current>
+
+# 5. Iterate on v3.md, v4.md, ... the same way; the live agent stays untouched
 ```
 
 ### Evaluation as Unit Testing
@@ -1825,7 +1983,8 @@ Scores are only comparable when the runs were produced under comparable conditio
 - `containment`, per agent (`tool_trust`, `fake_gh`, `read_only_fs`, `network`; a run with a containment record against one without is shown as `record: none → …`),
 - `judge_model`,
 - `agent_model`, per agent,
-- `prompt_sha256`, per agent.
+- `prompt_sha256`, per agent,
+- `prompt_file`, per agent (the `--prompt-file` candidate path; see [Evaluating a candidate prompt](#evaluating-a-candidate-prompt---prompt-file)).
 
 Trust sets are compared ignoring order. A value a run did not record is shown as `(not recorded)`. When nothing differs the block says `No provenance differences.`
 
