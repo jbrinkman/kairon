@@ -38,7 +38,7 @@ Kairon's evaluation framework measures agent quality and cost, enabling data-dri
 
 This is the default evals directory. Use `--evals-dir` to point the harness at a different directory with the same layout (see [Evals Directory](#evals-directory---evals-dir)).
 
-Iteration logs live outside the evals directory, in `.kairon/iterations/<agent>/iteration-NN.md`, and reference the runs under `results/` (see [Iteration Logs and `verify-log`](#iteration-logs-and-verify-log)).
+Iteration logs live outside the evals directory, in `.kairon/iterations/<agent>/iteration-NN.md`, and reference the runs under `results/` (see [Iteration Logs and `verify-log`](#iteration-logs-and-verify-log)). The same directory holds an agent's optional `load-bearing.md` table, which `kairon eval audit` reads (see [Prompt Audit](#prompt-audit-kairon-eval-audit)).
 
 ## Rubric Format
 
@@ -1530,6 +1530,152 @@ go run ./cmd/kairon eval verify-log selftest --min-iterations 5 \
 ```
 
 The unit tests are `go test ./internal/eval/ -run VerifyLog` and `go test ./cmd/kairon/cmd/ -run VerifyLog`.
+
+## Prompt Audit (`kairon eval audit`)
+
+`kairon eval audit` is a static check of an agent's prompt, for the maturity-model Stage 3 requirement that prompts are structured and that most of their instructions earn their place. It checks two things:
+
+1. **RTCC structure.** The prompt has the level-2 headings `## Role`, `## Task`, `## Context` and `## Constraints`, in that order.
+2. **Load-bearing coverage.** At least **90%** of the prompt's instructions are *load-bearing*: each is mapped, in a hand-written table, to a criterion of the agent's rubric. The table format is defined in [`.kairon/iterations/README.md`](../.kairon/iterations/README.md#load-bearing-table).
+
+The audit is deterministic. It makes no model call, starts no `kiro-cli` and no container, and reads only the agent config, the prompt, the rubric and the table. It does not edit anything.
+
+```bash
+kairon eval audit <agent> [--prompt-file PATH] [--iterations-dir DIR] [--evals-dir DIR]
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--prompt-file` | none | Audit this candidate prompt file instead of the agent's own prompt. The table and the rubric still come from the agent. Local to `audit`. |
+| `--iterations-dir` | `.kairon/iterations` | Directory holding `<agent>/load-bearing.md`. Local to `audit`. |
+| `--evals-dir` | `.kairon/evals` | Evals directory holding `rubrics/<agent>.yaml` and the optional `agents/<agent>.json` overlay. This is the persistent `kairon eval` flag, inherited by `audit` (see [Evals Directory](#evals-directory---evals-dir)). |
+
+The command takes exactly one argument, the agent name (a single path element: no `/`, `\` or `..`).
+
+### What is audited
+
+- **The prompt.** The file that the agent config's `prompt: file://<path>` points at, resolved relative to the config. The config is `<evals-dir>/agents/<agent>.json` if it exists, else `.kiro/agents/<agent>.json`. An inline prompt or an absolute `file://` path cannot be audited and is an error. With `--prompt-file`, the candidate is audited instead, and the report line reads `Prompt: <path> (candidate)`. The candidate must be a non-empty regular file, as for `kairon eval --prompt-file`.
+- **Engine skills.** Every `skill://.kiro/skills/<name>/SKILL.md` entry in the config's `resources` whose name does **not** end in `-conventions` is an engine skill, such as `sentinel-protocol`. Its lines are audited together with the prompt and count toward the 90%. The skill is read from the copy shipped inside the `kairon` binary (`cmd/kairon/templates/kiro/skills/`), so the audit scores what users actually receive. A skill that is not shipped there cannot be audited and fails with the `resource` rule.
+- **Override hooks.** A resource whose skill name ends in `-conventions` (for example `builder-conventions`) is a per-project override hook. It is listed in the report, never read and never scored.
+- Resources that are not `skill://` strings are listed as ignored and not scored. A skill that appears twice is processed once.
+
+### The RTCC rule
+
+The prompt, but not the skills, must contain the four headings `## Role`, `## Task`, `## Context` and `## Constraints`. Names are compared exactly and case-sensitively, so `## role` and `### Role` do not count. A heading inside a fenced code block does not count. Other headings may appear between the four. If the first occurrences are not in the order Role, Task, Context, Constraints, the prompt fails.
+
+### What counts as an instruction
+
+Every physical line of the prompt and of each audited skill that is non-blank after trimming, outside a fenced code block (backtick or tilde fences), not an ATX heading and not a table separator row. A leading YAML front-matter block is skipped, so a `SKILL.md` does not need rows for its metadata. Each occurrence counts separately. An instruction is mapped when its trimmed text equals an `Instruction` cell of the table exactly, and the row's `Criterion` is a criterion `name` in `<evals-dir>/rubrics/<agent>.yaml`. The full rules, including escaped pipes, are in [`.kairon/iterations/README.md`](../.kairon/iterations/README.md#load-bearing-table).
+
+The score is `mapped / total` over the prompt plus the audited engine skills. The audit passes when `mapped * 100 >= 90 * total`, computed in integers. Exactly 90% passes, 89% fails, and 899 of 1000 (shown as `89.9%`) fails. A percentage is shown truncated to one decimal and never rounded up. If there are no instructions at all, the audit fails.
+
+### Rule IDs
+
+Every violation is printed as `<file>[:<line>]: <rule>: <message>`. The audit collects all of them instead of stopping at the first.
+
+| Rule ID | Fails when |
+|---------|------------|
+| `structure` | A required RTCC heading is missing (one violation per missing heading, for example `missing required heading "## Context"`), or the headings are out of order (`required headings out of order: want Role, Task, Context, Constraints; found …`). |
+| `resource` | An engine skill listed in `resources` is not shipped under `cmd/kairon/templates/kiro/skills/`, or a `skill://` resource does not name a single skill directory. |
+| `table` | `<iterations-dir>/<agent>/load-bearing.md` is missing or unreadable, has no `\| Instruction \| Criterion \| Evidence \|` header row, has a row without exactly three cells or with an empty `Instruction` or `Criterion` cell, or maps one instruction to two different criteria. |
+| `unmapped` | An instruction (reported at `<file>:<line>`) is not in the table. |
+| `unknown-criterion` | An instruction's row names a criterion that is not in the rubric. The instruction does not count as mapped. |
+| `coverage` | Fewer than 90% of the instructions are mapped, or there are no instructions to audit. |
+
+`unmapped` and `unknown-criterion` are the per-line detail of a coverage failure, so they are reported only when coverage is below 90%. A prompt at or above the threshold passes even if some of its lines are unmapped. The `structure`, `resource` and `table` violations are always reported.
+
+Problems that stop the audit from running at all are plain errors, not rule violations: an invalid agent name, a missing agent config, an unreadable or empty `--prompt-file`, or a rubric that is missing, invalid or has no criteria.
+
+### Report format
+
+The report goes to stdout, whether the audit passes or fails:
+
+```
+Audit: <agent>
+Prompt: <prompt path>[ (candidate)]
+Audited resources:
+  skill <name> (<N> instructions)
+Override hooks (excluded from score):
+  skill <name>
+Ignored resources:
+  <resource>
+Instructions: total=<T> mapped=<M> coverage=<P>% (threshold 90%)
+```
+
+The `Audited resources:`, `Override hooks (excluded from score):` and `Ignored resources:` blocks appear only when they have entries. On success one more line follows:
+
+```
+OK <agent>: <T> instructions, <P>% load-bearing, RTCC structure present
+```
+
+On failure the violations are returned as the error, so they are printed on stderr after `Error:`, one per line, ordered by file (prompt, then skills, then the table), then by line, then by rule. Usage text is not printed.
+
+### Exit status
+
+| Exit status | Meaning |
+|-------------|---------|
+| `0` | No violations. The last line on stdout is `OK <agent>: …`. |
+| `1` | At least one violation, or any other error (invalid argument, missing config or rubric, unreadable `--prompt-file`). |
+
+### Running it on the real agents
+
+Prompts are not edited by the audit feature and no `load-bearing.md` ships yet, so the real agents are expected to **fail** until their tables are written. For example `kairon eval audit builder` lists the engine skill and the hook, and then fails on the missing table:
+
+```
+Audit: builder
+Prompt: .kiro/agents/builder-prompt.md
+Audited resources:
+  skill sentinel-protocol (36 instructions)
+Override hooks (excluded from score):
+  skill builder-conventions
+Instructions: total=63 mapped=0 coverage=0.0% (threshold 90%)
+```
+
+followed on stderr by `.kairon/iterations/builder/load-bearing.md: table: load-bearing table not found` among the other violations. The planner prompt has none of the RTCC headings, so `kairon eval audit planner` exits `1` and names `## Role`, `## Task`, `## Context` and `## Constraints` as missing.
+
+### Verifying the audit
+
+The audit ships with fixtures under `internal/eval/testdata/audit/`. Each case directory holds an agent `demo` (config and prompt in `evals/agents/`, rubric in `evals/rubrics/demo.yaml` with the criteria `alpha` and `beta`) and its table in `iterations/demo/load-bearing.md`. The fixture prompts have no engine skills, so the commands do not depend on the shipped templates.
+
+**Exactly 90% passes.** The `coverage-90` prompt has 10 instructions and the table maps 9 of them:
+
+```bash
+go run ./cmd/kairon eval audit demo \
+  --evals-dir internal/eval/testdata/audit/coverage-90/evals \
+  --iterations-dir internal/eval/testdata/audit/coverage-90/iterations; echo "exit=$?"
+```
+
+```
+Audit: demo
+Prompt: internal/eval/testdata/audit/coverage-90/evals/agents/demo-prompt.md
+Instructions: total=10 mapped=9 coverage=90.0% (threshold 90%)
+OK demo: 10 instructions, 90.0% load-bearing, RTCC structure present
+exit=0
+```
+
+**89% fails.** The `coverage-89` prompt has 100 instructions and the table maps 89 of them (`Instruction 001.` to `Instruction 089.`):
+
+```bash
+go run ./cmd/kairon eval audit demo \
+  --evals-dir internal/eval/testdata/audit/coverage-89/evals \
+  --iterations-dir internal/eval/testdata/audit/coverage-89/iterations; echo "exit=$?"
+```
+
+```
+Audit: demo
+Prompt: internal/eval/testdata/audit/coverage-89/evals/agents/demo-prompt.md
+Instructions: total=100 mapped=89 coverage=89.0% (threshold 90%)
+Error: internal/eval/testdata/audit/coverage-89/evals/agents/demo-prompt.md:94: unmapped: instruction not in load-bearing table: "Instruction 090."
+internal/eval/testdata/audit/coverage-89/evals/agents/demo-prompt.md:95: unmapped: instruction not in load-bearing table: "Instruction 091."
+…
+internal/eval/testdata/audit/coverage-89/evals/agents/demo-prompt.md:104: unmapped: instruction not in load-bearing table: "Instruction 100."
+internal/eval/testdata/audit/coverage-89/iterations/demo/load-bearing.md: coverage: 89.0% of instructions are load-bearing; need at least 90%
+exit=1
+```
+
+(The `…` stands for the lines for `Instruction 092.` to `Instruction 099.`, which follow the same form. The `Error:` block goes to stderr and the report to stdout.)
+
+The other fixture directories each isolate one rule: `no-rtcc`, `partial` and `wrong-order` (the `structure` rule), `unmapped` (both `unmapped` and `unknown-criterion`), `ok-hooks` (an engine skill audited and a hook excluded, library tests only, because it needs its own skills directory), `candidate` (`--prompt-file`) and `fence-and-table` (extraction and escaped pipes). The unit tests are `go test ./internal/eval/ -run Audit` and `go test ./cmd/kairon/cmd/ -run Audit`.
 
 ## Case Workspaces
 

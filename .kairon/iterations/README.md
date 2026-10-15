@@ -13,6 +13,7 @@ Every score a log claims must be checkable against eval results committed under 
     iteration-00.md               # first iteration (NN starts at 00)
     iteration-01.md
     iteration-02.md
+    load-bearing.md               # optional: instruction-to-criterion table read by `kairon eval audit`
     v2.md                         # optional candidate prompt files may live here too
 ```
 
@@ -143,6 +144,61 @@ On success it prints `OK <agent>: N iterations verified` and exits 0. Otherwise 
 
 Because `verify-log` reports every violation, one run shows everything to fix.
 
+## Load-bearing table
+
+`kairon eval audit <agent>` checks that at least 90% of an agent's instructions are **load-bearing**: each one serves at least one evaluation criterion. The mapping from instruction to criterion is a hand-written table at:
+
+```
+.kairon/iterations/<agent>/load-bearing.md
+```
+
+`load-bearing.md` coexists with the `iteration-NN.md` logs and `verify-log` ignores it, because only files named `iteration-NN.md` are read as logs. The audit command, its flags and its rules are documented in [docs/evaluation.md](../../docs/evaluation.md) under "Prompt Audit (`kairon eval audit`)".
+
+### Table format
+
+The file holds a Markdown table whose header row is exactly:
+
+```markdown
+| Instruction | Criterion | Evidence |
+```
+
+| Column | Content |
+|--------|---------|
+| `Instruction` | The instruction text, copied **verbatim** from the prompt or skill (see "Verbatim match" below). |
+| `Criterion` | The `name` of a criterion in `<evals-dir>/rubrics/<agent>.yaml`. |
+| `Evidence` | Free text saying why removing the instruction would lower that criterion's score. The column must exist, but the audit does not check its content: it is the justification a human reviewer reads. |
+
+Text outside the table (a title, notes) is allowed and ignored. Rows before the header row are ignored. Every pipe-delimited row after the header is a data row, apart from the `|---|---|---|` separator row. A data row must have exactly three cells, and its `Instruction` and `Criterion` cells must not be empty.
+
+### Example
+
+For an agent `demo` whose rubric `rubrics/demo.yaml` defines the criteria `alpha` and `beta`:
+
+```markdown
+| Instruction | Criterion | Evidence |
+|---|---|---|
+| Be careful. | alpha | Cases that skip verification lose points on alpha. |
+| \| a \| b \| | alpha | Escaped pipes: the prompt line is a literal pipe-delimited `a`/`b` row. |
+| Use `a \| b` carefully. | beta | Escaped pipe inside inline code in the prompt line. |
+| Read the code. | beta | Cases that answer without reading the code lose points on beta. |
+| Do not guess. | beta | Guessed answers fail the beta checks. |
+```
+
+This table is modelled on the `fence-and-table` audit fixture (see `internal/eval/testdata/audit/fence-and-table/`). Its prompt contains the lines `Be careful.`, `| a | b |`, ``Use `a | b` carefully.``, `Read the code.` and `Do not guess.`. The pipes in the 2nd and 3rd instructions are written `\|` in the table. An `Evidence` cell must not contain an unescaped `|` either, because it would add a fourth cell.
+
+### Rules
+
+- **What counts as an instruction.** Every physical line of the agent prompt, and of each audited engine skill, that is non-blank after trimming, outside a fenced code block, not an ATX heading (`#` to `######`) and not a table separator row (`|---|---|`). Each occurrence counts separately: a line that appears three times is three instructions.
+- **Front-matter is skipped.** A leading YAML front-matter block (the file starts with `---` and ends at the next `---` line) is metadata, not instructions, and is not counted. This keeps every `SKILL.md` from needing rows for `---` and `name:`. Any other `---` line (a horizontal rule) is an ordinary instruction line.
+- **Verbatim match.** An instruction is mapped when its trimmed text equals the trimmed `Instruction` cell exactly. There is no case folding, no whitespace collapsing and no Markdown rendering, so copy the line as it is in the file, bullet markers and backticks included.
+- **Escaped pipes.** A `|` inside an `Instruction` cell must be written `\|`, otherwise it ends the cell. The audit turns `\|` back into `|` before it compares.
+- **Criterion rule.** The `Criterion` cell must be the `name` of a criterion in `<evals-dir>/rubrics/<agent>.yaml` (default `.kairon/evals/rubrics/<agent>.yaml`). A row that names a criterion that is not in the rubric does not count as mapped.
+- **Duplicate rows.** The first row for an instruction wins. A second row for the same instruction with a **different** criterion is a `table` violation.
+- **Hooks are excluded.** Skills whose name ends in `-conventions` (for example `builder-conventions`) are per-project override hooks. They are never read, never scored and need no rows. Engine skills that the agent lists in `resources` (for example `sentinel-protocol`) are audited together with the prompt, so their lines need rows too.
+- **Threshold.** The audit passes when **at least 90%** of all counted instructions are mapped (`mapped * 100 >= 90 * total`, integer arithmetic). Exactly 90% passes and 89% fails. The percentage is printed truncated to one decimal, so 899 of 1000 shows as `89.9%` and fails. A prompt with no instructions fails.
+
+Put the table next to the iteration logs and update it in the same change as the prompt: a new or reworded instruction needs a new or changed row.
+
 ## See also
 
-- [docs/evaluation.md](../../docs/evaluation.md): "Iteration Logs and `verify-log`" and "Evaluating a candidate prompt (`--prompt-file`)".
+- [docs/evaluation.md](../../docs/evaluation.md): "Iteration Logs and `verify-log`", "Prompt Audit (`kairon eval audit`)" and "Evaluating a candidate prompt (`--prompt-file`)".
