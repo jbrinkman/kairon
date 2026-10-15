@@ -126,7 +126,7 @@ func TestSelftestSandbox(t *testing.T) {
 	}
 
 	// The sandbox run must satisfy the same expectations as the native one.
-	assertSelfTestResults(t, sandboxed)
+	assertSelfTestResults(t, evalsDir, sandboxed)
 }
 
 // agentCallModel returns the model recorded on the case's agent call.

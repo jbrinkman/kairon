@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"encoding/json"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -151,5 +152,128 @@ func TestEvalSelfTestSucceedsWithDefaults(t *testing.T) {
 	runs, _ := filepath.Glob(filepath.Join(evalsDir, "results", "*", "summary.json"))
 	if len(runs) != 1 {
 		t.Fatalf("summary.json files = %v, want 1", runs)
+	}
+}
+
+func TestEvalPromptFileFlagRegistered(t *testing.T) {
+	f := evalCmd.Flags().Lookup("prompt-file")
+	if f == nil {
+		t.Fatal("--prompt-file flag not registered on eval")
+	}
+	if f.DefValue != "" {
+		t.Errorf("--prompt-file default = %q, want empty", f.DefValue)
+	}
+	if !strings.Contains(strings.ToLower(f.Usage), "candidate") {
+		t.Errorf("--prompt-file usage %q does not describe the candidate prompt", f.Usage)
+	}
+	// Local to eval: it must not be a persistent flag, so diff does not inherit it.
+	if evalCmd.PersistentFlags().Lookup("prompt-file") != nil {
+		t.Error("--prompt-file must be a local flag on eval, not persistent")
+	}
+	if diffCmd.InheritedFlags().Lookup("prompt-file") != nil {
+		t.Error("diff subcommand must not inherit --prompt-file")
+	}
+}
+
+func TestEvalPromptFileWithoutAgentRejected(t *testing.T) {
+	orig := evalPromptFile
+	t.Cleanup(func() { evalPromptFile = orig })
+	evalPromptFile = "x.md"
+
+	err := evalCmd.RunE(evalCmd, nil)
+	if err == nil || !strings.Contains(err.Error(), "agent is required") {
+		t.Fatalf("err = %v, want error containing 'agent is required'", err)
+	}
+}
+
+func TestEvalPromptFileMissingRejected(t *testing.T) {
+	evalsDir := evalSelfTestProject(t, "")
+	orig := evalPromptFile
+	t.Cleanup(func() { evalPromptFile = orig })
+	evalPromptFile = filepath.Join(t.TempDir(), "missing.md")
+
+	err := evalCmd.RunE(evalCmd, []string{"selftest"})
+	if err == nil {
+		t.Fatal("expected error for missing candidate file")
+	}
+	if !strings.Contains(err.Error(), "missing.md") {
+		t.Errorf("error %q does not name the candidate path", err)
+	}
+	if _, statErr := os.Stat(filepath.Join(evalsDir, "results")); !os.IsNotExist(statErr) {
+		t.Errorf("results dir exists after rejection (stat err = %v)", statErr)
+	}
+}
+
+func TestEvalPromptFileRecorded(t *testing.T) {
+	evalsDir := evalSelfTestProject(t, "")
+	orig := evalPromptFile
+	t.Cleanup(func() { evalPromptFile = orig })
+
+	readSummary := func() map[string]any {
+		t.Helper()
+		matches, _ := filepath.Glob(filepath.Join(evalsDir, "results", "*", "summary.json"))
+		if len(matches) != 1 {
+			t.Fatalf("summary.json files = %v, want 1", matches)
+		}
+		data, err := os.ReadFile(matches[0])
+		if err != nil {
+			t.Fatal(err)
+		}
+		var s map[string]any
+		if err := json.Unmarshal(data, &s); err != nil {
+			t.Fatal(err)
+		}
+		// Clear so the next run starts from a clean results dir.
+		if err := os.RemoveAll(filepath.Join(evalsDir, "results")); err != nil {
+			t.Fatal(err)
+		}
+		return s
+	}
+	selftestAgent := func(s map[string]any) map[string]any {
+		t.Helper()
+		agents, _ := s["agents"].(map[string]any)
+		a, _ := agents["selftest"].(map[string]any)
+		if a == nil {
+			t.Fatalf("summary has no agents.selftest: %v", s)
+		}
+		return a
+	}
+
+	// Baseline: no candidate.
+	evalPromptFile = ""
+	if err := evalCmd.RunE(evalCmd, []string{"selftest"}); err != nil {
+		t.Fatalf("baseline run: %v", err)
+	}
+	base := readSummary()
+	baseAgent := selftestAgent(base)
+	if _, ok := baseAgent["prompt_file"]; ok {
+		t.Errorf("baseline agents.selftest has prompt_file: %v", baseAgent["prompt_file"])
+	}
+	baseSHA, _ := baseAgent["prompt_sha256"].(string)
+	if baseSHA == "" {
+		t.Fatal("baseline run did not record prompt_sha256")
+	}
+
+	// Candidate run.
+	cand := filepath.Join(t.TempDir(), "cand.md")
+	if err := os.WriteFile(cand, []byte("# Candidate\n\nAnswer concisely.\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	evalPromptFile = cand
+	if err := evalCmd.RunE(evalCmd, []string{"selftest"}); err != nil {
+		t.Fatalf("candidate run: %v", err)
+	}
+	got := readSummary()
+	want := filepath.ToSlash(filepath.Clean(cand))
+	if got["prompt_file"] != want {
+		t.Errorf("summary.prompt_file = %v, want %q", got["prompt_file"], want)
+	}
+	candAgent := selftestAgent(got)
+	if candAgent["prompt_file"] != want {
+		t.Errorf("agents.selftest.prompt_file = %v, want %q", candAgent["prompt_file"], want)
+	}
+	candSHA, _ := candAgent["prompt_sha256"].(string)
+	if candSHA == "" || candSHA == baseSHA {
+		t.Errorf("candidate prompt_sha256 = %q, want non-empty and different from baseline %q", candSHA, baseSHA)
 	}
 }

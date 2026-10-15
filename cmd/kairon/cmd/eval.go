@@ -22,6 +22,7 @@ var (
 	evalBackend        string
 	evalEvalsDir       string
 	evalKeepWorkspaces bool
+	evalPromptFile     string
 )
 
 var evalCmd = &cobra.Command{
@@ -62,6 +63,7 @@ var evalCmd = &cobra.Command{
 			Backend:        evalBackend,
 			EvalsDir:       evalEvalsDir,
 			KeepWorkspaces: evalKeepWorkspaces,
+			PromptFile:     evalPromptFile,
 		})
 	},
 }
@@ -88,6 +90,8 @@ func init() {
 	evalCmd.Flags().StringVar(&evalBackend, "backend", inference.NameKiroCLI,
 		fmt.Sprintf("Inference backend for agent and judge calls (%s)", strings.Join(inference.Names(), ", ")))
 	evalCmd.Flags().BoolVar(&evalKeepWorkspaces, "keep-workspaces", false, "Keep per-case workspaces after the run (their paths are recorded as workspace_dir in the results)")
+	evalCmd.Flags().StringVar(&evalPromptFile, "prompt-file", "",
+		"Evaluate a candidate prompt file in place of the agent's prompt, in per-case workspaces only (requires an agent; the live .kiro/agents is not modified)")
 	evalCmd.PersistentFlags().StringVar(&evalEvalsDir, "evals-dir", "",
 		"Evals directory holding rubrics, cases, fixtures and results (default \".kairon/evals\")")
 
