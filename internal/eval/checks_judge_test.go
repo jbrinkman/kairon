@@ -376,6 +376,48 @@ func TestJudgeCheckTruncatesOnRuneBoundaryAndSanitizesUTF8(t *testing.T) {
 
 func isValidUTF8(s string) bool { return strings.ToValidUTF8(s, "") == s }
 
+// TestJudgeCheckCutInsideMultiByteRuneRemovesWholeRune guards against a cut
+// landing in the MIDDLE of a 3- or 4-byte rune: the whole incomplete rune must
+// be dropped, not just one byte. Otherwise ToValidUTF8 replaces the dangling
+// byte(s) with U+FFFD (altered text) and the shown prefix can exceed the cap.
+// For "€" (3 bytes) the 64 KiB prefix ends with 2 of its bytes; for "𝄞" (4
+// bytes) it can end with 1-3. In both cases the kept prefix must be valid
+// UTF-8, carry no U+FFFD, and be <= judgeMaxFileBytes.
+func TestJudgeCheckCutInsideMultiByteRuneRemovesWholeRune(t *testing.T) {
+	dir := t.TempDir()
+	cases := map[string]string{
+		// 65534 ASCII + "€" (E2 82 AC): the 65536-byte cut keeps "€"'s first 2 bytes.
+		"three-byte": strings.Repeat("a", judgeMaxFileBytes-2) + "€",
+		// 65533 ASCII + "𝄞" (F0 9D 84 9E): the cut keeps "𝄞"'s first 3 bytes.
+		"four-byte": strings.Repeat("a", judgeMaxFileBytes-3) + "𝄞",
+	}
+	for name, content := range cases {
+		t.Run(name, func(t *testing.T) {
+			writeEvalFile(t, dir, name+".md", content+strings.Repeat("b", 100))
+			f := &fakeJudge{verdict: JudgeVerdict{Yes: true, Reasoning: "r"}}
+			wantPass(t, evalOne(t, judgeCheck("q", name+".md"), CheckInput{Dir: dir, Judge: f.judge}))
+			jf := f.queries[0].Files[0]
+			shown := jf.Content
+			if i := strings.Index(shown, "\n[truncated:"); i >= 0 {
+				shown = shown[:i]
+			}
+			if !isValidUTF8(shown) {
+				t.Errorf("shown prefix is not valid UTF-8")
+			}
+			if strings.Contains(shown, "\uFFFD") {
+				t.Errorf("shown prefix contains U+FFFD: a split rune was not fully removed")
+			}
+			if len(shown) > judgeMaxFileBytes {
+				t.Errorf("shown prefix is %d bytes, exceeds cap %d", len(shown), judgeMaxFileBytes)
+			}
+			// The incomplete trailing rune is gone, so the prefix is all ASCII 'a'.
+			if !strings.HasSuffix(shown, "a") {
+				t.Errorf("shown prefix should end on the last complete ASCII byte, got ...%q", shown[max(0, len(shown)-4):])
+			}
+		})
+	}
+}
+
 // TestJudgeCheckKeepsCompleteFinalRuneAtCap guards the P2 trailing-trim bug:
 // when the capped prefix ends exactly on a COMPLETE multi-byte rune, that rune
 // must be kept, not dropped. Here (judgeMaxFileBytes-2) ASCII bytes plus one

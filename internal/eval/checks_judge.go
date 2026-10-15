@@ -188,12 +188,25 @@ func readJudgeFile(dir, rel string, limit int) (JudgeFile, string) {
 		if len(data) > limit {
 			data = data[:limit]
 		}
-		// Drop only an INCOMPLETE final rune so the cut lands on a rune
-		// boundary; a complete final rune (even multi-byte) that fits within
-		// the cap is kept. DecodeLastRune returns (RuneError, 1) for an invalid
-		// or incomplete trailing byte sequence and (RuneError, 0) for empty.
+		// Keep the cut on a rune boundary. A COMPLETE final rune (even
+		// multi-byte) that fits within the cap is kept; an INCOMPLETE trailing
+		// rune is removed in full, however many bytes of it the cut left behind.
+		// DecodeLastRune reports an incomplete tail as (RuneError, 1), so it
+		// cannot do this alone: back up over continuation bytes (0x80-0xBF) to
+		// the lead byte, then drop from there only if that rune is not whole.
 		if r, size := utf8.DecodeLastRune(data); r == utf8.RuneError && size <= 1 {
-			data = data[:len(data)-size]
+			i := len(data)
+			for i > 0 && data[i-1]&0xC0 == 0x80 { // continuation byte
+				i--
+			}
+			if i > 0 {
+				i-- // include the lead byte
+			}
+			// data[i:] is the (possibly incomplete) final rune. Drop it unless
+			// it decodes as a single complete rune spanning exactly to the end.
+			if rr, rs := utf8.DecodeRune(data[i:]); rr == utf8.RuneError || i+rs != len(data) {
+				data = data[:i]
+			}
 		}
 	}
 	jf.Content = strings.ToValidUTF8(string(data), "\uFFFD")
