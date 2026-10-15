@@ -214,16 +214,21 @@ func printCaseResult(out io.Writer, tc TestCase, rubric Rubric, cr CaseResult) {
 			pct := float64(totalScore) / float64(maxTotal) * 100
 			threshold := caseThreshold(tc, rubric)
 
-			if pct >= threshold {
+			// Decide pass/warn/fail with the same multiply-first comparison the
+			// saved verdict uses (percentAtLeast), so the printed ✅/⚠️/❌ can
+			// never disagree with the stamped Passed at a float-drift boundary
+			// (e.g. 29/50 at 58). pct above is only the displayed number.
+			passes := percentAtLeast(totalScore, maxTotal, threshold)
+			if passes {
 				fmt.Fprintf(out, " ✅ %.0f%% (threshold: %.0f%%)\n", pct, threshold)
-			} else if pct >= 60 {
+			} else if percentAtLeast(totalScore, maxTotal, 60) {
 				fmt.Fprintf(out, " ⚠️  %.0f%% (threshold: %.0f%%)\n", pct, threshold)
 			} else {
 				fmt.Fprintf(out, " ❌ %.0f%% (threshold: %.0f%%)\n", pct, threshold)
 			}
 
 			// Show criterion breakdown for scores below threshold
-			if pct < threshold {
+			if !passes {
 				for _, s := range cr.Scores {
 					if s.Score < s.MaxScore*3/4 {
 						fmt.Fprintf(out, "      %s: %d/%d\n", s.Name, s.Score, s.MaxScore)

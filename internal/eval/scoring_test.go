@@ -85,6 +85,18 @@ func TestPrintCaseResultStatuses(t *testing.T) {
 			// 50% < 60 => fail; max 2 => 2*3/4 == 1, so 1 < 1 is false => no breakdown line.
 			want: " ❌ 50% (threshold: 90%)\n",
 		},
+		{
+			// Float-drift boundary: 29/50 at threshold 58. The saved verdict
+			// (percentAtLeast, multiply-first) passes (2900/50 = 58.0 >= 58),
+			// so the printed line must agree. A divide-first comparison lands
+			// at 57.999999999999993 and would wrongly print ❌.
+			name: "boundary 29/50 at 58 passes to match the saved verdict",
+			tc:   TestCase{Name: "c", MinScore: floatPtr(58)},
+			cr: CaseResult{ActualOutput: "out", Scores: []CriterionScore{
+				{Name: "a", Score: 29, MaxScore: 50},
+			}},
+			want: " ✅ 58% (threshold: 58%)\n",
+		},
 	}
 
 	for _, tt := range tests {
