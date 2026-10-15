@@ -1,6 +1,7 @@
 package eval
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -565,9 +566,9 @@ func loadRunRecord(resultsDir, run, agent string) runRecord {
 	}
 
 	switch {
-	case hasVerdict(summary, agent):
+	case hasVerdict(filepath.Join(dir, "summary.json"), summary, agent):
 		rec.hasScore, rec.score, rec.scoreSource = true, summary.AgentVerdicts[agent].Score, "agent_verdicts"
-	case hasAgentScore(summary, agent):
+	case hasAgentScore(filepath.Join(dir, "summary.json"), summary, agent):
 		rec.hasScore, rec.score, rec.scoreSource = true, summary.AgentScores[agent]*100, "agent_scores"
 	case resErr == nil:
 		if _, max := agentScoreTotals(result); max > 0 {
@@ -582,12 +583,61 @@ func loadRunRecord(resultsDir, run, agent string) runRecord {
 	return rec
 }
 
-func hasVerdict(s Summary, agent string) bool {
-	_, ok := s.AgentVerdicts[agent]
-	return ok
+// hasVerdict reports whether the summary records a *measured* verdict for
+// agent. A present-but-empty verdict object ({}) decodes to the zero
+// AgentVerdict and is not a real 0.0 score, so it is ignored and the next
+// score source is tried. A measured verdict always serializes a "score"
+// field (even a real 0.0 as "score":0), so the raw bytes are re-read to tell
+// an empty object from a measured verdict rather than relying on a
+// non-distinguishing in-memory zero value.
+func hasVerdict(summaryPath string, s Summary, agent string) bool {
+	if _, ok := s.AgentVerdicts[agent]; !ok {
+		return false
+	}
+	raw, ok := rawSummaryEntry(summaryPath, "agent_verdicts", agent)
+	if !ok {
+		return false
+	}
+	var fields map[string]json.RawMessage
+	if json.Unmarshal(raw, &fields) != nil {
+		return false
+	}
+	_, hasScore := fields["score"]
+	return hasScore
 }
 
-func hasAgentScore(s Summary, agent string) bool {
-	_, ok := s.AgentScores[agent]
-	return ok
+// hasAgentScore reports whether the summary records a *measured* agent_scores
+// entry for agent. A JSON null decodes to 0.0 with the key present and is
+// indistinguishable from a real zero after unmarshalling, so the raw summary
+// bytes are re-read to tell a null entry (ignored) from a real 0.0 (used).
+func hasAgentScore(summaryPath string, s Summary, agent string) bool {
+	if _, ok := s.AgentScores[agent]; !ok {
+		return false
+	}
+	raw, ok := rawSummaryEntry(summaryPath, "agent_scores", agent)
+	return ok && string(raw) != "null"
+}
+
+// rawSummaryEntry reads summaryPath and returns the raw JSON value of
+// field[agent] (e.g. agent_scores[agent]). ok is false if the file is
+// unreadable, not valid JSON, or the key is absent.
+func rawSummaryEntry(summaryPath, field, agent string) (json.RawMessage, bool) {
+	data, err := os.ReadFile(summaryPath)
+	if err != nil {
+		return nil, false
+	}
+	var top map[string]json.RawMessage
+	if json.Unmarshal(data, &top) != nil {
+		return nil, false
+	}
+	rawField, ok := top[field]
+	if !ok {
+		return nil, false
+	}
+	var entries map[string]json.RawMessage
+	if json.Unmarshal(rawField, &entries) != nil {
+		return nil, false
+	}
+	v, ok := entries[agent]
+	return v, ok
 }
