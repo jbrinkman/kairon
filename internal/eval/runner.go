@@ -824,8 +824,15 @@ func containerEnv(cConfig *ContainerConfig) []string {
 // newContainerConfig is the container.Config for one case.
 func newContainerConfig(image string, cConfig *ContainerConfig) *container.Config {
 	return &container.Config{
-		Image:      image,
-		Cmd:        []string{"sleep", "3600"},
+		Image: image,
+		// Keep-alive only: the container is always torn down explicitly by
+		// session.Close, so this must simply outlast any real case. A
+		// multi-turn case opens one container for the whole case (one Run per
+		// turn), so a short wall (the old `sleep 3600`) could exit mid-case
+		// even when no single per-turn timeout was exceeded. BusyBox sleep
+		// (alpine base image) takes a numeric argument only — `sleep infinity`
+		// is rejected — so use the largest portable value (~68 years).
+		Cmd:        []string{"sleep", "2147483647"},
 		Env:        containerEnv(cConfig),
 		User:       containerUser,
 		WorkingDir: cConfig.WorkspaceDir,
