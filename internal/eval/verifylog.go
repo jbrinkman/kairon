@@ -67,7 +67,12 @@ const (
 var (
 	iterationFileRe = regexp.MustCompile(`^iteration-(\d{2,})\.md$`)
 	scoreFormatRe   = regexp.MustCompile(`^(100\.0|[0-9]{1,2}\.[0-9])$`)
-	h2HeadingRe     = regexp.MustCompile(`^##[ \t]+(\S.*?)[ \t]*$`)
+	// h2HeadingRe matches a CommonMark level-2 ATX heading: up to 3 leading
+	// spaces (4+ is a code block), "##" followed by at least one space, and
+	// an optional closed-ATX trailing run of # (which must be preceded by a
+	// space and is not part of the name). The name capture may be empty for
+	// an otherwise-valid empty heading ("##" or "## ##").
+	h2HeadingRe = regexp.MustCompile(`^ {0,3}##(?:[ \t]+(.*?))?(?:[ \t]+#+)?[ \t]*$`)
 
 	// requiredHeadings are the level-2 headings every log must carry, once
 	// each and in this order.

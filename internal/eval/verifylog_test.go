@@ -567,6 +567,16 @@ func TestVerifyLogHeadingViolations(t *testing.T) {
 		{"all present", bodyOf(b, h, c, r, rs), ""},
 		{"extra headings allowed", bodyOf(b, h, "## Notes\n\nextra\n\n", c, r, rs, "## Appendix\n\nmore\n"), ""},
 		{"trailing spaces on heading allowed", strings.Replace(bodyOf(b, h, c, r, rs), "## Change", "## Change  ", 1), ""},
+		{
+			// Up to 3 leading spaces is still a valid CommonMark ATX heading.
+			"indented heading allowed",
+			strings.Replace(bodyOf(b, h, c, r, rs), "## Change", "   ## Change", 1), "",
+		},
+		{
+			// Closed-ATX form: the trailing run of # is not part of the name.
+			"closed-atx heading allowed",
+			strings.Replace(bodyOf(b, h, c, r, rs), "## Change", "## Change ##", 1), "",
+		},
 		{"missing Baseline", bodyOf(h, c, r, rs), "Baseline"},
 		{"missing Reasoning", bodyOf(b, h, c, r), "Reasoning"},
 		{"duplicated heading", bodyOf(b, h, c, c, r, rs), "Change"},
