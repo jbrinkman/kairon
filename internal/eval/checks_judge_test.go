@@ -376,6 +376,43 @@ func TestJudgeCheckTruncatesOnRuneBoundaryAndSanitizesUTF8(t *testing.T) {
 
 func isValidUTF8(s string) bool { return strings.ToValidUTF8(s, "") == s }
 
+// TestJudgeCheckInvalidBytesStayWithinCap guards against ToValidUTF8 expansion
+// pushing a truncated file past the cap: each invalid byte is replaced with
+// U+FFFD (3 bytes), so a prefix of alternating ASCII and invalid bytes capped
+// at the raw-byte limit roughly doubles once sanitized. The shown content
+// (excluding the marker) must still be <= judgeMaxFileBytes and valid UTF-8.
+func TestJudgeCheckInvalidBytesStayWithinCap(t *testing.T) {
+	dir := t.TempDir()
+	// 2*judgeMaxFileBytes bytes alternating 'a' and 0xff. Capped raw to 64 KiB
+	// that is ~32 KiB of 0xff, each becoming a 3-byte U+FFFD -> ~128 KiB.
+	buf := make([]byte, 2*judgeMaxFileBytes)
+	for i := range buf {
+		if i%2 == 0 {
+			buf[i] = 'a'
+		} else {
+			buf[i] = 0xff
+		}
+	}
+	writeEvalFile(t, dir, "x.md", string(buf))
+	f := &fakeJudge{verdict: JudgeVerdict{Yes: true, Reasoning: "r"}}
+	wantPass(t, evalOne(t, judgeCheck("q", "x.md"), CheckInput{Dir: dir, Judge: f.judge}))
+
+	jf := f.queries[0].Files[0]
+	if !jf.Truncated {
+		t.Fatal("file should be truncated")
+	}
+	shown := jf.Content
+	if i := strings.Index(shown, "\n[truncated:"); i >= 0 {
+		shown = shown[:i]
+	}
+	if !isValidUTF8(shown) {
+		t.Errorf("shown content is not valid UTF-8")
+	}
+	if len(shown) > judgeMaxFileBytes {
+		t.Errorf("shown content is %d bytes after U+FFFD expansion, exceeds cap %d", len(shown), judgeMaxFileBytes)
+	}
+}
+
 // TestJudgeCheckCutInsideMultiByteRuneRemovesWholeRune guards against a cut
 // landing in the MIDDLE of a 3- or 4-byte rune: the whole incomplete rune must
 // be dropped, not just one byte. Otherwise ToValidUTF8 replaces the dangling

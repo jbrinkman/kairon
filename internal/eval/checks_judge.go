@@ -188,33 +188,45 @@ func readJudgeFile(dir, rel string, limit int) (JudgeFile, string) {
 		if len(data) > limit {
 			data = data[:limit]
 		}
-		// Keep the cut on a rune boundary. A COMPLETE final rune (even
-		// multi-byte) that fits within the cap is kept; an INCOMPLETE trailing
-		// rune is removed in full, however many bytes of it the cut left behind.
-		// DecodeLastRune reports an incomplete tail as (RuneError, 1), so it
-		// cannot do this alone: back up over continuation bytes (0x80-0xBF) to
-		// the lead byte, then drop from there only if that rune is not whole.
-		if r, size := utf8.DecodeLastRune(data); r == utf8.RuneError && size <= 1 {
-			i := len(data)
-			for i > 0 && data[i-1]&0xC0 == 0x80 { // continuation byte
-				i--
-			}
-			if i > 0 {
-				i-- // include the lead byte
-			}
-			// data[i:] is the (possibly incomplete) final rune. Drop it unless
-			// it decodes as a single complete rune spanning exactly to the end.
-			if rr, rs := utf8.DecodeRune(data[i:]); rr == utf8.RuneError || i+rs != len(data) {
-				data = data[:i]
-			}
-		}
+		data = trimToLastWholeRune(data)
 	}
-	jf.Content = strings.ToValidUTF8(string(data), "\uFFFD")
+	content := strings.ToValidUTF8(string(data), "\uFFFD")
+	// Replacing each invalid byte with U+FFFD (3 bytes) can grow the content
+	// past the cap, so re-apply the limit after sanitizing. trimToLastWholeRune
+	// keeps this cut off a U+FFFD boundary.
+	if jf.Truncated && len(content) > limit {
+		content = string(trimToLastWholeRune([]byte(content)[:limit]))
+	}
+	jf.Content = content
 	jf.shown = len(jf.Content)
 	if jf.Truncated {
 		jf.Content += truncationMarker(jf, jf.shown)
 	}
 	return jf, ""
+}
+
+// trimToLastWholeRune drops an incomplete final rune so b ends on a rune
+// boundary. A complete final rune (even multi-byte) is kept; an incomplete
+// trailing rune is removed in full, however many of its bytes b ends with.
+// utf8.DecodeLastRune reports an incomplete tail as (RuneError, 1), so it
+// cannot do this alone: back up over continuation bytes (0x80-0xBF) to the lead
+// byte, then drop from there only when that rune is not whole.
+func trimToLastWholeRune(b []byte) []byte {
+	r, size := utf8.DecodeLastRune(b)
+	if r != utf8.RuneError || size > 1 {
+		return b // ends on a complete rune (or is empty)
+	}
+	i := len(b)
+	for i > 0 && b[i-1]&0xC0 == 0x80 { // continuation byte
+		i--
+	}
+	if i > 0 {
+		i-- // include the lead byte
+	}
+	if rr, rs := utf8.DecodeRune(b[i:]); rr == utf8.RuneError || i+rs != len(b) {
+		return b[:i]
+	}
+	return b
 }
 
 const (
