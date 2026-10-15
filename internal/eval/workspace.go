@@ -226,7 +226,7 @@ func validateSimulatedUser(tc TestCase, file string) error {
 		switch {
 		case strings.TrimSpace(f.ID) == "":
 			return fail("simulated_user.facts[%d].id must not be blank", i)
-		case len(strings.Fields(f.ID)) != 1:
+		case len(strings.Fields(f.ID)) != 1 || f.ID != strings.TrimSpace(f.ID):
 			return fail("simulated_user.facts[%d].id %q must not contain whitespace", i, f.ID)
 		case strings.EqualFold(f.ID, noFact):
 			return fail("simulated_user.facts[%d].id %q is reserved (%q means no fact matched)", i, f.ID, noFact)

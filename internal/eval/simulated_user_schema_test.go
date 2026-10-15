@@ -205,6 +205,30 @@ simulated_user:
 			want: "whitespace",
 		},
 		{
+			name: "leading-whitespace-id",
+			yaml: `name: leading-whitespace-id
+agent: a1
+input: hi
+simulated_user:
+  facts:
+    - {id: " f1", answer: a, discoverable: false}
+  default_reply: r
+`,
+			want: "whitespace",
+		},
+		{
+			name: "trailing-whitespace-id",
+			yaml: `name: trailing-whitespace-id
+agent: a1
+input: hi
+simulated_user:
+  facts:
+    - {id: "f1 ", answer: a, discoverable: false}
+  default_reply: r
+`,
+			want: "whitespace",
+		},
+		{
 			name: "blank-answer",
 			yaml: `name: blank-answer
 agent: a1
