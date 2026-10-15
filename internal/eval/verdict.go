@@ -124,7 +124,8 @@ func agentVerdict(ar AgentResult) AgentVerdict {
 // failed. A case with a single result fails per casePassed (a stamped Passed
 // wins, a legacy case is recomputed). A case with several results (repeats)
 // fails when its pooled percent over those results is below the case's
-// threshold: the CaseResult.Threshold when set, else the agent's.
+// threshold: the CaseResult.Threshold of a stamped case (authoritative,
+// including an explicit 0), else the agent's.
 func caseAccounting(ar AgentResult, agentThreshold float64) (total, failed int) {
 	groups := map[string][]CaseResult{}
 	var order []string
@@ -144,7 +145,12 @@ func caseAccounting(ar AgentResult, agentThreshold float64) (total, failed int) 
 		}
 		threshold := agentThreshold
 		for _, c := range g {
-			if c.Threshold > 0 {
+			// A stamped case (Passed != nil) carries an authoritative
+			// Threshold, including an explicit 0 (min_score: 0); an unstamped
+			// legacy case has Threshold 0 meaning "unset" and falls back to
+			// the agent threshold. Guarding on Threshold > 0 would miscount a
+			// case with an explicit zero threshold against the agent's.
+			if c.Passed != nil {
 				threshold = c.Threshold
 				break
 			}

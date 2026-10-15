@@ -184,12 +184,27 @@ func TestRepeatVerdictCasesFailedUsesPooledPercentPerCase(t *testing.T) {
 		t.Errorf("CasesTotal/CasesFailed = %d/%d, want 2/1", v.CasesTotal, v.CasesFailed)
 	}
 
-	// A case's own threshold (CaseResult.Threshold) applies when set.
+	// A case's own threshold (CaseResult.Threshold) applies when the case is
+	// stamped. In production stampCase always stamps (Passed != nil); set it
+	// here so the stamp-aware guard reads the case threshold.
+	yes := true
 	lenient1, lenient2 := ranScored("lenient", 1, 10, 10), ranScored("lenient", 2, 0, 10)
 	lenient1.Threshold, lenient2.Threshold = 40, 40
+	lenient1.Passed, lenient2.Passed = &yes, &yes
 	v = agentVerdict(AgentResult{Agent: "a", Threshold: 95, Repeat: 2, Cases: []CaseResult{lenient1, lenient2}})
 	if v.CasesFailed != 0 {
 		t.Errorf("CasesFailed = %d, want 0 (pooled 50%% >= case threshold 40%%)", v.CasesFailed)
+	}
+
+	// An explicit case threshold of 0 (min_score: 0) is honoured. A stamped
+	// case carries an authoritative Threshold, so a zero there means "0", not
+	// "unset": pooled 50%% >= 0, so the case does not fail. Guarding on
+	// Threshold > 0 would miscount it against the agent's 95%% threshold.
+	zero1, zero2 := ranScored("zero-threshold", 1, 10, 10), ranScored("zero-threshold", 2, 0, 10)
+	zero1.Passed, zero2.Passed = &yes, &yes // stamped; Threshold stays 0
+	v = agentVerdict(AgentResult{Agent: "a", Threshold: 95, Repeat: 2, Cases: []CaseResult{zero1, zero2}})
+	if v.CasesFailed != 0 {
+		t.Errorf("CasesFailed = %d, want 0 (pooled 50%% >= explicit case threshold 0%%)", v.CasesFailed)
 	}
 }
 
