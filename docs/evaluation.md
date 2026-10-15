@@ -77,6 +77,10 @@ input: |
 # turns:                   # Optional, instead of `input`: a scripted multi-turn conversation (see Multi-turn cases)
 #   - "First user message"
 #   - "Second user message"
+# simulated_user:          # Optional, together with `input`: answer the agent's questions from a bank of facts (see Simulated user)
+#   facts:
+#     - {id: format, answer: "Comma separated, UTF-8.", discoverable: false}
+#   default_reply: "I don't know, use your best judgement."
 output: |
   Optional: pre-captured agent output for offline evaluation.
 workspace: seeded         # Optional: workspace fixture name (see Case Workspaces)
@@ -102,8 +106,9 @@ stub:                      # Optional: scripted response for `--backend stub`
 Fields:
 - `name` — unique identifier
 - `description` — what this case tests
-- `input` — the input the agent would receive (a single-turn case). Mutually exclusive with `turns`
-- `turns` — (optional) a list of user messages that replaces `input` for a scripted multi-turn conversation: one agent call per entry, all in the same conversation and the same workspace (see [Multi-turn cases](#multi-turn-cases)). A case sets `turns` **or** `input`, never both: a non-blank `input` together with `turns` is a load error naming the case (`turns and input are mutually exclusive; use turns for a multi-turn case`). An empty list (`turns: []`) and a blank entry (`turns[2] is empty`) are load errors too.
+- `input` — the input the agent would receive (a single-turn case). Mutually exclusive with `turns`, unless the case has `simulated_user`, where `input` is the required opening message
+- `turns` — (optional) a list of user messages that replaces `input` for a scripted multi-turn conversation: one agent call per entry, all in the same conversation and the same workspace (see [Multi-turn cases](#multi-turn-cases)). A case without `simulated_user` sets `turns` **or** `input`, never both: a non-blank `input` together with `turns` is a load error naming the case (`turns and input are mutually exclusive; use turns for a multi-turn case`). An empty list (`turns: []`) and a blank entry (`turns[2] is empty`) are load errors too. With `simulated_user`, `input` and `turns` may both be present: the `turns` are sent after the simulated phase (see [Simulated user](#simulated-user-elicitation-cases)).
+- `simulated_user` — (optional) turns the case into an elicitation case: the harness answers whatever the agent asks from a fixed bank of `facts` (see [Simulated user (elicitation cases)](#simulated-user-elicitation-cases)). Requires a non-blank `input`.
 - `output` — (optional) pre-captured output for offline scoring
 - `setup` — (optional) extra prompt context; `type: file` entries read `path` from disk. In a `turns` case the setup context is delivered with **turn 1 only**; later turns are sent verbatim.
 - `workspace` — (optional) name of a fixture under `<evals-dir>/fixtures/workspaces/` that the case's workspace starts from (see [Case Workspaces](#case-workspaces)). Must match `^[A-Za-z0-9._-]+$` (and not be `.` or `..`) and the fixture directory must exist, otherwise loading the cases fails with an error naming the case.
@@ -113,7 +118,8 @@ Fields:
 - `gh_issue` — (optional) the issue the sandbox's fake `gh issue view` answers with: `number` (default `1`), `title` (required), `body`, `state` (default `OPEN`), `author` (default `fake-user`), `labels`. It is only valid together with `requires_sandbox: true`; otherwise loading the cases fails with an error naming the case, because a native run would call the developer's **real** `gh` (see [The fake `gh`](#the-fake-gh)).
 - `mocks` — (optional) a list of `{command, script}` entries that each place a mock of a command on the container `PATH`, so a bare `aws`, `npm` or `curl` resolves to the author's script instead of a real tool. `command` is the bare command name (it must match `^[A-Za-z0-9][A-Za-z0-9._+-]*$`, must be unique within the case, and cannot be `gh`, which is the harness's fake). `script` is a path relative to the evals directory (no absolute path, no `..`) naming an existing regular file; `fixtures/mock-cli.sh` is the reusable one. Like `gh_issue`, `mocks` is only valid together with `requires_sandbox: true`, because a native run has no such directory on `PATH` and would silently call the **real** tool; otherwise loading the cases fails with an error naming the case. See [Preventing Production Side Effects](#preventing-production-side-effects-containment-and-mocking).
 - `checks` — (optional) a list of deterministic pass/fail checks on the workspace the agent left behind, its output and the fake `gh` log. A criterion that has checks is scored `passed` out of `total` instead of by a heuristic or the LLM judge. Each entry has a `criterion` (a non-cost criterion of the agent's rubric) and a `type`, plus the fields that type takes, including an optional `turn` on the `output_*` and `gh_log_*` types for multi-turn cases. An invalid `checks` block is a **fatal** load error that names the case file, the 1-based check number and the type; it is not downgraded to a warning (see [Checks](#checks)).
-- `stub.turns[]` — (optional) scripted model responses, used only by the `stub` backend. In a `turns` case there is exactly one entry per turn (see [Stub Case Fields](#stub-case-fields))
+- `stub.turns[]` — (optional) scripted model responses, used only by the `stub` backend. In a `turns` case there is exactly one entry per turn; in a `simulated_user` case the count is bounded by `max_turns` (see [Stub Case Fields](#stub-case-fields))
+- `stub.routes` — (optional, `simulated_user` cases only) scripted routing decisions, one per simulated reply, used only by the `stub` backend (see [Stub Case Fields](#stub-case-fields))
 - `stub.judge` — (optional) scripted yes/no answers for `judge` checks, a single value or a list, used only by the `stub` backend (see [Stub Case Fields](#stub-case-fields))
 
 ## Checks
@@ -123,7 +129,7 @@ A case can declare `checks`: small, deterministic assertions about what the agen
 ```yaml
 checks:
   - criterion: structural_completeness   # required: a non-cost criterion of the agent's rubric
-    type: command                         # required: one of the eleven types below
+    type: command                         # required: one of the thirteen types below
     run: "go test ./..."
 ```
 
@@ -147,7 +153,7 @@ Every check has `criterion` and `type`. The other fields depend on the type, and
 
 `turn` is only accepted by the four `output_*` / `gh_log_*` types; see [The `turn` field](#the-turn-field).
 
-### The eleven check types
+### The thirteen check types
 
 `command` runs a shell command in the workspace root and compares its exit status. `expect_exit` (0–255, default `0`) lets a case assert a specific non-zero status. `inject` copies files from `fixtures/hidden/` into the workspace for the duration of the command (see [Hidden files and `inject`](#hidden-files-and-inject)).
 
@@ -236,7 +242,7 @@ checks:
 
 > **Native runs have no `gh` log.** The fake `gh` exists only under `--sandbox`; a native run calls the real `gh`, which Kairon does not log. Natively the log is empty unless the stub or the agent wrote `.eval/gh.log` itself, so `gh_log_contains` fails and `gh_log_not_contains` passes vacuously. `gh_log_*` checks do not require `requires_sandbox`, so the native self-test can exercise every type, but a case that asserts on real `gh` calls should set `requires_sandbox: true`. The log lives in `.eval/`, which the agent can write: it is evidence from the fake, not tamper-proof. The same holds for each per-turn snapshot of a `turns` case.
 
-`fact_asked` and `fact_not_asked` read the simulated-user decision log, `.eval/sim-log.jsonl` (one JSON object per line with `turn`, `question`, `fact` and `discoverable`). `fact_asked` passes when at least one decision has `fact` equal to the given id; `fact_not_asked` passes when none has. `fact` is required on these two types and rejected on every other; `turn` is not accepted on them. A missing, symlinked, non-regular, oversized (over 10 MiB) or malformed log **fails** the check with a detail, including for `fact_not_asked`; it is never a silent pass.
+`fact_asked` and `fact_not_asked` read the simulated-user decision log, `.eval/sim-log.jsonl` (one JSON object per line with `turn`, `question`, `fact` and `discoverable`; see [The sim log](#the-sim-log)). `fact_asked` passes when at least one decision has `fact` equal to the given id; `fact_not_asked` passes when none has. `fact` is required on these two types and rejected on every other; `turn` is not accepted on them. A missing, symlinked, non-regular, oversized (over 10 MiB) or malformed log **fails** the check with a detail, including for `fact_not_asked`; it is never a silent pass.
 
 ```yaml
 checks:
@@ -436,7 +442,7 @@ results := eval.EvaluateChecks(checks, eval.CheckInput{
 
 ## Multi-turn cases
 
-Some agent behaviour depends on the user's answers: the planner, for example, is a gated conversation (draft, approval, label confirmation, creation). A case with `turns` scripts that conversation: the harness sends one user message per entry, in order, and the agent's replies are never fed back by the harness. Turns are scripted, not simulated.
+Some agent behaviour depends on the user's answers: the planner, for example, is a gated conversation (draft, approval, label confirmation, creation). A case with `turns` scripts that conversation: the harness sends one user message per entry, in order, and the agent's replies are never fed back by the harness. Turns are scripted, not simulated. To answer the agent's questions from a bank of facts instead, see [Simulated user (elicitation cases)](#simulated-user-elicitation-cases).
 
 ```yaml
 name: planner-gates
@@ -603,6 +609,169 @@ kairon eval --evals-dir /tmp/evals317 --sandbox planner remember-word
 Step 4: in both runs, `turn_outputs[1]` in the result file must contain `PINEAPPLE` and the check must pass.
 
 If it does not, the `--resume` call is not reaching the same conversation. The `--resume` position and its combination with `--agent <name>` (which the harness always passes) is the thing to adjust in `KiroCLIAgentCommand`; turn 1 and every single-turn case must stay unchanged.
+
+## Simulated user (elicitation cases)
+
+Some agents, the planner above all, must draw out every requirement the user holds without filling the gaps with assumptions. Scripted [`turns`](#multi-turn-cases) cannot measure that: the agent's questions vary from run to run, so fixed replies stop matching them. A case with `simulated_user` answers **whatever the agent asks** from a fixed **bank of facts**, and the [`fact_asked` / `fact_not_asked`](#the-thirteen-check-types) checks then say which facts the agent asked for.
+
+```yaml
+name: csv-export-elicitation
+agent: planner
+input: "I want a feature that exports reports as CSV"   # the opening user message (required)
+simulated_user:
+  facts:
+    - id: format
+      answer: "Comma separated, UTF-8, one header row."
+      discoverable: false              # the fixture code does NOT answer this
+    - id: schedule
+      answer: "Reports are exported weekly, every Monday."
+      discoverable: false
+    - id: language
+      answer: "The service is written in Go."
+      discoverable: true               # the fixture code answers this; asking is unnecessary
+  default_reply: "I don't know, use your best judgement."
+  stop_when: 'ISSUE-DRAFT-READY'       # regex on the agent's output (optional)
+  max_turns: 8                         # agent turns in the simulated phase (default 10)
+turns:                                 # optional scripted turns, sent AFTER the simulated phase
+  - "Looks good, create it."
+stub:                                  # stub backend only
+  routes: [format, none]               # one routing decision per simulated reply
+  turns:
+    - response: "Which format should the export use?"
+    - response: "How large are the reports?"
+    - response: "ISSUE-DRAFT-READY: here is the draft."
+    - response: "Created."
+checks:
+  - criterion: requirement_clarity
+    type: fact_asked
+    fact: format
+  - criterion: requirement_clarity
+    type: fact_not_asked
+    fact: language
+  - criterion: requirement_clarity
+    type: output_contains
+    pattern: 'ISSUE-DRAFT-READY'
+    turn: 3
+```
+
+### Fields
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `input` | yes | The opening user message. A `simulated_user` case needs a non-blank `input`, and unlike other cases it may be combined with `turns`. |
+| `simulated_user.facts[]` | yes (at least one) | The answer bank. |
+| `facts[].id` | yes | Identifier the checks and `stub.routes` refer to. Non-blank, no whitespace, unique within the case, and not `none` (any case): `none` is the "no fact matches" value. |
+| `facts[].answer` | yes | The text sent to the agent, **verbatim** (no trimming, no rewriting), when the agent asks about this fact. Must not be blank. |
+| `facts[].discoverable` | yes | `true` or `false`; omitting it is a load error. `true` means the fixture code could answer the question itself, so the agent should not have needed to ask. It is recorded in the [sim log](#the-sim-log) next to each decision for later metrics; nothing scores it yet. |
+| `simulated_user.default_reply` | yes | Sent when the agent's output asks about no fact. Must not be blank. |
+| `simulated_user.stop_when` | no | An RE2 regular expression. A simulated-phase turn whose output matches ends the phase. Case-sensitive (use `(?i)` otherwise). An invalid expression is a load error. |
+| `simulated_user.max_turns` | no (default `10`) | The most agent turns the simulated phase runs. Must be `>= 1`; an explicit `0` is a load error. |
+| `turns` | no | Scripted user messages sent after the simulated phase, one per agent turn. Entries must be non-blank and `turns: []` is still rejected. |
+
+### How the loop runs
+
+After agent turn *k* of the simulated phase:
+
+1. If `stop_when` matches that turn's output, the phase ends. Nothing is routed and no reply is sent.
+2. Otherwise, if *k* equals `max_turns`, the phase ends the same way. The last allowed turn is never answered.
+3. Otherwise the output is [routed](#routing) and the chosen fact's `answer`, or `default_reply`, is sent as the next user message.
+
+When the phase ends, the scripted `turns` follow, one per agent turn, and the case ends after the last one. A case without `turns` ends when the phase ends.
+
+- `max_turns` counts the agent turns of the simulated phase only; scripted turns do not count against it.
+- Turn numbers are **global and 1-based**: `turn_outputs`, `calls[].turn`, a check's `turn` and the sim log all number the agent turns from 1 across the simulated phase and then the scripted turns. In the example, turn 3 is the turn whose output matched `stop_when` and turn 4 is the scripted one.
+- `stop_when` is only evaluated on simulated-phase turns, never on scripted ones.
+- `setup` is delivered with the first message only; replies and scripted turns are sent verbatim. Each message is passed to the backend as `Request.Prompt` alone, with `Request.Turn = k-1`, exactly as for a `turns` case (see [Backend contract for turns](#backend-contract-for-turns)). A reply is just the next user turn, so a future direct-API backend needs nothing new to support simulated cases.
+- Under `--sandbox` a simulated case keeps **one container** for all its turns, like a `turns` case (see [Conversation continuity](#conversation-continuity)).
+- Progress output prints `turn k` (no `/n`, because the total is not known in advance).
+
+### Routing
+
+After each non-final simulated turn the harness makes **one routing call** to the judge: the model pinned for judging, a 2-minute timeout, always on the host (also under `--sandbox`, like every judge call). The prompt lists every fact as `id` plus `answer`, then the agent's output between `===BEGIN AGENT OUTPUT===` and `===END AGENT OUTPUT===`, declared untrusted data and limited to its last 8 KiB because questions come last. It asks which single fact the agent is asking about (the first answerable question wins when there are several) and expects:
+
+```
+===JSON_START===
+{"reasoning": "…", "fact": "<id>" | "none"}
+===JSON_END===
+```
+
+- **The reply text never comes from the model.** The model returns an id and the harness looks the answer up in the bank, so an instruction injected into the agent's output can at most choose *which* bank fact is returned.
+- Only an id from the case's `facts` or `none` is accepted (ids exactly, `none` in any case). An unknown id, a missing `fact` key, a non-string value or bad JSON is a parse error.
+- **Routing fails closed.** A routing call that fails or cannot be parsed ends the case like a failed agent turn: the remaining turns do not run, `actual_output` is `""` (so criteria with checks record `0/<total>`, see [When the agent failed](#when-the-agent-failed)), `turn_outputs` keeps the outputs recorded so far, and the error is printed and recorded in `error_context.stderr` as `turn k: simulated user: <reason>`. `default_reply` is never used as a fallback, because that would hide a broken judge as "the agent asked nothing relevant".
+- `--debug` prints the routing prompt like the other judge prompts.
+- Every routing call costs one judge call; `max_turns` bounds it. It is recorded in `calls[]` as a judge record with `purpose: simulated_user` (and no `criterion`). Its cost is added to `judge_cost` only when the call succeeded and parsed; a failed call is in `calls[]` only, like any other judge call (see [Per-call records](#per-call-records-calls)).
+
+### Results
+
+A simulated case records the same per-turn evidence as a `turns` case (`turn_outputs`, `calls[].turn`) and adds `user_turns`: every user message actually sent, in order (the opening message, each reply, each scripted turn). `user_turns` is set only for simulated cases, so the result JSON of classic and `turns` cases does not change.
+
+```json
+{
+  "case_name": "sim-routes",
+  "user_turns": [
+    "I want a feature that exports reports as CSV",
+    "SIM-F1-ANSWER: comma separated, UTF-8, one header row.",
+    "SIM-DEFAULT-REPLY: I don't know, use your best judgement."
+  ],
+  "calls": [
+    { "role": "agent", "agent": "selftest", "turn": 1, "…": "…" },
+    { "role": "judge", "purpose": "simulated_user", "…": "…" },
+    { "role": "agent", "agent": "selftest", "turn": 2, "…": "…" }
+  ]
+}
+```
+
+`calls[]` stays in execution order: agent turn 1, its routing call, agent turn 2, and so on.
+
+For the judge, the `INPUT` of a simulated case is rendered from `user_turns` as `Turn N (user): …` blocks (see [Judge input](#judge-input)), so the judge sees the conversation that actually happened rather than only the opening message.
+
+### The sim log
+
+Each routing decision is appended to `.eval/sim-log.jsonl` in the case workspace, one JSON object per line:
+
+```json
+{"turn":1,"question":"…last 200 characters of the agent output…","fact":"format","discoverable":false}
+{"turn":2,"question":"…","fact":"none"}
+```
+
+| Field | Description |
+|-------|-------------|
+| `turn` | The 1-based agent turn whose output was routed. |
+| `question` | The last 200 characters of that output with whitespace runs collapsed to one space, so a human can audit a misroute. |
+| `fact` | The routed fact id, or `none`. |
+| `discoverable` | The routed fact's flag. Omitted for `none`. |
+
+The reply text is not logged: it is a function of `fact` (see `user_turns`). The file is created empty when the case starts, so "no decision yet" differs from "no log".
+
+`.eval/` is writable by the agent, so **the log is rewritten by the harness from its in-memory record of the decisions** after every decision and again once more after the last turn (after any container is closed, just before scoring). Anything an agent wrote or truncated there is replaced, and `fact_asked` / `fact_not_asked` read what the harness decided. Run with `--keep-workspaces` to read the file (see [Keeping workspaces](#keeping-workspaces-and-workspace_dir)).
+
+### Fact checks
+
+`fact_asked: <id>` passes when at least one decision has that fact; `fact_not_asked: <id>` passes when none has. They require a `simulated_user` case and a `fact` that names one of its facts (see [Checks](#the-thirteen-check-types)). A missing, unreadable or malformed log fails the check with a detail, for `fact_not_asked` too; it is never a silent pass.
+
+### Stub backend: `stub.routes`
+
+The stub backend makes the harness deterministic with no model calls (no `kiro-cli`, no network). `stub.routes` scripts the routing decisions: entry *N* answers the *N*th routing decision (0-based) of the case, and each entry is a fact `id` or `none`. It is **index-based, not a cursor**: the harness passes the decision number and the stub looks it up, like `Request.Turn` and `stub.turns`, so a rerun, `--resume` or parallel cases cannot desynchronise it. A decision with no entry fails the case closed with `case has no stub.routes[N]` rather than cycling. `stub.routes` is only valid with `simulated_user` (see [Stub Case Fields](#stub-case-fields)).
+
+### Load errors
+
+Each of these is a load error that names the case (`case "<name>" (<file>): …`):
+
+- `simulated_user` without a non-blank `input`; `turns: []` or a blank `turns` entry.
+- `facts` empty; a fact `id` that is blank, contains whitespace, is `none`, or is duplicated; a blank `answer`; a missing `discoverable`.
+- A blank `default_reply`; a `stop_when` that is not a valid regular expression; a `max_turns` below `1`.
+- `stub.turns` with fewer than `1 + len(turns)` or more than `max_turns + len(turns)` entries: the simulated phase runs between 1 and `max_turns` agent turns, then the scripted turns, so fewer could never complete and more could never be used. (A run that needs more entries than declared still fails with the stub's own `no stub.turns[k]` error.)
+- `stub.routes` without `simulated_user`; an entry that is neither a fact id nor `none`; more than `max_turns - 1` entries (a route is consumed only when the simulated user replies).
+- `fact_asked` / `fact_not_asked` on a case without `simulated_user`, or naming a fact that is not defined.
+- A check `turn` beyond `max_turns + len(turns)`. The real number of turns is only known after the run, so this is the static bound; a `turn` beyond the turns that actually ran fails at run time with a clear detail, as in a `turns` case.
+- A case with `turns` **and** `input` but no `simulated_user` is still rejected (`turns and input are mutually exclusive`).
+
+### Notes
+
+- **Routing quality depends on the judge model.** Real runs are nondeterministic by nature, which is why `fact_asked` is a per-fact boolean over a log that keeps the question excerpt. The stub makes the harness itself deterministic.
+- **`discoverable` is recorded, not scored.** A later check can compute "asked but discoverable" from the log.
+- **For backend authors.** `Request.Route` and `Request.RouteSeq` exist only so the stub can answer from `stub.routes`; a real backend treats the routing request as the ordinary judge prompt it is (see [Adding a New Backend](#adding-a-new-backend)).
+- Not covered: free-form generated user replies (answers always come verbatim from the bank).
 
 ## Running Evaluations
 
@@ -783,6 +952,7 @@ stub:
         - tool: fs_write
           command: "echo x > tool-marker.txt"
   judge: [yes, no]         # optional: answers to yes/no `judge` checks (a single value is allowed: `judge: yes`)
+  routes: [f1, none]       # optional, simulated_user cases only: which fact each simulated reply answers (a fact id or `none`)
 ```
 
 | Field | Required | Description |
@@ -793,8 +963,11 @@ stub:
 | `stub.turns[].commands` | no | Shell commands, each run with `sh -c` in the case workspace (the request's `WorkDir`), in order, before the response is returned. This lets a stub case simulate an agent that edits files. In a multi-turn case the workspace is shared, so a later turn's commands see the files of earlier turns. They are scripted environment actions, **not** tool calls, so the trust gate never applies to them. |
 | `stub.turns[].tool_calls[]` | no | Scripted tool calls, each `{tool, command}`. They run after `commands`, in order. Each runs `sh -c <command>` in the workspace only if the tool is in the request's trust set; otherwise the command is skipped and a denial is recorded (see [Tool trust](#tool-trust)). With no trust set (every native run) every tool call runs. |
 | `stub.judge` | no | Scripted answers to the yes/no calls made by [`judge` checks](#the-judge-check): a single value (`judge: yes`) or a list (`judge: [yes, no]`). See below. |
+| `stub.routes` | no | Scripted routing decisions of a [simulated-user case](#stub-backend-stubroutes): entry *N* answers the *N*th (0-based) simulated reply and is a fact `id` or `none`. Only valid with `simulated_user`. |
 
 The stub answers a request with `stub.turns[Request.Turn]` (0-based). In a single-turn (`input`) case only `turns[0]` is used; the other entries are ignored and not validated. In a `turns` case every user turn consumes its own entry: turn *k* (1-based) uses `stub.turns[k-1]`, including its `response`, `commands` and `tool_calls`, and the number of entries must equal the number of turns (otherwise the case fails to load). A case with no `stub`, a missing entry for the turn, or an empty `response` fails with `case has no stub.turns[<index>].response` (0-based index) rather than silently producing empty output. The `kiro-cli` backend ignores `stub`. See [Multi-turn cases](#multi-turn-cases).
+
+In a [simulated-user case](#simulated-user-elicitation-cases) the number of agent turns is not fixed, so the count rule is a range: `stub.turns` must have at least `1 + len(turns)` and at most `max_turns + len(turns)` entries (the simulated phase runs 1 to `max_turns` agent turns, then the scripted turns). `stub.routes` is indexed by the routing decision number, never consumed as a cursor, and has at most `max_turns - 1` entries; a decision beyond the list fails the case with `case has no stub.routes[N]`. The stub answers routing requests with no model call.
 
 How `stub.judge` behaves:
 - It answers only the yes/no calls of [`judge` checks](#the-judge-check). The legacy 1-5 judge calls are unchanged and still always return score 5.
@@ -926,8 +1099,9 @@ Each case in `<agent>.json` carries a `calls` array with one record per agent ca
 | `role` | `agent` or `judge`. |
 | `model` | The model that served the call when the backend reports one, otherwise the pinned (requested) model. `kiro-cli` cannot report the served model, so its records carry the pinned model; the stub records `stub` / `stub-model`. |
 | `agent` | Agent name (agent calls only). |
-| `turn` | 1-based user turn of the call. Present only on agent calls of a `turns` case (see [Multi-turn cases](#multi-turn-cases)); omitted for single-turn cases and judge calls. |
+| `turn` | 1-based user turn of the call. Present only on agent calls of a `turns` or simulated-user case (see [Multi-turn cases](#multi-turn-cases)); omitted for single-turn cases and judge calls. |
 | `criterion` | Rubric criterion being judged (judge calls only). |
+| `purpose` | Why a judge call was made when it is not a criterion check. Currently only `simulated_user`, the routing call of a [simulated-user case](#routing). Omitted otherwise. |
 | `input_tokens` / `output_tokens` | Token counts for the call. |
 | `cost_usd` | Cost of the call, using the same fixed $3 / $15 per million tokens estimate as `agent_cost` / `judge_cost`. |
 | `estimated` | `true` unless the usage was `reported` by the backend. |
@@ -1415,7 +1589,7 @@ internal/eval/testdata/evals/
 
 `selftest.json` declares a `model` so the self-test passes the model-pinning pre-flight, and lists a `skill://.kiro/skills/selftest-conventions/SKILL.md` resource that intentionally does not exist. It exercises the "missing resources are normal" rule: the run succeeds and the recorded `resources_present` is `[]`.
 
-The `selftest` agent has twenty-one cases and all of them pass (`task eval:selftest`): the five original `stub-*` cases, which carry no `checks` and keep their pinned scores, fourteen `check-*` cases that exercise [checks](#checks) (ten per-type cases, `check-command-inject`, and three `judge` cases: `check-judge-yes`, `check-judge-files` and `check-judge-mixed`), and two [multi-turn](#multi-turn-cases) cases (`multi-turn-gh-log`, `multi-turn-workspace`). The `selftest-fail` agent is deliberately separate, so `selftest` keeps meaning "everything passes". It has nineteen cases, all **expected to fail**: fifteen `check-*` cases (ten per-type cases and five `check-judge-*` cases) plus `check-partial`, all built so that checks fail; `stub-timeout`, which records a timeout failure (empty `actual_output`, `error_context.stderr` containing `timeout after 1s`) in about a second; `stub-empty-response`, whose stub returns an empty response, so the case has no output, every criterion scores 0 out of its maximum, and it still counts toward the agent's score; and `multi-turn-wrong-turn`, described below. Run it with:
+The `selftest` agent has twenty-three cases and all of them pass (`task eval:selftest`): the five original `stub-*` cases, which carry no `checks` and keep their pinned scores, fourteen `check-*` cases that exercise [checks](#checks) (ten per-type cases, `check-command-inject`, and three `judge` cases: `check-judge-yes`, `check-judge-files` and `check-judge-mixed`), two [multi-turn](#multi-turn-cases) cases (`multi-turn-gh-log`, `multi-turn-workspace`) and two [simulated-user](#simulated-user-elicitation-cases) cases (`sim-routes`, `sim-stop-when`). The `selftest-fail` agent is deliberately separate, so `selftest` keeps meaning "everything passes". It has twenty cases, all **expected to fail**: fifteen `check-*` cases (ten per-type cases and five `check-judge-*` cases) plus `check-partial`, all built so that checks fail; `stub-timeout`, which records a timeout failure (empty `actual_output`, `error_context.stderr` containing `timeout after 1s`) in about a second; `stub-empty-response`, whose stub returns an empty response, so the case has no output, every criterion scores 0 out of its maximum, and it still counts toward the agent's score; `multi-turn-wrong-turn`; and `sim-fact-not-asked`, both described below. Run it with:
 
 ```bash
 go run ./cmd/kairon eval --backend stub --no-sandbox --evals-dir internal/eval/testdata/evals selftest-fail
@@ -1438,6 +1612,8 @@ All check cases score the `structural_completeness` criterion (present in both r
 | `gh_log_contains` | `check-gh-log-contains`: the stub writes a `gh issue create` line to `.eval/gh.log` | `check-gh-log-contains`: the log is empty |
 | `gh_log_not_contains` | `check-gh-log-not-contains` | `check-gh-log-not-contains`: the stub writes a `gh pr merge 1` line |
 | `judge` | `check-judge-yes`: `stub.judge: yes` | `check-judge-no`: `stub.judge: no` fails with `judge answered no: stub judge: no` |
+| `fact_asked` | `sim-routes` (`fact_asked: f1`) | |
+| `fact_not_asked` | `sim-routes` (`fact_not_asked: f2`) | `sim-fact-not-asked`: the stub routes the first question to `f1`, so `fact_not_asked: f1` fails |
 
 The `judge` check has further cases. In `selftest`: `check-judge-files` has the stub turn write `.eval/issue-body.md` and the check list it in `files`, so the whole file path runs end to end; `check-judge-mixed` puts a `file_exists` check and a `judge` check on one criterion and scores `2/2`. In `selftest-fail`: `check-judge-garbage` (`stub.judge: garbage`) fails with `judge parse error`; `check-judge-no-script` (no `stub.judge`) fails with `judge call failed: case has no stub.judge`; `check-judge-missing-file` (`files: [.eval/absent.md]`) fails with `file does not exist` and makes no judge call; `check-judge-list` (`stub.judge: [yes, no]`, two `judge` checks) passes the first and fails the second, so it records exactly `1/2`. None of them is skipped.
 
@@ -1450,6 +1626,12 @@ Further `selftest` / `selftest-fail` cases pin behavior you may rely on:
 - `selftest-fail/multi-turn-wrong-turn` has the same shape as `multi-turn-gh-log` but asserts `gh_log_contains 'issue create'` with `turn: 1` for a call made in turn 3. It fails (the reasoning names the check with `turn=1`), which proves turn scoping is real: the check would pass if it saw the final log.
 
 The native self-test has no real `gh`, so the `gh_log_*` cases, `multi-turn-gh-log` and `multi-turn-wrong-turn` write `.eval/gh.log` from a stub command (see the [native caveat](#checks)).
+
+The simulated-user cases use the stub backend only, so they make no model call and need no `kiro-cli`:
+
+- `selftest/sim-routes` has facts `f1` (`discoverable: false`) and `f2` (`discoverable: true`), `max_turns: 3`, `stub.routes: [f1, none]` and three stub turns with distinct markers. The agent's first question is routed to `f1` and answered verbatim, the second to `none` and answered with `default_reply`, and the third turn ends the phase unanswered. Its result has `user_turns` `[input, <f1 answer>, <default_reply>]` (three entries) and three agent `calls[]` plus two routing calls with `purpose: simulated_user`. With `--keep-workspaces`, `.eval/sim-log.jsonl` has exactly two lines: turn 1 → `f1` (`discoverable: false`) and turn 2 → `none`. Its checks are `fact_asked: f1`, `fact_not_asked: f2` and `output_contains` of each marker at its turn.
+- `selftest/sim-stop-when` has `stop_when: 'PLAN-READY'`, `max_turns: 5`, `stub.routes: [f1]` and two scripted `turns` (`Please summarise.`, `Thanks.`). The second stub response contains `PLAN-READY`, so the simulated phase ends after 2 agent turns (only the first output is routed) and the scripted turns run as turns 3 and 4: `turn_outputs` has 4 entries, `user_turns` is `[input, <f1 answer>, "Please summarise.", "Thanks."]`, and the sim log has one line.
+- `selftest-fail/sim-fact-not-asked` has the shape of `sim-routes` with `fact_not_asked: f1` while the stub routes `f1`. It fails and the reasoning names `fact_not_asked fact=f1`.
 
 The `selftest-sandbox` and `selftest-sandbox-ro` agents exercise [Sandbox Containment](#sandbox-containment) with the stub backend (`selftest-sandbox` includes `stub-mock-cli`, the working example of [the mock pattern](#preventing-production-side-effects-containment-and-mocking)). Every one of their cases is `requires_sandbox: true`, so a native run records each as failed with `requires --sandbox` and starts nothing. `stub-write-outside-mounts` is, like `selftest-fail`, **expected to fail** under `--sandbox`: that failure is the proof that the root filesystem is read-only, and it also means the `selftest-sandbox-ro` run exits non-zero (its agent ends below the pass threshold). Run them under the sandbox with:
 
@@ -1514,6 +1696,7 @@ The direct `go run ... --sandbox` command has no skip: without a reachable daemo
    - Wrap `inference.ErrTimeout` on timeouts so `errors.Is(err, inference.ErrTimeout)` holds.
    - Honour `Request.Turn`, the 0-based position of this user message in the conversation. `Prompt` carries **only that turn's** user message, and the harness passes no resume flag or transcript, so a backend must continue the conversation itself when `Turn > 0` (`kiro-cli` adds `--resume`, the stub answers `Stub.Turns[Turn]`, a direct-API backend keeps a message list keyed by `WorkDir`, starting a new one at `Turn == 0`). A backend with no notion of conversation can ignore it, but then a `turns` case cannot work on it. See [Backend contract for turns](#backend-contract-for-turns), including its limit under `--sandbox`.
    - A judge response must contain `===JSON_START===` ... `===JSON_END===` with `{"score": <1-5>, "reasoning": "...", "pass": <bool>}`.
+   - A routing request (`Request.Route`, a `RoleJudge` request made by a [simulated-user case](#routing)) needs nothing special from a real backend: the prompt carries the whole question and the reply is parsed from `===JSON_START==={"reasoning": "...", "fact": "<id>" | "none"}===JSON_END===`, so answer it as an ordinary judge prompt. `Request.RouteSeq`, the 0-based number of the routing decision in the case, only exists so the stub can index `stub.routes`; ignore both fields. `Route` and `YesNo` are never set together.
 4. Keep the package stdlib-only and do not import `internal/eval`.
 5. Add unit tests next to it (see `stub_test.go` and `kirocli_test.go`), and verify with `go test ./internal/inference/...`.
 
