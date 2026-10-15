@@ -94,6 +94,36 @@ func TestContainerSessionThreeTurnsOneOpenOneClose(t *testing.T) {
 	}
 }
 
+// TestContainerSessionClosedBeforeScoring pins the F1 fix: the multi-turn
+// container session is closed BEFORE scoreCaseFn reads the final workspace,
+// not deferred until after executeCase returns. Otherwise the container stays
+// live during final-workspace checks (file_*, changed_files, command,
+// default output_*/gh_log_*) and a detaching backend could keep changing
+// scored files, making scores timing-dependent.
+func TestContainerSessionClosedBeforeScoring(t *testing.T) {
+	sessionEnv(t)
+	f := &fakeSession{}
+	useFakeSession(t, f)
+
+	origScore := scoreCaseFn
+	t.Cleanup(func() { scoreCaseFn = origScore })
+	closedAtScoring := -1
+	scoreCaseFn = func(r Rubric, tc TestCase, cr *CaseResult) {
+		closedAtScoring = len(f.closed)
+		origScore(r, tc, cr)
+	}
+
+	var out bytes.Buffer
+	executeCase(execRubric(), containerTurnsCase("close-first", "one", "two"), testContainerConfig(), &out, false)
+
+	if closedAtScoring != 1 {
+		t.Errorf("session Close calls seen at scoring time = %d, want 1 (closed before scoring)\n%s", closedAtScoring, out.String())
+	}
+	if len(f.closed) != 1 || f.closed[0] {
+		t.Errorf("Close calls = %v, want exactly one with failed=false (deferred Close is a no-op fallback)", f.closed)
+	}
+}
+
 func TestContainerSessionTurnFailureClosesFailedAndStops(t *testing.T) {
 	sessionEnv(t)
 	f := &fakeSession{failTurn: 2}

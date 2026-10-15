@@ -159,6 +159,15 @@ func executeCase(rubric Rubric, tc TestCase, cConfig *ContainerConfig, out io.Wr
 	}
 	fmt.Fprintf(out, " → evaluating...")
 
+	// Close the container before scoring reads the final workspace, so a
+	// detaching backend can't keep changing scored files while final-workspace
+	// checks (file_*, changed_files, command, default output_*/gh_log_*) run.
+	// The deferred Close above remains as a fallback for the early-return
+	// failure paths; a second Close on an already-closed session is a no-op.
+	if session != nil {
+		session.Close(failed)
+	}
+
 	scoreCaseFn(rubric, tc, &cr)
 	return cr
 }
