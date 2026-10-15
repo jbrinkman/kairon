@@ -1,0 +1,5 @@
+{
+  "name": "demo",
+  "prompt": "file://./demo-prompt.md",
+  "resources": ["skill://.kiro/skills/demo-conventions/SKILL.md", "skill://.kiro/skills/engine-skill/SKILL.md"]
+}

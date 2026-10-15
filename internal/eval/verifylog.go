@@ -383,17 +383,9 @@ func checkHeadings(l *parsedLog, body string, add func(file, rule, format string
 	}
 	lines := strings.Split(body, "\n")
 	var heads []heading
-	var fence string // the opening fence marker while inside a fenced block
+	var fence fenceTracker
 	for i, line := range lines {
-		trimmed := strings.TrimLeft(line, " ")
-		if fence != "" {
-			if closesFence(trimmed, fence) {
-				fence = ""
-			}
-			continue
-		}
-		if f := fenceMarker(trimmed); f != "" && len(line)-len(trimmed) < 4 {
-			fence = f
+		if fence.skip(line) {
 			continue
 		}
 		if m := h2HeadingRe.FindStringSubmatch(line); m != nil {
@@ -446,6 +438,30 @@ func checkHeadings(l *parsedLog, body string, add func(file, rule, format string
 			add(l.path, ruleHeadings, "section %q has no content", "## "+name)
 		}
 	}
+}
+
+// fenceTracker follows CommonMark fenced code blocks line by line. The zero
+// value is outside a fence. It is shared by verify-log and audit.
+type fenceTracker struct {
+	marker string // the opening fence marker while inside a fenced block
+}
+
+// skip feeds the next line and reports whether it is a fence delimiter or
+// inside a fenced block, i.e. not ordinary prose. An unclosed fence runs to
+// the end of the input.
+func (f *fenceTracker) skip(line string) bool {
+	trimmed := strings.TrimLeft(line, " ")
+	if f.marker != "" {
+		if closesFence(trimmed, f.marker) {
+			f.marker = ""
+		}
+		return true
+	}
+	if m := fenceMarker(trimmed); m != "" && len(line)-len(trimmed) < 4 {
+		f.marker = m
+		return true
+	}
+	return false
 }
 
 // fenceMarker returns the run of backticks or tildes (at least three) that
