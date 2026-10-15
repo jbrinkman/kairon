@@ -215,10 +215,14 @@ type CaseResult struct {
 	ActualOutput string `json:"actual_output"`
 	// TurnOutputs lists the agent's output for every turn, in order. It is set
 	// only for cases declared with turns; ActualOutput is the last entry.
-	TurnOutputs []string         `json:"turn_outputs,omitempty"`
-	Scores      []CriterionScore `json:"scores"`
-	AgentCost   CostInfo         `json:"agent_cost"`
-	JudgeCost   CostInfo         `json:"judge_cost"`
+	TurnOutputs []string `json:"turn_outputs,omitempty"`
+	// UserTurns lists every user message actually sent, in order (the opening
+	// message, each simulated reply, each scripted turn). It is set only for
+	// simulated-user cases.
+	UserTurns []string         `json:"user_turns,omitempty"`
+	Scores    []CriterionScore `json:"scores"`
+	AgentCost CostInfo         `json:"agent_cost"`
+	JudgeCost CostInfo         `json:"judge_cost"`
 	// Threshold is the case's pass threshold (percent) and Passed whether it
 	// was met. Passed is a pointer so a result written before verdicts
 	// existed (field absent) is distinguishable from an explicit false.
