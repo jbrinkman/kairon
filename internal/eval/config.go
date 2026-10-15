@@ -1,6 +1,7 @@
 package eval
 
 import (
+	"fmt"
 	"path/filepath"
 	"strings"
 
@@ -34,6 +35,10 @@ type runConfig struct {
 	keepWorkspaces bool
 	// debug prints each judge-check prompt to debugWriter (--debug).
 	debug bool
+	// repeat is the number of times every case is executed (--repeat). Zero
+	// (unset, e.g. a direct call that bypasses RunWithOptions) means 1; read
+	// it through runRepeat.
+	repeat int
 }
 
 // cfg is the active run configuration. Call configure before use; tests
@@ -77,7 +82,34 @@ func configure(opts RunOptions) error {
 		dir = defaultEvalsDir
 	}
 
-	cfg = runConfig{evalsDir: dir, backend: backend, keepWorkspaces: opts.KeepWorkspaces, debug: opts.Debug} // pins reset to nil
+	cfg = runConfig{evalsDir: dir, backend: backend, keepWorkspaces: opts.KeepWorkspaces, debug: opts.Debug, repeat: opts.Repeat} // pins reset to nil
+	return nil
+}
+
+// runRepeat is the number of times each case runs: the configured --repeat,
+// at least 1.
+func runRepeat() int {
+	return max(1, cfg.repeat)
+}
+
+// validateRepeat rejects --repeat values that cannot be honoured. Zero means
+// "default 1" for programmatic callers. A repeat above 1 is refused for the
+// modes that never run cases (list, cleanup, perf) rather than silently doing
+// nothing with it. It changes no state, so RunWithOptions calls it first.
+func validateRepeat(opts RunOptions) error {
+	if opts.Repeat < 0 {
+		return fmt.Errorf("❌ invalid repeat %d: must be at least 1", opts.Repeat)
+	}
+	if opts.Repeat > 1 {
+		for _, m := range []struct {
+			flag string
+			set  bool
+		}{{"--list", opts.List}, {"--cleanup", opts.Cleanup}, {"--perf", opts.Perf}} {
+			if m.set {
+				return fmt.Errorf("❌ repeat %d cannot be combined with %s: it does not run any cases", opts.Repeat, m.flag)
+			}
+		}
+	}
 	return nil
 }
 

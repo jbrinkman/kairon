@@ -23,12 +23,21 @@ var (
 	evalEvalsDir       string
 	evalKeepWorkspaces bool
 	evalPromptFile     string
+	evalRepeat         int
 )
 
 var evalCmd = &cobra.Command{
 	Use:   "eval [agent] [testcase]",
 	Short: "Run evaluations or show diff between runs",
 	RunE: func(cmd *cobra.Command, args []string) error {
+		// Reject a bad --repeat before any work (and before SilenceUsage, so
+		// usage is shown as for other argument mistakes). The check lives here
+		// because eval.RunOptions.Repeat == 0 must keep meaning "default 1" for
+		// programmatic callers.
+		if evalRepeat < 1 {
+			return fmt.Errorf("--repeat must be at least 1 (got %d)", evalRepeat)
+		}
+
 		// Arguments are parsed; from here an error is a run result (for
 		// example an agent below its pass threshold), not a usage mistake.
 		cmd.SilenceUsage = true
@@ -68,6 +77,7 @@ var evalCmd = &cobra.Command{
 			EvalsDir:       evalEvalsDir,
 			KeepWorkspaces: evalKeepWorkspaces,
 			PromptFile:     evalPromptFile,
+			Repeat:         evalRepeat,
 		})
 	},
 }
@@ -96,6 +106,8 @@ func init() {
 	evalCmd.Flags().BoolVar(&evalKeepWorkspaces, "keep-workspaces", false, "Keep per-case workspaces after the run (their paths are recorded as workspace_dir in the results)")
 	evalCmd.Flags().StringVar(&evalPromptFile, "prompt-file", "",
 		"Evaluate a candidate prompt file in place of the agent's prompt, in per-case workspaces only (requires an agent; the live .kiro/agents is not modified)")
+	evalCmd.Flags().IntVar(&evalRepeat, "repeat", 1,
+		"Run every case N times, each in a fresh workspace; the agent score is the mean over runs, with min/max reported (must be at least 1)")
 	evalCmd.PersistentFlags().StringVar(&evalEvalsDir, "evals-dir", "",
 		"Evals directory holding rubrics, cases, fixtures and results (default \".kairon/evals\")")
 

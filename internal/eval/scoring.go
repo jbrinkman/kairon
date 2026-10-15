@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 )
 
@@ -222,6 +223,49 @@ func agentScoreTotals(ar AgentResult) (score, max float64) {
 		max += float64(cm)
 	}
 	return score, max
+}
+
+// runTotals is the summed score and maximum score of one repeat of an agent's
+// cases.
+type runTotals struct {
+	Run   int
+	Score float64
+	Max   float64
+}
+
+// resultRun returns the 1-based repeat number of a result. A result written
+// before repeats existed has no run and is read as run 1.
+func resultRun(c CaseResult) int {
+	if c.Run < 1 {
+		return 1
+	}
+	return c.Run
+}
+
+// repeatTotals groups an agent's results by repeat number (legacy Run 0 reads
+// as 1) and returns each repeat's totals in ascending run order, using
+// caseTotals so the per-case arithmetic stays in one place.
+func repeatTotals(ar AgentResult) []runTotals {
+	byRun := map[int]*runTotals{}
+	var runs []int
+	for _, c := range ar.Cases {
+		run := resultRun(c)
+		rt, ok := byRun[run]
+		if !ok {
+			rt = &runTotals{Run: run}
+			byRun[run] = rt
+			runs = append(runs, run)
+		}
+		cs, cm := caseTotals(c)
+		rt.Score += float64(cs)
+		rt.Max += float64(cm)
+	}
+	sort.Ints(runs)
+	out := make([]runTotals, 0, len(runs))
+	for _, run := range runs {
+		out = append(out, *byRun[run])
+	}
+	return out
 }
 
 // printCaseResult writes the final status line for a scored case:

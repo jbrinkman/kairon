@@ -611,6 +611,9 @@ kairon eval --evals-dir path/to/evals architect
 
 # Evaluate a candidate prompt without touching the live agent
 kairon eval architect --prompt-file .kairon/iterations/architect/v2.md
+
+# Run every case 5 times and report the mean score with its spread
+kairon eval architect --repeat 5
 ```
 
 | Flag | Default | Description |
@@ -619,6 +622,7 @@ kairon eval architect --prompt-file .kairon/iterations/architect/v2.md
 | `--evals-dir` | `.kairon/evals` | Directory holding `rubrics/`, `cases/`, `fixtures/`, optional `agents/`, and `results/`. Persistent flag, so `kairon eval diff` honours it too. |
 | `--keep-workspaces` | off | Keep each case's workspace after the run instead of deleting it. The path is printed on the case line and recorded as `workspace_dir` in the results (see [Case Workspaces](#case-workspaces)). Combine with `--debug` to inspect both the preserved container and its workspace. |
 | `--prompt-file` | none | Evaluate this file as the agent's prompt instead of the live one, in the per-case workspaces only. Requires an agent (`kairon eval <agent> --prompt-file <path>`); nothing under `.kiro/agents/` is modified. Local to `kairon eval` (not available on `eval diff`). See [Evaluating a candidate prompt](#evaluating-a-candidate-prompt---prompt-file). |
+| `--repeat` | `1` | Run every case N times, each run in a fresh workspace, and keep every result. The agent `score` becomes the **mean** over the N runs, with `score_min`, `score_max` and `repeat_scores` showing the spread. A value below `1` is rejected (non-zero exit). Cannot be combined with `--list`, `--cleanup` or `--perf` (they run no cases). Combined with `--case` (or `<agent> <testcase>`) it repeats that one case. `--resume` requires the same value the interrupted run used. See [Repeat runs](#repeat-runs---repeat). |
 
 ## Adding Test Cases
 
@@ -692,8 +696,9 @@ passed = score >= threshold
 ```
 
 - Skipped, errored and no-output criteria count as 0 in the aggregate (see [Skipped Criteria](#skipped-criteria)).
-- `cases_total` is the number of cases and `cases_failed` the number that did not pass their own threshold. `cases_failed` is informational: it does not fail the agent by itself, the aggregate score does.
-- **Fail closed.** If nothing was scored (the denominator is 0, for example a rubric with only cost criteria), the agent gets `score` 0, `passed: false`, and no `agent_scores` entry.
+- **With `--repeat`, `score` is the mean over the repeats.** The sums run over every run of every case; each repeat has the same cases and the same maxima, so this equals the arithmetic mean of the per-repeat scores. `passed` is decided on that mean: a single repeat above the threshold does not rescue a mean below it. The spread is reported next to it in `score_min`, `score_max` and `repeat_scores`, and the number of repeats in `repeat` (see [Repeat runs](#repeat-runs---repeat)). Without `--repeat` the run is one repeat and `score_min == score == score_max`.
+- `cases_total` is the number of distinct cases and `cases_failed` the number that did not pass their own threshold. A case with several runs counts as failed when its score pooled over its runs is below its threshold. `cases_failed` is informational: it does not fail the agent by itself, the aggregate score does.
+- **Fail closed.** If nothing was scored (the denominator is 0, for example a rubric with only cost criteria), the agent gets `score`, `score_min` and `score_max` of 0, `passed: false`, and no `agent_scores` entry.
 
 ### Output and exit status
 
@@ -704,7 +709,13 @@ PASS selftest: 100.0% (threshold 95.0%), 0/16 cases failed
 FAIL selftest-fail: 4.0% (threshold 95.0%), 13/13 cases failed
 ```
 
-The format is `PASS|FAIL <agent>: <score>% (threshold <threshold>%), <cases_failed>/<cases_total> cases failed`, with one decimal for the percentages.
+The format is `PASS|FAIL <agent>: <score>% (threshold <threshold>%), <cases_failed>/<cases_total> cases failed`, with one decimal for the percentages. With `--repeat N` (N > 1) `<score>` is the mean and the line ends with the spread, `[repeat N: min X%, max Y%]`; the line still starts with the verdict word and the text before the suffix is unchanged:
+
+```
+FAIL selftest-fail: 50.0% (threshold 95.0%), 1/1 cases failed [repeat 2: min 0.0%, max 100.0%]
+```
+
+With no `--repeat` (or `--repeat 1`) there is no suffix and the line is exactly as above.
 
 | Exit status | Meaning |
 |-------------|---------|
@@ -726,10 +737,56 @@ The verdict uses **percent**, `agent_scores` in `summary.json` uses a **0–1 fr
 | Field | Unit | Example |
 |-------|------|---------|
 | `agent_scores.<agent>` | fraction (0–1), unchanged | `0.96` |
-| `agent_verdicts.<agent>.score` | percent (0–100) | `96` |
+| `agent_verdicts.<agent>.score` | percent (0–100); the mean over repeats | `96` |
+| `agent_verdicts.<agent>.score_min`, `.score_max` | percent (0–100) | `92`, `100` |
+| `agent_verdicts.<agent>.repeat_scores` | list of percent (0–100) | `[92, 96, 100]` |
 | `agent_verdicts.<agent>.threshold` | percent (0–100) | `95` |
 
-`agent_scores` keeps its earlier meaning so that `kairon eval diff` reads old and new runs alike. See [Run summary](#run-summary-summaryjson) for the full JSON.
+`agent_scores` keeps its earlier meaning so that `kairon eval diff` reads old and new runs alike. Because it pools every result of the agent, with `--repeat` it is also the mean (as a fraction). See [Run summary](#run-summary-summaryjson) for the full JSON.
+
+## Repeat runs (`--repeat`)
+
+A single run with an LLM judge is noisy: the same prompt can score differently from one run to the next. `--repeat N` runs every case N times so that you read a **mean with its spread** instead of one sample, for example before promoting a prompt that has to reach 95% or more.
+
+```bash
+kairon eval architect --repeat 5
+kairon eval architect --case decompose-feature --repeat 3   # repeats that one case
+```
+
+**How it runs.**
+
+- Execution is case by case: a case runs N times back to back, then the next case. After k cases every repeat therefore covers the same k cases, and a partial `summary.json` already has a meaningful mean, min and max.
+- Each run goes through the normal case path, so each gets its own **fresh [case workspace](#case-workspaces)** (nothing a run wrote is visible to the next one). With `--keep-workspaces` every run keeps its own `workspace_dir`.
+- Cases are loaded once and the same case values are reused for every run. A stub `judge` list (`stub.judge: [yes, no]`) therefore continues from one run to the next instead of restarting, which is how the self-test produces two different scores (see [Self-Test](#self-test)).
+- Progressive saving still happens after each case, and writes all N runs of that case together.
+
+**What is kept.** Every run is its own entry in `cases` of `<agent>.json`: the list stays flat, so a case name appears N times, tagged with `run` (1-based; `1` for a plain run). The agent result records `repeat`. A result file without `run` or `repeat` (written before this feature) is read as one run of one repeat.
+
+**How the numbers are computed.** For repeat k, the repeat score is the sum of the run-k case scores over the sum of the run-k case maxima, as a percent, over the same non-cost criteria as always (skipped, errored and no-output criteria count as 0 and stay in the maximum, see [Skipped Criteria](#skipped-criteria)).
+
+| `agent_verdicts.<agent>` field | Meaning with `--repeat` |
+|--------------------------------|-------------------------|
+| `repeat` | Number of repeats the result holds (`1` for a plain run). |
+| `score` | The **mean** over the repeats. This is what `passed` is judged on. |
+| `score_min`, `score_max` | The lowest and highest repeat score. |
+| `repeat_scores` | The repeat scores in run order, one per completed repeat. |
+| `passed` | `score >= threshold`, on the mean. Repeats of 100% and 80% against a threshold of 95 give a mean of 90 and a FAIL even though the best repeat is above the threshold. |
+
+All four new fields are always written, including a legitimate `score_min` of `0`. A plain run writes `repeat: 1`, `score_min == score_max == score` and `repeat_scores: [score]`. Nothing scored fails closed with all of them `0`. `cases_total` counts distinct case names; see [Agent verdict](#agent-verdict) for `cases_failed`. These fields are the stable contract that promotion tooling can read from `summary.json`.
+
+**Cost** is the cost of all repeats: `cost` and `total_cost` sum every run, so `--repeat 3` costs about three times a single run.
+
+**Output.** A plain run prints exactly what it always did. With `--repeat N` (N > 1) each case line is followed by one `run k/N` line per run with its usual status, and the agent line ends with the `[repeat N: min X%, max Y%]` suffix described in [Output and exit status](#output-and-exit-status).
+
+**Validation.**
+
+- `--repeat` below `1` is rejected before anything runs, with `--repeat must be at least 1 (got 0)` and a non-zero exit.
+- `--repeat` above `1` together with `--list`, `--cleanup` or `--perf` is rejected (`❌ repeat 2 cannot be combined with --list: it does not run any cases`), because those modes run no cases.
+- `--case` / `<agent> <testcase>` repeats just that case.
+
+**Resume.** `--resume` works with repeats. A case counts as completed only when all N of its runs are saved, so an interrupted case re-runs from its first run. The resumed run must use the same `--repeat` as the interrupted one; otherwise it stops with `cannot resume: repeat changed since the interrupted run of <agent> (recorded repeat=N; now M) — resume with --repeat N or start a fresh run`, so one `<agent>.json` never mixes repeat counts. A legacy result file counts as `repeat` 1. See also [Resume refusal](#resume-refusal).
+
+**`eval diff`** works across runs with different repeat counts. Per-criterion averages and costs cover every result (means and totals), and the output comparison uses run 1 of each case. See [Comparing Runs](#comparing-runs).
 
 ## Inference Backends
 
@@ -973,6 +1030,7 @@ The per-agent result file always carries:
 | `resources_present` | The agent-config `resources` entries that existed when the hash was computed. Always written; an empty list serialises as `[]`. |
 | `sandbox` | Execution mode as a **boolean**: `true` for a `--sandbox` (container) run, `false` for a native run. Written by every run, including single-case (`--testcase`) runs. Absent in files written before mode tracking. Note that `summary.json` spells the same fact as a string (`"native"` / `"container"`); see below. |
 | `containment` | What contained this agent's cases (see [Execution mode and containment](#execution-mode-and-containment)). Present for container runs only; absent for native runs. |
+| `repeat` | Number of times every case was run (`--repeat`; see [Repeat runs](#repeat-runs---repeat)). Written as `1` for a plain run; omitted when `0`, and absent in files written before repeats existed, which count as `1`. Each entry of `cases` then carries `run` (1-based). |
 
 ```json
 {
@@ -983,6 +1041,7 @@ The per-agent result file always carries:
   "prompt_sha256": "9f2c…",
   "sandbox": false,
   "resources_present": [],
+  "repeat": 1,
   "cases": [ … ]
 }
 ```
@@ -999,8 +1058,8 @@ A `--prompt-file` run additionally carries `"prompt_file": "<path>"` (and a `pro
   "total_cost": { "tokens_in": 4210, "tokens_out": 980, "estimated_usd": 0.0273 },
   "agent_scores": { "architect": 0.85, "builder": 0.8 },
   "agent_verdicts": {
-    "architect": { "score": 85, "threshold": 95, "passed": false, "cases_total": 4, "cases_failed": 1, "cost": { "tokens_in": 2100, "tokens_out": 500, "estimated_usd": 0.0138 } },
-    "builder":   { "score": 80, "threshold": 95, "passed": false, "cases_total": 3, "cases_failed": 1, "cost": { "tokens_in": 2110, "tokens_out": 480, "estimated_usd": 0.0135 } }
+    "architect": { "score": 85, "threshold": 95, "passed": false, "cases_total": 4, "cases_failed": 1, "cost": { "tokens_in": 2100, "tokens_out": 500, "estimated_usd": 0.0138 }, "repeat": 1, "score_min": 85, "score_max": 85, "repeat_scores": [85] },
+    "builder":   { "score": 80, "threshold": 95, "passed": false, "cases_total": 3, "cases_failed": 1, "cost": { "tokens_in": 2110, "tokens_out": 480, "estimated_usd": 0.0135 }, "repeat": 1, "score_min": 80, "score_max": 80, "repeat_scores": [80] }
   },
   "judge_model": "claude-sonnet-5.5",
   "agents": {
@@ -1029,28 +1088,43 @@ A `--prompt-file` run additionally carries `"prompt_file": "<path>"` (and a `pro
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `score` | number, **percent** (0–100) | The agent's aggregate score. `0` when nothing was scored. |
+| `score` | number, **percent** (0–100) | The agent's aggregate score. With `--repeat` it is the **mean** over the repeats. `0` when nothing was scored. |
 | `threshold` | number, **percent** (0–100) | The agent's pass threshold (its rubric's `pass_threshold`, default 95). |
-| `passed` | boolean | `score >= threshold`. `false` when nothing was scored. |
-| `cases_total` | integer | Number of cases evaluated. |
-| `cases_failed` | integer | Number of cases that did not pass their own threshold. Informational. |
-| `cost` | object | The agent's cost (agent and judge calls of every case): `tokens_in`, `tokens_out`, `estimated_usd`. |
+| `passed` | boolean | `score >= threshold`, on the mean. `false` when nothing was scored. |
+| `cases_total` | integer | Number of distinct cases evaluated (a case run N times counts once). |
+| `cases_failed` | integer | Number of cases that did not pass their own threshold; for a case with several runs, its score pooled over the runs is compared to its threshold. Informational. |
+| `cost` | object | The agent's cost (agent and judge calls of every run of every case): `tokens_in`, `tokens_out`, `estimated_usd`. |
+| `repeat` | integer | Number of repeats (`--repeat`; `1` for a plain run). Always written. |
+| `score_min` | number, **percent** (0–100) | The lowest repeat score. Always written, including `0`; equals `score` for a plain run. |
+| `score_max` | number, **percent** (0–100) | The highest repeat score. Always written; equals `score` for a plain run. |
+| `repeat_scores` | array of **percent** numbers | The repeat scores in run order, one per completed repeat (`[score]` for a plain run). Always written. |
 
-`score` and `threshold` are percent, while `agent_scores` is a 0–1 fraction (an `agent_scores` of `0.85` is an `agent_verdicts` score of `85`). See [Pass/Fail Verdict and Exit Status](#passfail-verdict-and-exit-status).
+`score`, `score_min`, `score_max`, `repeat_scores` and `threshold` are percent, while `agent_scores` is a 0–1 fraction (an `agent_scores` of `0.85` is an `agent_verdicts` score of `85`). See [Pass/Fail Verdict and Exit Status](#passfail-verdict-and-exit-status).
 
-**New fields in `<agent>.json`.** The agent result carries `threshold` (the agent's pass threshold, percent). Each case carries `threshold` (the case's resolved threshold, percent) and `passed` (whether it was met):
+A `--repeat 3` run of one agent records, for example (the three repeats scored 92, 96 and 100, so the mean is 96 and the agent passes):
+
+```json
+"agent_verdicts": {
+  "architect": { "score": 96, "threshold": 95, "passed": true, "cases_total": 4, "cases_failed": 0, "cost": { … },
+                 "repeat": 3, "score_min": 92, "score_max": 100, "repeat_scores": [92, 96, 100] }
+}
+```
+
+**New fields in `<agent>.json`.** The agent result carries `threshold` (the agent's pass threshold, percent) and `repeat` (see above). Each case carries `threshold` (the case's resolved threshold, percent), `passed` (whether it was met) and `run` (1-based run number; with `--repeat 3` a case name appears three times, with `run` 1, 2 and 3):
 
 ```json
 {
   "agent": "selftest",
   "threshold": 95,
+  "repeat": 2,
   "cases": [
-    { "case_name": "stub-basic", "threshold": 95, "passed": true, … }
+    { "case_name": "stub-basic", "run": 1, "threshold": 95, "passed": true, … },
+    { "case_name": "stub-basic", "run": 2, "threshold": 95, "passed": true, … }
   ]
 }
 ```
 
-Both are optional on read: a result file written before verdicts existed has neither field, and its cases are judged against the agent's threshold (95 when it records none).
+All of them are optional on read: a result file written before verdicts existed has no `threshold` or `passed`, and its cases are judged against the agent's threshold (95 when it records none). A file without `repeat` or `run` counts as one repeat, with every case run 1.
 
 **Two spellings of one fact.** `summary.json` records the mode as a string (`"native"` / `"container"`), while each `<agent>.json` keeps `sandbox` as a boolean (`true` = container, `false` = native). Both come from the same run, and `eval diff` and `--resume` read both. A summary never mixes modes: one run is entirely native or entirely container.
 
@@ -1378,7 +1452,7 @@ internal/eval/testdata/evals/
   cases/selftest/multi-turn-workspace.yaml   # 2 turns plus a setup text entry; turn 2 needs the file turn 1 wrote (shared workspace)
   cases/selftest-fail/stub-timeout.yaml      # timeout: 1s, stub turn command 'sleep 3' -> timeout failure
   cases/selftest-fail/stub-empty-response.yaml  # empty stub response -> no output; every criterion scores 0 and is counted
-  cases/selftest-fail/check-*.yaml  # 10 per-type failing check cases, 5 check-judge-* cases and check-partial (see below)
+  cases/selftest-fail/check-*.yaml  # 10 per-type failing check cases, 6 check-judge-* cases and check-partial (see below)
   cases/selftest-fail/multi-turn-wrong-turn.yaml  # turn-1 gh_log_contains for a call made in turn 3 (expected to FAIL)
   agents/selftest-sandbox.json      # containment agent, allowedTools [read, write]; its cases are all requires_sandbox
   agents/selftest-sandbox-prompt.md
@@ -1401,7 +1475,7 @@ internal/eval/testdata/evals/
 
 `selftest.json` declares a `model` so the self-test passes the model-pinning pre-flight, and lists a `skill://.kiro/skills/selftest-conventions/SKILL.md` resource that intentionally does not exist. It exercises the "missing resources are normal" rule: the run succeeds and the recorded `resources_present` is `[]`.
 
-The `selftest` agent has twenty-one cases and all of them pass (`task eval:selftest`): the five original `stub-*` cases, which carry no `checks` and keep their pinned scores, fourteen `check-*` cases that exercise [checks](#checks) (ten per-type cases, `check-command-inject`, and three `judge` cases: `check-judge-yes`, `check-judge-files` and `check-judge-mixed`), and two [multi-turn](#multi-turn-cases) cases (`multi-turn-gh-log`, `multi-turn-workspace`). The `selftest-fail` agent is deliberately separate, so `selftest` keeps meaning "everything passes". It has nineteen cases, all **expected to fail**: fifteen `check-*` cases (ten per-type cases and five `check-judge-*` cases) plus `check-partial`, all built so that checks fail; `stub-timeout`, which records a timeout failure (empty `actual_output`, `error_context.stderr` containing `timeout after 1s`) in about a second; `stub-empty-response`, whose stub returns an empty response, so the case has no output, every criterion scores 0 out of its maximum, and it still counts toward the agent's score; and `multi-turn-wrong-turn`, described below. Run it with:
+The `selftest` agent has twenty-one cases and all of them pass (`task eval:selftest`): the five original `stub-*` cases, which carry no `checks` and keep their pinned scores, fourteen `check-*` cases that exercise [checks](#checks) (ten per-type cases, `check-command-inject`, and three `judge` cases: `check-judge-yes`, `check-judge-files` and `check-judge-mixed`), and two [multi-turn](#multi-turn-cases) cases (`multi-turn-gh-log`, `multi-turn-workspace`). The `selftest-fail` agent is deliberately separate, so `selftest` keeps meaning "everything passes". It has twenty cases, all **expected to fail**: sixteen `check-*` cases (ten per-type cases and six `check-judge-*` cases) plus `check-partial`, all built so that checks fail; `stub-timeout`, which records a timeout failure (empty `actual_output`, `error_context.stderr` containing `timeout after 1s`) in about a second; `stub-empty-response`, whose stub returns an empty response, so the case has no output, every criterion scores 0 out of its maximum, and it still counts toward the agent's score; and `multi-turn-wrong-turn`, described below. Run it with:
 
 ```bash
 go run ./cmd/kairon eval --backend stub --no-sandbox --evals-dir internal/eval/testdata/evals selftest-fail
@@ -1425,7 +1499,32 @@ All check cases score the `structural_completeness` criterion (present in both r
 | `gh_log_not_contains` | `check-gh-log-not-contains` | `check-gh-log-not-contains`: the stub writes a `gh pr merge 1` line |
 | `judge` | `check-judge-yes`: `stub.judge: yes` | `check-judge-no`: `stub.judge: no` fails with `judge answered no: stub judge: no` |
 
-The `judge` check has further cases. In `selftest`: `check-judge-files` has the stub turn write `.eval/issue-body.md` and the check list it in `files`, so the whole file path runs end to end; `check-judge-mixed` puts a `file_exists` check and a `judge` check on one criterion and scores `2/2`. In `selftest-fail`: `check-judge-garbage` (`stub.judge: garbage`) fails with `judge parse error`; `check-judge-no-script` (no `stub.judge`) fails with `judge call failed: case has no stub.judge`; `check-judge-missing-file` (`files: [.eval/absent.md]`) fails with `file does not exist` and makes no judge call; `check-judge-list` (`stub.judge: [yes, no]`, two `judge` checks) passes the first and fails the second, so it records exactly `1/2`. None of them is skipped.
+The `judge` check has further cases. In `selftest`: `check-judge-files` has the stub turn write `.eval/issue-body.md` and the check list it in `files`, so the whole file path runs end to end; `check-judge-mixed` puts a `file_exists` check and a `judge` check on one criterion and scores `2/2`. In `selftest-fail`: `check-judge-garbage` (`stub.judge: garbage`) fails with `judge parse error`; `check-judge-no-script` (no `stub.judge`) fails with `judge call failed: case has no stub.judge`; `check-judge-missing-file` (`files: [.eval/absent.md]`) fails with `file does not exist` and makes no judge call; `check-judge-list` (`stub.judge: [yes, no]`, two `judge` checks) passes the first and fails the second, so it records exactly `1/2`; `check-judge-repeat` (`stub.judge: [yes, no]`, one `judge` check) is meant for [`--repeat`](#repeat-runs---repeat): the judge answers `yes` on run 1 and `no` on run 2, so it scores `1/1` and then `0/1`. None of them is skipped.
+
+To see the repeat statistics end to end, run the whole `selftest` agent three times and the `check-judge-repeat` case twice:
+
+```bash
+# Every case runs 3 times: 3 results per case in selftest.json, repeat 3 in summary.json
+go run ./cmd/kairon eval --backend stub --no-sandbox --evals-dir internal/eval/testdata/evals selftest --repeat 3
+
+# Two different scores: run 1 scores 1/1, run 2 scores 0/1. Prints
+#   FAIL selftest-fail: 50.0% (threshold 95.0%), 1/1 cases failed [repeat 2: min 0.0%, max 100.0%]
+# and exits 1 (the mean, 50, is below the threshold)
+go run ./cmd/kairon eval --backend stub --no-sandbox --evals-dir internal/eval/testdata/evals selftest-fail check-judge-repeat --repeat 2
+```
+
+Then inspect the newest run directory under `internal/eval/testdata/evals/results/`:
+
+```bash
+# selftest: every case name appears exactly 3 times -> [3]
+jq '[.cases[].case_name] | group_by(.) | map(length) | unique' <run>/selftest.json
+jq '.agent_verdicts.selftest | {repeat, score, score_min, score_max, repeat_scores}' <run>/summary.json
+
+# selftest-fail / check-judge-repeat -> repeat 2, score 50, score_min 0, score_max 100, repeat_scores [100, 0]
+jq '.agent_verdicts."selftest-fail" | {repeat, score, score_min, score_max, repeat_scores}' <run>/summary.json
+```
+
+`--repeat 0` (or a negative value) is rejected: `go run ./cmd/kairon eval --repeat 0 selftest` prints `--repeat must be at least 1 (got 0)` and exits non-zero.
 
 Further `selftest` / `selftest-fail` cases pin behavior you may rely on:
 
@@ -2189,6 +2288,8 @@ The `eval diff` command shows, in this order:
 - Per-criterion score deltas per agent
 - Token and cost deltas
 - Quality-per-dollar assessment
+
+Runs made with [`--repeat`](#repeat-runs---repeat) diff like any other. The per-criterion averages and the cost cover every result of the run (so they are means and totals over the repeats), and the case output comparison uses run 1 of each case, so it does not depend on how many repeats either run used. The spread (`score_min`, `score_max`, `repeat_scores`) is not shown by `eval diff`; read it from `summary.json`.
 
 ### Run Provenance
 
