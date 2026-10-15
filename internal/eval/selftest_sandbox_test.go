@@ -130,8 +130,13 @@ func TestSelftestSandbox(t *testing.T) {
 	// The multi-turn cases run in one container per case under --sandbox:
 	// every turn's output, the call records and the check results must match
 	// the native run.
-	for _, name := range []string{multiTurnGHLogCase, multiTurnWorkspaceCase} {
+	// The simulated-user cases share the container session; the routing is
+	// host-side, so the user messages must match the native run as well.
+	for _, name := range []string{multiTurnGHLogCase, multiTurnWorkspaceCase, simRoutesCase, simStopWhenCase} {
 		n, s := nativeCases[name], sandboxCases[name]
+		if strings.Join(n.UserTurns, "\x00") != strings.Join(s.UserTurns, "\x00") {
+			t.Errorf("%s user_turns differ\n native: %q\nsandbox: %q", name, n.UserTurns, s.UserTurns)
+		}
 		if len(n.TurnOutputs) == 0 {
 			t.Errorf("native %s has no turn_outputs", name)
 		}
@@ -165,6 +170,7 @@ func TestSelftestSandbox(t *testing.T) {
 
 	// The sandbox run must satisfy the same expectations as the native one.
 	assertSelfTestResults(t, evalsDir, sandboxed)
+	assertSimulatedSelfTestResults(t, sandboxed)
 }
 
 // agentCallModel returns the model recorded on the case's agent call.

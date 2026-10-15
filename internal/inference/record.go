@@ -7,6 +7,9 @@ type CallRecord struct {
 	Model     string `json:"model"`               // served model when the backend reports one, else the pinned (requested) model
 	Agent     string `json:"agent,omitempty"`     // agent calls
 	Criterion string `json:"criterion,omitempty"` // judge calls
+	// Purpose says why a judge call was made when it is not a criterion check
+	// (e.g. "simulated_user" for routing). Omitted when empty.
+	Purpose string `json:"purpose,omitempty"`
 	// Turn is the 1-based user turn of a multi-turn agent call (Request.Turn+1).
 	// Zero, and therefore omitted, for single-turn calls and judge calls.
 	Turn         int     `json:"turn,omitempty"`

@@ -1,0 +1,5 @@
+{
+  "git_hash": "fffffff",
+  "agent_scores": {"selftest": 0.8},
+  "agents": {"selftest": {"prompt_sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"}}
+}

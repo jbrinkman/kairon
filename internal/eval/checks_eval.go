@@ -73,7 +73,7 @@ func evaluateOne(index int, c Check, in CheckInput) (res CheckResult) {
 
 func runCheck(c Check, in CheckInput) (bool, string) {
 	switch c.Type {
-	case CheckFileExists, CheckFileAbsent, CheckFileContains, CheckFileNotContains, CheckChangedFiles, CheckCommand:
+	case CheckFileExists, CheckFileAbsent, CheckFileContains, CheckFileNotContains, CheckChangedFiles, CheckCommand, CheckFactAsked, CheckFactNotAsked:
 		if err := checkDir(in.Dir); err != nil {
 			return false, err.Error()
 		}
@@ -108,6 +108,8 @@ func runCheck(c Check, in CheckInput) (bool, string) {
 		return evalCommand(c, in.Dir)
 	case CheckJudge:
 		return evalJudge(c, in)
+	case CheckFactAsked, CheckFactNotAsked:
+		return evalFact(c, in)
 	}
 	return false, fmt.Sprintf("unknown check type %q", c.Type)
 }
@@ -286,6 +288,8 @@ func checkLabel(index int, c Check) string {
 		fmt.Fprintf(&b, " allow=[%s]", shorten(strings.Join(c.Allow, " "), 80))
 	case CheckJudge:
 		fmt.Fprintf(&b, " question=%q", shorten(c.Question, 80))
+	case CheckFactAsked, CheckFactNotAsked:
+		fmt.Fprintf(&b, " fact=%s", shorten(c.Fact, 80))
 	default:
 		if c.Path != "" {
 			fmt.Fprintf(&b, " path=%s", shorten(c.Path, 80))

@@ -21,8 +21,10 @@ jobs:
         cache: true
         
     - name: Install Task
-      run: |
-        sh -c "$(curl --location https://taskfile.dev/install.sh)" -- -d -b /usr/local/bin
+      uses: arduino/setup-task@v3
+      with:
+        version: 3.53.1
+        repo-token: ${{ secrets.GITHUB_TOKEN }}
         
     - name: Format check
       run: task fmt:check

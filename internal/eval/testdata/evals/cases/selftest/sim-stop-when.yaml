@@ -1,0 +1,70 @@
+name: sim-stop-when
+description: "Self-test: stop_when ends the simulated phase after two agent turns, then the scripted turns run as turns 3 and 4"
+agent: selftest
+input: "I want a feature that exports reports as CSV"
+simulated_user:
+  facts:
+    - id: f1
+      answer: "SIM-F1-ANSWER: comma separated, UTF-8, one header row."
+      discoverable: false
+  default_reply: "SIM-DEFAULT-REPLY: I don't know, use your best judgement."
+  stop_when: 'PLAN-READY'
+  max_turns: 5
+turns:
+  - "Please summarise."
+  - "Thanks."
+context:
+  - "This case runs against the deterministic stub backend; no model is called"
+  - "The second stub response contains PLAN-READY, which ends the simulated phase; only the first output is routed"
+expected_output: |
+  A short report with a top-level section and at least one subsection.
+stub:
+  routes: [f1]
+  turns:
+    - response: |
+        ## Questions
+
+        SIM-STOP-TURN-ONE: which file format should the export use?
+
+        ### Details
+
+        Waiting for the answer before drafting anything.
+    - response: |
+        ## Plan
+
+        SIM-STOP-TURN-TWO: PLAN-READY
+
+        ### Details
+
+        The plan is complete.
+    - response: |
+        ## Summary
+
+        SIM-STOP-TURN-THREE: here is the summary.
+
+        ### Details
+
+        Summarised on request.
+    - response: |
+        ## Done
+
+        SIM-STOP-TURN-FOUR: you are welcome.
+
+        ### Details
+
+        Nothing further.
+checks:
+  - criterion: structural_completeness
+    type: fact_asked
+    fact: f1
+  - criterion: structural_completeness
+    type: output_contains
+    pattern: "PLAN-READY"
+    turn: 2
+  - criterion: structural_completeness
+    type: output_contains
+    pattern: "SIM-STOP-TURN-THREE"
+    turn: 3
+  - criterion: structural_completeness
+    type: output_contains
+    pattern: "SIM-STOP-TURN-FOUR"

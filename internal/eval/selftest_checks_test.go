@@ -62,8 +62,8 @@ func checkedScore(t *testing.T, c CaseResult) CriterionScore {
 func TestSelfTestChecksPassingCases(t *testing.T) {
 	res := runSelfTestAgent(t, "selftest")
 
-	if got, want := len(res.Cases), 5+11+2+3; got != want {
-		t.Errorf("selftest has %d cases, want %d (5 legacy + 11 check + 2 multi-turn + 3 judge)", got, want)
+	if got, want := len(res.Cases), 5+11+2+3+2; got != want {
+		t.Errorf("selftest has %d cases, want %d (5 legacy + 11 check + 2 multi-turn + 3 judge + 2 simulated-user)", got, want)
 	}
 
 	seen := map[CheckType]bool{}
@@ -147,8 +147,8 @@ func TestSelfTestChecksPassingCases(t *testing.T) {
 func TestSelfTestChecksFailingCases(t *testing.T) {
 	res := runSelfTestAgent(t, "selftest-fail")
 
-	if got, want := len(res.Cases), 10+1+1+1+1+6; got != want {
-		t.Errorf("selftest-fail has %d cases, want %d (10 per-type + check-partial + stub-timeout + stub-empty-response + multi-turn-wrong-turn + 6 judge)", got, want)
+	if got, want := len(res.Cases), 10+1+1+1+1+6+1; got != want {
+		t.Errorf("selftest-fail has %d cases, want %d (10 per-type + check-partial + stub-timeout + stub-empty-response + multi-turn-wrong-turn + 6 judge + sim-fact-not-asked)", got, want)
 	}
 
 	for _, tt := range selftestCheckTypes {
