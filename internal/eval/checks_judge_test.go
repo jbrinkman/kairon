@@ -376,6 +376,35 @@ func TestJudgeCheckTruncatesOnRuneBoundaryAndSanitizesUTF8(t *testing.T) {
 
 func isValidUTF8(s string) bool { return strings.ToValidUTF8(s, "") == s }
 
+// TestJudgeCheckKeepsCompleteFinalRuneAtCap guards the P2 trailing-trim bug:
+// when the capped prefix ends exactly on a COMPLETE multi-byte rune, that rune
+// must be kept, not dropped. Here (judgeMaxFileBytes-2) ASCII bytes plus one
+// 2-byte "é" fill the 64 KiB prefix exactly, so no incomplete rune is present.
+// The old loop stripped the continuation byte and then FullRune([lead]) dropped
+// the lead byte too, discarding a valid rune and showing less than the cap.
+func TestJudgeCheckKeepsCompleteFinalRuneAtCap(t *testing.T) {
+	dir := t.TempDir()
+	content := strings.Repeat("a", judgeMaxFileBytes-2) + "é" // exactly judgeMaxFileBytes bytes, then more
+	writeEvalFile(t, dir, "r.md", content+strings.Repeat("b", 100))
+	f := &fakeJudge{verdict: JudgeVerdict{Yes: true, Reasoning: "r"}}
+	wantPass(t, evalOne(t, judgeCheck("q", "r.md"), CheckInput{Dir: dir, Judge: f.judge}))
+
+	jf := f.queries[0].Files[0]
+	if !jf.Truncated {
+		t.Fatal("file should be truncated")
+	}
+	shown := jf.Content
+	if i := strings.Index(shown, "\n[truncated:"); i >= 0 {
+		shown = shown[:i]
+	}
+	if len(shown) != judgeMaxFileBytes {
+		t.Errorf("shown prefix is %d bytes, want exactly %d (a complete final rune was dropped)", len(shown), judgeMaxFileBytes)
+	}
+	if !strings.HasSuffix(shown, "é") {
+		t.Errorf("shown prefix does not end with the complete final rune 'é': ...%q", shown[max(0, len(shown)-4):])
+	}
+}
+
 func TestJudgeCheckJudgeErrorFails(t *testing.T) {
 	f := &fakeJudge{err: errors.New("backend down")}
 	r := evalOne(t, judgeCheck("q"), CheckInput{Judge: f.judge})
