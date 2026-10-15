@@ -191,6 +191,53 @@ func TestEvaluateProgressiveResumeStampsThreshold(t *testing.T) {
 	}
 }
 
+// TestEvaluateProgressiveResumeStampsLegacyCaseAgainstOwnThreshold pins the
+// F2 fix: a completed legacy case (Passed == nil in a pre-change result file)
+// is skipped by the completed-case guard and never re-run on resume, so it must
+// be stamped from its matching TestCase using the case's OWN threshold. A case
+// that scored below the rubric threshold but at or above its own min_score
+// genuinely passed and must NOT be counted in cases_failed.
+func TestEvaluateProgressiveResumeStampsLegacyCaseAgainstOwnThreshold(t *testing.T) {
+	chdirTemp(t)
+	installFakeKiroCLI(t, "")
+	useStubBackend(t)
+
+	dir := t.TempDir()
+	// Pre-change result: one completed case scoring 60/100 = 60%, no verdict
+	// fields. The rubric threshold is 80, but this case's own min_score is 60,
+	// so it genuinely passed its own bar.
+	legacy := AgentResult{Agent: "selftest", GitHash: "abc", Cases: []CaseResult{scored("lenient-done", 60, 100)}}
+	data, _ := json.Marshal(legacy)
+	if err := os.WriteFile(filepath.Join(dir, "selftest.json"), data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var out strings.Builder
+	cases := append([]TestCase{{Name: "lenient-done", Input: "do it", MinScore: floatPtr(60)}}, verdictCases()...)
+	res := evaluateProgressive(verdictRubric(), cases, "abc", &out, dir, true, nil)
+
+	var legacyCase *CaseResult
+	for i := range res.Cases {
+		if res.Cases[i].CaseName == "lenient-done" {
+			legacyCase = &res.Cases[i]
+		}
+	}
+	if legacyCase == nil {
+		t.Fatal("resumed result is missing lenient-done")
+	}
+	if legacyCase.Passed == nil || !*legacyCase.Passed {
+		t.Errorf("lenient-done Passed = %v, want stamped true (60%% >= its own min_score 60)", legacyCase.Passed)
+	}
+	if legacyCase.Threshold != 60 {
+		t.Errorf("lenient-done Threshold = %v, want 60 (its own min_score)", legacyCase.Threshold)
+	}
+	if v := agentVerdict(res); v.CasesFailed != 1 {
+		// Only fail-case (40%% < 80) should be failed; the resumed lenient-done
+		// must not be miscounted against the rubric's 80.
+		t.Errorf("CasesFailed = %d, want 1 (only fail-case); resumed legacy case must not be miscounted", v.CasesFailed)
+	}
+}
+
 func verdictAgent(agent string, score, max int, cost CostInfo) AgentResult {
 	cr := scored("c", score, max)
 	cr.Threshold, cr.AgentCost = 95, cost

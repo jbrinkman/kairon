@@ -1874,6 +1874,27 @@ func conflictingSavedMode(resultsDir, agent string, sandbox bool) (bool, bool) {
 	return false, false
 }
 
+// stampResumedCases stamps the verdict on completed cases carried over from a
+// resumed result file that predate per-case verdicts (Passed == nil). Each is
+// matched to its current TestCase by name and stamped from the case's own
+// threshold via stampCase, without re-running it. Cases already stamped, and
+// cases with no matching TestCase (e.g. a case removed since the saved run),
+// are left untouched.
+func stampResumedCases(result *AgentResult, cases []TestCase, rubric Rubric) {
+	byName := make(map[string]TestCase, len(cases))
+	for _, tc := range cases {
+		byName[tc.Name] = tc
+	}
+	for i := range result.Cases {
+		if result.Cases[i].Passed != nil {
+			continue
+		}
+		if tc, ok := byName[result.Cases[i].CaseName]; ok {
+			stampCase(&result.Cases[i], tc, rubric)
+		}
+	}
+}
+
 // evaluateProgressive runs evaluation with progressive result saving after each test case.
 func evaluateProgressive(rubric Rubric, cases []TestCase, gitHash string, out io.Writer, resultsDir string, isResume bool, cConfig *ContainerConfig) AgentResult {
 	result := AgentResult{
@@ -1897,6 +1918,14 @@ func evaluateProgressive(rubric Rubric, cases []TestCase, gitHash string, out io
 				// A resumed result may predate verdicts; the threshold is the
 				// current rubric's, like the provenance above.
 				result.Threshold = rubric.Threshold()
+				// Completed cases are skipped below and never reach stampCase,
+				// so a case loaded from a pre-verdict result keeps Passed==nil.
+				// agentVerdict would then recompute it against the agent's
+				// threshold instead of the case's own min_score, miscounting a
+				// genuinely-passing case in cases_failed. Stamp each completed,
+				// unstamped case from its matching TestCase (its own threshold),
+				// without re-running it.
+				stampResumedCases(&result, cases, rubric)
 			}
 		}
 	}
