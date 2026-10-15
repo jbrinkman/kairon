@@ -2,6 +2,7 @@ package eval
 
 import (
 	"encoding/json"
+	"regexp"
 
 	"github.com/jbrinkman/kairon/internal/eval/sandbox"
 	"github.com/jbrinkman/kairon/internal/inference"
@@ -50,12 +51,15 @@ type TestCase struct {
 	Input       string `yaml:"input" json:"input"`
 	// Turns scripts a multi-turn case: one user message per turn. It replaces
 	// Input (the two are mutually exclusive).
-	Turns          []string     `yaml:"turns,omitempty" json:"turns,omitempty"`
-	ExpectedOutput string       `yaml:"expected_output,omitempty" json:"expected_output,omitempty"`
-	Context        []string     `yaml:"context,omitempty" json:"context,omitempty"`
-	Setup          []SetupEntry `yaml:"setup,omitempty" json:"setup,omitempty"`
-	Agent          string       `yaml:"agent" json:"agent"`
-	MinScore       *float64     `yaml:"min_score,omitempty" json:"min_score,omitempty"` // Success threshold (0-100); overrides the rubric pass_threshold for this case
+	Turns []string `yaml:"turns,omitempty" json:"turns,omitempty"`
+	// SimulatedUser makes the case an elicitation case: after each agent turn
+	// the next user message is chosen from a bank of facts.
+	SimulatedUser  *SimulatedUser `yaml:"simulated_user,omitempty" json:"simulated_user,omitempty"`
+	ExpectedOutput string         `yaml:"expected_output,omitempty" json:"expected_output,omitempty"`
+	Context        []string       `yaml:"context,omitempty" json:"context,omitempty"`
+	Setup          []SetupEntry   `yaml:"setup,omitempty" json:"setup,omitempty"`
+	Agent          string         `yaml:"agent" json:"agent"`
+	MinScore       *float64       `yaml:"min_score,omitempty" json:"min_score,omitempty"` // Success threshold (0-100); overrides the rubric pass_threshold for this case
 
 	// Stub scripts the agent's response for the stub inference backend.
 	// Other backends ignore it.
@@ -86,6 +90,48 @@ type TestCase struct {
 	// Checks are deterministic pass/fail assertions on the workspace, the
 	// agent output and the gh log. A criterion with checks is scored from them.
 	Checks []Check `yaml:"checks,omitempty" json:"checks,omitempty"`
+}
+
+// defaultSimMaxTurns is the number of agent turns in the simulated phase when
+// simulated_user.max_turns is unset.
+const defaultSimMaxTurns = 10
+
+// noFact is the routing value meaning "the agent's question matches no fact".
+// It is therefore not allowed as a fact id.
+const noFact = "none"
+
+// SimulatedUser configures the answer-bank simulated user of an elicitation
+// case. The harness (not the model) picks each reply: a judge maps the agent's
+// question to at most one Fact and the Fact's Answer is sent verbatim, or
+// DefaultReply when no fact matches.
+type SimulatedUser struct {
+	Facts        []Fact `yaml:"facts" json:"facts"`
+	DefaultReply string `yaml:"default_reply" json:"default_reply"`
+	// StopWhen is an optional RE2 regex on the agent's output that ends the
+	// simulated phase.
+	StopWhen string `yaml:"stop_when,omitempty" json:"stop_when,omitempty"`
+	// MaxTurns bounds the agent turns of the simulated phase (default 10). It
+	// is a pointer so an explicit 0 can be rejected.
+	MaxTurns *int `yaml:"max_turns,omitempty" json:"max_turns,omitempty"`
+
+	stopRE *regexp.Regexp // compiled from StopWhen at load
+}
+
+// Fact is one entry of the simulated user's answer bank.
+type Fact struct {
+	ID     string `yaml:"id" json:"id"`
+	Answer string `yaml:"answer" json:"answer"`
+	// Discoverable records whether the fixture code could answer the question
+	// itself. It is a pointer so omitting it is a load error.
+	Discoverable *bool `yaml:"discoverable" json:"discoverable"`
+}
+
+// maxTurns returns the number of agent turns of the simulated phase.
+func (tc TestCase) maxTurns() int {
+	if tc.SimulatedUser != nil && tc.SimulatedUser.MaxTurns != nil {
+		return *tc.SimulatedUser.MaxTurns
+	}
+	return defaultSimMaxTurns
 }
 
 // CaseMock declares one mocked command for a case.
@@ -370,8 +416,12 @@ type ProjectDetection struct {
 
 // userTurns returns the user messages of the case in order: Turns for a
 // multi-turn case, otherwise the single Input (a classic case is a case with
-// one turn).
+// one turn). For a simulated-user case it is the fixed messages only: Input
+// followed by the scripted Turns (replies are decided at run time).
 func (tc TestCase) userTurns() []string {
+	if tc.SimulatedUser != nil {
+		return append([]string{tc.Input}, tc.Turns...)
+	}
 	if tc.Turns != nil {
 		return tc.Turns
 	}
