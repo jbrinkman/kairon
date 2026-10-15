@@ -31,6 +31,10 @@ type JudgeFile struct {
 	Content   string
 	Truncated bool
 	Size      int64
+	// shown is the number of file bytes in Content before any truncation
+	// marker. It is the amount charged against the total budget; the marker
+	// itself is display-only and must not be counted.
+	shown int
 }
 
 // JudgeQuery is everything handed to a JudgeFunc for one judge check.
@@ -127,7 +131,9 @@ func loadJudgeFiles(dir string, paths []string) ([]JudgeFile, string) {
 	files := make([]JudgeFile, 0, len(paths))
 	budget := judgeMaxTotalBytes
 	for _, p := range paths {
-		limit := min(judgeMaxFileBytes, budget)
+		// Clamp against a non-negative remaining budget so a negative limit can
+		// never reach readJudgeFile (where data[:limit] would panic).
+		limit := min(judgeMaxFileBytes, max(0, budget))
 		f, detail := readJudgeFile(dir, p, limit)
 		if detail != "" {
 			return nil, detail
@@ -138,12 +144,10 @@ func loadJudgeFiles(dir string, paths []string) ([]JudgeFile, string) {
 	return files, ""
 }
 
-// shownBytes is the length of the file content before any truncation marker.
+// shownBytes is the number of file bytes shown for f, excluding any truncation
+// marker. The marker is display-only and is not charged against the budget.
 func shownBytes(f JudgeFile) int {
-	if !f.Truncated {
-		return len(f.Content)
-	}
-	return len(f.Content) - len(truncationMarker(f, 0))
+	return f.shown
 }
 
 // truncationMarker is appended to a cut file. shown is only used to size it.
@@ -193,8 +197,9 @@ func readJudgeFile(dir, rel string, limit int) (JudgeFile, string) {
 		}
 	}
 	jf.Content = strings.ToValidUTF8(string(data), "\uFFFD")
+	jf.shown = len(jf.Content)
 	if jf.Truncated {
-		jf.Content += truncationMarker(jf, len(jf.Content))
+		jf.Content += truncationMarker(jf, jf.shown)
 	}
 	return jf, ""
 }

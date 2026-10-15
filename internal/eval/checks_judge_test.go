@@ -317,6 +317,46 @@ func TestJudgeCheckFileCaps(t *testing.T) {
 	})
 }
 
+// TestJudgeCheckManyLargeFilesNoPanic covers the case where several files each
+// larger than judgeMaxFileBytes exhaust the total budget. The marker must not
+// be charged against the budget and the per-file limit must stay non-negative,
+// so the read never hits data[:negativeLimit]. Before the shownBytes fix the
+// budget went negative after the fourth file and the fifth read panicked
+// (recovered by evaluateOne as a check failure), so capping never showed large
+// files. Each file here is 70,000 bytes (> judgeMaxFileBytes = 65536).
+func TestJudgeCheckManyLargeFilesNoPanic(t *testing.T) {
+	dir := t.TempDir()
+	const big = 70000
+	names := make([]string, 5)
+	for i := range names {
+		names[i] = fmt.Sprintf("big%d.md", i)
+		writeEvalFile(t, dir, names[i], strings.Repeat("a", big))
+	}
+	f := &fakeJudge{verdict: JudgeVerdict{Yes: true, Reasoning: "r"}}
+	// Passes only if evalJudge did not fail the check (a panic would be
+	// recovered as a failure, not a pass).
+	wantPass(t, evalOne(t, judgeCheck("q", names...), CheckInput{Dir: dir, Judge: f.judge}))
+
+	files := f.queries[0].Files
+	if len(files) != len(names) {
+		t.Fatalf("got %d files, want %d", len(files), len(names))
+	}
+	shown := 0
+	for _, jf := range files {
+		if !jf.Truncated {
+			t.Errorf("%s should be truncated (file is %d bytes, per-file cap is %d)", jf.Path, big, judgeMaxFileBytes)
+		}
+		body := jf.Content
+		if i := strings.Index(body, "\n[truncated:"); i >= 0 {
+			body = body[:i]
+		}
+		shown += len(body)
+	}
+	if shown > judgeMaxTotalBytes {
+		t.Errorf("showed %d bytes of file content, want <= %d", shown, judgeMaxTotalBytes)
+	}
+}
+
 func TestJudgeCheckTruncatesOnRuneBoundaryAndSanitizesUTF8(t *testing.T) {
 	dir := t.TempDir()
 	// "é" is 2 bytes, so the 64 KiB cut falls mid-rune for an odd offset.
