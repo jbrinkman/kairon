@@ -1298,7 +1298,7 @@ The command takes exactly one argument, the agent name (a single path element: n
 
 The score recorded for a run is the first of these that is available (all values are compared as **percent**):
 
-1. `summary.json` → `agent_verdicts.<agent>.score`: percent, written since [per-agent pass/fail verdicts](#pass-fail-verdict-and-exit-status).
+1. `summary.json` → `agent_verdicts.<agent>.score`: percent, written since [per-agent pass/fail verdicts](#passfail-verdict-and-exit-status).
 2. `summary.json` → `agent_scores.<agent>`: a 0-1 fraction, multiplied by 100. This is the fallback for older runs without verdicts (see [Percent versus fraction](#percent-versus-fraction)).
 3. Recomputed from `<agent>.json` (the case scores, using the same arithmetic as the verdict). This is the fallback for runs that have neither summary field.
 
