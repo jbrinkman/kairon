@@ -1,0 +1,28 @@
+name: check-judge-list
+description: "Self-test (fail): stub.judge [yes, no] with two judge checks records exactly 1/2"
+agent: selftest-fail
+input: |
+  Review the work and report what you found.
+context:
+  - "This case runs against the deterministic stub backend"
+  - "Expected to score 1/2: the first judge answers yes, the second no"
+expected_output: |
+  A short report with a top-level section and at least one subsection.
+stub:
+  judge: [yes, no]
+  turns:
+    - response: |
+        ## Checks
+
+        The stub turn finished and reported output marker alpha.
+
+        ### Details
+
+        This response carries the headings the report format expects.
+checks:
+  - criterion: structural_completeness
+    type: judge
+    question: "Does the report describe what the stub turn finished?"
+  - criterion: structural_completeness
+    type: judge
+    question: "Does the report mention a second subsection?"

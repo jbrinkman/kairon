@@ -13,14 +13,14 @@ import (
 	"github.com/jbrinkman/kairon/internal/inference"
 )
 
-// recordingBackend wraps another backend and records every agent request.
-type recordingBackend struct {
+// agentRecordingBackend wraps another backend and records every agent request.
+type agentRecordingBackend struct {
 	inference.Backend
 	mu   sync.Mutex
 	reqs []inference.Request
 }
 
-func (r *recordingBackend) Invoke(ctx context.Context, req inference.Request) (inference.Response, error) {
+func (r *agentRecordingBackend) Invoke(ctx context.Context, req inference.Request) (inference.Response, error) {
 	if req.Role == inference.RoleAgent {
 		r.mu.Lock()
 		r.reqs = append(r.reqs, req)
@@ -31,9 +31,9 @@ func (r *recordingBackend) Invoke(ctx context.Context, req inference.Request) (i
 
 // useRecordingBackend swaps the configured backend for a recording wrapper
 // around it. execEnv/configure resets cfg for the next test.
-func useRecordingBackend(t *testing.T) *recordingBackend {
+func useRecordingBackend(t *testing.T) *agentRecordingBackend {
 	t.Helper()
-	rb := &recordingBackend{Backend: cfg.backend}
+	rb := &agentRecordingBackend{Backend: cfg.backend}
 	cfg.backend = rb
 	return rb
 }

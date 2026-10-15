@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io/fs"
 	"os"
 	"os/exec"
@@ -58,7 +59,12 @@ func runEvalIn(t *testing.T, evalsDir, agent string, opts RunOptions) AgentResul
 
 	opts.Backend = "stub"
 	opts.EvalsDir = evalsDir
-	if err := RunWithOptions(agent, "", opts); err != nil {
+	err := RunWithOptions(agent, "", opts)
+	if wantThresholdFailure(agent, opts) {
+		if !errors.Is(err, ErrThresholdFailed) {
+			t.Fatalf("run of %s (sandbox=%v, keep=%v) = %v, want ErrThresholdFailed", agent, opts.Sandbox, opts.KeepWorkspaces, err)
+		}
+	} else if err != nil {
 		t.Fatalf("run of %s (sandbox=%v, keep=%v) failed: %v", agent, opts.Sandbox, opts.KeepWorkspaces, err)
 	}
 	added := newRunDirs(t, resultsDir, before)
@@ -66,6 +72,54 @@ func runEvalIn(t *testing.T, evalsDir, agent string, opts RunOptions) AgentResul
 		t.Fatalf("run of %s created %d result dirs, want 1: %v", agent, len(added), added)
 	}
 	return readSelfTestResult(t, filepath.Join(resultsDir, added[0], agent+".json"))
+}
+
+// wantThresholdFailure reports whether a self-test run of agent is expected to
+// finish below its pass threshold: selftest-fail always does; selftest-sandbox
+// does when run natively (every case is refused with "requires --sandbox");
+// and selftest-sandbox-ro always does, because it owns stub-write-outside-mounts,
+// a requires_sandbox case deliberately failing against the read-only root even
+// under --sandbox. Everything else must pass.
+func wantThresholdFailure(agent string, opts RunOptions) bool {
+	switch agent {
+	case "selftest-fail", "selftest-sandbox-ro":
+		return true
+	case "selftest-sandbox":
+		return !opts.Sandbox
+	}
+	return false
+}
+
+// TestWantThresholdFailure pins the expected-failure contract for every
+// self-test agent in both modes. In particular selftest-sandbox-ro must be
+// expected to fail its threshold even under --sandbox: it owns
+// stub-write-outside-mounts, a requires_sandbox case that deliberately fails
+// against the read-only root filesystem, so the agent's aggregate falls below
+// its pass threshold and RunWithOptions returns ErrThresholdFailed. By
+// contrast selftest-sandbox's cases all pass under --sandbox, so it is only
+// expected to fail when run natively.
+func TestWantThresholdFailure(t *testing.T) {
+	cases := []struct {
+		agent   string
+		sandbox bool
+		want    bool
+	}{
+		{"selftest", false, false},
+		{"selftest", true, false},
+		{"selftest-fail", false, true},
+		{"selftest-fail", true, true},
+		{"selftest-sandbox", false, true},
+		{"selftest-sandbox", true, false},
+		{"selftest-sandbox-ro", false, true},
+		{"selftest-sandbox-ro", true, true},
+	}
+	for _, tc := range cases {
+		opts := RunOptions{Sandbox: tc.sandbox, NoSandbox: !tc.sandbox}
+		if got := wantThresholdFailure(tc.agent, opts); got != tc.want {
+			t.Errorf("wantThresholdFailure(%q, Sandbox=%v) = %v, want %v",
+				tc.agent, tc.sandbox, got, tc.want)
+		}
+	}
 }
 
 func caseByName(t *testing.T, res AgentResult, name string) CaseResult {
@@ -210,7 +264,7 @@ func TestSelfTestWorkspaceCasesNative(t *testing.T) {
 	rootStatusBefore := gitIn(t, ".", "status", "--porcelain")
 
 	start := time.Now()
-	agentRes, _ := runEvalCopy(t, "selftest", RunOptions{NoSandbox: true, KeepWorkspaces: true})
+	agentRes, agentEvals := runEvalCopy(t, "selftest", RunOptions{NoSandbox: true, KeepWorkspaces: true})
 	failRes, _ := runEvalCopy(t, "selftest-fail", RunOptions{NoSandbox: true, KeepWorkspaces: true})
 	for _, res := range []AgentResult{agentRes, failRes} {
 		for _, c := range res.Cases {
@@ -222,7 +276,7 @@ func TestSelfTestWorkspaceCasesNative(t *testing.T) {
 	}
 
 	assertWorkspaceCases(t, "native", agentRes, failRes)
-	assertSelfTestResults(t, agentRes)
+	assertSelfTestResults(t, agentEvals, agentRes)
 
 	if _, err := os.Stat("marker.txt"); err == nil {
 		t.Error("marker.txt appeared in the repository root")
@@ -293,8 +347,9 @@ func TestSandboxWorkspace(t *testing.T) {
 
 	// Sandbox runs, kept.
 	var sandboxAgent, sandboxFail AgentResult
+	var sandboxEvals string
 	sandboxOut := captureStdout(t, func() {
-		sandboxAgent, _ = runEvalCopy(t, "selftest", RunOptions{Sandbox: true, KeepWorkspaces: true})
+		sandboxAgent, sandboxEvals = runEvalCopy(t, "selftest", RunOptions{Sandbox: true, KeepWorkspaces: true})
 	})
 	failStart := time.Now()
 	sandboxFail, _ = runEvalCopy(t, "selftest-fail", RunOptions{Sandbox: true, KeepWorkspaces: true})
@@ -312,7 +367,7 @@ func TestSandboxWorkspace(t *testing.T) {
 
 	assertWorkspaceCases(t, "native", nativeAgent, nativeFail)
 	assertWorkspaceCases(t, "sandbox", sandboxAgent, sandboxFail)
-	assertSelfTestResults(t, sandboxAgent)
+	assertSelfTestResults(t, sandboxEvals, sandboxAgent)
 
 	// Native and sandbox host workspaces are identical for all three cases.
 	pairs := []struct {
@@ -385,8 +440,14 @@ func TestSandboxWorkspace(t *testing.T) {
 	editedOut := captureStdout(t, func() {
 		edited = runEvalIn(t, evalsDir, "selftest", RunOptions{Sandbox: true})
 	})
-	if len(edited.Cases) != 18 {
-		t.Errorf("edited run has %d cases, want 18", len(edited.Cases))
+	editedByName := map[string]bool{}
+	for _, c := range edited.Cases {
+		editedByName[c.CaseName] = true
+	}
+	for _, name := range selftestFixtureCaseNames(t, evalsDir) {
+		if !editedByName[name] {
+			t.Errorf("edited run did not exercise fixture case %q", name)
+		}
 	}
 	if strings.Contains(editedOut, "Base image built") {
 		t.Errorf("editing an agent config and a case rebuilt the base image:\n%s", editedOut)

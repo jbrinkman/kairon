@@ -162,10 +162,35 @@ func readSelfTestResult(t *testing.T, path string) AgentResult {
 	return res
 }
 
+// selftestFixtureCaseNames lists the self-test case names present on disk under
+// <evalsDir>/cases/selftest, i.e. each *.yaml filename without its extension.
+// Comparing results against this (rather than a hard-coded count) catches a
+// case that silently stops loading while never breaking when cases are added.
+func selftestFixtureCaseNames(t *testing.T, evalsDir string) []string {
+	t.Helper()
+	dir := filepath.Join(evalsDir, "cases", "selftest")
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("reading selftest fixture cases %s: %v", dir, err)
+	}
+	var names []string
+	for _, e := range entries {
+		if e.IsDir() || filepath.Ext(e.Name()) != ".yaml" {
+			continue
+		}
+		names = append(names, strings.TrimSuffix(e.Name(), ".yaml"))
+	}
+	if len(names) == 0 {
+		t.Fatalf("no selftest fixture cases found under %s", dir)
+	}
+	return names
+}
+
 // assertSelfTestResults checks the written selftest.json: the stub-usage case
 // carries the reported usage from its stub turn, and every score (including
-// LLM-judged ones) is at the maximum.
-func assertSelfTestResults(t *testing.T, res AgentResult) {
+// LLM-judged ones) is at the maximum. evalsDir is the fixture set the run used;
+// the result cases must cover exactly its on-disk selftest cases.
+func assertSelfTestResults(t *testing.T, evalsDir string, res AgentResult) {
 	t.Helper()
 	byName := map[string]CaseResult{}
 	for _, c := range res.Cases {
@@ -194,8 +219,17 @@ func assertSelfTestResults(t *testing.T, res AgentResult) {
 			t.Errorf("%s usage_source = %q, want estimated", name, got)
 		}
 	}
-	if len(res.Cases) != 5+11+2 {
-		t.Errorf("selftest has %d cases, want 18", len(res.Cases))
+	// Completeness: the results must cover exactly the self-test cases on
+	// disk. This catches a case that stops loading (lost coverage) without a
+	// brittle hard-coded count, so adding cases never breaks it.
+	fixtures := selftestFixtureCaseNames(t, evalsDir)
+	for _, name := range fixtures {
+		if _, ok := byName[name]; !ok {
+			t.Errorf("fixture case %q did not run (results have %d cases)", name, len(res.Cases))
+		}
+	}
+	if len(res.Cases) != len(fixtures) {
+		t.Errorf("results have %d cases, fixtures define %d (%v)", len(res.Cases), len(fixtures), fixtures)
 	}
 	assertMultiTurnGHLogResult(t, byName[multiTurnGHLogCase])
 	if got := byName[multiTurnWorkspaceCase].TurnOutputs; len(got) != 2 {
@@ -263,7 +297,7 @@ func TestSelfTestStubRunEndToEnd(t *testing.T) {
 
 	// Results must land under the evals dir, never under the default one.
 	resultFile := filepath.Join(resultsDir, added[0], "selftest.json")
-	assertSelfTestResults(t, readSelfTestResult(t, resultFile))
+	assertSelfTestResults(t, selftestEvalsDir, readSelfTestResult(t, resultFile))
 }
 
 // TestSelfTestStubRunDoesNotConsultPath runs the stub backend against a copy
@@ -287,7 +321,7 @@ func TestSelfTestStubRunDoesNotConsultPath(t *testing.T) {
 	if len(added) == 0 {
 		t.Fatalf("no run directory appeared under %s", resultsDir)
 	}
-	assertSelfTestResults(t, readSelfTestResult(t, filepath.Join(resultsDir, added[0], "selftest.json")))
+	assertSelfTestResults(t, evalsDir, readSelfTestResult(t, filepath.Join(resultsDir, added[0], "selftest.json")))
 }
 
 func TestSelfTestRejectsUnknownBackend(t *testing.T) {

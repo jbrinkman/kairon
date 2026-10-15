@@ -33,6 +33,7 @@ const (
 	CheckOutputNotContains CheckType = "output_not_contains"
 	CheckGHLogContains     CheckType = "gh_log_contains"
 	CheckGHLogNotContains  CheckType = "gh_log_not_contains"
+	CheckJudge             CheckType = "judge"
 )
 
 // Check is one declarative pass/fail assertion attached to a rubric criterion.
@@ -46,6 +47,8 @@ type Check struct {
 	Pattern    string    `yaml:"pattern,omitempty" json:"pattern,omitempty"`
 	Allow      []string  `yaml:"allow,omitempty" json:"allow,omitempty"`
 	Turn       *int      `yaml:"turn,omitempty" json:"turn,omitempty"`
+	Question   string    `yaml:"question,omitempty" json:"question,omitempty"`
+	Files      []string  `yaml:"files,omitempty" json:"files,omitempty"`
 
 	re        *regexp.Regexp
 	globs     []glob
@@ -76,6 +79,13 @@ type CheckInput struct {
 	// Turns is per-turn evidence for multi-turn cases; Turns[i] is turn i+1.
 	// Empty for classic cases, whose checks read Output and GHLog.
 	Turns []TurnEvidence
+
+	// Input is the case input shown to a judge check. Optional.
+	Input string
+
+	// Judge answers judge checks. Optional: a judge check evaluated with a nil
+	// Judge fails ("no judge configured"); other check types ignore it.
+	Judge JudgeFunc
 }
 
 // TurnEvidence is what output_* and gh_log_* checks may inspect for one turn.
@@ -95,7 +105,7 @@ func (c Check) expectedExit() int {
 
 // checkFields is the set of optional schema fields a check may carry.
 type checkFields struct {
-	run, expectExit, inject, path, pattern, allow, turn bool
+	run, expectExit, inject, path, pattern, allow, turn, question, files bool
 }
 
 // checkSpecs lists, per type, the fields it requires and the fields it
@@ -115,6 +125,7 @@ var checkSpecs = map[CheckType]struct{ required, allowed checkFields }{
 	CheckOutputNotContains: {checkFields{pattern: true}, checkFields{pattern: true, turn: true}},
 	CheckGHLogContains:     {checkFields{pattern: true}, checkFields{pattern: true, turn: true}},
 	CheckGHLogNotContains:  {checkFields{pattern: true}, checkFields{pattern: true, turn: true}},
+	CheckJudge:             {checkFields{question: true}, checkFields{question: true, files: true}},
 }
 
 // present reports which fields the check actually sets. Empty strings, a nil
@@ -128,6 +139,8 @@ func (c Check) present() checkFields {
 		pattern:    c.Pattern != "",
 		allow:      c.Allow != nil,
 		turn:       c.Turn != nil,
+		question:   c.Question != "",
+		files:      len(c.Files) > 0,
 	}
 }
 
@@ -174,6 +187,8 @@ func validateCheck(c *Check, hiddenDir string, rubric *Rubric) error {
 		{"pattern", have.pattern, spec.required.pattern, spec.allowed.pattern},
 		{"allow", have.allow, spec.required.allow, spec.allowed.allow},
 		{"turn", have.turn, spec.required.turn, spec.allowed.turn},
+		{"question", have.question, spec.required.question, spec.allowed.question},
+		{"files", have.files, spec.required.files, spec.allowed.files},
 	} {
 		switch {
 		case f.have && !f.ok:
@@ -195,6 +210,11 @@ func validateCheck(c *Check, hiddenDir string, rubric *Rubric) error {
 	if have.path {
 		if !filepath.IsLocal(c.Path) {
 			return fmt.Errorf("path %q must be relative and stay inside the workspace (no absolute path, no '..')", c.Path)
+		}
+	}
+	if c.Type == CheckJudge {
+		if err := validateJudgeCheck(c); err != nil {
+			return err
 		}
 	}
 	if have.pattern {

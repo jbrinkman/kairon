@@ -1,6 +1,7 @@
 package eval
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -61,8 +62,8 @@ func checkedScore(t *testing.T, c CaseResult) CriterionScore {
 func TestSelfTestChecksPassingCases(t *testing.T) {
 	res := runSelfTestAgent(t, "selftest")
 
-	if got, want := len(res.Cases), 5+11+2; got != want {
-		t.Errorf("selftest has %d cases, want %d (5 legacy + 11 check cases + 2 multi-turn)", got, want)
+	if got, want := len(res.Cases), 5+11+2+3; got != want {
+		t.Errorf("selftest has %d cases, want %d (5 legacy + 11 check + 2 multi-turn + 3 judge)", got, want)
 	}
 
 	seen := map[CheckType]bool{}
@@ -146,8 +147,8 @@ func TestSelfTestChecksPassingCases(t *testing.T) {
 func TestSelfTestChecksFailingCases(t *testing.T) {
 	res := runSelfTestAgent(t, "selftest-fail")
 
-	if got, want := len(res.Cases), 10+1+1+1; got != want {
-		t.Errorf("selftest-fail has %d cases, want %d (10 per-type + check-partial + stub-timeout + multi-turn-wrong-turn)", got, want)
+	if got, want := len(res.Cases), 10+1+1+1+1+5; got != want {
+		t.Errorf("selftest-fail has %d cases, want %d (10 per-type + check-partial + stub-timeout + stub-empty-response + multi-turn-wrong-turn + 5 judge)", got, want)
 	}
 
 	for _, tt := range selftestCheckTypes {
@@ -211,6 +212,48 @@ func TestSelfTestChecksWrongTurnFails(t *testing.T) {
 	}
 	if !strings.Contains(sc.Reasoning, "gh_log_contains") || !strings.Contains(sc.Reasoning, "turn=1") {
 		t.Errorf("reasoning %q must name the gh_log_contains check with turn=1", sc.Reasoning)
+	}
+}
+
+// TestSelfTestEmptyResponseCountsAsZero: the stub-empty-response case gets no
+// agent output, so every criterion scores 0 out of a positive maximum, stays in
+// the denominator, and drags the selftest-fail agent score down.
+func TestSelfTestEmptyResponseCountsAsZero(t *testing.T) {
+	res := runSelfTestAgent(t, "selftest-fail")
+	c := caseByName(t, res, "stub-empty-response")
+
+	if c.ActualOutput != "" {
+		t.Errorf("ActualOutput = %q, want empty", c.ActualOutput)
+	}
+	if len(c.Scores) == 0 {
+		t.Fatal("stub-empty-response recorded no scores")
+	}
+	for _, s := range c.Scores {
+		if s.Score != 0 || s.MaxScore <= 0 || !s.Skipped {
+			t.Errorf("criterion %s = %d/%d (skipped %v), want a skipped 0 with MaxScore > 0",
+				s.Name, s.Score, s.MaxScore, s.Skipped)
+		}
+	}
+	cs, cm := caseTotals(c)
+	if cs != 0 || cm == 0 {
+		t.Errorf("caseTotals = (%d, %d), want (0, >0): the case must stay in the denominator", cs, cm)
+	}
+
+	// The agent score with the case is lower than without it.
+	withScore, withMax := agentScoreTotals(res)
+	without := res
+	without.Cases = nil
+	for _, other := range res.Cases {
+		if other.CaseName != c.CaseName {
+			without.Cases = append(without.Cases, other)
+		}
+	}
+	woScore, woMax := agentScoreTotals(without)
+	if withScore != woScore || withMax != woMax+float64(cm) {
+		t.Errorf("totals with = %v/%v, without = %v/%v, want the case to add 0/%d", withScore, withMax, woScore, woMax, cm)
+	}
+	if with, wo := withScore/withMax, woScore/woMax; !(with < wo) {
+		t.Errorf("agent score with the empty-response case = %v, want lower than %v without it", with, wo)
 	}
 }
 
@@ -290,15 +333,18 @@ func TestSelfTestChecksLegacyScoresUnchanged(t *testing.T) {
 	}
 }
 
-// TestSelfTestChecksRunExitsCleanly mirrors `task eval:selftest` and the
-// selftest-fail run: failures are recorded in the results, not returned as an
-// error.
-func TestSelfTestChecksRunExitsCleanly(t *testing.T) {
+// TestSelfTestChecksRunExitStatus mirrors `task eval:selftest` (exits 0) and
+// the selftest-fail run (exits non-zero with the threshold error).
+func TestSelfTestChecksRunExitStatus(t *testing.T) {
 	t.Cleanup(resetConfig)
-	for _, agent := range []string{"selftest", "selftest-fail"} {
+	for agent, wantFail := range map[string]bool{"selftest": false, "selftest-fail": true} {
 		evalsDir := filepath.Join(t.TempDir(), "evals")
 		copyFixturesTo(t, evalsDir)
-		if err := RunWithOptions(agent, "", RunOptions{Backend: "stub", NoSandbox: true, EvalsDir: evalsDir}); err != nil {
+		err := RunWithOptions(agent, "", RunOptions{Backend: "stub", NoSandbox: true, EvalsDir: evalsDir})
+		if wantFail != errors.Is(err, ErrThresholdFailed) {
+			t.Errorf("run of %s: err = %v, want ErrThresholdFailed=%v", agent, err, wantFail)
+		}
+		if !wantFail && err != nil {
 			t.Errorf("run of %s returned an error: %v", agent, err)
 		}
 	}
