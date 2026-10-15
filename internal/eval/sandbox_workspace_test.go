@@ -75,17 +75,51 @@ func runEvalIn(t *testing.T, evalsDir, agent string, opts RunOptions) AgentResul
 }
 
 // wantThresholdFailure reports whether a self-test run of agent is expected to
-// finish below its pass threshold: selftest-fail always does, and the
-// containment agents do when run natively (every case is refused with
-// "requires --sandbox"). Everything else must pass.
+// finish below its pass threshold: selftest-fail always does; selftest-sandbox
+// does when run natively (every case is refused with "requires --sandbox");
+// and selftest-sandbox-ro always does, because it owns stub-write-outside-mounts,
+// a requires_sandbox case deliberately failing against the read-only root even
+// under --sandbox. Everything else must pass.
 func wantThresholdFailure(agent string, opts RunOptions) bool {
 	switch agent {
-	case "selftest-fail":
+	case "selftest-fail", "selftest-sandbox-ro":
 		return true
-	case "selftest-sandbox", "selftest-sandbox-ro":
+	case "selftest-sandbox":
 		return !opts.Sandbox
 	}
 	return false
+}
+
+// TestWantThresholdFailure pins the expected-failure contract for every
+// self-test agent in both modes. In particular selftest-sandbox-ro must be
+// expected to fail its threshold even under --sandbox: it owns
+// stub-write-outside-mounts, a requires_sandbox case that deliberately fails
+// against the read-only root filesystem, so the agent's aggregate falls below
+// its pass threshold and RunWithOptions returns ErrThresholdFailed. By
+// contrast selftest-sandbox's cases all pass under --sandbox, so it is only
+// expected to fail when run natively.
+func TestWantThresholdFailure(t *testing.T) {
+	cases := []struct {
+		agent   string
+		sandbox bool
+		want    bool
+	}{
+		{"selftest", false, false},
+		{"selftest", true, false},
+		{"selftest-fail", false, true},
+		{"selftest-fail", true, true},
+		{"selftest-sandbox", false, true},
+		{"selftest-sandbox", true, false},
+		{"selftest-sandbox-ro", false, true},
+		{"selftest-sandbox-ro", true, true},
+	}
+	for _, tc := range cases {
+		opts := RunOptions{Sandbox: tc.sandbox, NoSandbox: !tc.sandbox}
+		if got := wantThresholdFailure(tc.agent, opts); got != tc.want {
+			t.Errorf("wantThresholdFailure(%q, Sandbox=%v) = %v, want %v",
+				tc.agent, tc.sandbox, got, tc.want)
+		}
+	}
 }
 
 func caseByName(t *testing.T, res AgentResult, name string) CaseResult {
