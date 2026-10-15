@@ -352,11 +352,18 @@ func TestVerifyLogScoreSources(t *testing.T) {
 			agentJSON: vlAgentJSON(vlShaB), claimed: "72.5", wantRule: "run-data",
 		},
 		{
-			// A present-but-empty verdict object ({}) is not a measured
-			// score: CasesTotal is 0, so it must be ignored and fall
-			// through, not accepted as a real 0.0.
+			// A present-but-empty verdict object ({}) has no "score"
+			// field, so it is not a measured score: it must be ignored and
+			// fall through, not accepted as a real 0.0.
 			name:      "empty agent_verdicts object is not a 0.0 score",
 			summary:   `{"git_hash":"x","agent_verdicts":{"selftest":{}}}`,
+			agentJSON: vlAgentJSON(vlShaB), claimed: "0.0", wantRule: "run-data",
+		},
+		{
+			// A present-but-null verdict score decodes the numeric Score
+			// field to 0.0; it must not be accepted as a real 0.0 score.
+			name:      "null agent_verdicts score is not a 0.0 score",
+			summary:   `{"git_hash":"x","agent_verdicts":{"selftest":{"score":null}}}`,
 			agentJSON: vlAgentJSON(vlShaB), claimed: "0.0", wantRule: "run-data",
 		},
 		{

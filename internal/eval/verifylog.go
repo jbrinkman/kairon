@@ -589,11 +589,11 @@ func loadRunRecord(resultsDir, run, agent string) runRecord {
 }
 
 // hasVerdict reports whether the summary records a *measured* verdict for
-// agent. A present-but-empty verdict object ({}) decodes to the zero
-// AgentVerdict and is not a real 0.0 score, so it is ignored and the next
-// score source is tried. A measured verdict always serializes a "score"
-// field (even a real 0.0 as "score":0), so the raw bytes are re-read to tell
-// an empty object from a measured verdict rather than relying on a
+// agent. A present-but-empty verdict object ({}) has no "score" field, and a
+// present-but-null "score" decodes the numeric Score field to 0.0; neither is
+// a real 0.0 score, so both are ignored and the next score source is tried. A
+// measured verdict always serializes a non-null "score" field (even a real
+// 0.0 as "score":0), so the raw bytes are re-read to tell these apart from a
 // non-distinguishing in-memory zero value.
 func hasVerdict(summaryPath string, s Summary, agent string) bool {
 	if _, ok := s.AgentVerdicts[agent]; !ok {
@@ -607,8 +607,8 @@ func hasVerdict(summaryPath string, s Summary, agent string) bool {
 	if json.Unmarshal(raw, &fields) != nil {
 		return false
 	}
-	_, hasScore := fields["score"]
-	return hasScore
+	score, hasScore := fields["score"]
+	return hasScore && string(score) != "null"
 }
 
 // hasAgentScore reports whether the summary records a *measured* agent_scores
