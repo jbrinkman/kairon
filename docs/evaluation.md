@@ -142,6 +142,8 @@ Every check has `criterion` and `type`. The other fields depend on the type, and
 | `gh_log_contains` | `pattern` | `turn` | the fake `gh` log (default: the final log) matches the regex |
 | `gh_log_not_contains` | `pattern` | `turn` | the fake `gh` log (default: the final log) does not match the regex |
 | `judge` | `question` | `files` | the judge model answers the yes/no `question` with `yes` |
+| `fact_asked` | `fact` | | the simulated-user log (`.eval/sim-log.jsonl`) has at least one decision routed to fact id `fact` |
+| `fact_not_asked` | `fact` | | the simulated-user log has no decision routed to fact id `fact` |
 
 `turn` is only accepted by the four `output_*` / `gh_log_*` types; see [The `turn` field](#the-turn-field).
 
@@ -233,6 +235,18 @@ checks:
 ```
 
 > **Native runs have no `gh` log.** The fake `gh` exists only under `--sandbox`; a native run calls the real `gh`, which Kairon does not log. Natively the log is empty unless the stub or the agent wrote `.eval/gh.log` itself, so `gh_log_contains` fails and `gh_log_not_contains` passes vacuously. `gh_log_*` checks do not require `requires_sandbox`, so the native self-test can exercise every type, but a case that asserts on real `gh` calls should set `requires_sandbox: true`. The log lives in `.eval/`, which the agent can write: it is evidence from the fake, not tamper-proof. The same holds for each per-turn snapshot of a `turns` case.
+
+`fact_asked` and `fact_not_asked` read the simulated-user decision log, `.eval/sim-log.jsonl` (one JSON object per line with `turn`, `question`, `fact` and `discoverable`). `fact_asked` passes when at least one decision has `fact` equal to the given id; `fact_not_asked` passes when none has. `fact` is required on these two types and rejected on every other; `turn` is not accepted on them. A missing, symlinked, non-regular, oversized (over 10 MiB) or malformed log **fails** the check with a detail, including for `fact_not_asked`; it is never a silent pass.
+
+```yaml
+checks:
+  - criterion: structural_completeness
+    type: fact_asked
+    fact: format
+  - criterion: structural_completeness
+    type: fact_not_asked
+    fact: language
+```
 
 ### The `turn` field
 
