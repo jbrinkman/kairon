@@ -55,6 +55,11 @@ type StubScript struct {
 	Turns []StubTurn `yaml:"turns" json:"turns"`
 	// Judge scripts the answers to yes/no judge requests (Request.YesNo).
 	Judge StubJudge `yaml:"judge,omitempty" json:"judge,omitempty"`
+	// Routes scripts the answers to routing requests (Request.Route): entry N
+	// answers the routing decision with Request.RouteSeq == N. Each entry is a
+	// fact id or "none". Unlike Judge it is index-based, not a cursor: the same
+	// RouteSeq always yields the same answer, regardless of call order or reruns.
+	Routes []string `yaml:"routes,omitempty" json:"routes,omitempty"`
 
 	judgeNext int // cursor into Judge; guarded by judgeMu
 }
@@ -174,6 +179,16 @@ type Request struct {
 	// YesNo marks a RoleJudge request as a yes/no question (as opposed to the
 	// legacy 1-5 scoring call). The stub backend answers it from Stub.Judge.
 	YesNo bool `json:"YesNo"`
+	// Route marks a RoleJudge request as a routing question: which fact in the
+	// case's bank does an agent output ask about (or "none")? The prompt carries
+	// the whole question, so real backends ignore Route and just answer it. The
+	// stub backend answers from Stub.Routes[RouteSeq]. It is mutually exclusive
+	// with YesNo.
+	Route bool `json:"Route"`
+	// RouteSeq is the 0-based number of this routing decision in the case. Only
+	// the stub backend uses it, to index Stub.Routes (like Turn indexes
+	// Stub.Turns), so answers are stateless and cannot drift on reruns.
+	RouteSeq int `json:"RouteSeq"`
 	// ToolTrust restricts which tools the agent may use without prompting. nil
 	// means unrestricted (kiro-cli --trust-all-tools, the historical behaviour);
 	// non-nil, even with zero tools, means restricted to exactly that set

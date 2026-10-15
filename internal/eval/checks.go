@@ -34,6 +34,8 @@ const (
 	CheckGHLogContains     CheckType = "gh_log_contains"
 	CheckGHLogNotContains  CheckType = "gh_log_not_contains"
 	CheckJudge             CheckType = "judge"
+	CheckFactAsked         CheckType = "fact_asked"
+	CheckFactNotAsked      CheckType = "fact_not_asked"
 )
 
 // Check is one declarative pass/fail assertion attached to a rubric criterion.
@@ -49,6 +51,7 @@ type Check struct {
 	Turn       *int      `yaml:"turn,omitempty" json:"turn,omitempty"`
 	Question   string    `yaml:"question,omitempty" json:"question,omitempty"`
 	Files      []string  `yaml:"files,omitempty" json:"files,omitempty"`
+	Fact       string    `yaml:"fact,omitempty" json:"fact,omitempty"`
 
 	re        *regexp.Regexp
 	globs     []glob
@@ -105,7 +108,7 @@ func (c Check) expectedExit() int {
 
 // checkFields is the set of optional schema fields a check may carry.
 type checkFields struct {
-	run, expectExit, inject, path, pattern, allow, turn, question, files bool
+	run, expectExit, inject, path, pattern, allow, turn, question, files, fact bool
 }
 
 // checkSpecs lists, per type, the fields it requires and the fields it
@@ -126,6 +129,8 @@ var checkSpecs = map[CheckType]struct{ required, allowed checkFields }{
 	CheckGHLogContains:     {checkFields{pattern: true}, checkFields{pattern: true, turn: true}},
 	CheckGHLogNotContains:  {checkFields{pattern: true}, checkFields{pattern: true, turn: true}},
 	CheckJudge:             {checkFields{question: true}, checkFields{question: true, files: true}},
+	CheckFactAsked:         {checkFields{fact: true}, checkFields{fact: true}},
+	CheckFactNotAsked:      {checkFields{fact: true}, checkFields{fact: true}},
 }
 
 // present reports which fields the check actually sets. Empty strings, a nil
@@ -141,6 +146,7 @@ func (c Check) present() checkFields {
 		turn:       c.Turn != nil,
 		question:   c.Question != "",
 		files:      len(c.Files) > 0,
+		fact:       strings.TrimSpace(c.Fact) != "",
 	}
 }
 
@@ -189,6 +195,7 @@ func validateCheck(c *Check, hiddenDir string, rubric *Rubric) error {
 		{"turn", have.turn, spec.required.turn, spec.allowed.turn},
 		{"question", have.question, spec.required.question, spec.allowed.question},
 		{"files", have.files, spec.required.files, spec.allowed.files},
+		{"fact", have.fact, spec.required.fact, spec.allowed.fact},
 	} {
 		switch {
 		case f.have && !f.ok:

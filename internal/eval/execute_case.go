@@ -71,11 +71,14 @@ func executeCase(rubric Rubric, tc TestCase, cConfig *ContainerConfig, out io.Wr
 		return cr
 	}
 
-	// A classic case is a case with one turn. Setup context is part of the
-	// first turn's prompt only; later turns are sent verbatim.
-	turns := tc.userTurns()
-	multi := tc.Turns != nil // only turns cases record per-turn results
-	prompt, err := assemblePrompt(tc.Setup, turns[0])
+	// A classic case is a case with one turn. The turn plan decides each next
+	// user message: the next scripted turn, or a reply from the simulated
+	// user's fact bank. Setup context is part of the first turn's prompt only;
+	// later turns are sent verbatim.
+	simulated := tc.SimulatedUser != nil
+	multi := tc.Turns != nil || simulated // these cases record per-turn results
+	var plan *turnPlan
+	prompt, err := assemblePrompt(tc.Setup, openingMessage(tc))
 	if err != nil {
 		fmt.Fprintf(out, " ❌ (prompt error)\n")
 		fmt.Fprintf(out, "      Error: %v\n", err)
@@ -106,26 +109,67 @@ func executeCase(rubric Rubric, tc TestCase, cConfig *ContainerConfig, out io.Wr
 		defer ws.Remove() // after scoring; Remove never fails the run
 	}
 
+	// A simulated case's decision log starts empty, so "no decision yet" is
+	// distinguishable from "no log". The harness keeps the decisions in memory
+	// and rewrites the file before scoring, because the agent can write .eval/.
+	persist := func(ds []SimDecision) error { return rewriteSimLog(ws.Dir, ds) }
+	if simulated {
+		if err := persist(nil); err != nil {
+			fmt.Fprintf(out, " ❌ (workspace failed)\n")
+			fmt.Fprintf(out, "      Error: %v\n", err)
+			cr.ActualOutput = ""
+			cr.ErrorContext = &ErrorContext{Stderr: fmt.Sprintf("workspace setup failed: %v", err)}
+			scoreCaseFn(rubric, tc, &cr)
+			return cr
+		}
+	}
+	plan = newTurnPlan(tc, nil, persist)
+	if simulated {
+		plan.route = newRouter(tc, &cr)
+	}
+
+	// score scores the case. A simulated case's log is first rewritten from
+	// memory, and the judge sees the conversation that actually happened.
+	score := func() {
+		view := tc
+		if simulated {
+			if err := persist(plan.decisions); err != nil && cr.ErrorContext == nil {
+				cr.ActualOutput = ""
+				cr.ErrorContext = &ErrorContext{Stderr: err.Error()}
+			}
+			if len(cr.UserTurns) > 0 {
+				view.Turns = cr.UserTurns
+			}
+		}
+		scoreCaseFn(rubric, view, &cr)
+	}
+
 	// A multi-turn sandbox case keeps one container for all its turns, so the
 	// agent's conversation state under the container's $HOME survives between
 	// turns. One-turn and classic cases keep the one-shot container path.
 	var session containerSession
 	failed := false
-	if cConfig != nil && len(turns) > 1 {
+	if cConfig != nil && (simulated || len(tc.userTurns()) > 1) {
 		session = &lazyContainerSession{cConfig: cConfig, ws: ws}
 		defer func() { session.Close(failed) }()
 	}
 
 	// Every turn runs against the same workspace; the backend owns
 	// conversation continuity (Request.Turn > 0 continues it).
-	for i, userTurn := range turns {
-		k := i + 1
-		if i > 0 {
-			prompt = userTurn
+	userMsg := plan.first()
+	for k := 1; ; k++ {
+		if simulated {
+			cr.UserTurns = append(cr.UserTurns, userMsg)
 		}
-		if multi {
-			fmt.Fprintf(out, " → turn %d/%d...", k, len(turns))
-		} else {
+		if k > 1 {
+			prompt = userMsg
+		}
+		switch {
+		case simulated:
+			fmt.Fprintf(out, " → turn %d...", k)
+		case multi:
+			fmt.Fprintf(out, " → turn %d/%d...", k, plan.total())
+		default:
 			fmt.Fprintf(out, " → running agent...")
 		}
 		actualOutput, cost, rec, errorContext, err := invokeAgent(rubric.Agent, prompt, cConfig,
@@ -138,14 +182,17 @@ func executeCase(rubric Rubric, tc TestCase, cConfig *ContainerConfig, out io.Wr
 		if err != nil {
 			failed = true
 			fmt.Fprintf(out, " ❌ (agent failed)\n")
-			if multi {
-				fmt.Fprintf(out, "      Error: turn %d/%d: %v\n", k, len(turns), err)
-			} else {
+			switch {
+			case simulated:
+				fmt.Fprintf(out, "      Error: turn %d: %v\n", k, err)
+			case multi:
+				fmt.Fprintf(out, "      Error: turn %d/%d: %v\n", k, plan.total(), err)
+			default:
 				fmt.Fprintf(out, "      Error: %v\n", err)
 			}
 			cr.ActualOutput = ""
 			cr.ErrorContext = errorContext
-			scoreCaseFn(rubric, tc, &cr)
+			score()
 			return cr
 		}
 		cr.ActualOutput = actualOutput
@@ -156,6 +203,24 @@ func executeCase(rubric Rubric, tc TestCase, cConfig *ContainerConfig, out io.Wr
 			ghLog, oversized := readGHLog(ws.Dir)
 			cr.turnGHLogs = append(cr.turnGHLogs, ghLogSnapshot{Content: ghLog, Oversized: oversized})
 		}
+
+		next, more, nerr := plan.next(k, actualOutput)
+		if nerr != nil {
+			// The simulated user could not decide (routing failed). Fail
+			// closed: no default_reply, nothing more is sent.
+			failed = true
+			msg := fmt.Sprintf("turn %d: %v", k, nerr)
+			fmt.Fprintf(out, " ❌ (simulated user failed)\n")
+			fmt.Fprintf(out, "      Error: %s\n", msg)
+			cr.ActualOutput = ""
+			cr.ErrorContext = &ErrorContext{Stderr: msg}
+			score()
+			return cr
+		}
+		if !more {
+			break
+		}
+		userMsg = next
 	}
 	fmt.Fprintf(out, " → evaluating...")
 
@@ -168,6 +233,14 @@ func executeCase(rubric Rubric, tc TestCase, cConfig *ContainerConfig, out io.Wr
 		session.Close(failed)
 	}
 
-	scoreCaseFn(rubric, tc, &cr)
+	score()
 	return cr
+}
+
+// openingMessage is the first user message of a case.
+func openingMessage(tc TestCase) string {
+	if tc.SimulatedUser != nil {
+		return tc.Input
+	}
+	return tc.userTurns()[0]
 }

@@ -345,7 +345,7 @@ func TestCallRecordsSelfTestProvenance(t *testing.T) {
 	}
 
 	for _, c := range res.Cases {
-		var agents, judges int
+		var agents, judges, routes int
 		for _, call := range c.Calls {
 			if call.Model == "" || call.InputTokens == 0 || call.OutputTokens == 0 || call.CostUSD == 0 {
 				t.Errorf("case %s incomplete record: %+v", c.CaseName, call)
@@ -361,6 +361,15 @@ func TestCallRecordsSelfTestProvenance(t *testing.T) {
 					t.Errorf("case %s agent estimated = %v, want %v", c.CaseName, call.Estimated, wantEst)
 				}
 			case "judge":
+				// Simulated-user routing calls carry a purpose, no
+				// criterion and no prompt hash; they are counted apart.
+				if call.Purpose == "simulated_user" {
+					routes++
+					if call.Criterion != "" || call.PromptSHA256 != "" || !call.Estimated {
+						t.Errorf("case %s routing record = %+v", c.CaseName, call)
+					}
+					continue
+				}
 				// The legacy judge scores clarity once per case. The
 				// check-judge-* cases also record one yes/no judge call
 				// for the criterion that carries their judge checks.
@@ -380,6 +389,11 @@ func TestCallRecordsSelfTestProvenance(t *testing.T) {
 		wantAgents := max(len(c.TurnOutputs), 1)
 		if agents != wantAgents || judges != 1 {
 			t.Errorf("case %s: agent=%d judge=%d records, want %d agent and 1 judge", c.CaseName, agents, judges, wantAgents)
+		}
+		// A simulated case routes every agent turn except the last of its
+		// simulated phase.
+		if wantRoutes := map[string]int{"sim-routes": 2, "sim-stop-when": 1}[c.CaseName]; routes != wantRoutes {
+			t.Errorf("case %s: %d routing records, want %d", c.CaseName, routes, wantRoutes)
 		}
 	}
 	rawCalls := string(raw)
