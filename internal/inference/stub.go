@@ -36,6 +36,9 @@ func (*stubBackend) Invoke(ctx context.Context, req Request) (Response, error) {
 
 	switch req.Role {
 	case RoleJudge:
+		if req.Route {
+			return stubRouteJudge(req)
+		}
 		if req.YesNo {
 			return stubYesNoJudge(req)
 		}
@@ -111,6 +114,34 @@ func stubYesNoJudge(req Request) (Response, error) {
 		}
 		text = "===JSON_START===\n" + string(body) + "\n===JSON_END==="
 	}
+	return Response{
+		Text:    text,
+		Model:   NameStub,
+		Usage:   EstimateUsage(req.Prompt, text),
+		Command: cmd,
+	}, nil
+}
+
+// stubRouteJudge answers a routing judge request from req.Stub.Routes[RouteSeq],
+// rendered as delimited JSON. It is index-based and keeps no state, so the
+// same RouteSeq always yields the same answer. A missing script, a RouteSeq
+// outside Routes, or Route together with YesNo is an error.
+func stubRouteJudge(req Request) (Response, error) {
+	const cmd = "stub judge"
+	if req.YesNo {
+		return Response{Command: cmd}, errors.New("stub judge request sets both Route and YesNo")
+	}
+	if req.Stub == nil || req.RouteSeq < 0 || req.RouteSeq >= len(req.Stub.Routes) {
+		return Response{Command: cmd}, fmt.Errorf("case has no stub.routes[%d]", req.RouteSeq)
+	}
+	body, err := json.Marshal(struct {
+		Reasoning string `json:"reasoning"`
+		Fact      string `json:"fact"`
+	}{Reasoning: "stub route", Fact: req.Stub.Routes[req.RouteSeq]})
+	if err != nil {
+		return Response{Command: cmd}, err
+	}
+	text := "===JSON_START===\n" + string(body) + "\n===JSON_END==="
 	return Response{
 		Text:    text,
 		Model:   NameStub,
