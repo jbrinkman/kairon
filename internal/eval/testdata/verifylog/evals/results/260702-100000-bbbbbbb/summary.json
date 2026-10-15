@@ -1,0 +1,9 @@
+{
+  "git_hash": "bbbbbbb",
+  "agent_verdicts": {
+    "selftest": {"score": 72.5, "threshold": 70.0, "passed": true, "cases_total": 1, "cases_failed": 0, "cost": {}}
+  },
+  "agents": {
+    "selftest": {"prompt_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}
+  }
+}

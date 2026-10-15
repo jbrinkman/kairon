@@ -38,6 +38,8 @@ Kairon's evaluation framework measures agent quality and cost, enabling data-dri
 
 This is the default evals directory. Use `--evals-dir` to point the harness at a different directory with the same layout (see [Evals Directory](#evals-directory---evals-dir)).
 
+Iteration logs live outside the evals directory, in `.kairon/iterations/<agent>/iteration-NN.md`, and reference the runs under `results/` (see [Iteration Logs and `verify-log`](#iteration-logs-and-verify-log)).
+
 ## Rubric Format
 
 Each agent has a rubric YAML file defining scoring criteria:
@@ -1181,7 +1183,9 @@ The candidate is injected **only into the per-case workspaces** the harness alre
 
 ### Where to put candidates
 
-By convention candidates live under `.kairon/iterations/<agent>/` (for example `.kairon/iterations/architect/v2.md`). This is a convention only: Kairon does not create, require or scan that directory, and any readable file path works. A relative path is resolved against the process working directory (the repository root for a normal run).
+By convention candidates live under `.kairon/iterations/<agent>/` (for example `.kairon/iterations/architect/v2.md`). This is a convention only: `--prompt-file` does not create, require or scan that directory, and any readable file path works. A relative path is resolved against the process working directory (the repository root for a normal run).
+
+The same directory also holds the agent's [iteration logs](#iteration-logs-and-verify-log) (`iteration-NN.md`). `kairon eval verify-log` reads **only** files named `iteration-NN.md` there; candidate prompts such as `v2.md` and any other file coexist with the logs and are ignored.
 
 ### What is substituted, and what is not
 
@@ -1253,6 +1257,91 @@ diff <workspace_dir>/.kiro/agents/selftest-prompt.md /tmp/candidate.md   # no ou
 Every case's `<workspace_dir>/.kiro/agents/<prompt-ref>` holds the candidate's bytes, while the live `.kiro/agents/` (and `<evals-dir>/agents/`) files are unchanged. To confirm that the live files are untouched, compare `git status --porcelain .kiro/agents` and a checksum of the files before and after the run. Remove the kept workspaces yourself when you are done.
 
 For a no-op check, evaluate a copy of the live prompt: `prompt_sha256` equals the baseline and `prompt_file` is still recorded.
+
+## Iteration Logs and `verify-log`
+
+An iteration log documents one measured change to an agent: baseline, hypothesis, change, results and reasoning. Logs live at `.kairon/iterations/<agent>/iteration-NN.md` (`NN` zero-padded, starting at `00`) and must reference eval runs committed under `<evals-dir>/results/`. `kairon eval verify-log` checks that every claim in a log set matches the recorded results, so a log cannot assert a score nobody measured.
+
+The log format (front-matter keys `iteration`, `date`, `change_type`, `baseline_run`, `result_run`, `baseline_score`, `result_score`; headings `Baseline`, `Hypothesis`, `Change`, `Results`, `Reasoning`) and a complete example are defined in [`.kairon/iterations/README.md`](../.kairon/iterations/README.md).
+
+```bash
+kairon eval verify-log <agent> [--iterations-dir DIR] [--min-iterations N] [--evals-dir DIR]
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--iterations-dir` | `.kairon/iterations` | Directory holding `<agent>/iteration-NN.md`. |
+| `--min-iterations` | `2` | Minimum number of iteration logs. `0` disables the minimum; a negative value is rejected. |
+| `--evals-dir` | `.kairon/evals` | Evals directory whose `results/` holds the referenced runs. This is the persistent `kairon eval` flag, inherited by `verify-log` (see [Evals Directory](#evals-directory---evals-dir)). |
+
+The command takes exactly one argument, the agent name (a single path element: no `/`, `\` or `..`). It does not call a model, `kiro-cli` or a container, and it reads only the iterations directory and `<evals-dir>/results/`.
+
+### Verification rules
+
+`verify-log` collects **all** violations instead of stopping at the first. Each is reported as `<file>: <rule>: <message>`, where `<file>` is the log path as joined from `--iterations-dir` (or the agent directory for set-level rules).
+
+| Rule ID | Fails when |
+|---------|------------|
+| `no-logs` | The agent directory is missing or contains no `iteration-NN.md`. Reported whatever `--min-iterations` is. |
+| `front-matter` | Missing or malformed YAML front-matter; a required key is missing; `change_type` is not `prompt` or `eval`; `date` is not a real `YYYY-MM-DD` date; a score is not percent with exactly one decimal in `0.0`-`100.0`; a run name contains `/`, `\` or `..`. |
+| `headings` | A required heading (`Baseline`, `Hypothesis`, `Change`, `Results`, `Reasoning`) is missing, duplicated, out of order, or has no content. Headings inside fenced code blocks do not count. |
+| `sequence` | File numbers are not exactly `00..N-1` (gap, duplicate, not starting at `00`), the front-matter `iteration` differs from the file's `NN`, or a file such as `iteration-1.md` starts with `iteration-` and ends in `.md` but does not match `iteration-NN.md`. |
+| `chain` | For iteration `k > 0`, `baseline_run` is not iteration `k-1`'s `result_run`. |
+| `chronology` | Iteration `k`'s `date` is earlier than iteration `k-1`'s. |
+| `run-exists` | `baseline_run` or `result_run` is not a directory under `<evals-dir>/results/`. Runs are matched by exact directory name; unlike `eval diff`, a hash-only name is not resolved. |
+| `run-data` | A referenced run records no score for the agent or, for `change_type: prompt`, no `prompt_sha256` for the agent. Fails closed: an unverifiable change is a violation. |
+| `score-match` | A claimed score differs from the run's recorded score by more than 0.1 percentage points (exactly 0.1 passes). The message names the field, the claimed value, the recorded value and the run. The recorded score is not rounded before the comparison. |
+| `prompt-change` | For `change_type: prompt`, `baseline_run` and `result_run` record the same `prompt_sha256` for the agent. A `change_type: eval` iteration may keep the same hash. |
+| `min-iterations` | There are fewer iteration logs than `--min-iterations` (default `2`). |
+
+### Where the recorded score comes from
+
+The score recorded for a run is the first of these that is available (all values are compared as **percent**):
+
+1. `summary.json` → `agent_verdicts.<agent>.score`: percent, written since [per-agent pass/fail verdicts](#pass-fail-verdict-and-exit-status).
+2. `summary.json` → `agent_scores.<agent>`: a 0-1 fraction, multiplied by 100. This is the fallback for older runs without verdicts (see [Percent versus fraction](#percent-versus-fraction)).
+3. Recomputed from `<agent>.json` (the case scores, using the same arithmetic as the verdict). This is the fallback for runs that have neither summary field.
+
+If none of them is available the run has no recorded score for the agent, which is a `run-data` violation.
+
+`prompt_sha256` is read from `<agent>.json` and, if absent there, from `summary.json` → `agents.<agent>.prompt_sha256` (see [How `prompt_sha256` is computed](#how-prompt_sha256-is-computed)). A `--prompt-file` run hashes the candidate's bytes, so evaluating a changed candidate yields a different hash than the baseline.
+
+### Exit status
+
+| Exit status | Meaning |
+|-------------|---------|
+| `0` | No violations. Prints `OK <agent>: N iterations verified`. |
+| `1` | At least one violation (all are printed after `Error:` on stderr), or an invalid argument such as an agent name containing a path separator. |
+
+Usage text is not printed for a verification failure.
+
+### Verifying the verifier
+
+The verifier ships with fixtures under `internal/eval/testdata/verifylog/`: shared result runs in `evals/results/` and one log set per rule. Run the passing set with:
+
+```bash
+go run ./cmd/kairon eval verify-log selftest \
+  --iterations-dir internal/eval/testdata/verifylog/valid \
+  --evals-dir internal/eval/testdata/verifylog/evals
+```
+
+This exits 0 and prints `OK selftest: 3 iterations verified`. The other sets each violate one rule and exit non-zero, naming the file and the rule:
+
+| Set | Rule reported |
+|-----|---------------|
+| `missing-run` | `run-exists` |
+| `score-mismatch` | `score-match` |
+| `gap` | `sequence` |
+| `broken-chain` | `chain` |
+| `no-prompt-change` | `prompt-change` |
+
+```bash
+go run ./cmd/kairon eval verify-log selftest --min-iterations 5 \
+  --iterations-dir internal/eval/testdata/verifylog/valid \
+  --evals-dir internal/eval/testdata/verifylog/evals   # fails: min-iterations
+```
+
+The unit tests are `go test ./internal/eval/ -run VerifyLog` and `go test ./cmd/kairon/cmd/ -run VerifyLog`.
 
 ## Case Workspaces
 
