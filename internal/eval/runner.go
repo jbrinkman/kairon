@@ -1467,6 +1467,16 @@ func renderJudgeTurns(turns []string) string {
 	return strings.Join(parts, "\n\n")
 }
 
+// judgeCaseInput is the user input shown to a judge (both the legacy LLM judge
+// and judge checks): the case input, or the rendered turns for a multi-turn
+// case, which carries its messages in Turns and leaves Input empty.
+func judgeCaseInput(tc TestCase) string {
+	if tc.Turns != nil {
+		return renderJudgeTurns(tc.Turns)
+	}
+	return tc.Input
+}
+
 // The returned CallRecord describes the judge call (also when it failed or
 // its output could not be parsed, since tokens were spent).
 func scoreLLMJudge(criterion Criterion, tc TestCase, actualOutput string) (CostInfo, int, string, bool, inference.CallRecord) {
@@ -1480,10 +1490,7 @@ func scoreLLMJudge(criterion Criterion, tc TestCase, actualOutput string) (CostI
 		expectedSection = fmt.Sprintf("\nEXPECTED OUTPUT (compare similarity and completeness):\n%s\n", tc.ExpectedOutput)
 	}
 
-	judgeInput := tc.Input
-	if tc.Turns != nil {
-		judgeInput = renderJudgeTurns(tc.Turns)
-	}
+	judgeInput := judgeCaseInput(tc)
 
 	prompt := fmt.Sprintf(`Evaluate this output against the criterion.
 Wrap your JSON response between ===JSON_START=== and ===JSON_END=== delimiters.

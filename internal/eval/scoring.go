@@ -48,7 +48,7 @@ func scoreCase(rubric Rubric, tc TestCase, cr *CaseResult) {
 			GHLogOversized: ghLogOversized,
 			Base:           cr.baseCommit,
 			Turns:          caseTurnEvidence(cr),
-			Input:          tc.Input,
+			Input:          judgeCaseInput(tc),
 			Judge:          newCheckJudge(tc, cr),
 		})
 		results = make(map[string][]CheckResult, len(checkTotals))
