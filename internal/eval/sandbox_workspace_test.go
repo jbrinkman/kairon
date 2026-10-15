@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io/fs"
 	"os"
 	"os/exec"
@@ -58,7 +59,12 @@ func runEvalIn(t *testing.T, evalsDir, agent string, opts RunOptions) AgentResul
 
 	opts.Backend = "stub"
 	opts.EvalsDir = evalsDir
-	if err := RunWithOptions(agent, "", opts); err != nil {
+	err := RunWithOptions(agent, "", opts)
+	if wantThresholdFailure(agent, opts) {
+		if !errors.Is(err, ErrThresholdFailed) {
+			t.Fatalf("run of %s (sandbox=%v, keep=%v) = %v, want ErrThresholdFailed", agent, opts.Sandbox, opts.KeepWorkspaces, err)
+		}
+	} else if err != nil {
 		t.Fatalf("run of %s (sandbox=%v, keep=%v) failed: %v", agent, opts.Sandbox, opts.KeepWorkspaces, err)
 	}
 	added := newRunDirs(t, resultsDir, before)
@@ -66,6 +72,54 @@ func runEvalIn(t *testing.T, evalsDir, agent string, opts RunOptions) AgentResul
 		t.Fatalf("run of %s created %d result dirs, want 1: %v", agent, len(added), added)
 	}
 	return readSelfTestResult(t, filepath.Join(resultsDir, added[0], agent+".json"))
+}
+
+// wantThresholdFailure reports whether a self-test run of agent is expected to
+// finish below its pass threshold: selftest-fail always does; selftest-sandbox
+// does when run natively (every case is refused with "requires --sandbox");
+// and selftest-sandbox-ro always does, because it owns stub-write-outside-mounts,
+// a requires_sandbox case deliberately failing against the read-only root even
+// under --sandbox. Everything else must pass.
+func wantThresholdFailure(agent string, opts RunOptions) bool {
+	switch agent {
+	case "selftest-fail", "selftest-sandbox-ro":
+		return true
+	case "selftest-sandbox":
+		return !opts.Sandbox
+	}
+	return false
+}
+
+// TestWantThresholdFailure pins the expected-failure contract for every
+// self-test agent in both modes. In particular selftest-sandbox-ro must be
+// expected to fail its threshold even under --sandbox: it owns
+// stub-write-outside-mounts, a requires_sandbox case that deliberately fails
+// against the read-only root filesystem, so the agent's aggregate falls below
+// its pass threshold and RunWithOptions returns ErrThresholdFailed. By
+// contrast selftest-sandbox's cases all pass under --sandbox, so it is only
+// expected to fail when run natively.
+func TestWantThresholdFailure(t *testing.T) {
+	cases := []struct {
+		agent   string
+		sandbox bool
+		want    bool
+	}{
+		{"selftest", false, false},
+		{"selftest", true, false},
+		{"selftest-fail", false, true},
+		{"selftest-fail", true, true},
+		{"selftest-sandbox", false, true},
+		{"selftest-sandbox", true, false},
+		{"selftest-sandbox-ro", false, true},
+		{"selftest-sandbox-ro", true, true},
+	}
+	for _, tc := range cases {
+		opts := RunOptions{Sandbox: tc.sandbox, NoSandbox: !tc.sandbox}
+		if got := wantThresholdFailure(tc.agent, opts); got != tc.want {
+			t.Errorf("wantThresholdFailure(%q, Sandbox=%v) = %v, want %v",
+				tc.agent, tc.sandbox, got, tc.want)
+		}
+	}
 }
 
 func caseByName(t *testing.T, res AgentResult, name string) CaseResult {

@@ -228,9 +228,14 @@ func assertScoringParity(t *testing.T, evalsDir, agent string, native, container
 	if err != nil {
 		t.Fatal(err)
 	}
+	rubrics, err := loadRubrics(agent)
+	if err != nil || len(rubrics) != 1 {
+		t.Fatalf("loadRubrics(%q) = %d rubrics, err %v", agent, len(rubrics), err)
+	}
+	rubric := rubrics[0]
 	thresholds := map[string]float64{}
 	for _, tc := range cases {
-		thresholds[tc.Name] = getThreshold(tc)
+		thresholds[tc.Name] = caseThreshold(tc, rubric)
 	}
 
 	index := func(r AgentResult) map[string]CaseResult {
@@ -248,13 +253,11 @@ func assertScoringParity(t *testing.T, evalsDir, agent string, native, container
 		t.Fatalf("native has %d cases, container has %d", len(nc), len(cc))
 	}
 
-	// passed mirrors printCaseResult's threshold rule.
+	// passed mirrors printCaseResult's threshold rule (multiply-first, the same
+	// percentAtLeast comparison the saved verdict uses).
 	passed := func(c CaseResult) bool {
 		score, max := caseTotals(c)
-		if max == 0 {
-			return false
-		}
-		return float64(score)/float64(max)*100 >= thresholds[c.CaseName]
+		return percentAtLeast(score, max, thresholds[c.CaseName])
 	}
 	for name, n := range nc {
 		c, ok := cc[name]

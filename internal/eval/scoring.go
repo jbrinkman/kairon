@@ -178,22 +178,23 @@ func checksReasoning(results []CheckResult) string {
 }
 
 // caseTotals returns the summed score and maximum score of a case's criteria.
-// Skipped criteria contribute to neither the numerator nor the denominator.
+// A skipped, errored or no-output criterion contributes 0 to the numerator and
+// its MaxScore to the denominator, so a failure can never raise a score. The
+// Skipped flag is kept in the result only as the reason it scored 0.
 // This is the single place the per-case score arithmetic lives.
 func caseTotals(cr CaseResult) (score, max int) {
 	for _, s := range cr.Scores {
-		if s.Skipped {
-			continue
+		if !s.Skipped {
+			score += s.Score
 		}
-		score += s.Score
 		max += s.MaxScore
 	}
 	return score, max
 }
 
 // agentScoreTotals returns the summed score and maximum score across every
-// case of an agent, as floats, using caseTotals so skipped criteria are
-// excluded from both. The agent score is score/max when max > 0.
+// case of an agent, as floats, using caseTotals so skipped criteria count as 0
+// in the denominator. The agent score is score/max when max > 0.
 func agentScoreTotals(ar AgentResult) (score, max float64) {
 	for _, c := range ar.Cases {
 		cs, cm := caseTotals(c)
@@ -206,27 +207,32 @@ func agentScoreTotals(ar AgentResult) (score, max float64) {
 // printCaseResult writes the final status line for a scored case:
 // "no output" / "no scored criteria" / pass (✅) / warn (⚠️, pct>=60) / fail (❌),
 // plus the breakdown of criteria scoring below 3/4 of max when pct < threshold.
-func printCaseResult(out io.Writer, tc TestCase, cr CaseResult) {
+func printCaseResult(out io.Writer, tc TestCase, rubric Rubric, cr CaseResult) {
 	if cr.ActualOutput != "" {
 		totalScore, maxTotal := caseTotals(cr)
 		if maxTotal == 0 {
 			fmt.Fprintf(out, " ⚠️  no scored criteria\n")
 		} else {
 			pct := float64(totalScore) / float64(maxTotal) * 100
-			threshold := getThreshold(tc)
+			threshold := caseThreshold(tc, rubric)
 
-			if pct >= threshold {
+			// Decide pass/warn/fail with the same multiply-first comparison the
+			// saved verdict uses (percentAtLeast), so the printed ✅/⚠️/❌ can
+			// never disagree with the stamped Passed at a float-drift boundary
+			// (e.g. 29/50 at 58). pct above is only the displayed number.
+			passes := percentAtLeast(totalScore, maxTotal, threshold)
+			if passes {
 				fmt.Fprintf(out, " ✅ %.0f%% (threshold: %.0f%%)\n", pct, threshold)
-			} else if pct >= 60 {
+			} else if percentAtLeast(totalScore, maxTotal, 60) {
 				fmt.Fprintf(out, " ⚠️  %.0f%% (threshold: %.0f%%)\n", pct, threshold)
 			} else {
 				fmt.Fprintf(out, " ❌ %.0f%% (threshold: %.0f%%)\n", pct, threshold)
 			}
 
 			// Show criterion breakdown for scores below threshold
-			if pct < threshold {
+			if !passes {
 				for _, s := range cr.Scores {
-					if !s.Skipped && s.Score < s.MaxScore*3/4 {
+					if s.Score < s.MaxScore*3/4 {
 						fmt.Fprintf(out, "      %s: %d/%d\n", s.Name, s.Score, s.MaxScore)
 					}
 				}
