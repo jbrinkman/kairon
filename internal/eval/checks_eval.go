@@ -105,6 +105,8 @@ func runCheck(c Check, in CheckInput) (bool, string) {
 		return evalChangedFiles(c, in)
 	case CheckCommand:
 		return evalCommand(c, in.Dir)
+	case CheckJudge:
+		return evalJudge(c, in)
 	}
 	return false, fmt.Sprintf("unknown check type %q", c.Type)
 }
@@ -264,6 +266,8 @@ func checkLabel(index int, c Check) string {
 		fmt.Fprintf(&b, " %q", shorten(c.Run, 80))
 	case CheckChangedFiles:
 		fmt.Fprintf(&b, " allow=[%s]", shorten(strings.Join(c.Allow, " "), 80))
+	case CheckJudge:
+		fmt.Fprintf(&b, " question=%q", shorten(c.Question, 80))
 	default:
 		if c.Path != "" {
 			fmt.Fprintf(&b, " path=%s", shorten(c.Path, 80))

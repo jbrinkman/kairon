@@ -357,6 +357,15 @@ func TestCallRecordsSelfTestProvenance(t *testing.T) {
 					t.Errorf("case %s agent estimated = %v, want %v", c.CaseName, call.Estimated, wantEst)
 				}
 			case "judge":
+				// The legacy judge scores clarity once per case. The
+				// check-judge-* cases also record one yes/no judge call
+				// for the criterion that carries their judge checks.
+				if strings.HasPrefix(c.CaseName, "check-judge-") && call.Criterion == "structural_completeness" {
+					if call.PromptSHA256 != "" || !call.Estimated {
+						t.Errorf("case %s judge-check record = %+v", c.CaseName, call)
+					}
+					continue
+				}
 				judges++
 				if call.PromptSHA256 != "" || call.Criterion != "clarity" || !call.Estimated {
 					t.Errorf("case %s judge record = %+v", c.CaseName, call)

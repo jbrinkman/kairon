@@ -1,0 +1,30 @@
+name: check-judge-mixed
+description: "Self-test: a file_exists and a judge check on one criterion score 2/2"
+agent: selftest
+input: |
+  Review the work and report what you found.
+context:
+  - "This case runs against the deterministic stub backend"
+  - "Passes: marker.txt exists and the judge answers yes"
+expected_output: |
+  A short report with a top-level section and at least one subsection.
+stub:
+  judge: yes
+  turns:
+    - commands:
+        - "echo hi > marker.txt"
+      response: |
+        ## Checks
+
+        The stub turn finished and reported output marker alpha.
+
+        ### Details
+
+        This response carries the headings the report format expects.
+checks:
+  - criterion: structural_completeness
+    type: file_exists
+    path: marker.txt
+  - criterion: structural_completeness
+    type: judge
+    question: "Does the report describe what the stub turn finished?"

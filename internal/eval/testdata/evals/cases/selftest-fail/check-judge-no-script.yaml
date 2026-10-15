@@ -1,0 +1,24 @@
+name: check-judge-no-script
+description: "Self-test (fail): a judge check without stub.judge fails with a backend error"
+agent: selftest-fail
+input: |
+  Review the work and report what you found.
+context:
+  - "This case runs against the deterministic stub backend"
+  - "Fails: the case has no stub.judge so the judge call errors"
+expected_output: |
+  A short report with a top-level section and at least one subsection.
+stub:
+  turns:
+    - response: |
+        ## Checks
+
+        The stub turn finished and reported output marker alpha.
+
+        ### Details
+
+        This response carries the headings the report format expects.
+checks:
+  - criterion: structural_completeness
+    type: judge
+    question: "Does the report describe what the stub turn finished?"
