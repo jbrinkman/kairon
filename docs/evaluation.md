@@ -1400,7 +1400,7 @@ A `--prompt-file` run additionally carries `"prompt_file": "<path>"` (and a `pro
 |-------|------|-------------|
 | `score` | number, **percent** (0–100) | The agent's aggregate score. With `--repeat` it is the **mean** over the repeats. `0` when nothing was scored. |
 | `threshold` | number, **percent** (0–100) | The agent's pass threshold (its rubric's `pass_threshold`, default 95). |
-| `passed` | boolean | `score >= threshold`, on the mean. `false` when nothing was scored. |
+| `passed` | boolean | The agent passes when `score >= threshold` on the mean **and**, if `min_criterion_score` is set, no criterion's pooled percent is below that floor. `false` when nothing was scored. |
 | `cases_total` | integer | Number of distinct cases evaluated (a case run N times counts once). |
 | `cases_failed` | integer | Number of cases that did not pass their own threshold; for a case with several runs, its score pooled over the runs is compared to its threshold. Informational. |
 | `cost` | object | The agent's cost (agent and judge calls of every run of every case): `tokens_in`, `tokens_out`, `estimated_usd`. |
