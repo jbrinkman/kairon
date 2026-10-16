@@ -25,7 +25,9 @@ const maxReasoningDetail = 200
 //
 // A criterion that has checks in tc is scored from them (passed out of total)
 // instead of by the heuristic or the judge; the checks are evaluated once for
-// the whole case. Criteria without checks are scored as before.
+// the whole case. Criteria without checks are scored as before, except under a
+// checks_only rubric, where they are skipped (no CriterionScore, no heuristic,
+// no judge call).
 func scoreCase(rubric Rubric, tc TestCase, cr *CaseResult) {
 	checkTotals := map[string]int{}
 	var checkOrder []string // criteria named by checks, first-seen order
@@ -85,6 +87,13 @@ func scoreCase(rubric Rubric, tc TestCase, cr *CaseResult) {
 
 		if checkTotals[criterion.Name] > 0 {
 			cr.Scores = append(cr.Scores, checkedScore(criterion.Name))
+			continue
+		}
+
+		// A checks_only rubric scores from checks alone: an unchecked criterion
+		// gets no score, no heuristic and no judge call, and so adds nothing to
+		// the case or agent totals.
+		if rubric.ChecksOnly {
 			continue
 		}
 

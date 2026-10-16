@@ -1,0 +1,16 @@
+name: no-checks
+description: "Deliberately invalid: the agent's rubric sets checks_only but this case has no checks, so loading is rejected before any case runs"
+agent: selftest-checks
+input: |
+  Report that you did nothing.
+context:
+  - "This case runs against the deterministic stub backend"
+  - "Never runs: a checks_only rubric requires every case to have at least one check"
+expected_output: |
+  A short report.
+stub:
+  turns:
+    - response: |
+        ## Checks
+
+        The stub turn finished and reported output marker alpha.

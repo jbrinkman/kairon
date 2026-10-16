@@ -75,14 +75,15 @@ func runEvalIn(t *testing.T, evalsDir, agent string, opts RunOptions) AgentResul
 }
 
 // wantThresholdFailure reports whether a self-test run of agent is expected to
-// finish below its pass threshold: selftest-fail always does; selftest-sandbox
+// finish below its pass threshold: selftest-fail and selftest-checks-fail
+// always do (selftest-checks must pass); selftest-sandbox
 // does when run natively (every case is refused with "requires --sandbox");
 // and selftest-sandbox-ro always does, because it owns stub-write-outside-mounts,
 // a requires_sandbox case deliberately failing against the read-only root even
 // under --sandbox. Everything else must pass.
 func wantThresholdFailure(agent string, opts RunOptions) bool {
 	switch agent {
-	case "selftest-fail", "selftest-sandbox-ro":
+	case "selftest-fail", "selftest-sandbox-ro", "selftest-checks-fail":
 		return true
 	case "selftest-sandbox":
 		return !opts.Sandbox
@@ -112,6 +113,10 @@ func TestWantThresholdFailure(t *testing.T) {
 		{"selftest-sandbox", true, false},
 		{"selftest-sandbox-ro", false, true},
 		{"selftest-sandbox-ro", true, true},
+		{"selftest-checks", false, false},
+		{"selftest-checks", true, false},
+		{"selftest-checks-fail", false, true},
+		{"selftest-checks-fail", true, true},
 	}
 	for _, tc := range cases {
 		opts := RunOptions{Sandbox: tc.sandbox, NoSandbox: !tc.sandbox}

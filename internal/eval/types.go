@@ -14,6 +14,12 @@ type Rubric struct {
 	Criteria []Criterion `yaml:"criteria" json:"criteria"`
 	// PassThreshold is the percent (0-100] a case must reach to pass; nil means DefaultPassThreshold.
 	PassThreshold *float64 `yaml:"pass_threshold,omitempty" json:"pass_threshold,omitempty"`
+	// ChecksOnly scores every case from its pass/fail checks alone. A non-cost
+	// criterion with no checks in a case is skipped (no CriterionScore, nothing
+	// added to the case or agent score or maximum), and neither the legacy LLM
+	// judge nor the keyword heuristic runs. Every case of the agent must have at
+	// least one check, or loading it fails. Default false.
+	ChecksOnly bool `yaml:"checks_only,omitempty" json:"checks_only,omitempty"`
 }
 
 // DefaultPassThreshold is the pass threshold (percent) used when a rubric sets no pass_threshold.

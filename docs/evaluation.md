@@ -60,9 +60,27 @@ criteria:
     type: cost             # Tracked as cost metric
 ```
 
+A rubric whose cases are scored purely by [checks](#checks) sets `checks_only: true`:
+
+```yaml
+agent: builder
+checks_only: true          # Optional: score every case from its checks alone (default false)
+criteria:
+  - name: file_written
+    description: "The expected file exists in the workspace"
+    scoring: 1-5           # Ignored for a checked criterion: its maximum is its check count
+  - name: report_marker
+    description: "The agent's report carries the expected marker"
+    scoring: 1-5
+  - name: cost_efficiency
+    description: "Token usage relative to output quality"
+    type: cost
+```
+
 Fields:
 - `agent` — which agent this rubric evaluates
 - `pass_threshold` — (optional) the percent a case, and the agent as a whole, must reach to pass. It must be greater than 0 and at most 100 (`(0, 100]`); the default is `95`. A value of `0` or below, above `100`, or NaN makes loading the rubric fail with an error that names the rubric file. A case can override it with `min_score` (see [Test Case Format](#test-case-format) and [Pass/Fail Verdict and Exit Status](#passfail-verdict-and-exit-status)).
+- `checks_only` — (optional, boolean, default `false`) when `true`, every case of the agent is scored from its [checks](#checks) alone. A non-cost criterion that a case has no checks for is **not scored** in that case: it gets no entry in the case's scores and adds nothing to the case or agent score or maximum. Neither the legacy LLM judge nor the keyword heuristic runs for it, so no legacy judge call is made. [`judge` checks](#the-judge-check) are still checks and remain allowed. Every case of the agent must have at least one check; a case without any is rejected when the cases are loaded, before any case runs, with an error that names the case file (see [`checks_only` rubrics](#checks_only-rubrics)). Omitting the field leaves scoring unchanged.
 - `criteria[].name` — unique identifier for the criterion
 - `criteria[].description` — what is being measured
 - `criteria[].scoring` — score range (e.g. "1-5")
@@ -388,7 +406,7 @@ A criterion with at least one check in a case is scored by those checks:
 
 The key fields in a label are `command "<run>"`, `path=<path>`, `pattern=/<regex>/` or `allow=[<globs>]`.
 
-**Criteria without checks keep the legacy heuristics.** A criterion that no check names is scored exactly as before: deterministic criteria use the keyword heuristics on the agent's output, other criteria go to the LLM judge. A case can mix both, for example checks on `structural_completeness` and the judge for `clarity`. Cost criteria cannot have checks. Skipped criteria still count toward the totals, as `0` out of their maximum (see [Skipped Criteria](#skipped-criteria)).
+**Criteria without checks keep the legacy heuristics.** A criterion that no check names is scored exactly as before: deterministic criteria use the keyword heuristics on the agent's output, other criteria go to the LLM judge. A case can mix both, for example checks on `structural_completeness` and the judge for `clarity`. A rubric that sets [`checks_only`](#checks_only-rubrics) is the exception: its unchecked criteria are not scored at all. Cost criteria cannot have checks. Skipped criteria still count toward the totals, as `0` out of their maximum (see [Skipped Criteria](#skipped-criteria)).
 
 When the case prints, every failed check is listed on its own line whatever the percentage:
 
@@ -822,7 +840,18 @@ kairon eval architect --repeat 5
 - **LLM-judged criteria** — criteria without checks that are not deterministic are scored by an LLM evaluator using the rubric description (requires output and a configured judge)
 - **Cost criteria** — tracked automatically from token usage
 
-A criterion without checks is scored exactly as it was before checks existed, so adding checks to one criterion never changes how the others are scored.
+A criterion without checks is scored exactly as it was before checks existed, so adding checks to one criterion never changes how the others are scored. The exception is a rubric that sets [`checks_only`](#checks_only-rubrics).
+
+### `checks_only` rubrics
+
+A rubric with `checks_only: true` scores every case from its checks alone:
+
+- **Unchecked criteria are not scored.** A non-cost criterion that a case has no checks for gets no entry in that case's scores (it is absent from `scores`, not recorded as `0` or skipped). It adds nothing to the case score, the case maximum, the agent score or the agent maximum, so it can neither raise nor lower a result.
+- **No legacy scoring runs.** The legacy 1–5 LLM judge is never called and the keyword heuristic never runs for such a criterion, whether or not it is marked `deterministic`. The rubric's `scoring` and `deterministic` fields are ignored; a checked criterion's maximum is its number of checks, as before.
+- **`judge` checks remain allowed.** A [`judge` check](#the-judge-check) is a check, so it is scored `passed`/`total` like the others and still makes its one yes/no judge call. `checks_only` removes the legacy judge, not the `judge` check type.
+- **A case without checks is rejected.** Every case of an agent whose rubric sets `checks_only` must have at least one check. A check-less case would have nothing to score, so it is a fatal load error that names the case file and wraps the same invalid-checks error as a malformed `checks` block, for example `…: no-checks.yaml: rubric for agent selftest-checks sets checks_only but the case has no checks`. A `kairon eval` run over several agents checks every `checks_only` agent up front, so the rejection happens **before any case runs**, including cases of agents that come earlier in the run. A single-case run and `--list` hit the same error when the cases load.
+- **No output still scores zero.** A checked criterion is not rescued when the agent produced no output: it records `0/N` (not skipped) with the reasoning `agent produced no output; checks not run`, exactly as described in [When the agent failed](#when-the-agent-failed), and the run fails its threshold.
+- **Other rubrics are unchanged.** A rubric without the field (or with `checks_only: false`) is scored exactly as before.
 
 ### Skipped Criteria
 
@@ -1946,6 +1975,15 @@ internal/eval/testdata/evals/
   cases/selftest-sandbox/stub-mock-cli.yaml           # mocks: aws -> fixtures/mock-cli.sh; call logged in .eval/mock-aws.log, answered from the workspace
   cases/selftest-sandbox-ro/stub-write-outside-mounts.yaml  # write to /etc fails with 'Read-only file system' (expected to FAIL)
   cases/selftest-sandbox-ro/stub-tool-denied.yaml     # fs_write tool call is denied and recorded (only fs_read is trusted)
+  agents/selftest-checks.json       # checks_only agent whose cases pass (see below)
+  agents/selftest-checks-prompt.md
+  agents/selftest-checks-fail.json  # checks_only agent whose case is expected to FAIL
+  agents/selftest-checks-fail-prompt.md
+  rubrics/selftest-checks.yaml      # checks_only: true; file_written, report_marker (both 1-5, neither deterministic), cost_efficiency (cost)
+  rubrics/selftest-checks-fail.yaml # checks_only: true; same criteria
+  cases/selftest-checks/check-one-criterion.yaml   # checks on file_written only: report_marker is not scored
+  cases/selftest-checks/check-both-criteria.yaml   # checks on both criteria, all passing
+  cases/selftest-checks-fail/stub-empty-response.yaml  # empty stub response: each checked criterion scores 0/N (expected to FAIL)
   fixtures/selftest-input.md        # referenced as .kairon/evals/fixtures/selftest-input.md
   fixtures/mock-cli.sh              # byte-identical copy of .kairon/evals/fixtures/mock-cli.sh (this evals dir resolves case scripts here)
   fixtures/hidden/hidden_test.go    # file injected by the check-command-inject case (see Checks); the agent never sees it
@@ -2030,6 +2068,24 @@ The `selftest-sandbox` and `selftest-sandbox-ro` agents exercise [Sandbox Contai
 go run ./cmd/kairon eval --backend stub --sandbox --evals-dir internal/eval/testdata/evals selftest-sandbox
 go run ./cmd/kairon eval --backend stub --sandbox --evals-dir internal/eval/testdata/evals selftest-sandbox-ro
 ```
+
+The `selftest-checks` and `selftest-checks-fail` agents exercise [`checks_only` rubrics](#checks_only-rubrics) with the stub backend. Their fixtures use no `judge` checks and no `simulated_user`, so a run makes no judge call and its `calls[]` holds no record with `role: judge`.
+
+- `selftest-checks` **passes**. `check-one-criterion` has checks on `file_written` only, so its result records a score for `file_written` and none for `report_marker`, and the case total equals the number of checks. `check-both-criteria` has checks on both criteria and scores both in full.
+- `selftest-checks-fail` is **expected to fail**. `stub-empty-response` has an empty stub response, so the agent produced no output: each checked criterion records `0/N` (not skipped), no check runs, and the agent ends below its threshold, so the run exits non-zero.
+
+```bash
+go run ./cmd/kairon eval --backend stub --evals-dir internal/eval/testdata/evals selftest-checks        # PASS, exit 0
+go run ./cmd/kairon eval --backend stub --evals-dir internal/eval/testdata/evals selftest-checks-fail   # FAIL, exit 1
+```
+
+`internal/eval/testdata/checks-only-invalid/` is a separate, deliberately **invalid** evals directory: its `rubrics/selftest-checks.yaml` sets `checks_only: true`, but its only case, `cases/selftest-checks/no-checks.yaml`, has no `checks:` block. Running it is rejected while the cases load, before any case runs and without writing a result file, with a non-zero exit and an error that names `no-checks.yaml`:
+
+```bash
+go run ./cmd/kairon eval --backend stub --evals-dir internal/eval/testdata/checks-only-invalid selftest-checks   # error naming no-checks.yaml, exit 1
+```
+
+Like `selftest-fail`, `selftest-checks-fail` is an expected-to-fail agent, and `checks-only-invalid` is an expected-to-be-rejected fixture; neither is a regression when it fails.
 
 The self-test runs with the stub backend, so its per-call `model` values are `stub` / `stub-model` (what the stub reports) rather than the pinned names. The pinned models still appear in the run-level `agent_model` and `judge_model` fields.
 

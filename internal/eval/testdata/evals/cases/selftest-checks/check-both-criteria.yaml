@@ -1,0 +1,25 @@
+name: check-both-criteria
+description: "Self-test (checks_only): checks on both criteria, all passing"
+agent: selftest-checks
+input: |
+  Create the marker file and report with the expected marker phrase.
+context:
+  - "This case runs against the deterministic stub backend"
+  - "Passes: the stub turn writes marker.txt and the response contains output marker alpha"
+expected_output: |
+  A short report.
+stub:
+  turns:
+    - commands:
+        - "echo hi > marker.txt"
+      response: |
+        ## Checks
+
+        The stub turn finished and reported output marker alpha.
+checks:
+  - criterion: file_written
+    type: file_exists
+    path: marker.txt
+  - criterion: report_marker
+    type: output_contains
+    pattern: "output marker alpha"
