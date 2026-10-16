@@ -595,21 +595,28 @@ func loadAuditCases(evalsDir, agent string) (auditCases, error) {
 			// that differ only by surrounding whitespace are the same criterion.
 			criterion = strings.TrimSpace(criterion)
 			delete(ch, "criterion")
-			byCriterion[criterion] = append(byCriterion[criterion], canonicalAuditCheck(ch))
+			canonical, err := canonicalAuditCheck(ch)
+			if err != nil {
+				return auditCases{}, fmt.Errorf("parsing case %s: %w", file, err)
+			}
+			byCriterion[criterion] = append(byCriterion[criterion], canonical)
 		}
 	}
 	return cases, nil
 }
 
 // canonicalAuditCheck encodes a check body (criterion already removed) as JSON
-// with sorted keys. A body that JSON cannot encode (non-string YAML keys) falls
-// back to fmt's %v, which also prints maps in sorted key order.
-func canonicalAuditCheck(body map[string]any) string {
+// with sorted keys, so equal checks compare equal whatever their YAML field
+// order. A body JSON cannot encode is an error rather than a lossy fallback: a
+// format like fmt's %v drops value types and string boundaries, so two
+// different checks could canonicalize identically and wrongly trigger the
+// identical rule.
+func canonicalAuditCheck(body map[string]any) (string, error) {
 	b, err := json.Marshal(body)
 	if err != nil {
-		return fmt.Sprintf("%v", body)
+		return "", fmt.Errorf("check body cannot be encoded: %w", err)
 	}
-	return string(b)
+	return string(b), nil
 }
 
 // evidenceCaseNames returns the distinct case names an Evidence cell names via

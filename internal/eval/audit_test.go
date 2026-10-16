@@ -1514,6 +1514,27 @@ func TestAuditIdenticalCriteria(t *testing.T) {
 	})
 }
 
+// TestCanonicalAuditCheckUnencodable pins that a check body JSON cannot encode
+// is reported as an error rather than silently collapsed to a lossy fmt %v
+// string (which drops value types and string boundaries, so two different
+// checks could canonicalize identically and wrongly trigger the identical rule).
+func TestCanonicalAuditCheckUnencodable(t *testing.T) {
+	// A channel is not JSON-encodable, so json.Marshal fails on this body.
+	body := map[string]any{"bad": make(chan int)}
+	if _, err := canonicalAuditCheck(body); err == nil {
+		t.Fatal("canonicalAuditCheck returned no error for a JSON-unencodable body; it must not fall back to a lossy format")
+	}
+
+	ok := map[string]any{"type": "changed_files", "allow": []any{"a.md"}}
+	got, err := canonicalAuditCheck(ok)
+	if err != nil {
+		t.Fatalf("canonicalAuditCheck on an encodable body: unexpected error %v", err)
+	}
+	if want := `{"allow":["a.md"],"type":"changed_files"}`; got != want {
+		t.Fatalf("canonicalAuditCheck = %q, want %q", got, want)
+	}
+}
+
 func TestAuditReportCriteria(t *testing.T) {
 	prompt := auditRTCC + "Rule one.\n"
 	table := auditTable("Rule one.=>alpha")
