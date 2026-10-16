@@ -2,6 +2,7 @@ package eval
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -262,5 +263,147 @@ func TestExecuteCaseRequiresSandboxFailsFastNatively(t *testing.T) {
 	}
 	if len(entries) != 0 {
 		t.Errorf("workspace root not empty: %v", entries)
+	}
+}
+
+// provEnv prepares a git project whose selftest agent declares a conventions
+// resource, a workspace fixture "conv" that supplies it, and pins the run.
+func provEnv(t *testing.T) {
+	t.Helper()
+	execEnv(t, false)
+	writeCfgFile(t, ".kiro/agents/selftest.json",
+		`{"name":"selftest","model":"claude-sonnet-5.5","prompt":"inline","resources":["skill://.kiro/skills/x-conventions/SKILL.md"]}`)
+	gitTrack(t, ".kiro/agents/selftest.json")
+	writeCfgFile(t, "evals/fixtures/workspaces/conv/.kiro/skills/x-conventions/SKILL.md", "fixture override\n")
+	writeCfgFile(t, "evals/fixtures/workspaces/conv/README.md", "# conv\n")
+	if err := pinRun("selftest", RunOptions{}, false); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestExecuteCasePerCaseProvenanceFromStagedWorkspace(t *testing.T) {
+	provEnv(t)
+	const res = "skill://.kiro/skills/x-conventions/SKILL.md"
+	pin, ok := cfg.pins.pinOf("selftest")
+	if !ok {
+		t.Fatal("run is not pinned")
+	}
+
+	var out bytes.Buffer
+	plain := executeCase(execRubric(), stubCase("plain", "", "", "ok"), nil, &out, false)
+	withFix := executeCase(execRubric(), stubCase("fix", "conv", "", "ok"), nil, &out, false)
+
+	// A case without the fixture runs the baseline workspace.
+	if plain.PromptSHA256 != pin.Provenance.PromptSHA256 {
+		t.Errorf("plain prompt_sha256 = %q, want baseline %q", plain.PromptSHA256, pin.Provenance.PromptSHA256)
+	}
+	if plain.ResourcesPresent == nil || len(plain.ResourcesPresent) != 0 {
+		t.Errorf("plain resources_present = %#v, want []", plain.ResourcesPresent)
+	}
+	// A case with the fixture hashes and lists what its agent actually sees.
+	if len(withFix.ResourcesPresent) != 1 || withFix.ResourcesPresent[0] != res {
+		t.Errorf("fixture resources_present = %v, want [%s]", withFix.ResourcesPresent, res)
+	}
+	if withFix.PromptSHA256 == "" || withFix.PromptSHA256 == plain.PromptSHA256 {
+		t.Errorf("fixture prompt_sha256 = %q, must differ from the no-fixture %q", withFix.PromptSHA256, plain.PromptSHA256)
+	}
+	// The agent-level pin is untouched.
+	if got, _ := cfg.pins.pinOf("selftest"); got.Provenance.PromptSHA256 != pin.Provenance.PromptSHA256 || len(got.Provenance.ResourcesPresent) != 0 {
+		t.Errorf("agent-level pin changed: %+v", got.Provenance)
+	}
+	// Every agent call record carries the case's hash.
+	for _, c := range []CaseResult{plain, withFix} {
+		var agents int
+		for _, rec := range c.Calls {
+			if rec.Role != "agent" {
+				continue
+			}
+			agents++
+			if rec.PromptSHA256 != c.PromptSHA256 {
+				t.Errorf("case %s call prompt_sha256 = %q, want case value %q", c.CaseName, rec.PromptSHA256, c.PromptSHA256)
+			}
+		}
+		if agents == 0 {
+			t.Errorf("case %s has no agent call record", c.CaseName)
+		}
+	}
+}
+
+func TestExecuteCaseUnpinnedOmitsProvenance(t *testing.T) {
+	execEnv(t, false)
+	var out bytes.Buffer
+	cr := executeCase(execRubric(), stubCase("u", "", "", "ok"), nil, &out, false)
+	if cr.PromptSHA256 != "" || cr.ResourcesPresent != nil {
+		t.Fatalf("unpinned case recorded provenance: %q %v", cr.PromptSHA256, cr.ResourcesPresent)
+	}
+	b, err := json.Marshal(cr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{`"prompt_sha256"`, `"resources_present"`} {
+		if strings.Contains(string(b), key) {
+			t.Errorf("unpinned case JSON contains %s: %s", key, b)
+		}
+	}
+}
+
+func TestExecuteCaseProvenanceErrorIsWorkspaceFailure(t *testing.T) {
+	provEnv(t)
+	// The pin exists, but the staged workspace has no agent config to hash.
+	if err := os.Remove(".kiro/agents/selftest.json"); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	cr := executeCase(execRubric(), stubCase("broken", "", "", "ok"), nil, &out, false)
+	if cr.ErrorContext == nil || !strings.Contains(cr.ErrorContext.Stderr, "workspace") {
+		t.Fatalf("ErrorContext = %+v, want a workspace failure", cr.ErrorContext)
+	}
+	if !strings.Contains(out.String(), "workspace failed") {
+		t.Errorf("output lacks the workspace failure marker: %q", out.String())
+	}
+	if cr.ActualOutput != "" || len(cr.Calls) != 0 || cr.PromptSHA256 != "" {
+		t.Errorf("agent ran or provenance set despite the error: %+v", cr)
+	}
+	if cr.WorkspaceDir != "" {
+		if _, err := os.Stat(cr.WorkspaceDir); err == nil {
+			t.Errorf("workspace %s was not removed", cr.WorkspaceDir)
+		}
+	}
+}
+
+func TestCaseResultJSONProvenance(t *testing.T) {
+	has := func(t *testing.T, cr CaseResult, key string) bool {
+		t.Helper()
+		b, err := json.Marshal(cr)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var m map[string]json.RawMessage
+		if err := json.Unmarshal(b, &m); err != nil {
+			t.Fatal(err)
+		}
+		_, ok := m[key]
+		return ok
+	}
+	// Old shape: neither field.
+	old := CaseResult{CaseName: "c"}
+	if has(t, old, "prompt_sha256") || has(t, old, "resources_present") {
+		t.Error("a case without provenance must omit both fields")
+	}
+	// prompt_sha256 set with an empty list: resources_present is still emitted, as [].
+	cr := CaseResult{CaseName: "c", PromptSHA256: strings.Repeat("a", 64)}
+	b, _ := json.Marshal(cr)
+	if !strings.Contains(string(b), `"resources_present":[]`) || !strings.Contains(string(b), `"prompt_sha256"`) {
+		t.Errorf("JSON = %s, want prompt_sha256 and resources_present:[]", b)
+	}
+	// Round trip.
+	cr.ResourcesPresent = []string{"skill://a"}
+	b, _ = json.Marshal(cr)
+	var back CaseResult
+	if err := json.Unmarshal(b, &back); err != nil {
+		t.Fatal(err)
+	}
+	if back.PromptSHA256 != cr.PromptSHA256 || len(back.ResourcesPresent) != 1 || back.ResourcesPresent[0] != "skill://a" {
+		t.Errorf("round trip = %+v", back)
 	}
 }

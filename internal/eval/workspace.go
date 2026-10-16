@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -592,27 +593,116 @@ func hermeticGitEnv() []string {
 // only read. A candidate prompt (cfg.candidate) is written last, over all of
 // them, and is the one exception to the fixture precedence.
 func (w *caseWorkspace) stageKiro(fixtureFiles map[string]bool) error {
-	if err := os.MkdirAll(w.KiroDir, 0o755); err != nil {
-		return err
-	}
 	// Anything already present under .kiro came from the fixture.
 	fixtureKiro := func(rel string) bool { return fixtureFiles[filepath.Join(kiroDirName, rel)] }
+	return stageKiroInto(w.KiroDir, fixtureKiro, false, cfg.candidate)
+}
 
-	if err := copyTree(kiroDirName, w.KiroDir, func(rel string) bool { return fixtureKiro(rel) }, nil); err != nil {
-		return fmt.Errorf("staging project %s: %w", kiroDirName, err)
-	}
-	agents := filepath.Join(w.KiroDir, "agents")
-	if err := copyTree(evalsPath("agents"), agents, func(rel string) bool {
-		return fixtureKiro(filepath.Join("agents", rel))
-	}, nil); err != nil {
-		return fmt.Errorf("staging eval agents: %w", err)
-	}
-	// A --prompt-file candidate replaces the agent's prompt in this workspace
-	// copy only, over every lower layer and any fixture file.
-	if err := stageCandidatePrompt(w, cfg.candidate); err != nil {
+// stageKiroInto builds a staged .kiro directory at kiroDir. It is the single
+// staging routine: a case workspace uses it, and so can anything that needs
+// the .kiro a case would get (for example baseline provenance, which passes a
+// nil fixtureKiro).
+//
+// Layers are written in precedence order, lowest first:
+//  1. the project's .kiro, limited to git-tracked files (see
+//     projectKiroFilter) and without skills/*-conventions override hooks;
+//  2. the <evals-dir>/agents overlay, unless ignoreOverlay is set;
+//  3. the candidate prompt, if any, over every lower layer.
+//
+// fixtureKiro reports whether a path relative to .kiro was supplied by the
+// case fixture (already copied into kiroDir); a lower layer never overwrites
+// such a path. It may be nil.
+func stageKiroInto(kiroDir string, fixtureKiro func(rel string) bool, ignoreOverlay bool, cand *candidatePrompt) error {
+	if err := os.MkdirAll(kiroDir, 0o755); err != nil {
 		return err
 	}
-	return nil
+	isFixture := func(rel string) bool { return fixtureKiro != nil && fixtureKiro(rel) }
+
+	skipProject, err := projectKiroFilter()
+	if err != nil {
+		return fmt.Errorf("staging project %s: %w", kiroDirName, err)
+	}
+	if err := copyTree(kiroDirName, kiroDir, func(rel string) bool {
+		return isFixture(rel) || skipProject(rel)
+	}, nil); err != nil {
+		return fmt.Errorf("staging project %s: %w", kiroDirName, err)
+	}
+	if !ignoreOverlay {
+		agents := filepath.Join(kiroDir, "agents")
+		if err := copyTree(evalsPath("agents"), agents, func(rel string) bool {
+			return isFixture(filepath.Join("agents", rel))
+		}, nil); err != nil {
+			return fmt.Errorf("staging eval agents: %w", err)
+		}
+	}
+	// A --prompt-file candidate replaces the agent's prompt in this staged
+	// copy only, over every lower layer and any fixture file.
+	return stageCandidatePromptInto(kiroDir, cand, ignoreOverlay)
+}
+
+// isConventionsPath reports whether rel (relative to .kiro) is, or lies
+// under, a skills/<name>-conventions override hook directory.
+func isConventionsPath(rel string) bool {
+	parts := strings.Split(filepath.ToSlash(rel), "/")
+	return len(parts) >= 2 && parts[0] == "skills" && strings.HasSuffix(parts[1], auditConventionsSuffix)
+}
+
+// projectKiroFilter returns the skip predicate for the project layer: paths
+// are relative to .kiro. It skips skills/*-conventions subtrees and every file
+// git does not track, so untracked local state (such as .kiro/settings/) never
+// reaches a case. Tracked files are still read from the working tree, so
+// uncommitted edits to them are staged.
+//
+// A working directory outside any git repository has no untracked files by
+// definition, so only the conventions filter applies. Any other git failure is
+// returned rather than silently disabling the filter.
+func projectKiroFilter() (func(rel string) bool, error) {
+	files, err := trackedKiroFiles()
+	if err != nil {
+		return nil, err
+	}
+	if files == nil {
+		return isConventionsPath, nil
+	}
+	// Directories on the way to a tracked file must be walked.
+	dirs := map[string]bool{}
+	for f := range files {
+		for d := path.Dir(f); d != "."; d = path.Dir(d) {
+			dirs[d] = true
+		}
+	}
+	return func(rel string) bool {
+		if isConventionsPath(rel) {
+			return true
+		}
+		r := filepath.ToSlash(rel)
+		return !files[r] && !dirs[r]
+	}, nil
+}
+
+// trackedKiroFiles returns the set of git-tracked files under .kiro, as
+// slash-separated paths relative to .kiro. It returns (nil, nil) when the
+// working directory is not inside a git repository.
+func trackedKiroFiles() (map[string]bool, error) {
+	cmd := exec.Command("git", "ls-files", "-z", "--cached", "--", kiroDirName)
+	cmd.Env = append(hermeticGitEnv(), "LC_ALL=C", "LANGUAGE=C")
+	var stderr strings.Builder
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
+	if err != nil {
+		var exitErr *exec.ExitError
+		if errors.As(err, &exitErr) && exitErr.ExitCode() == 128 && strings.Contains(stderr.String(), "not a git repository") {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("git ls-files %s: %w: %s", kiroDirName, err, strings.TrimSpace(stderr.String()))
+	}
+	files := map[string]bool{}
+	for _, p := range strings.Split(string(out), "\x00") {
+		if rel, ok := strings.CutPrefix(p, kiroDirName+"/"); ok && rel != "" {
+			files[rel] = true
+		}
+	}
+	return files, nil
 }
 
 // setPermissions makes the workspace usable by an unprivileged container user

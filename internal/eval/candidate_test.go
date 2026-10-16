@@ -283,14 +283,14 @@ func TestProvenanceCandidateResourceAliasUsesCandidateBytes(t *testing.T) {
 	t.Run("non-aliasing resource still reads the live file", func(t *testing.T) {
 		chdirTemp(t)
 		writeProvFile(t, ".kiro/agents/a-prompt.md", "live prompt")
-		writeProvFile(t, "res.md", "res v1")
+		writeProvFile(t, ".kiro/res.md", "res v1")
 		writeProvFile(t, ".kiro/agents/a.json",
-			`{"name":"a","model":"m","prompt":"file://./a-prompt.md","resources":["file://res.md"]}`)
+			`{"name":"a","model":"m","prompt":"file://./a-prompt.md","resources":["file://.kiro/res.md"]}`)
 		cfg.candidate = &candidatePrompt{Agent: "a", Path: "cand.md", Content: []byte("candidate bytes")}
 		t.Cleanup(func() { cfg.candidate = nil })
 
 		before := mustProv(t, "a", false).PromptSHA256
-		writeProvFile(t, "res.md", "res v2")
+		writeProvFile(t, ".kiro/res.md", "res v2")
 		if after := mustProv(t, "a", false).PromptSHA256; after == before {
 			t.Error("editing a non-aliasing resource must still change the hash")
 		}
