@@ -1165,7 +1165,7 @@ Each case in `<agent>.json` carries a `calls` array with one record per agent ca
 | `cost_usd` | Cost of the call, using the same fixed $3 / $15 per million tokens estimate as `agent_cost` / `judge_cost`. |
 | `estimated` | `true` unless the usage was `reported` by the backend. |
 | `duration_ms` | Call duration in milliseconds: the backend's measurement, or wall-clock time when the backend reports none (the stub). |
-| `prompt_sha256` | Hash of the agent's prompt inputs (agent calls only; same value as the file-level `prompt_sha256`, see below). |
+| `prompt_sha256` | Hash of the agent's prompt inputs (agent calls only). It is the **case's own** `prompt_sha256` (see [Per-case fields](#per-case-fields-in-agentjson)), computed from that case's staged workspace. It equals the file-level `prompt_sha256` unless the case's fixture overrides `.kiro` content. |
 | `trusted_tools` | The whole-tool trust set the call ran with, in `kiro-cli --trust-tools` spelling (for example `["fs_read","fs_write"]`). Present only on `--sandbox` agent calls; omitted for native calls, which run with `--trust-all-tools`. An empty list `[]` means "restricted to nothing", which is different from absent. |
 | `tool_denials` | Tool calls the trust gate refused: `{tool, command, reason}` with `reason` `tool not trusted`. Omitted when empty. Populated by the stub backend only (see [Limits](#limits)). |
 | `error` | Set when the call failed. A failed call is still recorded. |
@@ -1215,9 +1215,9 @@ The per-agent result file always carries:
 |-------|-------------|
 | `agent_model` | The effective model the agent ran on (`evals.agent_model`, else the agent config's `model`), the same with and without `--sandbox`. |
 | `judge_model` | The model used for judge calls. |
-| `prompt_sha256` | Hash of everything that shapes the agent's prompt (see below). With `--prompt-file`, the prompt part of the hash is computed from the candidate file's bytes. |
+| `prompt_sha256` | Agent-level (baseline) hash of everything that shapes the agent's prompt, computed over a staged workspace with no fixture overrides (see [How `prompt_sha256` is computed](#how-prompt_sha256-is-computed)). With `--prompt-file`, the prompt part of the hash is computed from the candidate file's bytes. Individual cases carry their own value (see [Per-case fields](#per-case-fields-in-agentjson)). |
 | `prompt_file` | The `--prompt-file` path of a [candidate prompt run](#evaluating-a-candidate-prompt---prompt-file), as given on the command line and normalised with `filepath.Clean` and `filepath.ToSlash` (a relative path stays relative, an absolute path stays absolute). Omitted (the key is absent) for runs without `--prompt-file`. It is the path text only, not a content identity: key on `prompt_sha256` for that. |
-| `resources_present` | The agent-config `resources` entries that existed when the hash was computed. Always written; an empty list serialises as `[]`. |
+| `resources_present` | The agent-config `resources` entries that existed in that baseline staged workspace when the hash was computed. Always written; an empty list serialises as `[]`. A project `*-conventions` skill is never staged, so it is never listed here. |
 | `sandbox` | Execution mode as a **boolean**: `true` for a `--sandbox` (container) run, `false` for a native run. Written by every run, including single-case (`--testcase`) runs. Absent in files written before mode tracking. Note that `summary.json` spells the same fact as a string (`"native"` / `"container"`); see below. |
 | `containment` | What contained this agent's cases (see [Execution mode and containment](#execution-mode-and-containment)). Present for container runs only; absent for native runs. |
 | `repeat` | Number of times every case was run (`--repeat`; see [Repeat runs](#repeat-runs---repeat)). Written as `1` for a plain run; omitted when `0`, and absent in files written before repeats existed, which count as `1`. Each entry of `cases` then carries `run` (1-based). |
@@ -1238,9 +1238,37 @@ The per-agent result file always carries:
 
 A `--prompt-file` run additionally carries `"prompt_file": "<path>"` (and a `prompt_sha256` computed from the candidate), for example `"prompt_file": ".kairon/iterations/selftest/v2.md"`.
 
+##### Per-case fields in `<agent>.json`
+
+A pinned run (every normal `kairon eval` run, see [The `evals` block](#the-evals-block)) also records, on **each entry of `cases`**, what that case's own agent saw:
+
+| Field | Description |
+|-------|-------------|
+| `prompt_sha256` | The hash described in [How `prompt_sha256` is computed](#how-prompt_sha256-is-computed), taken over **the case's staged workspace** after its fixture, the `<evals-dir>/agents/` overlay and any `--prompt-file` candidate were applied. |
+| `resources_present` | The agent-config `resources` entries that existed in that workspace. Written whenever the case's `prompt_sha256` is, even when empty (`[]`). |
+
+Relation to the agent-level fields:
+
+- The agent-level `prompt_sha256` / `resources_present` (in `<agent>.json`, `summary.json` and the resume check) are the **baseline**: the hash of the workspace a case gets when its fixture overrides nothing. They never include a fixture, so they do not vary from case to case.
+- A case's value **equals the baseline** unless its fixture overrides `.kiro` content that the agent loads: a `skills/<name>-conventions/` skill, the prompt file, the agent config or a resource. A case whose fixture supplies a `*-conventions` skill that the agent lists in `resources` has that entry in its own `resources_present` and a `prompt_sha256` that differs from the baseline. Cases without such a fixture repeat the baseline.
+- The case value is what explains that case's score. Use it to confirm which prompt, resources and override hooks a given result was produced under; use the agent-level value to decide whether two runs are comparable.
+- Each agent `calls[]` record of the case carries the same `prompt_sha256` as the case.
+- Both fields are **omitted** from a case in an unpinned run and in result files written before they existed, so those keep their earlier shape. `--resume`, `eval diff` and [`verify-log`](#iteration-logs-and-verify-log) keep comparing the agent-level values only.
+
+```json
+{
+  "case_name": "stub-conventions-fixture",
+  "prompt_sha256": "c41a…",
+  "resources_present": ["skill://.kiro/skills/selftest-conventions/SKILL.md"],
+  "calls": [ { "role": "agent", "agent": "selftest", "prompt_sha256": "c41a…", "…": "…" } ]
+}
+```
+
+In the self-test, `stub-conventions-fixture` shows this: its workspace fixture supplies `selftest-conventions`, so the case lists it in `resources_present` with a `prompt_sha256` that differs from `stub-basic`'s, while the agent-level `resources_present` stays `[]`.
+
 #### Run summary (`summary.json`)
 
-`summary.json` always carries `judge_model` and an `agents` map with `agent_model`, `prompt_sha256` and `resources_present` per agent (plus `prompt_file` for a [candidate prompt run](#evaluating-a-candidate-prompt---prompt-file)). It also records the run's execution mode in `sandbox` and, for container runs, a per-agent `containment` map. The example below is a `--sandbox` (container) run (the `tool_trust` values are illustrative; they follow each agent's trust set, see [Tool trust](#tool-trust)):
+`summary.json` always carries `judge_model` and an `agents` map with `agent_model`, `prompt_sha256` and `resources_present` per agent (plus `prompt_file` for a [candidate prompt run](#evaluating-a-candidate-prompt---prompt-file)). These are the agent-level baseline values; per-case values live only in `<agent>.json` (see [Per-case fields](#per-case-fields-in-agentjson)). It also records the run's execution mode in `sandbox` and, for container runs, a per-agent `containment` map. The example below is a `--sandbox` (container) run (the `tool_trust` values are illustrative; they follow each agent's trust set, see [Tool trust](#tool-trust)):
 
 ```json
 {
@@ -1354,32 +1382,41 @@ The daemon-gated test `TestProvenanceParitySandbox` (run by `task eval:selftest:
 
 #### How `prompt_sha256` is computed
 
-`prompt_sha256` is a lowercase hex SHA-256 (64 characters). It is a hash only; the prompt text itself is not stored. It is computed over an ordered sequence of parts:
+`prompt_sha256` is a lowercase hex SHA-256 (64 characters). It is a hash only; the prompt text itself is not stored.
 
-1. **config** — the raw bytes of the agent config file. The config is `<evals-dir>/agents/<agent>.json` when it exists, else `.kiro/agents/<agent>.json` relative to the working directory (in a `kiro-cli` sandbox run only the latter).
-2. **prompt** — if the config's `prompt` starts with `file://`, the bytes of that file. A relative path resolves against the config file's directory; absolute paths are allowed. A missing or unreadable prompt file is an error. An inline prompt is already covered by the config bytes.
-3. **resource** — for each entry of the config's `resources` array, in config order, the bytes of every existing matching file.
+**It is hashed over a staged workspace, not over the repository.** The hash describes the bytes an agent actually sees, so it is computed from a staged `.kiro/` (see [Staged `.kiro` and precedence](#staged-kiro-and-precedence)): the config, the `file://` prompt and the `resources` are all read from inside that staged directory. Two staged workspaces are hashed:
 
-Each part is framed as `<kind>\x00<decimal length>\x00<bytes>` (`kind` is `config`, `prompt` or `resource`), so parts cannot run together ambiguously. File paths are not hashed, so the same contents give the same hash on any machine.
+- **The agent-level (baseline) workspace.** The value in `<agent>.json`, `summary.json` and the run pin is computed once per agent from a throwaway workspace staged **without any fixture files**: the project's git-tracked `.kiro/` files without `*-conventions` skills, the `<evals-dir>/agents/` overlay (unless the run is a `kiro-cli` sandbox run, which does not use it), and the `--prompt-file` candidate over both. This is "the workspace a case gets when its fixture overrides nothing". The throwaway directory is removed afterwards.
+- **Each case's own workspace.** The value in a case entry (see [Per-case fields](#per-case-fields-in-agentjson)) is computed from that case's real staged workspace, so a fixture that supplies a `*-conventions` skill, a prompt or a resource is reflected.
+
+Because untracked files and project `*-conventions` skills are never staged, creating, editing or deleting one of them does not change the agent-level hash.
+
+The hash is computed over an ordered sequence of parts:
+
+1. **config** — the raw bytes of the agent config file in the staged `.kiro/agents/<agent>.json`. Its source is `<evals-dir>/agents/<agent>.json` when it exists, else the project's `.kiro/agents/<agent>.json` (in a `kiro-cli` sandbox run only the latter). A project config must be git-tracked to be staged (see [Migration note](#migration-note-staged-kiro-and-provenance)).
+2. **prompt** — if the config's `prompt` starts with `file://`, the bytes of that file. A relative path resolves against the config file's directory in the staged `.kiro/agents/`; absolute paths are allowed. A missing or unreadable prompt file is an error. An inline prompt is already covered by the config bytes.
+3. **resource** — for each entry of the config's `resources` array, in config order, the bytes of every existing matching file in the staged workspace.
+
+Each part is framed as `<kind>\x00<decimal length>\x00<bytes>` (`kind` is `config`, `prompt` or `resource`), so parts cannot run together ambiguously. File paths are not hashed, so the same contents give the same hash on any machine. The framing is unchanged by the staged-workspace computation: for a tree with no `*-conventions` skills and no untracked files the hash is byte-identical to what was recorded before.
 
 **With `--prompt-file`.** The **prompt** part uses the candidate file's bytes instead of the live prompt file's bytes; the live prompt file is not read, so it does not even need to exist. The **config** and **resource** parts are unchanged. Consequences:
 
 - `prompt_sha256` differs from the baseline hash exactly when the candidate's content differs from the live prompt's content.
 - A candidate that is byte-identical to the live prompt gets the baseline `prompt_sha256` (a handy no-op check); `prompt_file` is still recorded, so the run is identifiable as a candidate run.
 - The candidate's path is not hashed (paths never are), so the same candidate content gives the same hash wherever the file lives.
-- The hash is computed once for the run and copied into every `calls[]` record, so agent call records carry the candidate-based hash too. Judge calls carry no prompt hash.
+- The candidate is staged over the prompt file in every workspace before anything is hashed, so the hash is taken from the very bytes the agent will read, including through a resource entry that points at the prompt file. Every agent `calls[]` record carries the hash of its own case (see [Per-case fields](#per-case-fields-in-agentjson)), which includes the candidate bytes. Judge calls carry no prompt hash.
 
 Consequently, editing the prompt file, the config, or any present resource changes the hash, and so does reordering resources. Running the same inputs twice gives an identical hash, which makes a before/after comparison of two runs a check that only the intended thing changed.
 
 Resource handling:
 - Only string entries of `resources` are considered; object entries are ignored.
 - A `file://` or `skill://` prefix is stripped. Any other scheme is not a local file and counts as not present.
-- Relative paths resolve against the **process working directory** (the repository root for a normal run), not against the config file.
+- Relative paths resolve against the **root of the staged workspace** (the directory that holds the staged `.kiro/`), not against the config file and not against the repository. A resource that is not staged, such as a repository file outside `.kiro/` that no fixture provides, is therefore not present. Absolute paths stay absolute.
 - An entry containing `*`, `?` or `[` is expanded as a glob (matches sorted). It counts as present if at least one regular file matches, and every match is hashed.
-- **A missing resource is normal, not an error.** Resources such as `skill://.kiro/skills/<agent>-conventions/SKILL.md` are optional per-project overrides and often do not exist. A missing entry is skipped: it does not contribute to the hash and is omitted from `resources_present`. If the file is created later, it appears in `resources_present` and the hash changes.
+- **A missing resource is normal, not an error.** Resources such as `skill://.kiro/skills/<agent>-conventions/SKILL.md` are optional per-project overrides. Because a project `*-conventions` skill is never staged, that entry is absent from the agent-level `resources_present` in every run, whether or not the file exists in your checkout, and creating or editing it does not change the agent-level hash. It can only be present when a case's workspace fixture supplies the file, and then only in that case's own `resources_present` and `prompt_sha256`. A missing entry is skipped: it does not contribute to the hash and is omitted from `resources_present`.
 - `resources_present` lists entries exactly as written in the config (for example `skill://.kiro/skills/sentinel-protocol/SKILL.md`), in config order.
 
-When an `<evals-dir>/agents/` overlay is used, the agent runs in its case workspace, whose `.kiro/` is staged by the harness (see [Case Workspaces](#case-workspaces)), and does not load relative resources from the repository root. The hash reflects the files the harness can see from the repository root.
+The agent runs in its case workspace, whose `.kiro/` is staged by the harness (see [Case Workspaces](#case-workspaces)), and does not load relative resources from the repository root. The hash is computed over exactly that staged workspace, so it reflects what the agent loads and not what happens to exist in your checkout. This holds whether or not an `<evals-dir>/agents/` overlay is used.
 
 ### Resume refusal
 
@@ -1390,6 +1427,8 @@ When an `<evals-dir>/agents/` overlay is used, the agent runs in its case worksp
 ```
 
 `prompt_file` is shown as `(none)` when the run used the live prompt. A result file without a `prompt_file` compares equal to "no candidate", so resuming a candidate run without `--prompt-file` (or with a different file, even one that happens to hash identically) is refused, while resuming with the same file works as usual. See [Resume and diff](#resume-and-diff).
+
+The comparison uses the agent-level (baseline) values only; per-case `prompt_sha256` values are not compared. Because the baseline is hashed over the staged workspace, a change to something that is not staged (an untracked file, a project `*-conventions` skill) cannot cause this refusal, while a change to a tracked `.kiro` file or to the `<evals-dir>/agents/` overlay can. An interrupted run that was started before the staging change described in the [migration note](#migration-note-staged-kiro-and-provenance) is refused with this message whenever its recorded hash differs from the new one.
 
 Start a fresh run (without `--resume`) after changing a prompt, a resource or `evals`. A result file written before provenance existed (no `prompt_sha256`) is **refused when it already holds saved cases** — resuming would attribute those scores to the current prompt and models, which were unknown when they were produced; an empty legacy file is allowed. An unchanged resume continues as before.
 
@@ -1403,6 +1442,19 @@ Start a fresh run (without `--resume`) after changing a prompt, a resource or `e
 ```
 
 Resume with the same mode, or start a fresh run. As a last line of defence, the summary writer also refuses to overwrite a recorded mode with a different one, so one `summary.json` never mixes modes. A `summary.json` with no recorded `sandbox` (an old run) is not mode-checked at this level.
+
+### Migration note: staged `.kiro` and provenance
+
+Two things change when you first run with the staged-workspace behaviour described in [Staged `.kiro` and precedence](#staged-kiro-and-precedence) and [How `prompt_sha256` is computed](#how-prompt_sha256-is-computed):
+
+- **The agent-level `prompt_sha256` changes once.** Previously the hash was taken over the repository working directory, so a project `*-conventions` skill (such as Kairon's own `.kiro/skills/builder-conventions/SKILL.md`) was hashed and listed in `resources_present` even though no case workspace contained it. It is no longer staged, so it is no longer hashed. For any agent whose project override file existed, the first run records a different `prompt_sha256` (and a shorter `resources_present`) than earlier runs, with no change to the prompt. For an agent without such a file the hash is unchanged. Consequences:
+  - [`eval diff`](#run-provenance) reports the difference in `prompt_sha256` between a run before and a run after the change. That difference is expected.
+  - [`verify-log`](#iteration-logs-and-verify-log) checks a `change_type: prompt` iteration by comparing the recorded hashes of its baseline and result runs. Do not use a pair of runs that straddles this change as a prompt iteration, because the hash differs without a prompt edit. Re-run the baseline under the new behaviour and use that run.
+  - `--resume` of a run interrupted before the change is refused (`cannot resume: prompt or models changed …`) when the hash differs. Start a fresh run.
+  - After the change, editing a project `*-conventions` file no longer changes the hash, so it can no longer be mistaken for a prompt iteration.
+- **A new, untracked config or skill is not staged.** Only files that git tracks under `.kiro/` reach a case. A new agent config, prompt or skill that you have created but not added to git is invisible to the eval, and the run fails with `agent config for "<agent>" not found in the staged .kiro`. An untracked prompt file that a tracked config references fails the run with a prompt read error, and an untracked resource is silently absent from `resources_present`. Run `git add <path>` for the new file before running `kairon eval`. `git add -N <path>` (intent to add) is enough, so you do not have to stage the content or commit it; the file is staged with its current working-tree content. The same applies to a file kept deliberately untracked, such as `.kiro/settings/`: it is never staged, by design.
+
+A `*-conventions` skill is still evaluated when a case needs one: put it in the case's workspace fixture (`<evals-dir>/fixtures/workspaces/<fixture>/.kiro/skills/<skill>-conventions/SKILL.md`) and set `workspace: <fixture>` on the case.
 
 ## Evals Directory (`--evals-dir`)
 
@@ -1784,9 +1836,14 @@ The workspace's `.kiro/` is assembled on the host, never copied into a running c
 
 1. a file provided by the workspace fixture itself,
 2. `<evals-dir>/agents/*` (copied to `.kiro/agents/`),
-3. the project's own `.kiro/` (agents, skills, MCP config, as set up by `kairon init`).
+3. the project's own `.kiro/` (agents, skills, MCP config, as set up by `kairon init`), **limited as described below**.
 
-The project's `.kiro/` is only read. The live repository's `.kiro/` is never exposed to the agent, and a fixture can override any file (for example a `*-conventions` skill).
+The project's `.kiro/` is only read. The live repository's `.kiro/` is never exposed to the agent. The two filters below apply to the project layer only; the `<evals-dir>/agents/` overlay and the fixture layer are copied as they are, so a fixture can still provide or override any file.
+
+- **Only git-tracked files are staged.** The harness asks git which files under `.kiro/` are tracked (`git ls-files --cached -- .kiro`, run in the working directory) and stages only those. Untracked local state, such as the gitignored `.kiro/settings/`, never reaches a case, so a result does not depend on what happens to sit on the machine that ran it. A tracked file is staged with its **current working-tree content**, so uncommitted edits to tracked files are still staged. A file added with `git add` (or `git add -N`) counts as tracked; a tracked file that was deleted from the working tree is skipped because it is not on disk. If the working directory is not inside a git repository there are no untracked files by definition, so the whole project `.kiro/` is staged (the conventions filter below still applies). Any other git failure is an error, so the filter never silently degrades.
+- **`*-conventions` skills are staged only from a case workspace fixture.** A project skill directory `.kiro/skills/<name>-conventions/` (for example Kairon's own `builder-conventions`, `planner-conventions` and `validator-conventions`) is a per-project override hook. It is never staged from the project, so an agent is evaluated with its override hooks **empty**. A case whose fixture provides `.kiro/skills/<name>-conventions/...` does get it, with exactly the fixture's files: the project's files in that directory are never merged in. This keeps an agent certified against its own prompt and engine skills instead of this repository's local overrides.
+
+Because the staged workspace is the single source of truth, [`prompt_sha256` and `resources_present`](#how-prompt_sha256-is-computed) are computed from it as well, never from the repository working directory.
 
 ### Workspace fixtures
 
@@ -1870,6 +1927,7 @@ internal/eval/testdata/evals/
   cases/selftest/stub-quoted-input.yaml  # input with quotes, newlines, $(...) and backticks; must reach the backend verbatim
   cases/selftest/stub-marker.yaml   # stub turn command 'echo hi > marker.txt' leaves marker.txt in the case workspace
   cases/selftest/stub-seeded-workspace.yaml  # workspace: seeded; the stub appends to README.md -> ' M README.md'
+  cases/selftest/stub-conventions-fixture.yaml  # workspace: conventions; the fixture supplies selftest-conventions -> per-case resources_present lists it
   cases/selftest/check-*.yaml       # 14 passing check cases: one per deterministic check type plus 3 check-judge-* (see below)
   cases/selftest/multi-turn-gh-log.yaml      # 3 turns, one scripted stub turn each; turn-scoped gh_log / output checks plus default-last checks
   cases/selftest/multi-turn-workspace.yaml   # 2 turns plus a setup text entry; turn 2 needs the file turn 1 wrote (shared workspace)
@@ -1893,12 +1951,13 @@ internal/eval/testdata/evals/
   fixtures/mock-cli.sh              # byte-identical copy of .kairon/evals/fixtures/mock-cli.sh (this evals dir resolves case scripts here)
   fixtures/hidden/hidden_test.go    # file injected by the check-command-inject case (see Checks); the agent never sees it
   fixtures/workspaces/seeded/       # README.md plus docs/notes.txt: the seeded workspace fixture
+  fixtures/workspaces/conventions/  # .kiro/skills/selftest-conventions/SKILL.md: a fixture-supplied *-conventions override hook
   fixtures/workspaces/mock-aws/     # report.txt plus .mocks/aws/s3-cp.out: canned reply for the mocked aws
 ```
 
-`selftest.json` declares a `model` so the self-test passes the model-pinning pre-flight, and lists a `skill://.kiro/skills/selftest-conventions/SKILL.md` resource that intentionally does not exist. It exercises the "missing resources are normal" rule: the run succeeds and the recorded `resources_present` is `[]`.
+`selftest.json` declares a `model` so the self-test passes the model-pinning pre-flight, and lists a `skill://.kiro/skills/selftest-conventions/SKILL.md` resource that no project file provides. It exercises the "missing resources are normal" rule: the run succeeds and the agent-level `resources_present` is `[]`, even if you create `.kiro/skills/selftest-conventions/SKILL.md` in the repository, because a project `*-conventions` skill is never staged. Only the `stub-conventions-fixture` case, whose workspace fixture supplies that file, lists it in its own per-case `resources_present` (see [Per-case fields](#per-case-fields-in-agentjson)).
 
-The `selftest` agent has twenty-three cases and all of them pass (`task eval:selftest`): the five original `stub-*` cases, which carry no `checks` and keep their pinned scores, fourteen `check-*` cases that exercise [checks](#checks) (ten per-type cases, `check-command-inject`, and three `judge` cases: `check-judge-yes`, `check-judge-files` and `check-judge-mixed`), two [multi-turn](#multi-turn-cases) cases (`multi-turn-gh-log`, `multi-turn-workspace`) and two [simulated-user](#simulated-user-elicitation-cases) cases (`sim-routes`, `sim-stop-when`). The `selftest-fail` agent is deliberately separate, so `selftest` keeps meaning "everything passes". It has twenty-one cases. Twenty are **expected to fail** on a plain run: sixteen `check-*` cases (ten per-type cases and five of the six `check-judge-*` cases) plus `check-partial`, all built so that checks fail. The sixth, `check-judge-repeat`, is the exception: its `stub.judge: [yes, no]` answers `yes` on the first run, so a plain run (no `--repeat`) scores it `1/1` and the agent reports `20/21 cases failed`; only under [`--repeat 2`](#repeat-runs---repeat) does it show the `1/1` then `0/1` spread that pools to a failing 50% (see the `judge` paragraph below). The agent still ends below threshold either way. The rest are `stub-timeout`, which records a timeout failure (empty `actual_output`, `error_context.stderr` containing `timeout after 1s`) in about a second; `stub-empty-response`, whose stub returns an empty response, so the case has no output, every criterion scores 0 out of its maximum, and it still counts toward the agent's score; `multi-turn-wrong-turn`; and `sim-fact-not-asked`, both described below. Run it with:
+The `selftest` agent has twenty-four cases and all of them pass (`task eval:selftest`): the six `stub-*` cases (five original ones, which carry no `checks` and keep their pinned scores, plus `stub-conventions-fixture`), fourteen `check-*` cases that exercise [checks](#checks) (ten per-type cases, `check-command-inject`, and three `judge` cases: `check-judge-yes`, `check-judge-files` and `check-judge-mixed`), two [multi-turn](#multi-turn-cases) cases (`multi-turn-gh-log`, `multi-turn-workspace`) and two [simulated-user](#simulated-user-elicitation-cases) cases (`sim-routes`, `sim-stop-when`). The `selftest-fail` agent is deliberately separate, so `selftest` keeps meaning "everything passes". It has twenty-one cases. Twenty are **expected to fail** on a plain run: sixteen `check-*` cases (ten per-type cases and five of the six `check-judge-*` cases) plus `check-partial`, all built so that checks fail. The sixth, `check-judge-repeat`, is the exception: its `stub.judge: [yes, no]` answers `yes` on the first run, so a plain run (no `--repeat`) scores it `1/1` and the agent reports `20/21 cases failed`; only under [`--repeat 2`](#repeat-runs---repeat) does it show the `1/1` then `0/1` spread that pools to a failing 50% (see the `judge` paragraph below). The agent still ends below threshold either way. The rest are `stub-timeout`, which records a timeout failure (empty `actual_output`, `error_context.stderr` containing `timeout after 1s`) in about a second; `stub-empty-response`, whose stub returns an empty response, so the case has no output, every criterion scores 0 out of its maximum, and it still counts toward the agent's score; `multi-turn-wrong-turn`; and `sim-fact-not-asked`, both described below. Run it with:
 
 ```bash
 go run ./cmd/kairon eval --backend stub --no-sandbox --evals-dir internal/eval/testdata/evals selftest-fail
