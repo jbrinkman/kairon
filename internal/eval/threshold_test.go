@@ -104,3 +104,62 @@ func TestLoadRubricsPassThreshold(t *testing.T) {
 		})
 	}
 }
+
+func TestLoadRubricsMinCriterionScore(t *testing.T) {
+	load := func(t *testing.T, field string) ([]Rubric, error) {
+		t.Helper()
+		dir := chdirTemp(t)
+		body := "agent: a1\n" + field + "criteria:\n  - name: c\n    scoring: \"1-5\"\n"
+		writeCfgFile(t, filepath.Join(dir, "alt", "rubrics", "r.yaml"), body)
+		if err := configure(RunOptions{EvalsDir: "alt"}); err != nil {
+			t.Fatal(err)
+		}
+		return loadRubrics("")
+	}
+
+	t.Run("absent is nil", func(t *testing.T) {
+		rubrics, err := load(t, "")
+		if err != nil || len(rubrics) != 1 {
+			t.Fatalf("loadRubrics: %v, %d rubrics", err, len(rubrics))
+		}
+		if rubrics[0].MinCriterionScore != nil {
+			t.Errorf("MinCriterionScore = %v, want nil", *rubrics[0].MinCriterionScore)
+		}
+	})
+
+	for _, tt := range []struct {
+		name, yaml string
+		want       float64
+	}{
+		{"value", "min_criterion_score: 50\n", 50},
+		{"upper bound 100", "min_criterion_score: 100\n", 100},
+		{"small positive", "min_criterion_score: 0.5\n", 0.5},
+	} {
+		t.Run("accepts "+tt.name, func(t *testing.T) {
+			rubrics, err := load(t, tt.yaml)
+			if err != nil || len(rubrics) != 1 {
+				t.Fatalf("loadRubrics: %v, %d rubrics", err, len(rubrics))
+			}
+			if got := rubrics[0].MinCriterionScore; got == nil || *got != tt.want {
+				t.Errorf("MinCriterionScore = %v, want %v", got, tt.want)
+			}
+		})
+	}
+
+	for _, tt := range []struct{ name, yaml string }{
+		{"zero", "min_criterion_score: 0\n"},
+		{"negative", "min_criterion_score: -1\n"},
+		{"above 100", "min_criterion_score: 100.5\n"},
+		{"NaN", "min_criterion_score: .nan\n"},
+	} {
+		t.Run("rejects "+tt.name, func(t *testing.T) {
+			_, err := load(t, tt.yaml)
+			if err == nil {
+				t.Fatal("expected an error")
+			}
+			if !strings.Contains(err.Error(), "r.yaml") || !strings.Contains(err.Error(), "min_criterion_score") {
+				t.Errorf("error %q should name the rubric file and min_criterion_score", err)
+			}
+		})
+	}
+}

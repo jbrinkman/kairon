@@ -30,6 +30,13 @@ type AgentVerdict struct {
 	// every case and repeat, in first-seen order. Always written ([] when
 	// nothing is scored).
 	Criteria []CriterionTotal `json:"criteria"`
+	// MinCriterionScore echoes the rubric's per-criterion floor (percent);
+	// absent when the rubric sets none.
+	MinCriterionScore *float64 `json:"min_criterion_score,omitempty"`
+	// CriteriaBelowFloor names the criteria whose pooled percent is below
+	// MinCriterionScore, in Criteria order; absent when there are none. Any
+	// entry fails the agent.
+	CriteriaBelowFloor []string `json:"criteria_below_floor,omitempty"`
 }
 
 // agentThreshold returns the pass threshold recorded on the agent result,
@@ -73,6 +80,10 @@ func stampCase(cr *CaseResult, tc TestCase, rubric Rubric) {
 // case) is at least its threshold. With nothing measured it fails closed.
 // CasesFailed is informational and does not by itself fail the agent.
 //
+// When the result carries a per-criterion floor (MinCriterionScore) the agent
+// also fails if any criterion's pooled percent is below it, even when the
+// score meets the threshold. The score itself is never changed by the floor.
+//
 // With repeats (CaseResult.Run) the aggregate score is the mean over the
 // repeats, computed as the pooled sum of scores over the sum of maxima (every
 // repeat has the same denominator, so this is the arithmetic mean of the
@@ -93,12 +104,21 @@ func agentVerdict(ar AgentResult) AgentVerdict {
 	if criteria := agentCriterionTotals(ar); len(criteria) > 0 {
 		v.Criteria = criteria
 	}
+	if ar.MinCriterionScore != nil {
+		floor := *ar.MinCriterionScore
+		v.MinCriterionScore = &floor
+		for _, c := range v.Criteria {
+			if !percentAtLeast(c.Score, c.MaxScore, floor) {
+				v.CriteriaBelowFloor = append(v.CriteriaBelowFloor, c.Name)
+			}
+		}
+	}
 	v.CasesTotal, v.CasesFailed = caseAccounting(ar, threshold)
 
 	score, maxScore := agentScoreTotals(ar)
 	if maxScore > 0 {
 		v.Score = score * 100 / maxScore
-		v.Passed = score*100/maxScore >= threshold
+		v.Passed = score*100/maxScore >= threshold && len(v.CriteriaBelowFloor) == 0
 	}
 
 	for i, rt := range repeatTotals(ar) {
@@ -225,6 +245,35 @@ type AgentFailure struct {
 	Agent     string
 	Score     float64
 	Threshold float64
+	// Floor and BelowFloor are set when criteria fell below the rubric's
+	// min_criterion_score floor.
+	Floor      float64
+	BelowFloor []CriterionTotal
+}
+
+// failureOf builds the AgentFailure of an agent whose verdict did not pass,
+// carrying the criteria below the floor when there are any.
+func failureOf(agent string, v AgentVerdict) AgentFailure {
+	f := AgentFailure{Agent: agent, Score: v.Score, Threshold: v.Threshold}
+	if len(v.CriteriaBelowFloor) == 0 || v.MinCriterionScore == nil {
+		return f
+	}
+	f.Floor = *v.MinCriterionScore
+	for _, c := range v.Criteria {
+		if !percentAtLeast(c.Score, c.MaxScore, f.Floor) {
+			f.BelowFloor = append(f.BelowFloor, c)
+		}
+	}
+	return f
+}
+
+// floorDetail renders criteria as "a 10.0% (1/10), b 0.0% (0/1)".
+func floorDetail(criteria []CriterionTotal) string {
+	parts := make([]string, 0, len(criteria))
+	for _, c := range criteria {
+		parts = append(parts, fmt.Sprintf("%s %.1f%% (%d/%d)", c.Name, c.Percent, c.Score, c.MaxScore))
+	}
+	return strings.Join(parts, ", ")
 }
 
 // ThresholdError is returned when one or more evaluated agents fall below
@@ -237,6 +286,20 @@ type ThresholdError struct {
 func (e *ThresholdError) Error() string {
 	parts := make([]string, 0, len(e.Failed))
 	for _, f := range e.Failed {
+		if len(f.BelowFloor) > 0 {
+			// Name the criteria instead of a score < threshold comparison: the
+			// overall score may have met its threshold.
+			names := make([]string, 0, len(f.BelowFloor))
+			for _, c := range f.BelowFloor {
+				names = append(names, fmt.Sprintf("%s %.1f%%", c.Name, c.Percent))
+			}
+			noun := "criterion"
+			if len(names) > 1 {
+				noun = "criteria"
+			}
+			parts = append(parts, fmt.Sprintf("%s (%s %s < floor %.1f%%)", f.Agent, noun, strings.Join(names, ", "), f.Floor))
+			continue
+		}
 		parts = append(parts, fmt.Sprintf("%s (%.1f%% < %.1f%%)", f.Agent, f.Score, f.Threshold))
 	}
 	return fmt.Sprintf("%s: %d of %d agents below their pass threshold: %s",
@@ -247,15 +310,29 @@ func (e *ThresholdError) Unwrap() error { return ErrThresholdFailed }
 
 // printAgentVerdict writes the single PASS/FAIL line for an agent. The line
 // starts with the verdict word so it can be matched with grep '^PASS \|^FAIL '.
-// With repeats (Repeat > 1) the spread is appended after the existing text.
+// When criteria are below the floor, they are named after the existing text; with
+// repeats (Repeat > 1) the spread is appended last.
 func printAgentVerdict(w io.Writer, agent string, v AgentVerdict) {
 	word := "FAIL"
 	if v.Passed {
 		word = "PASS"
 	}
 	suffix := ""
+	if len(v.CriteriaBelowFloor) > 0 && v.MinCriterionScore != nil {
+		var below []CriterionTotal
+		for _, c := range v.Criteria {
+			if !percentAtLeast(c.Score, c.MaxScore, *v.MinCriterionScore) {
+				below = append(below, c)
+			}
+		}
+		noun := "criterion"
+		if len(below) > 1 {
+			noun = "criteria"
+		}
+		suffix = fmt.Sprintf("; %s below floor %.1f%%: %s", noun, *v.MinCriterionScore, floorDetail(below))
+	}
 	if v.Repeat > 1 {
-		suffix = fmt.Sprintf(" [repeat %d: min %.1f%%, max %.1f%%]", v.Repeat, v.ScoreMin, v.ScoreMax)
+		suffix += fmt.Sprintf(" [repeat %d: min %.1f%%, max %.1f%%]", v.Repeat, v.ScoreMin, v.ScoreMax)
 	}
 	fmt.Fprintf(w, "%s %s: %.1f%% (threshold %.1f%%), %d/%d cases failed%s\n",
 		word, agent, v.Score, v.Threshold, v.CasesFailed, v.CasesTotal, suffix)

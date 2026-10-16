@@ -14,6 +14,11 @@ type Rubric struct {
 	Criteria []Criterion `yaml:"criteria" json:"criteria"`
 	// PassThreshold is the percent (0-100] a case must reach to pass; nil means DefaultPassThreshold.
 	PassThreshold *float64 `yaml:"pass_threshold,omitempty" json:"pass_threshold,omitempty"`
+	// MinCriterionScore is an optional per-criterion floor, a percent in
+	// (0, 100]. When set, the agent fails if any scored criterion's pooled
+	// percent is below it, even when the overall score meets the threshold.
+	// nil means no floor.
+	MinCriterionScore *float64 `yaml:"min_criterion_score,omitempty" json:"min_criterion_score,omitempty"`
 	// ChecksOnly scores every case from its pass/fail checks alone. A non-cost
 	// criterion with no checks in a case is skipped (no CriterionScore, nothing
 	// added to the case or agent score or maximum), and neither the legacy LLM
@@ -279,6 +284,10 @@ type AgentResult struct {
 	// Threshold is the agent's pass threshold (percent), taken from its
 	// rubric. Zero means the result predates verdicts.
 	Threshold float64 `json:"threshold,omitempty"`
+	// MinCriterionScore is the rubric's per-criterion floor (percent), stamped
+	// like Threshold. nil means no floor, which is also what a result written
+	// before the floor existed reads as.
+	MinCriterionScore *float64 `json:"min_criterion_score,omitempty"`
 	// PromptFile is the candidate prompt path given via --prompt-file; absent
 	// when the live prompt was evaluated.
 	PromptFile string `json:"prompt_file,omitempty"`
