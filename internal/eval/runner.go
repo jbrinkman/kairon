@@ -691,7 +691,7 @@ func requestTurn(turn int) int {
 // natively; container id/image in a container) and may be nil; the fields the
 // backend reported (command, stderr, exit code) are filled into it.
 func completeAgentCall(req inference.Request, resp inference.Response, err error, wall time.Duration, baseEC *ErrorContext) (string, CostInfo, inference.CallRecord, *ErrorContext, error) {
-	cost := costFromUsage(resp.Model, resp.Usage)
+	cost := costFromUsage(servedModel(req, resp), resp.Usage)
 	rec := newCallRecord(req, resp, err, wall, cost)
 	rec.PromptSHA256 = cfg.pins.agentPromptSHA(req.Agent)
 
@@ -1583,7 +1583,7 @@ ACTUAL OUTPUT TO EVALUATE:
 	}
 	wallStart := time.Now()
 	resp, err := cfg.backend.Invoke(context.Background(), req)
-	rec := newCallRecord(req, resp, err, time.Since(wallStart), costFromUsage(resp.Model, resp.Usage))
+	rec := newCallRecord(req, resp, err, time.Since(wallStart), costFromUsage(servedModel(req, resp), resp.Usage))
 	rec.Criterion = criterion.Name
 	// On a failed or unparseable call this returns CostInfo{} (zero), so the
 	// case's judge_cost deliberately keeps its historical zero-on-failure
@@ -1616,22 +1616,24 @@ ACTUAL OUTPUT TO EVALUATE:
 	}
 
 	score := max(1, min(response.Score, 5))
-	cost := costFromUsage(resp.Model, resp.Usage)
+	cost := costFromUsage(servedModel(req, resp), resp.Usage)
 	return cost, score, response.Reasoning, false, rec
 }
 
-// newCallRecord builds the audit record for one backend call. Model is the
-// served model when the backend reports one, else the pinned (requested) one;
+// newCallRecord builds the audit record for one backend call. Model is
+// servedModel (the backend's model, else the requested one), the same value
+// cost was priced under; CostUnknown is set when that model had no price;
 // DurationMS prefers the backend's measurement over the wall clock (the stub
 // reports 0). A failed call is still recorded, with Error set.
 func newCallRecord(req inference.Request, resp inference.Response, err error, wall time.Duration, cost CostInfo) inference.CallRecord {
 	rec := inference.CallRecord{
 		Role:         string(req.Role),
-		Model:        resp.Model,
+		Model:        servedModel(req, resp),
 		Agent:        req.Agent,
 		InputTokens:  cost.TokensIn,
 		OutputTokens: cost.TokensOut,
 		CostUSD:      cost.EstimatedUSD,
+		CostUnknown:  cost.CostIncomplete,
 		Estimated:    resp.Usage.Source != inference.UsageReported,
 		DurationMS:   resp.Duration.Milliseconds(),
 	}
@@ -1641,9 +1643,6 @@ func newCallRecord(req inference.Request, resp inference.Response, err error, wa
 	}
 	if len(resp.ToolDenials) > 0 {
 		rec.ToolDenials = append([]inference.ToolDenial(nil), resp.ToolDenials...)
-	}
-	if rec.Model == "" {
-		rec.Model = req.Model
 	}
 	if resp.Duration == 0 {
 		rec.DurationMS = wall.Milliseconds()

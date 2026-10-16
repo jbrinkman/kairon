@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jbrinkman/kairon/internal/inference"
 	"github.com/jbrinkman/kairon/internal/logging"
 	"gopkg.in/yaml.v3"
 )
@@ -32,22 +33,23 @@ type LoggingConfig struct {
 }
 
 type Config struct {
-	Repo                string        `yaml:"repo"`
-	Label               string        `yaml:"label"`
-	User                string        `yaml:"user"`        // Optional GitHub username for issue filtering (auto-detects if empty)
-	BaseBranch          string        `yaml:"base_branch"` // Optional base branch for new worktrees (auto-detects if empty)
-	PollInterval        time.Duration `yaml:"poll_interval"`
-	MaxRetries          int           `yaml:"max_retries"`
-	MaxQARetries        int           `yaml:"max_qa_retries"`
-	MaxActivityLines    int           `yaml:"max_activity_lines"`
-	ConsoleLogging      bool          `yaml:"console_logging"`
-	Theme               string        `yaml:"theme"`
-	EnableCopilotReview bool          `yaml:"enable_copilot_review"`
-	Session             SessionConfig `yaml:"session"`
-	Sandbox             SandboxConfig `yaml:"sandbox"`
-	Logging             LoggingConfig `yaml:"logging"`
-	Evals               EvalsConfig   `yaml:"evals"`
-	LoadedTheme         *Theme        `yaml:"-"`
+	Repo                string               `yaml:"repo"`
+	Label               string               `yaml:"label"`
+	User                string               `yaml:"user"`        // Optional GitHub username for issue filtering (auto-detects if empty)
+	BaseBranch          string               `yaml:"base_branch"` // Optional base branch for new worktrees (auto-detects if empty)
+	PollInterval        time.Duration        `yaml:"poll_interval"`
+	MaxRetries          int                  `yaml:"max_retries"`
+	MaxQARetries        int                  `yaml:"max_qa_retries"`
+	MaxActivityLines    int                  `yaml:"max_activity_lines"`
+	ConsoleLogging      bool                 `yaml:"console_logging"`
+	Theme               string               `yaml:"theme"`
+	EnableCopilotReview bool                 `yaml:"enable_copilot_review"`
+	Session             SessionConfig        `yaml:"session"`
+	Sandbox             SandboxConfig        `yaml:"sandbox"`
+	Logging             LoggingConfig        `yaml:"logging"`
+	Evals               EvalsConfig          `yaml:"evals"`
+	Pricing             inference.PriceTable `yaml:"-"`
+	LoadedTheme         *Theme               `yaml:"-"`
 }
 
 func extractLeadingWhitespace(line string) string {
@@ -98,6 +100,15 @@ func Load() (*Config, error) {
 	if cfg.Repo == "" {
 		return nil, fmt.Errorf("repo field is required")
 	}
+
+	// Pricing is decoded separately (not via the struct tag) so an absent key
+	// yields the defaults, a present key replaces them, and errors name the
+	// offending model id.
+	pricing, err := pricingFromYAML(data)
+	if err != nil {
+		return nil, err
+	}
+	cfg.Pricing = pricing
 
 	// Validate session config
 	if cfg.Session.MaxHistoryMessages <= 0 {

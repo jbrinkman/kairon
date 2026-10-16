@@ -18,6 +18,15 @@ const stubJudgeOutput = "===JSON_START===\n" +
 	`{"score": 5, "reasoning": "stub judge: always passes", "pass": true}` + "\n" +
 	"===JSON_END==="
 
+// stubJudgeModel is the model a stub judge response reports: the pinned
+// request model when set (mirroring kiro-cli, which echoes it), else "stub".
+func stubJudgeModel(req Request) string {
+	if req.Model != "" {
+		return req.Model
+	}
+	return NameStub
+}
+
 // stubBackend is deterministic and never spawns a process or touches the network.
 type stubBackend struct{}
 
@@ -44,7 +53,7 @@ func (*stubBackend) Invoke(ctx context.Context, req Request) (Response, error) {
 		}
 		return Response{
 			Text:    stubJudgeOutput,
-			Model:   NameStub,
+			Model:   stubJudgeModel(req),
 			Usage:   EstimateUsage(req.Prompt, stubJudgeOutput),
 			Command: "stub judge",
 		}, nil
@@ -116,7 +125,7 @@ func stubYesNoJudge(req Request) (Response, error) {
 	}
 	return Response{
 		Text:    text,
-		Model:   NameStub,
+		Model:   stubJudgeModel(req),
 		Usage:   EstimateUsage(req.Prompt, text),
 		Command: cmd,
 	}, nil
@@ -144,7 +153,7 @@ func stubRouteJudge(req Request) (Response, error) {
 	text := "===JSON_START===\n" + string(body) + "\n===JSON_END==="
 	return Response{
 		Text:    text,
-		Model:   NameStub,
+		Model:   stubJudgeModel(req),
 		Usage:   EstimateUsage(req.Prompt, text),
 		Command: cmd,
 	}, nil

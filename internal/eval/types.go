@@ -3,6 +3,7 @@ package eval
 import (
 	"encoding/json"
 	"regexp"
+	"sort"
 
 	"github.com/jbrinkman/kairon/internal/eval/sandbox"
 	"github.com/jbrinkman/kairon/internal/inference"
@@ -154,6 +155,13 @@ type CostInfo struct {
 	Model string `json:"model,omitempty"`
 	// UsageSource is "reported" or "estimated" (see inference.UsageSource).
 	UsageSource string `json:"usage_source,omitempty"`
+
+	// CostIncomplete is true when at least one contributing call used a model
+	// with no configured price. Those calls add 0 USD, so EstimatedUSD is a
+	// lower bound, not the real cost.
+	CostIncomplete bool `json:"cost_incomplete,omitempty"`
+	// UnpricedModels lists the models that had no price (sorted, de-duplicated).
+	UnpricedModels []string `json:"unpriced_models,omitempty"`
 }
 
 // Add accumulates other into c. Model is kept if c has none yet. The merged
@@ -163,9 +171,7 @@ type CostInfo struct {
 func (c *CostInfo) Add(other CostInfo) {
 	empty := c.TokensIn == 0 && c.TokensOut == 0 && c.EstimatedUSD == 0 && c.UsageSource == ""
 
-	c.TokensIn += other.TokensIn
-	c.TokensOut += other.TokensOut
-	c.EstimatedUSD += other.EstimatedUSD
+	c.addTotals(other)
 
 	if c.Model == "" {
 		c.Model = other.Model
@@ -183,17 +189,68 @@ func (c *CostInfo) Add(other CostInfo) {
 	}
 }
 
-// costFromUsage converts inference usage to a CostInfo using the Claude
-// Sonnet pricing estimate ($3/M input, $15/M output tokens).
+// costFromUsage prices u under model with the run's price table
+// (cfg.pins.Prices, from the top-level `pricing` config key). A model with no
+// price contributes 0 USD and marks the result CostIncomplete with the model
+// in UnpricedModels (omitted when model is ""): the cost is unknown, never
+// guessed from another model's price. Callers pass servedModel(req, resp) so
+// the priced model and the recorded model are always the same value.
 func costFromUsage(model string, u inference.Usage) CostInfo {
-	cost := (float64(u.InputTokens) * 3.0 / 1_000_000) + (float64(u.OutputTokens) * 15.0 / 1_000_000)
-	return CostInfo{
+	price := cfg.pins.prices().Cost(model, u)
+	c := CostInfo{
 		TokensIn:     u.InputTokens,
 		TokensOut:    u.OutputTokens,
-		EstimatedUSD: cost,
+		EstimatedUSD: price.USD,
 		Model:        model,
 		UsageSource:  string(u.Source),
 	}
+	if !price.Known {
+		c.CostIncomplete = true
+		if model != "" {
+			c.UnpricedModels = []string{model}
+		}
+	}
+	return c
+}
+
+// servedModel is the model a call ran under: the one the backend reported,
+// else the one requested.
+func servedModel(req inference.Request, resp inference.Response) string {
+	if resp.Model != "" {
+		return resp.Model
+	}
+	return req.Model
+}
+
+// addTotals adds other's tokens, cost and incompleteness into c without
+// touching Model or UsageSource. It is the aggregation used for case, agent
+// and run totals; UnpricedModels stays sorted and de-duplicated.
+func (c *CostInfo) addTotals(other CostInfo) {
+	c.TokensIn += other.TokensIn
+	c.TokensOut += other.TokensOut
+	c.EstimatedUSD += other.EstimatedUSD
+	if other.CostIncomplete {
+		c.CostIncomplete = true
+	}
+	c.UnpricedModels = unionModels(c.UnpricedModels, other.UnpricedModels)
+}
+
+// unionModels returns the sorted, de-duplicated union of a and b. It returns
+// nil when both are empty so an unmarked cost serialises without the field.
+func unionModels(a, b []string) []string {
+	if len(b) == 0 {
+		return a
+	}
+	seen := make(map[string]bool, len(a)+len(b))
+	var out []string
+	for _, m := range append(append([]string(nil), a...), b...) {
+		if !seen[m] {
+			seen[m] = true
+			out = append(out, m)
+		}
+	}
+	sort.Strings(out)
+	return out
 }
 
 // CriterionScore is the score for a single criterion on a single test case.

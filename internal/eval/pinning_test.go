@@ -347,7 +347,12 @@ func TestCallRecordsSelfTestProvenance(t *testing.T) {
 	for _, c := range res.Cases {
 		var agents, judges, routes int
 		for _, call := range c.Calls {
-			if call.Model == "" || call.InputTokens == 0 || call.OutputTokens == 0 || call.CostUSD == 0 {
+			// Only the stub-usage (model stub-model) and stub-price-unknown
+			// (claude-haiku-4.5) agent calls have no price, so their cost is
+			// unknown; every other call is priced.
+			wantUnknown := call.Role == "agent" && (c.CaseName == "stub-usage" || c.CaseName == "stub-price-unknown")
+			if call.Model == "" || call.InputTokens == 0 || call.OutputTokens == 0 ||
+				call.CostUnknown != wantUnknown || (call.CostUSD == 0) != wantUnknown {
 				t.Errorf("case %s incomplete record: %+v", c.CaseName, call)
 			}
 			switch call.Role {
@@ -356,7 +361,8 @@ func TestCallRecordsSelfTestProvenance(t *testing.T) {
 				if call.PromptSHA256 != res.PromptSHA256 || call.Agent != "selftest" {
 					t.Errorf("case %s agent record = %+v", c.CaseName, call)
 				}
-				wantEst := c.CaseName != "stub-usage"
+				// Cases whose stub turn reports usage are "reported".
+				wantEst := c.CaseName != "stub-usage" && c.CaseName != priceSonnetCase && c.CaseName != priceUnknownCase
 				if call.Estimated != wantEst {
 					t.Errorf("case %s agent estimated = %v, want %v", c.CaseName, call.Estimated, wantEst)
 				}

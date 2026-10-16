@@ -346,7 +346,7 @@ func TestContainerStubMatchesNativeStub(t *testing.T) {
 			if cOut != stub.Turns[0].Response || cOut != nOut {
 				t.Errorf("output %q, native %q, scripted %q", cOut, nOut, stub.Turns[0].Response)
 			}
-			if cCost != nCost {
+			if !reflect.DeepEqual(cCost, nCost) {
 				t.Errorf("cost %+v != native %+v", cCost, nCost)
 			}
 			// Wall-clock duration legitimately differs; everything else must match.
