@@ -476,6 +476,7 @@ func evaluate(rubric Rubric, cases []TestCase, gitHash string, out io.Writer, cC
 
 		result.Cases = append(result.Cases, crs...)
 	}
+	stampCoverage(&result, cases)
 
 	return result
 }
@@ -2192,6 +2193,7 @@ func evaluateProgressive(rubric Rubric, cases []TestCase, gitHash string, out io
 				// unstamped case from its matching TestCase (its own threshold),
 				// without re-running it.
 				stampResumedCases(&result, cases, rubric)
+				stampCoverage(&result, cases)
 			}
 		}
 	}
@@ -2215,6 +2217,9 @@ func evaluateProgressive(rubric Rubric, cases []TestCase, gitHash string, out io
 		// Add or update the case's results: every earlier result of this case
 		// is replaced by the new runs.
 		result.Cases = replaceCaseResults(result.Cases, tc.Name, crs)
+		// Every save records its own coverage, so an interrupted run is left
+		// with complete:false and only the last save of a finished run is true.
+		stampCoverage(&result, cases)
 
 		// Progressive save after all repeats of the test case, so a saved case
 		// always has every run
@@ -2344,7 +2349,7 @@ func updateIncrementalSummary(summaryFile string, agentResult AgentResult, gitHa
 	if agentResult.JudgeModel != "" {
 		summary.JudgeModel = agentResult.JudgeModel
 	}
-	if agentResult.PromptSHA256 != "" {
+	if agentResult.PromptSHA256 != "" || agentResult.SuiteSHA256 != "" {
 		if summary.Agents == nil {
 			summary.Agents = make(map[string]AgentProvenance)
 		}
@@ -2353,6 +2358,9 @@ func updateIncrementalSummary(summaryFile string, agentResult AgentResult, gitHa
 			PromptSHA256:     agentResult.PromptSHA256,
 			PromptFile:       agentResult.PromptFile,
 			ResourcesPresent: append([]string{}, agentResult.ResourcesPresent...),
+			SuiteSHA256:      agentResult.SuiteSHA256,
+			Complete:         agentResult.Complete,
+			CaseFilter:       agentResult.CaseFilter,
 		}
 	}
 	summary.AgentModel, summary.PromptSHA256, summary.PromptFile, summary.ResourcesPresent = "", "", "", nil
@@ -2557,4 +2565,49 @@ func saveDebugContainerInfo(containerID, imageName, customImageName, platform, a
 
 	fmt.Printf("🔧 Debug: Container info saved to %s\n", infoFile)
 	return nil
+}
+
+// casesCovered reports whether results hold, for every case in cases, a
+// result for every run 1..repeat. A result with Run == 0 (a legacy file
+// written before repeats) counts as run 1. Zero cases is never covered: a
+// suite with nothing in it proves nothing about coverage.
+func casesCovered(results []CaseResult, cases []TestCase, repeat int) bool {
+	if len(cases) == 0 {
+		return false
+	}
+	repeat = max(1, repeat)
+	have := make(map[string]map[int]bool, len(cases))
+	for _, r := range results {
+		run := r.Run
+		if run == 0 {
+			run = 1
+		}
+		if have[r.CaseName] == nil {
+			have[r.CaseName] = make(map[int]bool)
+		}
+		have[r.CaseName][run] = true
+	}
+	for _, tc := range cases {
+		for run := 1; run <= repeat; run++ {
+			if !have[tc.Name][run] {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// stampCoverage records what the run covered on r: the agent's suite hash,
+// whether every case ran for every repeat, and the --case filter. A run with
+// a filter is never complete, even when the agent has only that one case.
+// It is a no-op when the run did not pin a suite for the agent (direct calls
+// that bypass RunWithOptions), so those results keep their previous shape.
+func stampCoverage(r *AgentResult, cases []TestCase) {
+	suite, ok := cfg.suites[r.Agent]
+	if !ok {
+		return
+	}
+	complete := cfg.caseFilter == "" && casesCovered(r.Cases, cases, runRepeat())
+	filter := cfg.caseFilter
+	r.SuiteSHA256, r.Complete, r.CaseFilter = suite, &complete, &filter
 }

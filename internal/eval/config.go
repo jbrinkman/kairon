@@ -39,6 +39,11 @@ type runConfig struct {
 	// (unset, e.g. a direct call that bypasses RunWithOptions) means 1; read
 	// it through runRepeat.
 	repeat int
+	// suites maps each agent in scope to its suite_sha256, set by RunWithOptions.
+	// nil means coverage is not tracked (direct calls that bypass it), like pins.
+	suites map[string]string
+	// caseFilter is the --case value of the run; "" for a full run.
+	caseFilter string
 }
 
 // cfg is the active run configuration. Call configure before use; tests
