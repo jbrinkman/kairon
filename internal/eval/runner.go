@@ -1965,6 +1965,16 @@ func checkResumeIntegrity(resultsDir, agent string, sandbox bool) error {
 				// AC1/AC2 rule out. Refuse, like the mode/model guards.
 				return fmt.Errorf("❌ cannot resume: tool-trust set changed since the interrupted run of %s (recorded tool_trust=%s; now %s) — resume with the same trust set or start a fresh run",
 					agent, trustString(existing.Containment.ToolTrust), trustString(containmentFor(agent).ToolTrust))
+			case sandbox && existing.Containment != nil &&
+				existing.Containment.KaironBinary != containmentFor(agent).KaironBinary:
+				// kairon_binary is stamped from the current kaironBinaryMounted
+				// const. A result recorded before the binary mount existed
+				// decodes it as false; re-stamping it true would claim the
+				// completed cases ran with the binary on PATH when they did
+				// not — the same provenance drift the tool-trust guard rules
+				// out. Refuse, like the guards above.
+				return fmt.Errorf("❌ cannot resume: kairon-binary mount changed since the interrupted run of %s (recorded kairon_binary=%t; now %t) — resume with the same mount or start a fresh run",
+					agent, existing.Containment.KaironBinary, containmentFor(agent).KaironBinary)
 			}
 		}
 	}

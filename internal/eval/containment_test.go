@@ -392,6 +392,55 @@ func TestCheckResumeIntegrityTrustSetChange(t *testing.T) {
 	}
 }
 
+// TestCheckResumeIntegrityKaironBinaryChange verifies a sandbox resume is
+// refused when the kairon-binary mount differs from the interrupted run, so a
+// re-stamp never claims the already-completed cases ran with the binary on
+// PATH when they did not. A result recorded before the mount existed decodes
+// kairon_binary as false; resuming it under the current (true) mount is the
+// drift the guard rules out, mirroring the tool-trust guard.
+func TestCheckResumeIntegrityKaironBinaryChange(t *testing.T) {
+	t.Cleanup(resetConfig)
+	dir := t.TempDir()
+
+	// A saved container run of builder recorded before the kairon binary was
+	// mounted: kairon_binary=false. Tool trust matches the current set so the
+	// trust guard does not fire first; this isolates the kairon-binary guard.
+	cfg.pins = &runPins{TrustOverrides: map[string][]string{"builder": {"read"}}}
+	saved := AgentResult{
+		Agent:       "builder",
+		Sandbox:     boolPtr(true),
+		Containment: &Containment{ToolTrust: containmentFor("builder").ToolTrust, FakeGH: true, ReadOnlyFS: true, KaironBinary: false, Network: "unrestricted"},
+		Cases:       []CaseResult{{CaseName: "c1"}},
+	}
+	data, err := json.Marshal(saved)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "builder.json"), data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Resuming when the current run mounts the binary (kaironBinaryMounted is
+	// true) is refused: the saved cases ran without it.
+	err = checkResumeIntegrity(dir, "builder", true)
+	if err == nil || !strings.Contains(err.Error(), "kairon-binary mount changed") {
+		t.Fatalf("err = %v, want kairon-binary refusal", err)
+	}
+
+	// Resuming with the same mount is allowed.
+	saved.Containment.KaironBinary = containmentFor("builder").KaironBinary
+	data, err = json.Marshal(saved)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "builder.json"), data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := checkResumeIntegrity(dir, "builder", true); err != nil {
+		t.Errorf("same kairon-binary mount refused: %v", err)
+	}
+}
+
 // TestCheckResumeIntegritySiblingModeFallback verifies that when summary.json
 // records no run-wide mode (a run interrupted before summary-level mode
 // tracking), a resume of a not-yet-started agent is still refused if a sibling
