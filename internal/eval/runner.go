@@ -268,8 +268,8 @@ func runSingleTestCase(agent string, testcase string, cConfig *ContainerConfig) 
 	}
 
 	timestamp := generateTimestampPrefix()
-	resultsDir := evalsPath("results", timestamp)
-	if err := os.MkdirAll(resultsDir, 0755); err != nil {
+	resultsDir, err := makeUniqueResultsDir(evalsPath("results"), timestamp)
+	if err != nil {
 		return fmt.Errorf("failed to create results directory: %w", err)
 	}
 
@@ -419,8 +419,8 @@ func Run(agent string, cConfig *ContainerConfig) error {
 	}
 
 	timestamp := generateTimestampPrefix()
-	resultsDir := evalsPath("results", timestamp+"-"+gitHash)
-	if err := os.MkdirAll(resultsDir, 0755); err != nil {
+	resultsDir, err := makeUniqueResultsDir(evalsPath("results"), timestamp+"-"+gitHash)
+	if err != nil {
 		return fmt.Errorf("failed to create results directory: %w", err)
 	}
 
