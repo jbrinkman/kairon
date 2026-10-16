@@ -68,6 +68,14 @@ func pricingFromYAML(data []byte) (inference.PriceTable, error) {
 	table := make(inference.PriceTable, len(entries))
 	for _, id := range ids {
 		entry := entries[id]
+		// A null entry (`model: null`) bypasses Price.UnmarshalYAML and would
+		// decode to a zero Price, which Validate accepts -- making the model
+		// look like a known $0 price instead of an unknown cost. Reject it so
+		// a free model must be written explicitly as a pair of zero rates.
+		if entry.Kind == yaml.ScalarNode && entry.Tag == "!!null" {
+			return nil, fmt.Errorf("invalid pricing config: model %q: price must not be null; "+
+				"set input_usd_per_mtok and output_usd_per_mtok (both 0 for a free model)", id)
+		}
 		var p inference.Price
 		if err := entry.Decode(&p); err != nil {
 			return nil, fmt.Errorf("invalid pricing config: model %q: %w", id, err)

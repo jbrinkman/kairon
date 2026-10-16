@@ -203,6 +203,13 @@ var invalidPricingCases = []struct {
 `,
 		wantErr: []string{"model-e"},
 	},
+	{
+		name: "null entry",
+		yaml: `pricing:
+  model-f: null
+`,
+		wantErr: []string{"model-f", "null"},
+	},
 }
 
 func TestLoadPricing_InvalidEntryRejectedNamingModel(t *testing.T) {
