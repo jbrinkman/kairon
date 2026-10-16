@@ -196,7 +196,8 @@ func TestSandboxHomeWritableAsSandboxUser(t *testing.T) {
 	})
 	t.Run("rootfs is read-only", func(t *testing.T) {
 		_, err := c.ExecWithOutput(ctx, []string{"touch", "/etc/kairon-probe"})
-		assert.Error(t, err, "writing to the root filesystem must fail")
+		require.Error(t, err, "writing to the root filesystem must fail")
+		assert.Contains(t, err.Error(), "Read-only file system")
 	})
 }
 
