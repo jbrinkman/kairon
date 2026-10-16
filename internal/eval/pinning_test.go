@@ -371,9 +371,10 @@ func TestCallRecordsSelfTestProvenance(t *testing.T) {
 					continue
 				}
 				// The legacy judge scores clarity once per case. The
-				// check-judge-* cases also record one yes/no judge call
-				// for the criterion that carries their judge checks.
-				if strings.HasPrefix(c.CaseName, "check-judge-") && call.Criterion == "structural_completeness" {
+				// check-judge-* cases (and multi-turn-judge, sim-judge) also
+				// record one yes/no judge call per judge check for the
+				// criterion that carries them.
+				if (strings.HasPrefix(c.CaseName, "check-judge-") || c.CaseName == "multi-turn-judge" || c.CaseName == "sim-judge") && call.Criterion == "structural_completeness" {
 					if call.PromptSHA256 != "" || !call.Estimated {
 						t.Errorf("case %s judge-check record = %+v", c.CaseName, call)
 					}
@@ -392,7 +393,7 @@ func TestCallRecordsSelfTestProvenance(t *testing.T) {
 		}
 		// A simulated case routes every agent turn except the last of its
 		// simulated phase.
-		if wantRoutes := map[string]int{"sim-routes": 2, "sim-stop-when": 1}[c.CaseName]; routes != wantRoutes {
+		if wantRoutes := map[string]int{"sim-routes": 2, "sim-stop-when": 1, "sim-judge": 2}[c.CaseName]; routes != wantRoutes {
 			t.Errorf("case %s: %d routing records, want %d", c.CaseName, routes, wantRoutes)
 		}
 	}

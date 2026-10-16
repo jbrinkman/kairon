@@ -1,0 +1,38 @@
+name: multi-turn-judge
+description: "Self-test: a two-turn case with two judge checks; the one with turn: 1 is shown turn 1 only, the one without sees the whole conversation (both user messages and both agent replies)"
+agent: selftest
+turns:
+  - "USER-ONE-MARKER: draft the first section."
+  - "USER-TWO-MARKER: now draft the second section."
+context:
+  - "This case runs against the deterministic stub backend; the judge prompts are visible with --debug"
+  - "Passes: stub.judge answers yes to both judge checks"
+expected_output: |
+  A short report with a top-level section and at least one subsection.
+stub:
+  judge: yes
+  turns:
+    - response: |
+        ## First section
+
+        REPLY-ONE-MARKER: the first section is drafted.
+
+        ### Details
+
+        This response carries the headings the report format expects.
+    - response: |
+        ## Second section
+
+        REPLY-TWO-MARKER: the second section is drafted.
+
+        ### Details
+
+        This response carries the headings the report format expects.
+checks:
+  - criterion: structural_completeness
+    type: judge
+    question: "Does the first reply draft the section the user asked for?"
+    turn: 1
+  - criterion: structural_completeness
+    type: judge
+    question: "Does each reply address the user message of its own turn?"
