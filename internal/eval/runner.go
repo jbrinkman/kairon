@@ -62,6 +62,7 @@ func RunWithOptions(agent string, testcase string, options RunOptions) error {
 	}
 	// configure resets cfg, so a candidate never leaks between runs.
 	cfg.candidate = candidate
+	cfg.caseFilter = testcase
 
 	// Handle cleanup operation early
 	if options.Cleanup {
@@ -78,6 +79,14 @@ func RunWithOptions(agent string, testcase string, options RunOptions) error {
 		// path (there is no longer a kiro-cli container that cannot see it).
 		if err := pinRun(agent, options, false); err != nil {
 			return err
+		}
+		// Record the identity of each in-scope agent's eval suite so the
+		// results can prove what they covered. Only runs that execute cases
+		// need it; a hashing error stops the run before any case starts.
+		if !options.Perf && !options.Cleanup {
+			if err := pinSuites(agent, options); err != nil {
+				return err
+			}
 		}
 	}
 
@@ -134,6 +143,29 @@ func RunWithOptions(agent string, testcase string, options RunOptions) error {
 
 	// Default to original behavior for backward compatibility
 	return Run(agent, cConfig)
+}
+
+// pinSuites computes suite_sha256 for every in-scope agent and sets
+// cfg.suites. An agent whose rubric or cases cannot be loaded is skipped, so
+// the later, more specific error or warning for it is unchanged. Any other
+// hashing error is returned, before any case starts.
+func pinSuites(agent string, opts RunOptions) error {
+	suites := map[string]string{}
+	for _, name := range agentsInScope(agent, opts) {
+		if rubrics, err := loadRubrics(name); err != nil || len(rubrics) == 0 {
+			continue
+		}
+		if _, err := loadCases(name); err != nil {
+			continue
+		}
+		sum, err := suiteSHA256(name)
+		if err != nil {
+			return fmt.Errorf("❌ cannot hash the eval suite of %s before any case started: %w", name, err)
+		}
+		suites[name] = sum
+	}
+	cfg.suites = suites
+	return nil
 }
 
 // RunCleanup stops and removes all tracked debug containers and cleans artifacts
@@ -1942,6 +1974,36 @@ func runProgressiveEvaluation(agent, resultsDir string, isResume bool, cConfig *
 	return thresholdFailure(failed, evaluated)
 }
 
+// checkResumeSuite refuses to resume into a result file whose recorded eval
+// suite differs from the current one, or that holds cases but records no suite
+// (written before suite hashing existed). Resuming would stamp the current
+// suite hash onto cases that ran under a different suite. Nothing is checked
+// when the run pinned no suite for the agent, and an empty file has no cases
+// to mis-attribute.
+func checkResumeSuite(resultsDir, agent string) error {
+	now, ok := cfg.suites[agent]
+	if !ok {
+		return nil
+	}
+	data, err := os.ReadFile(filepath.Join(resultsDir, agent+".json"))
+	if err != nil {
+		return nil
+	}
+	var existing AgentResult
+	if json.Unmarshal(data, &existing) != nil || len(existing.Cases) == 0 {
+		return nil
+	}
+	if existing.SuiteSHA256 == "" {
+		return fmt.Errorf("❌ cannot resume: %s.json predates eval suite tracking and has %d saved case(s); the suite they ran under cannot be verified (now suite_sha256=%s) — start a fresh run (without --resume)",
+			agent, len(existing.Cases), now)
+	}
+	if existing.SuiteSHA256 != now {
+		return fmt.Errorf("❌ cannot resume: eval suite changed since the interrupted run of %s (recorded suite_sha256=%s; now %s) — resume with the same suite or start a fresh run",
+			agent, existing.SuiteSHA256, now)
+	}
+	return nil
+}
+
 // checkResumeIntegrity refuses to resume into a result file that was written
 // with a different prompt, different models, or a different sandbox mode, so
 // one file never mixes two execution configurations. A legacy file (no
@@ -2032,6 +2094,10 @@ func checkResumeIntegrity(resultsDir, agent string, sandbox bool) error {
 					other, sandbox)
 			}
 		}
+	}
+
+	if err := checkResumeSuite(resultsDir, agent); err != nil {
+		return err
 	}
 
 	pin, ok := cfg.pins.pinOf(agent)
