@@ -62,8 +62,8 @@ func checkedScore(t *testing.T, c CaseResult) CriterionScore {
 func TestSelfTestChecksPassingCases(t *testing.T) {
 	res := runSelfTestAgent(t, "selftest")
 
-	if got, want := len(res.Cases), 5+1+11+2+3+2; got != want {
-		t.Errorf("selftest has %d cases, want %d (5 legacy + 1 conventions-fixture + 11 check + 2 multi-turn + 3 judge + 2 simulated-user)", got, want)
+	if got, want := len(res.Cases), 5+1+11+2+3+2+2; got != want {
+		t.Errorf("selftest has %d cases, want %d (5 legacy + 1 conventions-fixture + 11 check + 2 multi-turn + 3 judge + 2 simulated-user + 2 judge-transcript)", got, want)
 	}
 
 	seen := map[CheckType]bool{}
@@ -347,5 +347,202 @@ func TestSelfTestChecksRunExitStatus(t *testing.T) {
 		if !wantFail && err != nil {
 			t.Errorf("run of %s returned an error: %v", agent, err)
 		}
+	}
+}
+
+// checksOnlyInvalidDir is the deliberately invalid evals dir: its checks_only
+// rubric owns a case without checks.
+const checksOnlyInvalidDir = "testdata/checks-only-invalid"
+
+// criterionByName returns the score recorded for the named criterion and
+// whether the case recorded one.
+func criterionByName(c CaseResult, name string) (CriterionScore, bool) {
+	for _, s := range c.Scores {
+		if s.Name == name {
+			return s, true
+		}
+	}
+	return CriterionScore{}, false
+}
+
+// TestSelfTestChecksOnlyPasses: selftest-checks scores two cases from their
+// checks alone. check-one-criterion has checks on file_written only, so
+// report_marker is absent; check-both-criteria scores both in full. Neither
+// case makes a judge call.
+func TestSelfTestChecksOnlyPasses(t *testing.T) {
+	res := runSelfTestAgent(t, "selftest-checks")
+
+	if len(res.Cases) != 2 {
+		t.Fatalf("selftest-checks has %d cases, want 2", len(res.Cases))
+	}
+	for _, c := range res.Cases {
+		if c.ErrorContext != nil {
+			t.Errorf("%s: unexpected ErrorContext %+v", c.CaseName, c.ErrorContext)
+		}
+		if c.Passed == nil || !*c.Passed {
+			t.Errorf("%s: Passed = %v, want true", c.CaseName, c.Passed)
+		}
+		for _, call := range c.Calls {
+			if call.Role == "judge" {
+				t.Errorf("%s: unexpected judge call %+v", c.CaseName, call)
+			}
+		}
+		for _, s := range c.Scores {
+			if s.Skipped || len(s.Checks) == 0 || s.Score != s.MaxScore || s.MaxScore != len(s.Checks) {
+				t.Errorf("%s: criterion %s = %d/%d (checks %d, skipped %v), want N/N from checks",
+					c.CaseName, s.Name, s.Score, s.MaxScore, len(s.Checks), s.Skipped)
+			}
+			for _, cr := range s.Checks {
+				if !cr.Passed {
+					t.Errorf("%s: check %s failed: %s", c.CaseName, cr.Label, cr.Detail)
+				}
+			}
+		}
+	}
+
+	one := caseByName(t, res, "check-one-criterion")
+	if len(one.Scores) != 1 {
+		t.Fatalf("check-one-criterion scores = %+v, want exactly file_written", one.Scores)
+	}
+	if _, ok := criterionByName(one, "file_written"); !ok {
+		t.Errorf("check-one-criterion has no file_written score: %+v", one.Scores)
+	}
+	if _, ok := criterionByName(one, "report_marker"); ok {
+		t.Errorf("check-one-criterion scored report_marker, which has no checks: %+v", one.Scores)
+	}
+
+	both := caseByName(t, res, "check-both-criteria")
+	if len(both.Scores) != 2 {
+		t.Fatalf("check-both-criteria scores = %+v, want file_written and report_marker", both.Scores)
+	}
+	for _, name := range []string{"file_written", "report_marker"} {
+		if _, ok := criterionByName(both, name); !ok {
+			t.Errorf("check-both-criteria has no %s score", name)
+		}
+	}
+
+	// The case totals equal the number of checks: nothing unchecked adds to
+	// the numerator or the denominator.
+	for _, c := range res.Cases {
+		var n int
+		for _, s := range c.Scores {
+			n += len(s.Checks)
+		}
+		if cs, cm := caseTotals(c); cs != n || cm != n {
+			t.Errorf("%s: caseTotals = (%d, %d), want (%d, %d)", c.CaseName, cs, cm, n, n)
+		}
+	}
+	if as, am := agentScoreTotals(res); as != am || am == 0 {
+		t.Errorf("agentScoreTotals = (%v, %v), want a full non-zero score", as, am)
+	}
+}
+
+// TestSelfTestChecksOnlyNoJudgeCallsInResultFile: the persisted results JSON
+// of the selftest-checks run holds no calls[] record with role judge.
+func TestSelfTestChecksOnlyNoJudgeCallsInResultFile(t *testing.T) {
+	t.Cleanup(resetConfig)
+	evalsDir := copySelfTestEvals(t)
+	if _, err := runStubCapturing(t, evalsDir, "selftest-checks", "", RunOptions{}); err != nil {
+		t.Fatalf("selftest-checks run: %v", err)
+	}
+	res := readSelfTestResult(t, filepath.Join(onlyRunDir(t, evalsDir), "selftest-checks.json"))
+	var agentCalls int
+	for _, c := range res.Cases {
+		for _, call := range c.Calls {
+			switch call.Role {
+			case "judge":
+				t.Errorf("%s: judge call recorded: %+v", c.CaseName, call)
+			case "agent":
+				agentCalls++
+			}
+		}
+	}
+	if agentCalls == 0 {
+		t.Error("no agent calls recorded; the no-judge assertion would be vacuous")
+	}
+}
+
+// TestSelfTestChecksOnlyFailRecordsZeroPerCheckedCriterion: an empty stub
+// response gives no output, so each checked criterion scores 0 out of its check
+// count and the run fails the
+// agent threshold.
+func TestSelfTestChecksOnlyFailRecordsZeroPerCheckedCriterion(t *testing.T) {
+	res := runSelfTestAgent(t, "selftest-checks-fail")
+
+	c := caseByName(t, res, "stub-empty-response")
+	if c.ActualOutput != "" {
+		t.Errorf("ActualOutput = %q, want empty", c.ActualOutput)
+	}
+	if len(c.Scores) != 2 {
+		t.Fatalf("scores = %+v, want file_written and report_marker", c.Scores)
+	}
+	want := map[string]int{"file_written": 2, "report_marker": 1}
+	for _, s := range c.Scores {
+		n, ok := want[s.Name]
+		if !ok {
+			t.Errorf("unexpected criterion %s", s.Name)
+			continue
+		}
+		if s.Score != 0 || s.MaxScore != n || s.Skipped || s.Reasoning != noOutputChecksReasoning {
+			t.Errorf("%s = %d/%d (skipped %v, %q), want 0/%d with %q",
+				s.Name, s.Score, s.MaxScore, s.Skipped, s.Reasoning, n, noOutputChecksReasoning)
+		}
+		for _, call := range c.Calls {
+			if call.Role == "judge" {
+				t.Errorf("unexpected judge call %+v", call)
+			}
+		}
+	}
+	if cs, cm := caseTotals(c); cs != 0 || cm != 3 {
+		t.Errorf("caseTotals = (%d, %d), want (0, 3)", cs, cm)
+	}
+	if c.Passed == nil || *c.Passed {
+		t.Errorf("Passed = %v, want false", c.Passed)
+	}
+}
+
+// TestSelfTestChecksOnlyRunExitStatus: selftest-checks exits zero and
+// selftest-checks-fail returns ErrThresholdFailed (non-zero exit).
+func TestSelfTestChecksOnlyRunExitStatus(t *testing.T) {
+	for agent, wantFail := range map[string]bool{"selftest-checks": false, "selftest-checks-fail": true} {
+		evalsDir := copySelfTestEvals(t)
+		_, err := runStubCapturing(t, evalsDir, agent, "", RunOptions{})
+		if wantFail != errors.Is(err, ErrThresholdFailed) {
+			t.Errorf("run of %s: err = %v, want ErrThresholdFailed=%v", agent, err, wantFail)
+		}
+		if !wantFail && err != nil {
+			t.Errorf("run of %s returned an error: %v", agent, err)
+		}
+	}
+}
+
+// TestSelfTestChecksOnlyInvalidRejectedBeforeAnyCase: the checks-only-invalid
+// evals dir holds a checks_only rubric whose only case has no checks. The run
+// fails with an invalid-checks error naming the case file (not a threshold
+// failure) and no case runs, so no agent result file is written.
+func TestSelfTestChecksOnlyInvalidRejectedBeforeAnyCase(t *testing.T) {
+	evalsDir := filepath.Join(t.TempDir(), "evals")
+	if err := os.CopyFS(evalsDir, os.DirFS(checksOnlyInvalidDir)); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(filepath.Join(evalsDir, "results")); err != nil {
+		t.Fatal(err)
+	}
+	_, err := runStubCapturing(t, evalsDir, "selftest-checks", "", RunOptions{})
+	if err == nil {
+		t.Fatal("run of the checks-only-invalid dir succeeded, want an error")
+	}
+	if errors.Is(err, ErrThresholdFailed) {
+		t.Errorf("err = %v, want a load error rather than a threshold failure", err)
+	}
+	if !errors.Is(err, errInvalidChecks) {
+		t.Errorf("err = %v, want errInvalidChecks", err)
+	}
+	if !strings.Contains(err.Error(), "no-checks.yaml") {
+		t.Errorf("err = %q, want it to name no-checks.yaml", err.Error())
+	}
+	matches, _ := filepath.Glob(filepath.Join(evalsDir, "results", "*", "selftest-checks*.json"))
+	if len(matches) != 0 {
+		t.Errorf("agent result files written for a rejected run: %v", matches)
 	}
 }

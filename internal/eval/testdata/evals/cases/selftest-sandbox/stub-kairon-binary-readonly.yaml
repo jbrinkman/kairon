@@ -1,0 +1,31 @@
+name: stub-kairon-binary-readonly
+description: "Sandbox self-test: the kairon binary mount is read-only; writing to or chmod-ing /usr/local/bin/kairon is refused (Read-only file system or Permission denied) and the binary still runs afterwards. Unlike stub-write-outside-mounts this case passes: the refusal is captured and the turn does not fail"
+agent: selftest-sandbox
+requires_sandbox: true
+input: |
+  Try to overwrite the kairon binary, record the refusal, and confirm kairon still runs.
+context:
+  - "This case runs against the deterministic stub backend and only under --sandbox"
+  - "Both attempts' stderr goes to write-refused.txt and the turn continues; kairon --version then runs again into after.txt"
+  - "The harness is running this very binary (kairon inference-exec), so the kernel refuses the plain write with 'Text file busy' before it reaches the read-only mount check; the chmod attempt does not open the file for writing and is refused with 'Read-only file system', which is what the check pins"
+expected_output: |
+  A short report with a top-level section and at least one subsection.
+stub:
+  turns:
+    - commands:
+        - "(echo x >> /usr/local/bin/kairon) 2> write-refused.txt || true"
+        - "(chmod 777 /usr/local/bin/kairon) 2>> write-refused.txt || true"
+        - "kairon --version > after.txt"
+      response: |
+        ## Read-only kairon binary
+
+        The write and chmod of the kairon binary were refused and the binary still runs.
+
+        ### Details
+
+        write-refused.txt holds the refusals and after.txt the version printed afterwards.
+checks:
+  - criterion: structural_completeness
+    type: file_contains
+    path: write-refused.txt
+    pattern: "Read-only file system|Permission denied"

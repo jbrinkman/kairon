@@ -1,3 +1,3 @@
 | Instruction | Criterion | Evidence |
 |---|---|---|
-| Candidate line. | alpha | e |
+| Candidate line. | alpha | case:basic |

@@ -1,4 +1,4 @@
 | Instruction | Criterion | Evidence |
 |---|---|---|
-| Role line. | alpha | e |
-| Task line. | alpha | e |
+| Role line. | alpha | case:basic |
+| Task line. | alpha | case:basic |

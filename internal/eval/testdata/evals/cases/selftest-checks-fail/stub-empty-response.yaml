@@ -1,0 +1,24 @@
+name: stub-empty-response
+description: "Self-test (checks_only, fail): an empty stub response yields no agent output, so each checked criterion scores 0 out of its check count"
+agent: selftest-checks-fail
+input: |
+  This case is expected to produce no output.
+context:
+  - "This case runs against the deterministic stub backend"
+  - "Expected to FAIL: the stub turn returns an empty response, so no check runs and each checked criterion scores 0"
+expected_output: |
+  A short report.
+stub:
+  turns:
+    - response: ""
+checks:
+  - criterion: file_written
+    type: file_exists
+    path: marker.txt
+  - criterion: file_written
+    type: file_contains
+    path: marker.txt
+    pattern: "(?m)^hi$"
+  - criterion: report_marker
+    type: output_contains
+    pattern: "output marker alpha"

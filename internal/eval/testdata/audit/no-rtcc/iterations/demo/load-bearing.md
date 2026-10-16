@@ -1,3 +1,3 @@
 | Instruction | Criterion | Evidence |
 |---|---|---|
-| Do the thing. | alpha | Only line |
+| Do the thing. | alpha | case:basic |

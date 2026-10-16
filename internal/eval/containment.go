@@ -17,6 +17,11 @@ const (
 	// switch buildContainerMounts honours (the fake gh bin directory is
 	// mounted only when it is true) and the value recorded as containment.fake_gh.
 	fakeGHInstalled = true
+
+	// kaironBinaryMounted is whether container runs get the linux kairon
+	// binary mounted read-only on PATH. It is the switch buildContainerMounts
+	// honours and the value recorded as containment.kairon_binary.
+	kaironBinaryMounted = true
 )
 
 // containmentFor returns the containment that applies to a container run of
@@ -32,10 +37,11 @@ func containmentFor(agent string) Containment {
 		toolTrust = names
 	}
 	return Containment{
-		ToolTrust:  toolTrust,
-		FakeGH:     fakeGHInstalled,
-		ReadOnlyFS: sandbox.ReadonlyRootfs,
-		Network:    networkUnrestricted,
+		ToolTrust:    toolTrust,
+		FakeGH:       fakeGHInstalled,
+		ReadOnlyFS:   sandbox.ReadonlyRootfs,
+		KaironBinary: kaironBinaryMounted,
+		Network:      networkUnrestricted,
 	}
 }
 

@@ -25,7 +25,9 @@ const maxReasoningDetail = 200
 //
 // A criterion that has checks in tc is scored from them (passed out of total)
 // instead of by the heuristic or the judge; the checks are evaluated once for
-// the whole case. Criteria without checks are scored as before.
+// the whole case. Criteria without checks are scored as before, except under a
+// checks_only rubric, where they are skipped (no CriterionScore, no heuristic,
+// no judge call).
 func scoreCase(rubric Rubric, tc TestCase, cr *CaseResult) {
 	checkTotals := map[string]int{}
 	var checkOrder []string // criteria named by checks, first-seen order
@@ -41,17 +43,7 @@ func scoreCase(rubric Rubric, tc TestCase, cr *CaseResult) {
 	var results map[string][]CheckResult
 	checksRan := len(tc.Checks) > 0 && cr.ActualOutput != "" && cr.WorkspaceDir != ""
 	if checksRan {
-		ghLog, ghLogOversized := readGHLog(cr.WorkspaceDir)
-		all := EvaluateChecks(tc.Checks, CheckInput{
-			Dir:            cr.WorkspaceDir,
-			Output:         cr.ActualOutput,
-			GHLog:          ghLog,
-			GHLogOversized: ghLogOversized,
-			Base:           cr.baseCommit,
-			Turns:          caseTurnEvidence(cr),
-			Input:          judgeCaseInput(tc),
-			Judge:          newCheckJudge(tc, cr),
-		})
+		all := EvaluateChecks(tc.Checks, caseCheckInput(tc, cr))
 		results = make(map[string][]CheckResult, len(checkTotals))
 		for i, r := range all {
 			name := tc.Checks[i].Criterion
@@ -85,6 +77,13 @@ func scoreCase(rubric Rubric, tc TestCase, cr *CaseResult) {
 
 		if checkTotals[criterion.Name] > 0 {
 			cr.Scores = append(cr.Scores, checkedScore(criterion.Name))
+			continue
+		}
+
+		// A checks_only rubric scores from checks alone: an unchecked criterion
+		// gets no score, no heuristic and no judge call, and so adds nothing to
+		// the case or agent totals.
+		if rubric.ChecksOnly {
 			continue
 		}
 
@@ -126,6 +125,31 @@ func scoreCase(rubric Rubric, tc TestCase, cr *CaseResult) {
 		score.Reasoning = fmt.Sprintf("criterion %q is not in the rubric", name)
 		cr.Scores = append(cr.Scores, score)
 	}
+}
+
+// caseCheckInput assembles everything the checks of tc may look at from the
+// finished run cr.
+func caseCheckInput(tc TestCase, cr *CaseResult) CheckInput {
+	ghLog, ghLogOversized := readGHLog(cr.WorkspaceDir)
+	return CheckInput{
+		Dir:            cr.WorkspaceDir,
+		Output:         cr.ActualOutput,
+		GHLog:          ghLog,
+		GHLogOversized: ghLogOversized,
+		Base:           cr.baseCommit,
+		Turns:          caseTurnEvidence(cr),
+		UserTurns:      scoredUserTurns(tc),
+		Input:          judgeCaseInput(tc),
+		Judge:          newCheckJudge(tc, cr),
+	}
+}
+
+// scoredUserTurns returns the user messages a judge check pairs with the
+// agent's per-turn replies: tc.Turns, or nil for a classic case. For a
+// simulated-user case executeCase has already replaced tc.Turns with the
+// messages actually sent, so no further substitution is needed here.
+func scoredUserTurns(tc TestCase) []string {
+	return tc.Turns
 }
 
 // caseTurnEvidence builds the per-turn check evidence of a multi-turn case from the

@@ -43,13 +43,15 @@ var workspaceNameRe = regexp.MustCompile(`^[A-Za-z0-9._-]+$`)
 var mockCommandRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._+-]*$`)
 
 // reservedMockCommands names commands that may not be mocked, each with the
-// reason reported to the eval author. "gh" shadows the harness-owned fake gh.
+// reason reported to the eval author. "gh" shadows the harness-owned fake gh and "kairon" the
+// harness-mounted kairon binary (the mock dir is first on PATH).
 // The remaining names are POSIX helpers the mock shim itself invokes via PATH
 // (see fixtures/mock-cli.sh); because the staged mock directory is first on
 // PATH, mocking one of them would make the shim re-enter itself (recursion or
 // hang) and would also be hit by any sibling mock in the same case.
 var reservedMockCommands = map[string]string{
 	"gh":       "reserved for the harness's fake gh",
+	"kairon":   "reserved for the harness's kairon binary",
 	"basename": "used internally by the mock shim and cannot be mocked",
 	"dirname":  "used internally by the mock shim and cannot be mocked",
 	"cat":      "used internally by the mock shim and cannot be mocked",
