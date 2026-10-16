@@ -1,7 +1,7 @@
 | Instruction | Criterion | Evidence |
 |---|---|---|
-| Be careful. | alpha | e |
-| \| a \| b \| | alpha | Escaped pipes |
-| Use `a \| b` carefully. | beta | Escaped pipe |
-| Read the code. | beta | e |
-| Do not guess. | beta | e |
+| Be careful. | alpha | case:basic |
+| \| a \| b \| | alpha | case:basic |
+| Use `a \| b` carefully. | beta | case:basic |
+| Read the code. | beta | case:basic |
+| Do not guess. | beta | case:basic |

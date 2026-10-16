@@ -1737,7 +1737,7 @@ func loadCases(agent string) ([]TestCase, error) {
 
 	var (
 		cases        []TestCase
-		rubric       *Rubric // the agent's rubric, loaded lazily for checks
+		rubric       *Rubric // the agent's rubric, loaded lazily for checks and checks_only
 		rubricLoaded bool
 	)
 	for _, e := range entries {
@@ -1764,15 +1764,21 @@ func loadCases(agent string) ([]TestCase, error) {
 		if err := validateCaseFields(tc, e.Name()); err != nil {
 			return nil, err
 		}
-		if len(tc.Checks) > 0 {
-			if !rubricLoaded {
-				rubricLoaded = true
-				// If the rubric cannot be loaded the criterion cross-check
-				// is skipped; the rubric errors surface elsewhere.
-				if rubrics, err := loadRubrics(agent); err == nil && len(rubrics) > 0 {
-					rubric = &rubrics[0]
-				}
+		if !rubricLoaded {
+			rubricLoaded = true
+			// If the rubric cannot be loaded the criterion cross-check and
+			// the checks_only guard are skipped; the rubric errors surface
+			// elsewhere.
+			if rubrics, err := loadRubrics(agent); err == nil && len(rubrics) > 0 {
+				rubric = &rubrics[0]
 			}
+		}
+		// A checks_only rubric scores from checks alone, so a case without
+		// any would have nothing to score: reject it rather than score 0/0.
+		if rubric != nil && rubric.ChecksOnly && len(tc.Checks) == 0 {
+			return nil, fmt.Errorf("%w: %s: rubric for agent %s sets checks_only but the case has no checks", errInvalidChecks, e.Name(), agent)
+		}
+		if len(tc.Checks) > 0 {
 			if err := ValidateChecks(e.Name(), tc.Checks, evalsPath("fixtures", "hidden"), rubric); err != nil {
 				return nil, fmt.Errorf("case %q: %w", tc.Name, err)
 			}
@@ -1874,6 +1880,17 @@ func runProgressiveEvaluation(agent, resultsDir string, isResume bool, cConfig *
 
 	if len(rubrics) == 0 {
 		return fmt.Errorf("❌ Fatal: no rubrics found")
+	}
+
+	// Reject an invalid checks_only agent before any agent's first case runs.
+	// Per-agent loading below would otherwise run earlier agents' cases first.
+	for _, rubric := range rubrics {
+		if !rubric.ChecksOnly {
+			continue
+		}
+		if _, err := loadCases(rubric.Agent); errors.Is(err, errInvalidChecks) || errors.Is(err, errMalformedCase) {
+			return err
+		}
 	}
 
 	var failed []AgentFailure

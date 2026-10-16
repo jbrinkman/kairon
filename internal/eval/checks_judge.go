@@ -37,13 +37,24 @@ type JudgeFile struct {
 	shown int
 }
 
+// JudgeTurn is one exchange of the conversation shown to a judge check.
+type JudgeTurn struct {
+	User  string // the user message actually sent in this turn
+	Agent string // the agent's reply to it
+}
+
 // JudgeQuery is everything handed to a JudgeFunc for one judge check.
 type JudgeQuery struct {
 	Criterion string
 	Question  string
 	Input     string // the case input
-	Output    string // the agent's final output
+	Output    string // the output under review: the agent's final output, or the reply of Turn
 	Files     []JudgeFile
+	// Turn is the 1-based turn being judged; 0 when the case has no transcript.
+	Turn int
+	// Transcript holds turns 1..Turn in order. Empty means a single-turn
+	// prompt (classic case, or a one-element turns list).
+	Transcript []JudgeTurn
 }
 
 // JudgeVerdict is a parsed yes/no answer.
@@ -85,23 +96,52 @@ func validateJudgeCheck(c *Check) error {
 
 // evalJudge runs one judge check. It fails closed: no judge, an unreadable
 // file, a failed call or an unparseable answer all fail the check; there is no
-// skipped or silent-pass path. Files are loaded (and refused) before the judge
-// is called, so a missing artifact costs no model call.
+// skipped or silent-pass path. The turn is selected first and files are loaded
+// (and refused) before the judge is called, so a bad turn or a missing
+// artifact costs no file read and no model call.
+//
+// A real multi-turn case (two or more turns of evidence) gets a transcript of
+// turns 1..N, where N is the check's turn (default: the last), and the reply of
+// turn N as the output under review. Any other input keeps the single-turn
+// query unchanged.
 func evalJudge(c Check, in CheckInput) (bool, string) {
 	if in.Judge == nil {
 		return false, "no judge configured"
+	}
+	total := max(len(in.Turns), 1)
+	sel := total
+	if c.Turn != nil {
+		sel = *c.Turn
+	}
+	if sel < 1 || sel > total {
+		return false, fmt.Sprintf("turn %d is out of range: the case has %d turn(s)", sel, total)
 	}
 	files, detail := loadJudgeFiles(in.Dir, c.Files)
 	if detail != "" {
 		return false, detail
 	}
-	verdict, err := in.Judge(JudgeQuery{
+	q := JudgeQuery{
 		Criterion: c.Criterion,
 		Question:  c.Question,
 		Input:     in.Input,
 		Output:    in.Output,
 		Files:     files,
-	})
+	}
+	if total >= 2 {
+		q.Turn = sel
+		q.Output = in.Turns[sel-1].Output
+		q.Transcript = make([]JudgeTurn, sel)
+		for i := range q.Transcript {
+			// A missing user message renders as empty rather than failing; the
+			// scoreCase path always supplies one per turn.
+			user := ""
+			if i < len(in.UserTurns) {
+				user = in.UserTurns[i]
+			}
+			q.Transcript[i] = JudgeTurn{User: user, Agent: in.Turns[i].Output}
+		}
+	}
+	verdict, err := in.Judge(q)
 	if err != nil {
 		if errors.Is(err, errJudgeParse) {
 			return false, "judge parse error: " + strings.TrimPrefix(err.Error(), errJudgeParse.Error()+": ")

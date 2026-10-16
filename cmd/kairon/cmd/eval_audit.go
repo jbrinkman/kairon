@@ -27,6 +27,12 @@ var auditCmd = &cobra.Command{
 load-bearing, i.e. mapped to a rubric criterion in
 <iterations-dir>/<agent>/load-bearing.md.
 
+Every row's Evidence cell in the table must name a case of the agent as
+case:<case-name>; the case must exist in <evals-dir>/cases/<agent>/ and have a
+check on the row's Criterion. Repeated instructions fail the audit: a line whose
+text repeats an earlier instruction in the prompt or its audited skills is a
+"duplicate" violation.
+
 Engine skills listed in the agent's resources are audited together with the
 prompt; *-conventions skills are override hooks and are excluded. The audit is
 deterministic and makes no model calls.

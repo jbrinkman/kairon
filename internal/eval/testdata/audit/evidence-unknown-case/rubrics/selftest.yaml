@@ -1,0 +1,8 @@
+agent: selftest
+criteria:
+  - name: alpha
+    description: Alpha criterion.
+    scoring: "1-5"
+  - name: beta
+    description: Beta criterion.
+    scoring: "1-5"

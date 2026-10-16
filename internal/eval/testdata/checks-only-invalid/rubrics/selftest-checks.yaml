@@ -1,0 +1,12 @@
+agent: selftest-checks
+checks_only: true
+criteria:
+  - name: file_written
+    description: "The agent created the marker file"
+    scoring: 1-5
+  - name: report_marker
+    description: "The report mentions the output marker"
+    scoring: 1-5
+  - name: cost_efficiency
+    description: "Token usage relative to output quality"
+    type: cost

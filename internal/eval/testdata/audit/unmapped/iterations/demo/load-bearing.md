@@ -1,4 +1,4 @@
 | Instruction | Criterion | Evidence |
 |---|---|---|
-| Mapped line. | alpha | Scored by alpha |
-| Ghost line. | ghost | Criterion does not exist |
+| Mapped line. | alpha | case:basic |
+| Ghost line. | ghost | case:basic |
