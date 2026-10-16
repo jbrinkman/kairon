@@ -1,0 +1,33 @@
+name: stub-kairon-binary
+description: "Sandbox self-test: the harness's kairon binary is mounted read-only on PATH at /usr/local/bin/kairon; a bare 'kairon --version' runs and prints the version, and 'command -v kairon' resolves to the mount"
+agent: selftest-sandbox
+requires_sandbox: true
+input: |
+  Run kairon --version and report where the kairon binary resolves from.
+context:
+  - "This case runs against the deterministic stub backend and only under --sandbox"
+  - "kairon --version output goes to .eval/kairon-version.txt; the resolved path goes to kairon-path.txt"
+expected_output: |
+  A short report with a top-level section and at least one subsection.
+stub:
+  turns:
+    - commands:
+        - "kairon --version > .eval/kairon-version.txt"
+        - "command -v kairon > kairon-path.txt"
+      response: |
+        ## Kairon binary
+
+        The kairon binary ran from PATH.
+
+        ### Details
+
+        .eval/kairon-version.txt holds the version and kairon-path.txt the resolved path.
+checks:
+  - criterion: structural_completeness
+    type: file_contains
+    path: .eval/kairon-version.txt
+    pattern: "(?m)^(v?[0-9]+\\.[0-9]+\\.[0-9]+\\S*|dev)$"
+  - criterion: structural_completeness
+    type: file_contains
+    path: kairon-path.txt
+    pattern: "(?m)^/usr/local/bin/kairon$"

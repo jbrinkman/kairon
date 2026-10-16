@@ -383,6 +383,10 @@ type Containment struct {
 	ToolTrust  []string `json:"tool_trust"`
 	FakeGH     bool     `json:"fake_gh"`
 	ReadOnlyFS bool     `json:"read_only_fs"`
+	// KaironBinary is whether the linux kairon binary is mounted read-only on
+	// PATH inside the container. Always written (not omitempty); a result
+	// recorded before this fact existed decodes as false.
+	KaironBinary bool `json:"kairon_binary"`
 	// Network is always "unrestricted": Kairon makes no network containment
 	// guarantee. It is not the container runtime's NetworkMode.
 	Network string `json:"network"`

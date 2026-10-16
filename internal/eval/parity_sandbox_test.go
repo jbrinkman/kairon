@@ -183,7 +183,7 @@ func assertModeAndContainment(t *testing.T, evalsDir, agent string, native, cont
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := Containment{ToolTrust: trust.Names(), FakeGH: true, ReadOnlyFS: true, Network: "unrestricted"}
+	want := Containment{ToolTrust: trust.Names(), FakeGH: true, ReadOnlyFS: true, KaironBinary: true, Network: "unrestricted"}
 	got, ok := container.summary.Containment[agent]
 	if !ok {
 		t.Fatalf("container summary has no containment entry for %s: %v", agent, container.summary.Containment)

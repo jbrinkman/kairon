@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -85,7 +86,7 @@ func trustContainment(trust ...string) *Containment {
 	if trust == nil {
 		trust = []string{}
 	}
-	return &Containment{ToolTrust: trust, FakeGH: true, ReadOnlyFS: true, Network: "unrestricted"}
+	return &Containment{ToolTrust: trust, FakeGH: true, ReadOnlyFS: true, KaironBinary: true, Network: "unrestricted"}
 }
 
 func runDiff(t *testing.T, a, b string) string {
@@ -180,6 +181,46 @@ func TestDiffListsContainmentDifference(t *testing.T) {
 	}
 }
 
+// A run recorded before kairon_binary existed reads as false, so it shows as a
+// containment difference against a current run.
+func TestDiffListsKaironBinaryDifference(t *testing.T) {
+	chdirTemp(t)
+	scores := map[string]float64{"a1": 0.5}
+	sa := provSummary("container", scores)
+	old := trustContainment("read")
+	old.KaironBinary = false
+	sa.Containment = map[string]Containment{"a1": *old}
+	sb := provSummary("container", scores)
+	sb.Containment = map[string]Containment{"a1": *trustContainment("read")}
+	writeProvRun(t, "r1", provRun{summary: sa})
+	writeProvRun(t, "r2", provRun{summary: sb})
+
+	out := runDiff(t, "r1", "r2")
+	want := "a1 containment.kairon_binary: false → true"
+	if !strings.Contains(out, want) {
+		t.Errorf("output missing %q:\n%s", want, out)
+	}
+}
+
+func TestContainmentDiffKaironBinary(t *testing.T) {
+	a, b := Containment{ToolTrust: []string{}}, Containment{ToolTrust: []string{}, KaironBinary: true}
+	got := containmentDiff(&a, &b)
+	if !reflect.DeepEqual(got, []string{"kairon_binary: false → true"}) {
+		t.Errorf("containmentDiff = %v", got)
+	}
+	if got := containmentDiff(&b, &b); len(got) != 0 {
+		t.Errorf("identical containment diff = %v, want none", got)
+	}
+}
+
+func TestDescribeContainmentIncludesKaironBinary(t *testing.T) {
+	c := Containment{ToolTrust: []string{"read"}, FakeGH: true, ReadOnlyFS: true, KaironBinary: true, Network: "unrestricted"}
+	want := "tool_trust=[read] fake_gh=true read_only_fs=true kairon_binary=true network=unrestricted"
+	if got := describeContainment(c); got != want {
+		t.Errorf("describeContainment = %q, want %q", got, want)
+	}
+}
+
 func TestDiffContainmentNoneVsPresent(t *testing.T) {
 	chdirTemp(t)
 	scores := map[string]float64{"a1": 0.5}
@@ -189,7 +230,7 @@ func TestDiffContainmentNoneVsPresent(t *testing.T) {
 	writeProvRun(t, "r2", provRun{summary: sb})
 
 	out := runDiff(t, "r1", "r2")
-	want := "a1 containment.record: none → tool_trust=[] fake_gh=true read_only_fs=true network=unrestricted"
+	want := "a1 containment.record: none → tool_trust=[] fake_gh=true read_only_fs=true kairon_binary=true network=unrestricted"
 	if !strings.Contains(out, want) {
 		t.Errorf("output missing %q:\n%s", want, out)
 	}

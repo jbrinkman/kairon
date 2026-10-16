@@ -189,6 +189,9 @@ func containmentDiff(a, b *Containment) []string {
 	if a.ReadOnlyFS != b.ReadOnlyFS {
 		lines = append(lines, fmt.Sprintf("read_only_fs: %t → %t", a.ReadOnlyFS, b.ReadOnlyFS))
 	}
+	if a.KaironBinary != b.KaironBinary {
+		lines = append(lines, fmt.Sprintf("kairon_binary: %t → %t", a.KaironBinary, b.KaironBinary))
+	}
 	if a.Network != b.Network {
 		lines = append(lines, fmt.Sprintf("network: %s → %s", a.Network, b.Network))
 	}
@@ -196,8 +199,8 @@ func containmentDiff(a, b *Containment) []string {
 }
 
 func describeContainment(c Containment) string {
-	return fmt.Sprintf("tool_trust=%s fake_gh=%t read_only_fs=%t network=%s",
-		trustString(c.ToolTrust), c.FakeGH, c.ReadOnlyFS, c.Network)
+	return fmt.Sprintf("tool_trust=%s fake_gh=%t read_only_fs=%t kairon_binary=%t network=%s",
+		trustString(c.ToolTrust), c.FakeGH, c.ReadOnlyFS, c.KaironBinary, c.Network)
 }
 
 // trustString renders a trust set order-insensitively.
