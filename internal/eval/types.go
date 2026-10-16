@@ -304,6 +304,15 @@ type AgentResult struct {
 	Cases  []CaseResult `json:"cases"`
 }
 
+// CriterionTotal is one non-cost criterion pooled over every case and repeat of
+// an agent.
+type CriterionTotal struct {
+	Name     string  `json:"name"`
+	Score    int     `json:"score"`     // points, summed over cases and repeats (skipped counts as 0)
+	MaxScore int     `json:"max_score"` // summed maxima
+	Percent  float64 `json:"percent"`   // score*100/max_score, 0-100
+}
+
 // RunOptions configures evaluation execution.
 type RunOptions struct {
 	List          bool              // List available test cases

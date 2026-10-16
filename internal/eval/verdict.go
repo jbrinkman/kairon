@@ -26,6 +26,10 @@ type AgentVerdict struct {
 	ScoreMin     float64   `json:"score_min"`
 	ScoreMax     float64   `json:"score_max"`
 	RepeatScores []float64 `json:"repeat_scores"`
+	// Criteria is every non-cost criterion scored in any case, pooled over
+	// every case and repeat, in first-seen order. Always written ([] when
+	// nothing is scored).
+	Criteria []CriterionTotal `json:"criteria"`
 }
 
 // agentThreshold returns the pass threshold recorded on the agent result,
@@ -84,6 +88,10 @@ func agentVerdict(ar AgentResult) AgentVerdict {
 		Cost:         agentCostTotals(ar),
 		Repeat:       max(ar.Repeat, 1),
 		RepeatScores: []float64{},
+		Criteria:     []CriterionTotal{},
+	}
+	if criteria := agentCriterionTotals(ar); len(criteria) > 0 {
+		v.Criteria = criteria
 	}
 	v.CasesTotal, v.CasesFailed = caseAccounting(ar, threshold)
 
@@ -251,6 +259,9 @@ func printAgentVerdict(w io.Writer, agent string, v AgentVerdict) {
 	}
 	fmt.Fprintf(w, "%s %s: %.1f%% (threshold %.1f%%), %d/%d cases failed%s\n",
 		word, agent, v.Score, v.Threshold, v.CasesFailed, v.CasesTotal, suffix)
+	for _, c := range v.Criteria {
+		fmt.Fprintf(w, "  %s: %d/%d (%.1f%%)\n", c.Name, c.Score, c.MaxScore, c.Percent)
+	}
 }
 
 // thresholdFailure returns a *ThresholdError for the failed agents, or nil when
