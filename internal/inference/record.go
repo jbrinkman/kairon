@@ -1,5 +1,9 @@
 package inference
 
+// SourceWorkspace is the CallRecord.Source of a record imported from an agent
+// workspace (e.g. .eval/calls.jsonl) rather than made by the harness itself.
+const SourceWorkspace = "workspace"
+
 // CallRecord is one inference call, in the shape shared by eval runs and
 // (Stage 4) production workflow audit trails.
 type CallRecord struct {
@@ -12,7 +16,13 @@ type CallRecord struct {
 	Purpose string `json:"purpose,omitempty"`
 	// Turn is the 1-based user turn of a multi-turn agent call (Request.Turn+1).
 	// Zero, and therefore omitted, for single-turn calls and judge calls.
-	Turn         int     `json:"turn,omitempty"`
+	Turn int `json:"turn,omitempty"`
+	// Step names the workflow step an imported record belongs to (e.g.
+	// "design"). Omitted when empty.
+	Step string `json:"step,omitempty"`
+	// Source says who wrote the record: SourceWorkspace for records imported
+	// from the agent workspace, empty (omitted) for records the harness made.
+	Source       string  `json:"source,omitempty"`
 	InputTokens  int     `json:"input_tokens"`
 	OutputTokens int     `json:"output_tokens"`
 	CostUSD      float64 `json:"cost_usd"`

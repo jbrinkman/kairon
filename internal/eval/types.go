@@ -261,6 +261,21 @@ type CaseResult struct {
 	// MarshalJSON for the serialisation rule.
 	PromptSHA256     string   `json:"prompt_sha256,omitempty"`
 	ResourcesPresent []string `json:"resources_present,omitempty"`
+	// SubAgents and WorkflowSHA256 are the case's workflow provenance: the
+	// agents the dispatching agent trusts (transitively) and the hash over the
+	// whole workflow, resolved from the same staged workspace. Both are absent
+	// for an agent with no trusted agents.
+	SubAgents      map[string]SubAgentProvenance `json:"sub_agents,omitempty"`
+	WorkflowSHA256 string                        `json:"workflow_sha256,omitempty"`
+}
+
+// SubAgentProvenance is the recorded identity of one sub-agent a dispatching
+// agent trusts. It is recorded, not checked against evals.allowed_models.
+type SubAgentProvenance struct {
+	AgentModel   string `json:"agent_model"`
+	PromptSHA256 string `json:"prompt_sha256"`
+	// ResourcesPresent is never omitted: a resolved-but-empty list is [].
+	ResourcesPresent []string `json:"resources_present"`
 }
 
 // MarshalJSON emits resources_present whenever prompt_sha256 is set, including
@@ -326,6 +341,10 @@ type AgentResult struct {
 	// was computed. It is not omitempty: a resolved-but-empty list serialises
 	// as [] so that "the missing resource was omitted" is observable.
 	ResourcesPresent []string `json:"resources_present"`
+	// SubAgents and WorkflowSHA256 are the baseline workflow provenance (see
+	// CaseResult); absent for an agent with no trusted agents.
+	SubAgents      map[string]SubAgentProvenance `json:"sub_agents,omitempty"`
+	WorkflowSHA256 string                        `json:"workflow_sha256,omitempty"`
 	// Repeat is how many times each case was run (--repeat). Absent (0) in a
 	// result written before repeats existed, which is read as 1.
 	Repeat int          `json:"repeat,omitempty"`
@@ -446,6 +465,10 @@ type AgentProvenance struct {
 	PromptSHA256     string   `json:"prompt_sha256"`
 	PromptFile       string   `json:"prompt_file,omitempty"`
 	ResourcesPresent []string `json:"resources_present"`
+	// SubAgents and WorkflowSHA256 are nested under the dispatching agent,
+	// never added as keys of Summary.Agents; absent without trusted agents.
+	SubAgents      map[string]SubAgentProvenance `json:"sub_agents,omitempty"`
+	WorkflowSHA256 string                        `json:"workflow_sha256,omitempty"`
 }
 
 // ContainerConfig configures containerized execution

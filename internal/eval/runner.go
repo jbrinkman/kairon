@@ -2075,15 +2075,20 @@ func checkResumeIntegrity(resultsDir, agent string, sandbox bool) error {
 	}
 	if existing.PromptSHA256 != pin.Provenance.PromptSHA256 ||
 		existing.PromptFile != pin.Provenance.PromptFile ||
+		existing.WorkflowSHA256 != pin.Provenance.WorkflowSHA256 ||
 		existing.AgentModel != pin.Model ||
 		existing.JudgeModel != cfg.pins.Judge {
 		// prompt_file is compared as well as the hash: a candidate run resumed
 		// without the candidate (or with a different file that happens to hash
 		// identically) must not mix provenance. A file without prompt_file
 		// compares equal to "no candidate".
-		return fmt.Errorf("❌ cannot resume: prompt or models changed since the interrupted run of %s (recorded agent_model=%s judge_model=%s prompt_sha256=%s prompt_file=%s; now agent_model=%s judge_model=%s prompt_sha256=%s prompt_file=%s)",
-			agent, existing.AgentModel, existing.JudgeModel, existing.PromptSHA256, promptFileLabel(existing.PromptFile),
-			pin.Model, cfg.pins.Judge, pin.Provenance.PromptSHA256, promptFileLabel(pin.Provenance.PromptFile))
+		// workflow_sha256 covers the sub-agents the agent may dispatch: a
+		// resume after a sub-agent edit would otherwise mix versions. A
+		// recorded file without it compares equal to "no workflow" and so is
+		// refused for a workflow agent.
+		return fmt.Errorf("❌ cannot resume: prompt or models changed since the interrupted run of %s (recorded agent_model=%s judge_model=%s prompt_sha256=%s prompt_file=%s workflow_sha256=%s; now agent_model=%s judge_model=%s prompt_sha256=%s prompt_file=%s workflow_sha256=%s)",
+			agent, existing.AgentModel, existing.JudgeModel, existing.PromptSHA256, promptFileLabel(existing.PromptFile), workflowLabel(existing.WorkflowSHA256),
+			pin.Model, cfg.pins.Judge, pin.Provenance.PromptSHA256, promptFileLabel(pin.Provenance.PromptFile), workflowLabel(pin.Provenance.WorkflowSHA256))
 	}
 	return nil
 }
@@ -2091,6 +2096,15 @@ func checkResumeIntegrity(resultsDir, agent string, sandbox bool) error {
 // effectiveRepeat is the repeat a result file recorded: 1 when absent.
 func effectiveRepeat(recorded int) int {
 	return max(1, recorded)
+}
+
+// workflowLabel renders a workflow_sha256 for messages: "(none)" for an agent
+// without sub-agents.
+func workflowLabel(w string) string {
+	if w == "" {
+		return "(none)"
+	}
+	return w
 }
 
 // promptFileLabel renders a prompt_file for messages: "(none)" when the run
@@ -2353,6 +2367,8 @@ func updateIncrementalSummary(summaryFile string, agentResult AgentResult, gitHa
 			PromptSHA256:     agentResult.PromptSHA256,
 			PromptFile:       agentResult.PromptFile,
 			ResourcesPresent: append([]string{}, agentResult.ResourcesPresent...),
+			SubAgents:        copySubAgents(agentResult.SubAgents),
+			WorkflowSHA256:   agentResult.WorkflowSHA256,
 		}
 	}
 	summary.AgentModel, summary.PromptSHA256, summary.PromptFile, summary.ResourcesPresent = "", "", "", nil
