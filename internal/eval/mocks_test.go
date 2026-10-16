@@ -70,6 +70,7 @@ func TestMocksValidation(t *testing.T) {
 		{"no mocks", false, nil, ""},
 		{"requires sandbox", false, []CaseMock{{"aws", ok}}, "requires_sandbox: true"},
 		{"gh reserved", true, []CaseMock{{"gh", ok}}, "reserved"},
+		{"kairon reserved", true, []CaseMock{{"kairon", ok}}, "reserved for the harness's kairon binary"},
 		{"cat reserved", true, []CaseMock{{"cat", ok}}, "used internally by the mock shim"},
 		{"sed reserved", true, []CaseMock{{"sed", ok}}, "used internally by the mock shim"},
 		{"basename reserved", true, []CaseMock{{"basename", ok}}, "used internally by the mock shim"},

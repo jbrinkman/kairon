@@ -15,6 +15,7 @@ cmd/kairon/kairon
 .kairon/retries/
 **/.kairon/evals/tmp/
 internal/eval/testdata/evals/results/
+internal/eval/testdata/checks-only-invalid/results/
 /test-build
 .kairon/sessions/
 .kairon/artifacts/

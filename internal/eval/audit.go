@@ -32,6 +32,7 @@ const (
 	auditRuleStructure        = "structure"
 	auditRuleResource         = "resource"
 	auditRuleTable            = "table"
+	auditRuleDuplicate        = "duplicate"
 	auditRuleUnmapped         = "unmapped"
 	auditRuleUnknownCriterion = "unknown-criterion"
 	auditRuleCoverage         = "coverage"
@@ -39,8 +40,8 @@ const (
 
 // auditRuleOrder ranks rules for stable output ordering within a file and line.
 var auditRuleOrder = map[string]int{
-	auditRuleStructure: 0, auditRuleResource: 1, auditRuleTable: 2,
-	auditRuleUnmapped: 3, auditRuleUnknownCriterion: 4, auditRuleCoverage: 5,
+	auditRuleStructure: 0, auditRuleResource: 1, auditRuleTable: 2, auditRuleDuplicate: 3,
+	auditRuleUnmapped: 4, auditRuleUnknownCriterion: 5, auditRuleCoverage: 6,
 }
 
 // rtccHeadings are the level-2 headings a prompt must carry, in this order.
@@ -53,6 +54,10 @@ var (
 	// tableSeparatorRe matches a table separator row: only pipes, dashes,
 	// colons and spaces.
 	tableSeparatorRe = regexp.MustCompile(`^[|:\- \t]+$`)
+	// auditEvidenceRe finds "case:<name>" tokens in an Evidence cell. The
+	// leading boundary keeps "showcase:x" from matching; trailing '.' and '-'
+	// are stripped from the capture (sentence punctuation).
+	auditEvidenceRe = regexp.MustCompile(`(?:^|[^A-Za-z0-9_])case:([A-Za-z0-9_.-]+)`)
 )
 
 // AuditOptions configures Audit.
@@ -147,6 +152,10 @@ func Audit(w io.Writer, agent string, opts AuditOptions) error {
 	if err != nil {
 		return err
 	}
+	cases, err := loadAuditCases(evalsDir, agent)
+	if err != nil {
+		return err
+	}
 	tablePath := filepath.Join(itersDir, agent, "load-bearing.md")
 
 	// Files are ranked by registration order for stable output: the prompt,
@@ -180,7 +189,21 @@ func Audit(w io.Writer, agent string, opts AuditOptions) error {
 		add(configPath, 0, auditRuleResource, "%s", msg)
 	}
 
-	table := loadAuditTable(tablePath, add)
+	table := loadAuditTable(tablePath, agent, criteria, cases, add)
+
+	// A later instruction whose text equals an earlier one (prompt first, then
+	// engine skills) is dead weight. Every repeat refers to the first
+	// occurrence. Always reported, regardless of coverage; counting is unchanged.
+	duplicates := 0
+	first := make(map[string]auditInstruction, len(instructions))
+	for _, in := range instructions {
+		if prev, seen := first[in.Text]; seen {
+			duplicates++
+			add(in.File, in.Line, auditRuleDuplicate, "duplicate of %s:%d: %q", prev.File, prev.Line, in.Text)
+			continue
+		}
+		first[in.Text] = in
+	}
 
 	// Map every instruction. Per-instruction findings are details of a
 	// coverage failure: they are reported only when coverage is below the
@@ -213,7 +236,7 @@ func Audit(w io.Writer, agent string, opts AuditOptions) error {
 		}
 	}
 
-	if err := writeAuditReport(w, agent, promptPath, isCandidate, skills, hooks, ignored, total, mapped, percent); err != nil {
+	if err := writeAuditReport(w, agent, promptPath, isCandidate, skills, hooks, ignored, total, mapped, duplicates, percent); err != nil {
 		return err
 	}
 
@@ -244,7 +267,7 @@ func auditPercent(mapped, total int) string {
 	return fmt.Sprintf("%d.%d%%", tenths/10, tenths%10)
 }
 
-func writeAuditReport(w io.Writer, agent, promptPath string, isCandidate bool, skills []auditSkill, hooks, ignored []string, total, mapped int, percent string) error {
+func writeAuditReport(w io.Writer, agent, promptPath string, isCandidate bool, skills []auditSkill, hooks, ignored []string, total, mapped, duplicates int, percent string) error {
 	var b strings.Builder
 	fmt.Fprintf(&b, "Audit: %s\n", agent)
 	if isCandidate {
@@ -270,7 +293,7 @@ func writeAuditReport(w io.Writer, agent, promptPath string, isCandidate bool, s
 			fmt.Fprintf(&b, "  %s\n", r)
 		}
 	}
-	fmt.Fprintf(&b, "Instructions: total=%d mapped=%d coverage=%s (threshold %d%%)\n", total, mapped, percent, auditThresholdPercent)
+	fmt.Fprintf(&b, "Instructions: total=%d mapped=%d duplicates=%d coverage=%s (threshold %d%%)\n", total, mapped, duplicates, percent, auditThresholdPercent)
 	_, err := io.WriteString(w, b.String())
 	return err
 }
@@ -477,10 +500,102 @@ func isTableSeparator(trimmed string) bool {
 	return tableSeparatorRe.MatchString(trimmed) && strings.Contains(trimmed, "-") && strings.Contains(trimmed, "|")
 }
 
+// auditCases maps a case name to the set of criteria it has at least one
+// check on.
+type auditCases struct {
+	dir   string // <evals-dir>/cases/<agent>, for messages
+	names map[string]map[string]bool
+}
+
+// loadAuditCases reads <evalsDir>/cases/<agent>/*.yaml (non-recursive). A case
+// is identified by its name: field and checks only need their criterion. A
+// missing directory means the agent has no cases. Like loadAuditConfig it does
+// not use package state, so it cannot share loadCases.
+func loadAuditCases(evalsDir, agent string) (auditCases, error) {
+	dir := filepath.Join(evalsDir, "cases", agent)
+	cases := auditCases{dir: dir, names: map[string]map[string]bool{}}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return cases, nil
+		}
+		return auditCases{}, fmt.Errorf("reading cases directory %s: %w", dir, err)
+	}
+	for _, e := range entries {
+		if e.IsDir() || filepath.Ext(e.Name()) != ".yaml" {
+			continue
+		}
+		file := filepath.Join(dir, e.Name())
+		data, err := os.ReadFile(file)
+		if err != nil {
+			return auditCases{}, fmt.Errorf("reading case %s: %w", file, err)
+		}
+		var c struct {
+			Name   string `yaml:"name"`
+			Checks []struct {
+				Criterion string `yaml:"criterion"`
+			} `yaml:"checks"`
+		}
+		if err := yaml.Unmarshal(data, &c); err != nil {
+			return auditCases{}, fmt.Errorf("parsing case %s: %w", file, err)
+		}
+		if c.Name == "" {
+			return auditCases{}, fmt.Errorf("parsing case %s: empty name", file)
+		}
+		set := cases.names[c.Name]
+		if set == nil {
+			set = map[string]bool{}
+			cases.names[c.Name] = set
+		}
+		for _, ch := range c.Checks {
+			set[ch.Criterion] = true
+		}
+	}
+	return cases, nil
+}
+
+// evidenceCaseNames returns the distinct case names an Evidence cell names via
+// "case:<name>" tokens, in order of first appearance.
+func evidenceCaseNames(cell string) []string {
+	var names []string
+	seen := map[string]bool{}
+	for _, m := range auditEvidenceRe.FindAllStringSubmatch(cell, -1) {
+		name := strings.TrimRight(m[1], ".-")
+		if name == "" || seen[name] {
+			continue
+		}
+		seen[name] = true
+		names = append(names, name)
+	}
+	return names
+}
+
+// checkAuditEvidence reports the table violations of one data row's Evidence
+// cell: no case named, a named case that does not exist, or a case with no
+// check on the row's criterion (skipped when the criterion is not in the
+// rubric, which is already an unknown-criterion problem).
+func checkAuditEvidence(add func(file string, line int, rule, format string, args ...any), tablePath string, lineNo int, agent string, criteria map[string]bool, cases auditCases, criterion, evidence string) {
+	names := evidenceCaseNames(evidence)
+	if len(names) == 0 {
+		add(tablePath, lineNo, auditRuleTable, "row %d: Evidence must name at least one case of agent %q as case:<case-name>", lineNo, agent)
+		return
+	}
+	for _, name := range names {
+		checked, ok := cases.names[name]
+		switch {
+		case !ok:
+			add(tablePath, lineNo, auditRuleTable, "row %d: evidence names case %q which is not a case of agent %q (looked in %s)", lineNo, name, agent, cases.dir)
+		case criteria[criterion] && !checked[criterion]:
+			add(tablePath, lineNo, auditRuleTable, "row %d: case %q has no check on criterion %q", lineNo, name, criterion)
+		}
+	}
+}
+
 // loadAuditTable reads and parses <iterations-dir>/<agent>/load-bearing.md into
-// a map keyed by the verbatim instruction text. A missing file is a table
-// violation and an empty table.
-func loadAuditTable(tablePath string, add func(file string, line int, rule, format string, args ...any)) map[string]auditTableRow {
+// a map keyed by the verbatim instruction text, and validates every data row's
+// Evidence cell against the agent's cases. A missing file is a table violation
+// and an empty table.
+func loadAuditTable(tablePath, agent string, criteria map[string]bool, cases auditCases, add func(file string, line int, rule, format string, args ...any)) map[string]auditTableRow {
 	data, err := os.ReadFile(tablePath)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
@@ -521,6 +636,7 @@ func loadAuditTable(tablePath string, add func(file string, line int, rule, form
 			add(tablePath, lineNo, auditRuleTable, "row %d: Instruction and Criterion must not be empty", lineNo)
 			continue
 		}
+		checkAuditEvidence(add, tablePath, lineNo, agent, criteria, cases, cells[1], cells[2])
 		if prev, dup := table[cells[0]]; dup {
 			if prev.criterion != cells[1] {
 				add(tablePath, lineNo, auditRuleTable, "instruction %q is already mapped to %q on line %d; it cannot also map to %q", cells[0], prev.criterion, prev.line, cells[1])

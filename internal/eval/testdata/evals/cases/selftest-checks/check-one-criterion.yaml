@@ -1,0 +1,22 @@
+name: check-one-criterion
+description: "Self-test (checks_only): checks on file_written only, so report_marker is not scored"
+agent: selftest-checks
+input: |
+  Create the marker file and report that you did.
+context:
+  - "This case runs against the deterministic stub backend"
+  - "Passes: the stub turn writes marker.txt; report_marker has no checks and is not scored"
+expected_output: |
+  A short report.
+stub:
+  turns:
+    - commands:
+        - "echo hi > marker.txt"
+      response: |
+        ## Checks
+
+        The stub turn finished and reported output marker alpha.
+checks:
+  - criterion: file_written
+    type: file_exists
+    path: marker.txt

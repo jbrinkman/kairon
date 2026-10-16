@@ -1,0 +1,8 @@
+{
+  "name": "selftest-checks",
+  "description": "Minimal agent used only by the eval self-test fixtures; its checks_only cases are expected to pass.",
+  "prompt": "file://./selftest-checks-prompt.md",
+  "model": "claude-sonnet-5.5",
+  "tools": ["read"],
+  "allowedTools": ["read"]
+}

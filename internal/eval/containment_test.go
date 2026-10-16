@@ -2,6 +2,7 @@ package eval
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -46,7 +47,7 @@ func TestApplyRunContextContainerVsNative(t *testing.T) {
 	if container.Sandbox == nil || !*container.Sandbox {
 		t.Fatalf("container Sandbox = %v, want true", container.Sandbox)
 	}
-	wantC := Containment{ToolTrust: want.Names(), FakeGH: true, ReadOnlyFS: true, Network: "unrestricted"}
+	wantC := Containment{ToolTrust: want.Names(), FakeGH: true, ReadOnlyFS: true, KaironBinary: true, Network: "unrestricted"}
 	if container.Containment == nil || !reflect.DeepEqual(*container.Containment, wantC) {
 		t.Errorf("container Containment = %+v, want %+v", container.Containment, wantC)
 	}
@@ -107,6 +108,48 @@ func TestContainmentToolTrustSerialisesEmptyArray(t *testing.T) {
 	}
 }
 
+// The containment record carries the kairon_binary fact, sourced from the
+// kaironBinaryMounted const that enforcement honours.
+func TestContainmentForRecordsKaironBinary(t *testing.T) {
+	t.Cleanup(resetConfig)
+	cfg.pins = &runPins{TrustOverrides: map[string][]string{"builder": {"read"}}}
+	c := containmentFor("builder")
+	if c.KaironBinary != kaironBinaryMounted || !c.KaironBinary {
+		t.Errorf("KaironBinary = %t, want %t (kaironBinaryMounted) and true", c.KaironBinary, kaironBinaryMounted)
+	}
+}
+
+// kairon_binary is always written (never omitted), including when false, and
+// round-trips; a file written before the field existed decodes as false.
+func TestContainmentKaironBinaryJSON(t *testing.T) {
+	for _, want := range []bool{true, false} {
+		data, err := json.Marshal(Containment{ToolTrust: []string{}, KaironBinary: want})
+		if err != nil {
+			t.Fatal(err)
+		}
+		key := fmt.Sprintf(`"kairon_binary":%t`, want)
+		if !strings.Contains(string(data), key) {
+			t.Errorf("json = %s, want %s", data, key)
+		}
+		var got Containment
+		if err := json.Unmarshal(data, &got); err != nil {
+			t.Fatal(err)
+		}
+		if got.KaironBinary != want {
+			t.Errorf("round-trip KaironBinary = %t, want %t", got.KaironBinary, want)
+		}
+	}
+
+	old := `{"tool_trust":["fs_read"],"fake_gh":true,"read_only_fs":true,"network":"unrestricted"}`
+	var c Containment
+	if err := json.Unmarshal([]byte(old), &c); err != nil {
+		t.Fatal(err)
+	}
+	if c.KaironBinary || !c.FakeGH || !c.ReadOnlyFS || c.Network != "unrestricted" {
+		t.Errorf("old-format containment = %+v, want KaironBinary false, other fields intact", c)
+	}
+}
+
 func TestContainmentForUnresolvableTrustRecordsEmptyAndDoesNotFail(t *testing.T) {
 	chdirTemp(t) // no agent config anywhere
 	t.Cleanup(resetConfig)
@@ -115,7 +158,7 @@ func TestContainmentForUnresolvableTrustRecordsEmptyAndDoesNotFail(t *testing.T)
 	if r.Containment == nil || r.Containment.ToolTrust == nil || len(r.Containment.ToolTrust) != 0 {
 		t.Fatalf("Containment = %+v, want tool_trust []", r.Containment)
 	}
-	if !r.Containment.FakeGH || !r.Containment.ReadOnlyFS || r.Containment.Network != "unrestricted" {
+	if !r.Containment.FakeGH || !r.Containment.ReadOnlyFS || !r.Containment.KaironBinary || r.Containment.Network != "unrestricted" {
 		t.Errorf("other containment facts wrong: %+v", r.Containment)
 	}
 }
@@ -138,6 +181,7 @@ func TestContainmentMatchesEnforcement(t *testing.T) {
 	}
 
 	ws := testWorkspaceDirs(t)
+	useFakeLinuxBinary(t)
 	ms, err := buildContainerMounts(ws, testContainerConfig(), inference.NameKiroCLI)
 	if err != nil {
 		t.Fatal(err)
@@ -145,6 +189,13 @@ func TestContainmentMatchesEnforcement(t *testing.T) {
 	_, hasBin := mountSummary(ms)[containerBinDir]
 	if c.FakeGH != hasBin {
 		t.Errorf("FakeGH = %t, bin mount present = %t", c.FakeGH, hasBin)
+	}
+	kb, hasKairon := mountSummary(ms)[containerHelperPath]
+	if c.KaironBinary != hasKairon {
+		t.Errorf("KaironBinary = %t, kairon mount present = %t", c.KaironBinary, hasKairon)
+	}
+	if hasKairon && !kb.ReadOnly {
+		t.Errorf("kairon mount must be read-only: %+v", kb)
 	}
 
 	trust, _ := resolveTrustSet("builder")
@@ -158,7 +209,7 @@ func boolPtr(b bool) *bool { return &b }
 func containerResult(agent string, trust []string) AgentResult {
 	return AgentResult{
 		Agent: agent, Sandbox: boolPtr(true),
-		Containment: &Containment{ToolTrust: trust, FakeGH: true, ReadOnlyFS: true, Network: "unrestricted"},
+		Containment: &Containment{ToolTrust: trust, FakeGH: true, ReadOnlyFS: true, KaironBinary: true, Network: "unrestricted"},
 	}
 }
 
@@ -177,7 +228,7 @@ func TestUpdateIncrementalSummaryRecordsModeAndContainment(t *testing.T) {
 	if cs.Sandbox != "container" {
 		t.Errorf("Sandbox = %q, want container", cs.Sandbox)
 	}
-	if got := cs.Containment["builder"]; !reflect.DeepEqual(got, Containment{ToolTrust: []string{"read"}, FakeGH: true, ReadOnlyFS: true, Network: "unrestricted"}) {
+	if got := cs.Containment["builder"]; !reflect.DeepEqual(got, Containment{ToolTrust: []string{"read"}, FakeGH: true, ReadOnlyFS: true, KaironBinary: true, Network: "unrestricted"}) {
 		t.Errorf("containment[builder] = %+v", got)
 	}
 
@@ -306,7 +357,7 @@ func TestCheckResumeIntegrityTrustSetChange(t *testing.T) {
 	saved := AgentResult{
 		Agent:       "builder",
 		Sandbox:     boolPtr(true),
-		Containment: &Containment{ToolTrust: []string{"fs_read"}, FakeGH: true, ReadOnlyFS: true, Network: "unrestricted"},
+		Containment: &Containment{ToolTrust: []string{"fs_read"}, FakeGH: true, ReadOnlyFS: true, KaironBinary: true, Network: "unrestricted"},
 		Cases:       []CaseResult{{CaseName: "c1"}},
 	}
 	data, err := json.Marshal(saved)
@@ -338,6 +389,98 @@ func TestCheckResumeIntegrityTrustSetChange(t *testing.T) {
 		// A native resume of a saved container run is caught by the mode check
 		// first, not the trust check — confirm it is the mode guard talking.
 		t.Errorf("native resume of container run: err = %v, want sandbox-mode refusal", err)
+	}
+}
+
+// TestCheckResumeIntegrityKaironBinaryChange verifies a sandbox resume is
+// refused when the kairon-binary mount differs from the interrupted run, so a
+// re-stamp never claims the already-completed cases ran with the binary on
+// PATH when they did not. A result recorded before the mount existed decodes
+// kairon_binary as false; resuming it under the current (true) mount is the
+// drift the guard rules out, mirroring the tool-trust guard.
+func TestCheckResumeIntegrityKaironBinaryChange(t *testing.T) {
+	t.Cleanup(resetConfig)
+	dir := t.TempDir()
+
+	// A saved container run of builder recorded before the kairon binary was
+	// mounted: kairon_binary=false. Tool trust matches the current set so the
+	// trust guard does not fire first; this isolates the kairon-binary guard.
+	cfg.pins = &runPins{TrustOverrides: map[string][]string{"builder": {"read"}}}
+	saved := AgentResult{
+		Agent:       "builder",
+		Sandbox:     boolPtr(true),
+		Containment: &Containment{ToolTrust: containmentFor("builder").ToolTrust, FakeGH: true, ReadOnlyFS: true, KaironBinary: false, Network: "unrestricted"},
+		Cases:       []CaseResult{{CaseName: "c1"}},
+	}
+	data, err := json.Marshal(saved)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "builder.json"), data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Resuming when the current run mounts the binary (kaironBinaryMounted is
+	// true) is refused: the saved cases ran without it.
+	err = checkResumeIntegrity(dir, "builder", true)
+	if err == nil || !strings.Contains(err.Error(), "kairon-binary mount changed") {
+		t.Fatalf("err = %v, want kairon-binary refusal", err)
+	}
+
+	// Resuming with the same mount is allowed.
+	saved.Containment.KaironBinary = containmentFor("builder").KaironBinary
+	data, err = json.Marshal(saved)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "builder.json"), data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := checkResumeIntegrity(dir, "builder", true); err != nil {
+		t.Errorf("same kairon-binary mount refused: %v", err)
+	}
+}
+
+// TestCheckResumeIntegritySandboxNilContainment verifies a sandbox resume is
+// refused when the saved result has completed cases but no containment record.
+// sandbox-mode tracking (#306) predates the containment record (#310), so a
+// result written in that window has Sandbox=true and a provenance hash yet
+// Containment==nil. Both containment comparisons are gated on
+// `existing.Containment != nil`, so without this guard such a resume slips
+// through and applyRunContext stamps a fabricated containment (kairon_binary,
+// tool_trust) onto cases whose real state is unknown.
+func TestCheckResumeIntegritySandboxNilContainment(t *testing.T) {
+	t.Cleanup(resetConfig)
+	dir := t.TempDir()
+	cfg.pins = nil
+
+	// A saved sandbox run with completed cases but no containment record (the
+	// field did not exist when it was written).
+	saved := AgentResult{
+		Agent:   "builder",
+		Sandbox: boolPtr(true),
+		Cases:   []CaseResult{{CaseName: "c1"}},
+	}
+	data, err := json.Marshal(saved)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "builder.json"), data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// A sandbox resume of a containment-less result is refused.
+	err = checkResumeIntegrity(dir, "builder", true)
+	if err == nil || !strings.Contains(err.Error(), "no containment metadata") {
+		t.Fatalf("err = %v, want nil-containment refusal", err)
+	}
+
+	// A native resume (sandbox=false) is not containment-checked: native runs
+	// record no containment, so a nil containment is expected, not drift.
+	if err := checkResumeIntegrity(dir, "builder", false); err == nil ||
+		!strings.Contains(err.Error(), "sandbox mode changed") {
+		// Caught by the mode guard first (saved sandbox=true vs now false).
+		t.Errorf("native resume of sandbox run: err = %v, want sandbox-mode refusal", err)
 	}
 }
 

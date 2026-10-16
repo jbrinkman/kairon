@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"path"
 	"path/filepath"
 	"reflect"
 	"strconv"
@@ -71,25 +72,24 @@ func mountSummary(ms []sandbox.Mount) map[string]sandbox.Mount {
 func TestBuildContainerMountsKiroCLI(t *testing.T) {
 	ws := testWorkspaceDirs(t)
 	cc := testContainerConfig()
+	bin := useFakeLinuxBinary(t)
 
 	ms, err := buildContainerMounts(ws, cc, inference.NameKiroCLI)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(ms) != 4 {
-		t.Fatalf("mounts = %+v, want exactly 4 (no helper for kiro-cli)", ms)
+	if len(ms) != 5 {
+		t.Fatalf("mounts = %+v, want exactly 5 (the kairon binary is mounted for kiro-cli too)", ms)
 	}
 	want := []sandbox.Mount{
 		{HostPath: ws.KiroDir, ContainerPath: "/workspace/.kiro", ReadOnly: true},
 		{HostPath: ws.Dir, ContainerPath: "/workspace"},
 		{HostPath: ws.EvalDir, ContainerPath: "/workspace/.eval"},
 		{HostPath: ws.BinDir, ContainerPath: "/opt/kairon/bin", ReadOnly: true},
+		{HostPath: bin, ContainerPath: "/usr/local/bin/kairon", ReadOnly: true},
 	}
 	if !reflect.DeepEqual(ms, want) {
 		t.Errorf("mounts = %+v\nwant     %+v", ms, want)
-	}
-	if _, ok := mountSummary(ms)[containerHelperPath]; ok {
-		t.Error("kiro-cli backend must not mount the helper")
 	}
 
 	// Through the real host-config constructor: bind mounts only, plus the
@@ -145,8 +145,103 @@ func TestBuildContainerMountsHelper(t *testing.T) {
 	if m := by["/opt/kairon/bin"]; m.HostPath != ws.BinDir || !m.ReadOnly {
 		t.Errorf("bin mount = %+v", m)
 	}
-	if m := by["/opt/kairon/kairon"]; m.HostPath != bin || !m.ReadOnly {
-		t.Errorf("helper mount = %+v", m)
+	if m := by["/usr/local/bin/kairon"]; m.HostPath != bin || !m.ReadOnly {
+		t.Errorf("kairon binary mount = %+v", m)
+	}
+	if _, ok := by["/opt/kairon/kairon"]; ok {
+		t.Error("the old /opt/kairon/kairon mount must not exist")
+	}
+}
+
+// The kairon binary is mounted read-only, exactly once, at a path whose
+// directory is on the container PATH, for every backend (kiro-cli included),
+// so a bare `kairon` resolves for agents.
+func TestBuildContainerMountsKaironBinaryOnPathForEveryBackend(t *testing.T) {
+	if !kaironBinaryMounted {
+		t.Skip("kaironBinaryMounted is false")
+	}
+	if containerHelperPath != "/usr/local/bin/kairon" {
+		t.Errorf("containerHelperPath = %q, want /usr/local/bin/kairon", containerHelperPath)
+	}
+	for _, backend := range []string{inference.NameKiroCLI, inference.NameStub} {
+		t.Run(backend, func(t *testing.T) {
+			ws := testWorkspaceDirs(t)
+			cc := testContainerConfig()
+			bin := useFakeLinuxBinary(t)
+
+			ms, err := buildContainerMounts(ws, cc, backend)
+			if err != nil {
+				t.Fatal(err)
+			}
+			n := 0
+			for _, m := range ms {
+				if m.ContainerPath == containerHelperPath {
+					n++
+					if m.HostPath != bin || !m.ReadOnly {
+						t.Errorf("kairon mount = %+v, want read-only %s", m, bin)
+					}
+				}
+			}
+			if n != 1 {
+				t.Fatalf("%d mounts at %s, want exactly 1: %+v", n, containerHelperPath, ms)
+			}
+			dir := path.Dir(containerHelperPath)
+			onPath := false
+			for _, d := range strings.Split(containerPath, ":") {
+				if d == dir {
+					onPath = true
+				}
+			}
+			if !onPath {
+				t.Errorf("%s is not a directory on containerPath %q", dir, containerPath)
+			}
+		})
+	}
+}
+
+// prepareBaseImage resolves the kairon binary first, so a missing binary
+// fails before any image manager is created or any case starts.
+func TestPrepareBaseImageFailsFastWithoutKaironBinary(t *testing.T) {
+	orig := resolveLinuxBinary
+	var gotPlatform string
+	resolveLinuxBinary = func(p string) (string, error) {
+		gotPlatform = p
+		return "", errors.New("no binary: set KAIRON_SANDBOX_BINARY")
+	}
+	t.Cleanup(func() { resolveLinuxBinary = orig })
+
+	cc := testContainerConfig()
+	cc.Platform = "linux/arm64"
+	im, err := prepareBaseImage(cc)
+	if err == nil {
+		t.Fatal("expected an error when the kairon binary cannot be resolved")
+	}
+	if im != nil {
+		t.Errorf("image manager = %v, want nil (must not be created)", im)
+	}
+	for _, want := range []string{"KAIRON_SANDBOX_BINARY", "linux/arm64"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("err = %v, want it to contain %q", err, want)
+		}
+	}
+	if gotPlatform != "linux/arm64" {
+		t.Errorf("resolver platform = %q, want linux/arm64", gotPlatform)
+	}
+	if cc.ImageManager != nil || cc.CachedImageName != "" {
+		t.Errorf("config must be untouched on failure: %+v", cc)
+	}
+}
+
+func TestPrepareBaseImageNativeRunSkipsPreflight(t *testing.T) {
+	orig := resolveLinuxBinary
+	resolveLinuxBinary = func(string) (string, error) {
+		t.Error("native run must not resolve the kairon binary")
+		return "", errors.New("unexpected")
+	}
+	t.Cleanup(func() { resolveLinuxBinary = orig })
+	im, err := prepareBaseImage(nil)
+	if im != nil || err != nil {
+		t.Errorf("prepareBaseImage(nil) = %v, %v; want nil, nil", im, err)
 	}
 }
 
@@ -168,7 +263,7 @@ func TestBuildContainerMountsErrors(t *testing.T) {
 		}
 	})
 
-	t.Run("helper not readable by the container user", func(t *testing.T) {
+	t.Run("binary not readable by the container user", func(t *testing.T) {
 		bin := filepath.Join(t.TempDir(), "kairon-linux")
 		if err := os.WriteFile(bin, []byte("x"), 0o700); err != nil {
 			t.Fatal(err)
@@ -179,9 +274,14 @@ func TestBuildContainerMountsErrors(t *testing.T) {
 		orig := resolveLinuxBinary
 		resolveLinuxBinary = func(string) (string, error) { return bin, nil }
 		t.Cleanup(func() { resolveLinuxBinary = orig })
-		_, err := buildContainerMounts(ws, cc, inference.NameStub)
-		if err == nil || !strings.Contains(err.Error(), bin) {
-			t.Fatalf("err = %v, want one naming %s", err, bin)
+		for _, backend := range []string{inference.NameStub, inference.NameKiroCLI} {
+			_, err := buildContainerMounts(ws, cc, backend)
+			if err == nil || !strings.Contains(err.Error(), bin) {
+				t.Fatalf("%s: err = %v, want one naming %s", backend, err, bin)
+			}
+			if strings.Contains(err.Error(), "helper") {
+				t.Errorf("%s: err = %v, want backend-neutral wording (no \"helper\")", backend, err)
+			}
 		}
 	})
 }

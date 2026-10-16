@@ -240,7 +240,7 @@ func TestContainerHelperPromptOnStdinNotArgv(t *testing.T) {
 	if len(x.stdins) != 1 || !strings.Contains(x.stdins[0], "PROMPT-MARKER") {
 		t.Errorf("the JSON request on stdin must carry the prompt")
 	}
-	wantCmd := "/opt/kairon/kairon inference-exec --backend stub"
+	wantCmd := "/usr/local/bin/kairon inference-exec --backend stub"
 	if got := strings.Join(x.cmds[0], " "); got != wantCmd {
 		t.Errorf("cmd = %q, want %q", got, wantCmd)
 	}

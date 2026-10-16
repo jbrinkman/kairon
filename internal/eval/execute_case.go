@@ -96,6 +96,26 @@ func executeCase(rubric Rubric, tc TestCase, cConfig *ContainerConfig, out io.Wr
 		scoreCaseFn(rubric, tc, &cr)
 		return cr
 	}
+
+	// A pinned run records, per case, what the case's own agent sees: the
+	// provenance is resolved from the staged workspace, so a fixture that
+	// supplies a *-conventions skill (or a prompt) is reflected. Unpinned
+	// runs record nothing, as before.
+	if _, pinned := cfg.pins.pinOf(rubric.Agent); pinned {
+		prov, perr := resolveProvenanceInRoot(ws.Dir, rubric.Agent, cfg.candidate)
+		if perr != nil {
+			_ = ws.Remove()
+			fmt.Fprintf(out, " ❌ (workspace failed)\n")
+			fmt.Fprintf(out, "      Error: %v\n", perr)
+			cr.ActualOutput = ""
+			cr.ErrorContext = &ErrorContext{Stderr: fmt.Sprintf("workspace setup failed: resolving provenance: %v", perr)}
+			scoreCaseFn(rubric, tc, &cr)
+			return cr
+		}
+		cr.PromptSHA256 = prov.PromptSHA256
+		cr.ResourcesPresent = prov.ResourcesPresent
+	}
+
 	cr.WorkspaceDir = ws.Dir
 	cr.baseCommit = ws.BaseCommit
 	if cConfig != nil {
@@ -176,6 +196,10 @@ func executeCase(rubric Rubric, tc TestCase, cConfig *ContainerConfig, out io.Wr
 			callOpts{Stub: tc.Stub, Workspace: ws, Timeout: caseTimeout(tc), Turn: k, Session: session})
 		if multi {
 			rec.Turn = k
+		}
+		if cr.PromptSHA256 != "" {
+			// The call record must not disagree with the case it belongs to.
+			rec.PromptSHA256 = cr.PromptSHA256
 		}
 		cr.Calls = append(cr.Calls, rec)
 		cr.AgentCost.Add(cost)

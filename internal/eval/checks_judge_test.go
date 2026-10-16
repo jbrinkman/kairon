@@ -640,3 +640,196 @@ func TestParseYesNo(t *testing.T) {
 		})
 	}
 }
+
+// twoTurnJudgeInput is a hand-built 2-turn CheckInput with distinct markers.
+func twoTurnJudgeInput(dir string, f *fakeJudge) CheckInput {
+	return CheckInput{
+		Dir:       dir,
+		Output:    "REPLY-TWO",
+		Input:     "rendered input",
+		UserTurns: []string{"USER-ONE", "USER-TWO"},
+		Turns:     []TurnEvidence{{Output: "REPLY-ONE"}, {Output: "REPLY-TWO"}},
+		Judge:     f.judge,
+	}
+}
+
+func TestJudgeCheckTurnFieldValidation(t *testing.T) {
+	tests := []struct {
+		name    string
+		check   Check
+		wantErr string // "" = valid
+	}{
+		{"turn on judge", Check{Type: CheckJudge, Question: "q", Turn: turnPtr(1)}, ""},
+		{"turn 3 on judge", Check{Type: CheckJudge, Question: "q", Turn: turnPtr(3)}, ""},
+		{"turn 0 on judge", Check{Type: CheckJudge, Question: "q", Turn: turnPtr(0)}, "turn 0 must be >= 1"},
+		{"negative turn on judge", Check{Type: CheckJudge, Question: "q", Turn: turnPtr(-1)}, "must be >= 1"},
+		{"turn on file_exists", Check{Type: CheckFileExists, Path: "a", Turn: turnPtr(1)}, "turn is not valid for type file_exists"},
+		{"turn on file_contains", Check{Type: CheckFileContains, Path: "a", Pattern: "x", Turn: turnPtr(1)}, "turn is not valid for type file_contains"},
+		{"turn on command", Check{Type: CheckCommand, Run: "true", Turn: turnPtr(1)}, "turn is not valid for type command"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tt.check.Criterion = "clarity"
+			err := ValidateChecks("case-file.yaml", []Check{tt.check}, "", nil)
+			if tt.wantErr == "" {
+				if err != nil {
+					t.Fatalf("unexpected error: %v", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("error = %v, want it to contain %q", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestJudgeCheckMultiTurnDefaultsToLastTurn(t *testing.T) {
+	f := &fakeJudge{verdict: JudgeVerdict{Yes: true, Reasoning: "ok"}}
+	wantPass(t, evalOne(t, judgeCheck("q"), twoTurnJudgeInput(t.TempDir(), f)))
+	if len(f.queries) != 1 {
+		t.Fatalf("judge called %d times, want 1", len(f.queries))
+	}
+	q := f.queries[0]
+	if q.Turn != 2 || q.Output != "REPLY-TWO" {
+		t.Errorf("Turn = %d, Output = %q; want 2, REPLY-TWO", q.Turn, q.Output)
+	}
+	want := []JudgeTurn{{User: "USER-ONE", Agent: "REPLY-ONE"}, {User: "USER-TWO", Agent: "REPLY-TWO"}}
+	if len(q.Transcript) != len(want) || q.Transcript[0] != want[0] || q.Transcript[1] != want[1] {
+		t.Errorf("Transcript = %+v, want %+v", q.Transcript, want)
+	}
+}
+
+func TestJudgeCheckMultiTurnSelectsEarlierTurn(t *testing.T) {
+	f := &fakeJudge{verdict: JudgeVerdict{Yes: true, Reasoning: "ok"}}
+	c := judgeCheck("q")
+	c.Turn = turnPtr(1)
+	wantPass(t, evalOne(t, c, twoTurnJudgeInput(t.TempDir(), f)))
+	q := f.queries[0]
+	if q.Turn != 1 || q.Output != "REPLY-ONE" {
+		t.Errorf("Turn = %d, Output = %q; want 1, REPLY-ONE", q.Turn, q.Output)
+	}
+	if len(q.Transcript) != 1 || q.Transcript[0] != (JudgeTurn{User: "USER-ONE", Agent: "REPLY-ONE"}) {
+		t.Fatalf("Transcript = %+v, want only turn 1", q.Transcript)
+	}
+	if strings.Contains(fmt.Sprintf("%+v", q.Transcript), "TWO") {
+		t.Errorf("turn-1 query leaks turn 2: %+v", q.Transcript)
+	}
+}
+
+func TestJudgeCheckTurnOutOfRangeFailsBeforeFilesAndJudge(t *testing.T) {
+	f := &fakeJudge{verdict: JudgeVerdict{Yes: true, Reasoning: "ok"}}
+	c := judgeCheck("q", "missing.md") // would fail with "file does not exist" if read
+	c.Turn = turnPtr(9)
+	r := evalOne(t, c, twoTurnJudgeInput(t.TempDir(), f))
+	wantFail(t, r, "turn 9 is out of range: the case has 2 turn(s)")
+	if strings.Contains(r.Detail, "does not exist") {
+		t.Errorf("files were read before the turn was checked: %q", r.Detail)
+	}
+	if len(f.queries) != 0 {
+		t.Errorf("judge was invoked %d times for an out-of-range turn", len(f.queries))
+	}
+}
+
+func TestJudgeCheckClassicInputHasNoTranscript(t *testing.T) {
+	f := &fakeJudge{verdict: JudgeVerdict{Yes: true, Reasoning: "ok"}}
+	in := CheckInput{Dir: t.TempDir(), Output: "final", Input: "case input", Judge: f.judge}
+	wantPass(t, evalOne(t, judgeCheck("q"), in))
+	q := f.queries[0]
+	if len(q.Transcript) != 0 || q.Turn != 0 || q.Input != "case input" || q.Output != "final" {
+		t.Errorf("classic query changed: %+v", q)
+	}
+
+	// turn: 1 is accepted and changes nothing.
+	f.queries = nil
+	c := judgeCheck("q")
+	c.Turn = turnPtr(1)
+	wantPass(t, evalOne(t, c, in))
+	q = f.queries[0]
+	if len(q.Transcript) != 0 || q.Input != "case input" || q.Output != "final" {
+		t.Errorf("classic query with turn: 1 changed: %+v", q)
+	}
+
+	// turn: 2 is out of range.
+	f.queries = nil
+	c.Turn = turnPtr(2)
+	wantFail(t, evalOne(t, c, in), "turn 2 is out of range: the case has 1 turn(s)")
+	if len(f.queries) != 0 {
+		t.Errorf("judge was invoked for an out-of-range turn")
+	}
+}
+
+func TestJudgeCheckOneElementTurnsHasNoTranscript(t *testing.T) {
+	f := &fakeJudge{verdict: JudgeVerdict{Yes: true, Reasoning: "ok"}}
+	in := CheckInput{
+		Dir: t.TempDir(), Output: "only reply", Input: "Turn 1 (user): hi",
+		UserTurns: []string{"hi"}, Turns: []TurnEvidence{{Output: "only reply"}}, Judge: f.judge,
+	}
+	wantPass(t, evalOne(t, judgeCheck("q"), in))
+	q := f.queries[0]
+	if len(q.Transcript) != 0 || q.Input != "Turn 1 (user): hi" || q.Output != "only reply" {
+		t.Errorf("one-element turns query changed: %+v", q)
+	}
+	c := judgeCheck("q")
+	c.Turn = turnPtr(2)
+	wantFail(t, evalOne(t, c, in), "the case has 1 turn(s)")
+}
+
+func TestScoredUserTurns(t *testing.T) {
+	if got := scoredUserTurns(TestCase{Input: "classic"}); got != nil {
+		t.Errorf("classic case: scoredUserTurns = %v, want nil", got)
+	}
+	got := scoredUserTurns(TestCase{Turns: []string{"a", "b"}})
+	if len(got) != 2 || got[0] != "a" || got[1] != "b" {
+		t.Errorf("scoredUserTurns = %v, want [a b]", got)
+	}
+}
+
+// scoreCase must hand the judge the user messages actually sent (tc.Turns,
+// which executeCase swaps for the simulated user's messages).
+func TestCaseCheckInputCarriesUserTurns(t *testing.T) {
+	cr := &CaseResult{
+		ActualOutput: "r2",
+		WorkspaceDir: t.TempDir(),
+		TurnOutputs:  []string{"r1", "r2"},
+		turnGHLogs:   make([]ghLogSnapshot, 2),
+	}
+	tc := TestCase{Name: "c", Turns: []string{"sent one", "sent two"}}
+	in := caseCheckInput(tc, cr)
+	if len(in.UserTurns) != 2 || in.UserTurns[0] != "sent one" || in.UserTurns[1] != "sent two" {
+		t.Errorf("CheckInput.UserTurns = %v, want the messages from tc.Turns", in.UserTurns)
+	}
+	if len(in.Turns) != 2 {
+		t.Errorf("CheckInput.Turns = %d entries, want 2", len(in.Turns))
+	}
+	if got := caseCheckInput(TestCase{Name: "classic", Input: "x"}, &CaseResult{}).UserTurns; got != nil {
+		t.Errorf("classic case UserTurns = %v, want nil", got)
+	}
+}
+
+// A hand-built case that bypasses the loader records the out-of-range failure.
+func TestScoreCaseJudgeTurnOutOfRangeRecorded(t *testing.T) {
+	chdirTemp(t)
+	useRecording(t, yesBackend())
+	rubric := Rubric{Agent: "a", Criteria: []Criterion{{Name: "crit", Scoring: "1-7"}}}
+	tc := TestCase{Name: "c", Turns: []string{"u1", "u2"}, Checks: []Check{
+		{Criterion: "crit", Type: CheckJudge, Question: "q", Turn: turnPtr(9)},
+	}}
+	cr := CaseResult{
+		ActualOutput: "r2",
+		WorkspaceDir: t.TempDir(),
+		TurnOutputs:  []string{"r1", "r2"},
+		turnGHLogs:   make([]ghLogSnapshot, 2),
+	}
+	scoreCase(rubric, tc, &cr)
+	if len(cr.Scores) != 1 || len(cr.Scores[0].Checks) != 1 {
+		t.Fatalf("scores = %+v", cr.Scores)
+	}
+	r := cr.Scores[0].Checks[0]
+	if r.Passed || !strings.Contains(r.Detail, "turn 9 is out of range: the case has 2 turn(s)") {
+		t.Errorf("check result = %+v, want a failure naming the turn count", r)
+	}
+	if len(cr.Calls) != 0 {
+		t.Errorf("model called %d times for an out-of-range turn", len(cr.Calls))
+	}
+}

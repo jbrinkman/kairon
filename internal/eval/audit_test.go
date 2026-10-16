@@ -22,6 +22,12 @@ type auditCase struct {
 	resources []string
 	skills    map[string]string // skill name -> SKILL.md content, served via SkillsFS
 	rubric    string            // "" => criteria alpha, beta
+	// caseChecks maps case name -> criteria the case has a check on; it is
+	// written to cases/demo/<name>.yaml. nil => one case "basic" with checks on
+	// alpha and beta.
+	caseChecks map[string][]string
+	noCases    bool              // true => no cases/ directory at all
+	rawCases   map[string]string // file name -> raw YAML written to cases/demo/ (for malformed input)
 }
 
 const auditDefaultRubric = "agent: demo\ncriteria:\n  - name: alpha\n    description: a\n    scoring: \"1-5\"\n  - name: beta\n    description: b\n    scoring: \"1-5\"\n"
@@ -33,7 +39,7 @@ func auditTable(rows ...string) string {
 	b.WriteString("| Instruction | Criterion | Evidence |\n|---|---|---|\n")
 	for _, r := range rows {
 		ins, crit, _ := strings.Cut(r, "=>")
-		fmt.Fprintf(&b, "| %s | %s | e |\n", strings.ReplaceAll(ins, "|", `\|`), crit)
+		fmt.Fprintf(&b, "| %s | %s | case:basic |\n", strings.ReplaceAll(ins, "|", `\|`), crit)
 	}
 	return b.String()
 }
@@ -67,6 +73,23 @@ func (c auditCase) write(t *testing.T) AuditOptions {
 	mustWrite("evals/rubrics/demo.yaml", rubric)
 	if c.table != "" {
 		mustWrite("iterations/demo/load-bearing.md", c.table)
+	}
+	caseChecks := c.caseChecks
+	if caseChecks == nil {
+		caseChecks = map[string][]string{"basic": {"alpha", "beta"}}
+	}
+	if !c.noCases {
+		for name, criteria := range caseChecks {
+			var b strings.Builder
+			fmt.Fprintf(&b, "name: %s\nagent: demo\ninput: x\nchecks:\n", name)
+			for _, crit := range criteria {
+				fmt.Fprintf(&b, "  - criterion: %s\n    type: changed_files\n    allow: [README.md]\n", crit)
+			}
+			mustWrite("evals/cases/demo/"+name+".yaml", b.String())
+		}
+		for file, content := range c.rawCases {
+			mustWrite("evals/cases/demo/"+file, content)
+		}
 	}
 	skills := fstest.MapFS{}
 	for name, content := range c.skills {
@@ -283,7 +306,7 @@ func TestAuditResources(t *testing.T) {
 		for _, want := range []string{
 			"Audited resources:", "skill engine-skill (1 instructions)",
 			"Override hooks (excluded from score):", "skill demo-conventions",
-			"Instructions: total=5 mapped=5 coverage=100.0% (threshold 90%)",
+			"Instructions: total=5 mapped=5 duplicates=0 coverage=100.0% (threshold 90%)",
 			"OK demo: 5 instructions, 100.0% load-bearing, RTCC structure present",
 		} {
 			if !strings.Contains(out, want) {
@@ -303,7 +326,7 @@ func TestAuditResources(t *testing.T) {
 	t.Run("engine skill lines count in the totals", func(t *testing.T) {
 		opts := auditCase{prompt: prompt, table: table, resources: []string{"eng"}, skills: map[string]string{"eng": "---\nname: eng\n---\nEngine rule.\n"}}.write(t)
 		out := mustPassAudit(t, opts)
-		if !strings.Contains(out, "total=2 mapped=2") {
+		if !strings.Contains(out, "total=2 mapped=2 duplicates=0") {
 			t.Errorf("want total=2 mapped=2:\n%s", out)
 		}
 	})
@@ -340,7 +363,7 @@ func TestAuditResources(t *testing.T) {
 			t.Fatal(err)
 		}
 		out := mustPassAudit(t, opts)
-		if !strings.Contains(out, "total=2 mapped=2") || strings.Count(out, "skill eng ") != 1 {
+		if !strings.Contains(out, "total=2 mapped=2 duplicates=0") || strings.Count(out, "skill eng ") != 1 {
 			t.Errorf("duplicate skill counted twice:\n%s", out)
 		}
 		if !strings.Contains(out, "Ignored resources:") || !strings.Contains(out, "file://x.md") {
@@ -365,7 +388,7 @@ func TestAuditUnmappedFixture(t *testing.T) {
 			t.Errorf("error missing line %q\n got:\n%s", want, got)
 		}
 	}
-	if !strings.Contains(out, "total=3 mapped=1 coverage=33.3%") {
+	if !strings.Contains(out, "total=3 mapped=1 duplicates=0 coverage=33.3%") {
 		t.Errorf("report missing totals:\n%s", out)
 	}
 }
@@ -373,7 +396,7 @@ func TestAuditUnmappedFixture(t *testing.T) {
 func TestAuditCoverageThreshold(t *testing.T) {
 	t.Run("fixture exactly 90 percent passes", func(t *testing.T) {
 		out := mustPassAudit(t, auditFixtureOpts("coverage-90"))
-		if !strings.Contains(out, "total=10 mapped=9 coverage=90.0%") {
+		if !strings.Contains(out, "total=10 mapped=9 duplicates=0 coverage=90.0%") {
 			t.Errorf("report missing totals:\n%s", out)
 		}
 	})
@@ -382,7 +405,7 @@ func TestAuditCoverageThreshold(t *testing.T) {
 		if ae == nil || !auditHas(ae, "coverage", "89.0%") {
 			t.Fatalf("want coverage violation at 89.0%%, got %v", ae)
 		}
-		if !strings.Contains(out, "total=100 mapped=89 coverage=89.0%") {
+		if !strings.Contains(out, "total=100 mapped=89 duplicates=0 coverage=89.0%") {
 			t.Errorf("report missing totals:\n%s", out)
 		}
 	})
@@ -416,7 +439,7 @@ func TestAuditCoverageThreshold(t *testing.T) {
 		if ae == nil || !auditHas(ae, "coverage", "") {
 			t.Fatalf("want coverage violation, got %v", ae)
 		}
-		if !strings.Contains(out, "total=0 mapped=0") {
+		if !strings.Contains(out, "total=0 mapped=0 duplicates=0") {
 			t.Errorf("report missing totals:\n%s", out)
 		}
 	})
@@ -469,9 +492,12 @@ func TestAuditTable(t *testing.T) {
 		tbl := "| Rule one. | alpha | e |\n```\n| Rule two. | alpha | e |\n```\n\n" + auditTable("Rule one.=>alpha", "Rule two.=>alpha")
 		mustPassAudit(t, auditCase{prompt: prompt, table: tbl}.write(t))
 	})
-	t.Run("evidence is not verified", func(t *testing.T) {
+	t.Run("evidence is verified", func(t *testing.T) {
 		tbl := "| Instruction | Criterion | Evidence |\n|---|---|---|\n| Rule one. | alpha | x |\n| Rule two. | beta | whatever |\n"
-		mustPassAudit(t, auditCase{prompt: prompt, table: tbl}.write(t))
+		_, ae := runAudit(t, auditCase{prompt: prompt, table: tbl}.write(t))
+		if ae == nil || strings.Count(ae.Error(), ": table: ") != 2 {
+			t.Fatalf("want two table violations for evidence without case:<name>, got %v", ae)
+		}
 	})
 	t.Run("rubric criterion name is exact", func(t *testing.T) {
 		_, ae := runAudit(t, auditCase{prompt: prompt, table: auditTable("Rule one.=>Alpha", "Rule two.=>alpha")}.write(t))
@@ -489,7 +515,7 @@ func TestAuditTable(t *testing.T) {
 
 func TestAuditFenceAndTableFixture(t *testing.T) {
 	out := mustPassAudit(t, auditFixtureOpts("fence-and-table"))
-	if !strings.Contains(out, "total=5 mapped=5 coverage=100.0%") {
+	if !strings.Contains(out, "total=5 mapped=5 duplicates=0 coverage=100.0%") {
 		t.Errorf("want 5 instructions (front-matter, fences, headings and separator skipped):\n%s", out)
 	}
 }
@@ -507,7 +533,7 @@ func TestAuditCandidate(t *testing.T) {
 	if !strings.Contains(out, "(candidate)") || !strings.Contains(out, "candidate.md") || strings.Contains(out, "Live line.") {
 		t.Errorf("report should name the candidate:\n%s", out)
 	}
-	if !strings.Contains(out, "total=1 mapped=1") {
+	if !strings.Contains(out, "total=1 mapped=1 duplicates=0") {
 		t.Errorf("only the candidate's lines should be counted:\n%s", out)
 	}
 
@@ -615,5 +641,525 @@ func TestAuditOrderingIsStable(t *testing.T) {
 	want := []string{"unmapped", "unknown-criterion", "coverage"}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("rule order = %v, want %v", got, want)
+	}
+}
+
+// auditFlatFixtureOpts returns options for a flat-layout fixture where the
+// iterations dir and the evals dir are the same directory (agent "selftest").
+func auditFlatFixtureOpts(name string) AuditOptions {
+	root := filepath.Join("testdata", "audit", name)
+	return AuditOptions{EvalsDir: root, IterationsDir: root}
+}
+
+func runAuditAgent(t *testing.T, agent string, opts AuditOptions) (string, *AuditError) {
+	t.Helper()
+	var buf bytes.Buffer
+	err := Audit(&buf, agent, opts)
+	if err == nil {
+		return buf.String(), nil
+	}
+	var ae *AuditError
+	if !errors.As(err, &ae) {
+		t.Fatalf("Audit returned a non-AuditError error: %v", err)
+	}
+	return buf.String(), ae
+}
+
+// tableViolations returns the "table" violations of ae.
+func tableViolations(ae *AuditError) []AuditViolation {
+	var out []AuditViolation
+	if ae == nil {
+		return nil
+	}
+	for _, v := range ae.Violations {
+		if v.Rule == auditRuleTable {
+			out = append(out, v)
+		}
+	}
+	return out
+}
+
+func TestAuditEvidence(t *testing.T) {
+	prompt := auditRTCC + "Rule one.\n"
+	// row renders a one-row table; the data row is on line 3.
+	row := func(criterion, evidence string) string {
+		return fmt.Sprintf("| Instruction | Criterion | Evidence |\n|---|---|---|\n| Rule one. | %s | %s |\n", criterion, evidence)
+	}
+	// wantOne asserts exactly one table violation at line wantLine whose message contains every substr.
+	wantOne := func(t *testing.T, c auditCase, wantLine int, substrs ...string) {
+		t.Helper()
+		_, ae := runAudit(t, c.write(t))
+		tv := tableViolations(ae)
+		if len(tv) != 1 {
+			t.Fatalf("want exactly one table violation, got %d (err: %v)", len(tv), ae)
+		}
+		if tv[0].Line != wantLine {
+			t.Errorf("violation line = %d, want %d: %s", tv[0].Line, wantLine, tv[0])
+		}
+		for _, s := range substrs {
+			if !strings.Contains(tv[0].Message, s) {
+				t.Errorf("message %q does not contain %q", tv[0].Message, s)
+			}
+		}
+	}
+	wantPass := func(t *testing.T, c auditCase) {
+		t.Helper()
+		mustPassAudit(t, c.write(t))
+	}
+
+	t.Run("empty evidence", func(t *testing.T) {
+		wantOne(t, auditCase{prompt: prompt, table: row("alpha", "")}, 3,
+			"row 3:", `Evidence must name at least one case of agent "demo" as case:<case-name>`)
+	})
+	t.Run("text without token", func(t *testing.T) {
+		wantOne(t, auditCase{prompt: prompt, table: row("alpha", "covered by the basic case")}, 3,
+			`Evidence must name at least one case of agent "demo"`)
+	})
+	t.Run("showcase: is not a token", func(t *testing.T) {
+		wantOne(t, auditCase{prompt: prompt, table: row("alpha", "showcase:basic")}, 3,
+			"Evidence must name at least one case")
+	})
+	t.Run("underscore and digit before case: is not a boundary", func(t *testing.T) {
+		wantOne(t, auditCase{prompt: prompt, table: row("alpha", "x_case:basic 1case:basic")}, 3,
+			"Evidence must name at least one case")
+	})
+	t.Run("bare case: with empty name is not a token", func(t *testing.T) {
+		wantOne(t, auditCase{prompt: prompt, table: row("alpha", "case:. case:-")}, 3,
+			"Evidence must name at least one case")
+	})
+	t.Run("token resolves", func(t *testing.T) {
+		wantPass(t, auditCase{prompt: prompt, table: row("alpha", "case:basic")})
+	})
+	t.Run("trailing dot is sentence punctuation", func(t *testing.T) {
+		wantPass(t, auditCase{prompt: prompt, table: row("alpha", "Proved by case:basic.")})
+	})
+	t.Run("trailing dash is stripped", func(t *testing.T) {
+		wantPass(t, auditCase{prompt: prompt, table: row("alpha", "case:basic-")})
+	})
+	t.Run("backticks and surrounding text", func(t *testing.T) {
+		wantPass(t, auditCase{prompt: prompt, table: row("alpha", "see `case:basic`, which checks it")})
+	})
+	t.Run("dotted and dashed case names", func(t *testing.T) {
+		wantPass(t, auditCase{prompt: prompt, table: row("alpha", "case:my-case.v2"),
+			caseChecks: map[string][]string{"my-case.v2": {"alpha"}}})
+	})
+	t.Run("case name is matched by name, not file name", func(t *testing.T) {
+		c := auditCase{prompt: prompt, table: row("alpha", "case:renamed"), noCases: false,
+			rawCases: map[string]string{"other-file.yaml": "name: renamed\nchecks:\n  - criterion: alpha\n    type: changed_files\n"}}
+		wantPass(t, c)
+	})
+	t.Run("case names are case-sensitive", func(t *testing.T) {
+		wantOne(t, auditCase{prompt: prompt, table: row("alpha", "case:Basic")}, 3, `"Basic"`, "not a case")
+	})
+	t.Run("unknown case names line and case", func(t *testing.T) {
+		wantOne(t, auditCase{prompt: prompt, table: row("alpha", "case:ghost")}, 3,
+			"row 3:", `evidence names case "ghost" which is not a case of agent "demo"`,
+			filepath.Join("cases", "demo"))
+	})
+	t.Run("case without a check on the criterion", func(t *testing.T) {
+		wantOne(t, auditCase{prompt: prompt, table: row("beta", "case:only-alpha"),
+			caseChecks: map[string][]string{"only-alpha": {"alpha"}}}, 3,
+			"row 3:", `case "only-alpha" has no check on criterion "beta"`)
+	})
+	t.Run("case with no checks at all", func(t *testing.T) {
+		wantOne(t, auditCase{prompt: prompt, table: row("alpha", "case:bare"),
+			caseChecks: map[string][]string{"bare": nil}}, 3, `case "bare" has no check on criterion "alpha"`)
+	})
+	t.Run("unknown criterion does not also report a missing check", func(t *testing.T) {
+		_, ae := runAudit(t, auditCase{prompt: prompt, table: row("ghost", "case:basic")}.write(t))
+		if ae == nil {
+			t.Fatal("want unknown-criterion failure")
+		}
+		if tv := tableViolations(ae); len(tv) != 0 {
+			t.Errorf("unknown criterion must not yield table violations, got %v", tv)
+		}
+	})
+	t.Run("unknown criterion still reports a missing token and an unknown case", func(t *testing.T) {
+		_, ae := runAudit(t, auditCase{prompt: prompt, table: row("ghost", "nothing")}.write(t))
+		if len(tableViolations(ae)) != 1 {
+			t.Errorf("missing token must still be reported: %v", ae)
+		}
+		_, ae = runAudit(t, auditCase{prompt: prompt, table: row("ghost", "case:nope")}.write(t))
+		if len(tableViolations(ae)) != 1 || !auditHas(ae, "table", `"nope"`) {
+			t.Errorf("unknown case must still be reported: %v", ae)
+		}
+	})
+	t.Run("several tokens, one bad, yields one violation naming it", func(t *testing.T) {
+		wantOne(t, auditCase{prompt: prompt, table: row("alpha", "case:basic and case:ghost, case:basic")}, 3, `"ghost"`)
+	})
+	t.Run("several bad tokens each reported once", func(t *testing.T) {
+		_, ae := runAudit(t, auditCase{prompt: prompt, table: row("alpha", "case:g1 case:g2 case:g1")}.write(t))
+		tv := tableViolations(ae)
+		if len(tv) != 2 || !strings.Contains(tv[0].Message, `"g1"`) || !strings.Contains(tv[1].Message, `"g2"`) {
+			t.Fatalf("want one violation each for g1 and g2 (in order), got %v", tv)
+		}
+	})
+	t.Run("several named cases all checking the criterion pass", func(t *testing.T) {
+		wantPass(t, auditCase{prompt: prompt, table: row("beta", "case:b-one case:b-too"),
+			caseChecks: map[string][]string{"b-one": {"beta"}, "b-too": {"alpha", "beta"}}})
+	})
+	t.Run("every named case must check the criterion", func(t *testing.T) {
+		wantOne(t, auditCase{prompt: prompt, table: row("beta", "case:a-only case:b-too"),
+			caseChecks: map[string][]string{"a-only": {"alpha"}, "b-too": {"alpha", "beta"}}}, 3, `case "a-only" has no check on criterion "beta"`)
+	})
+	t.Run("repeated identical row with bad evidence is reported on its own line", func(t *testing.T) {
+		tbl := "| Instruction | Criterion | Evidence |\n|---|---|---|\n| Rule one. | alpha | case:basic |\n| Rule one. | alpha | case:ghost |\n"
+		_, ae := runAudit(t, auditCase{prompt: prompt, table: tbl}.write(t))
+		tv := tableViolations(ae)
+		if len(tv) != 1 || tv[0].Line != 4 || !strings.Contains(tv[0].Message, `"ghost"`) {
+			t.Fatalf("want one violation on line 4 naming ghost, got %v", tv)
+		}
+	})
+	t.Run("conflicting duplicate row still has its evidence validated", func(t *testing.T) {
+		tbl := "| Instruction | Criterion | Evidence |\n|---|---|---|\n| Rule one. | alpha | case:basic |\n| Rule one. | beta | nothing |\n"
+		_, ae := runAudit(t, auditCase{prompt: prompt, table: tbl}.write(t))
+		if !auditHas(ae, "table", "already mapped") || !auditHas(ae, "table", "Evidence must name at least one case") {
+			t.Fatalf("want both the conflict and the evidence violation, got %v", ae)
+		}
+	})
+	t.Run("rows with empty instruction or criterion get no evidence violation", func(t *testing.T) {
+		tbl := auditTable("Rule one.=>alpha") + "|  | alpha |  |\n| Rule two. |  |  |\n"
+		_, ae := runAudit(t, auditCase{prompt: auditRTCC + "Rule one.\nRule two.\n", table: tbl}.write(t))
+		if tv := tableViolations(ae); len(tv) != 2 || auditHas(ae, "table", "Evidence must name") {
+			t.Fatalf("want only the two empty-cell violations, got %v", tv)
+		}
+	})
+	t.Run("violations carry the table path and rule", func(t *testing.T) {
+		opts := auditCase{prompt: prompt, table: row("alpha", "")}.write(t)
+		_, ae := runAudit(t, opts)
+		tv := tableViolations(ae)
+		if len(tv) != 1 {
+			t.Fatalf("got %v", ae)
+		}
+		wantFile := filepath.Join(opts.IterationsDir, "demo", "load-bearing.md")
+		if tv[0].File != wantFile || tv[0].Rule != "table" {
+			t.Errorf("violation = %+v, want file %s rule table", tv[0], wantFile)
+		}
+		if want := fmt.Sprintf("%s:3: table: row 3: Evidence must name", wantFile); !strings.Contains(ae.Error(), want) {
+			t.Errorf("rendered error missing %q:\n%s", want, ae.Error())
+		}
+	})
+	t.Run("reported even when coverage is above the threshold", func(t *testing.T) {
+		// 10/10 instructions are mapped (100% coverage) but one row has bad evidence.
+		var p strings.Builder
+		p.WriteString(auditRTCC)
+		var tbl strings.Builder
+		tbl.WriteString("| Instruction | Criterion | Evidence |\n|---|---|---|\n")
+		for i := 0; i < 10; i++ {
+			fmt.Fprintf(&p, "Rule %02d.\n", i)
+			ev := "case:basic"
+			if i == 4 {
+				ev = "case:ghost"
+			}
+			fmt.Fprintf(&tbl, "| Rule %02d. | alpha | %s |\n", i, ev)
+		}
+		out, ae := runAudit(t, auditCase{prompt: p.String(), table: tbl.String()}.write(t))
+		if ae == nil {
+			t.Fatalf("evidence violation must fail the audit at 100%% coverage; output:\n%s", out)
+		}
+		if !strings.Contains(out, "coverage=100.0%") {
+			t.Errorf("setup: coverage should be 100%%:\n%s", out)
+		}
+		if tv := tableViolations(ae); len(tv) != 1 || tv[0].Line != 7 {
+			t.Errorf("want one table violation at line 7, got %v", tv)
+		}
+		if auditHas(ae, "coverage", "") {
+			t.Errorf("no coverage violation expected: %v", ae)
+		}
+	})
+	t.Run("missing cases dir means no cases", func(t *testing.T) {
+		wantOne(t, auditCase{prompt: prompt, table: row("alpha", "case:basic"), noCases: true}, 3,
+			`evidence names case "basic" which is not a case of agent "demo"`)
+	})
+	t.Run("non-yaml files and subdirectories in cases are ignored", func(t *testing.T) {
+		opts := auditCase{prompt: prompt, table: row("alpha", "case:basic")}.write(t)
+		dir := filepath.Join(opts.EvalsDir, "cases", "demo")
+		if err := os.WriteFile(filepath.Join(dir, "notes.md"), []byte(": : not yaml"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.MkdirAll(filepath.Join(dir, "sub"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "sub", "ghost.yaml"), []byte("name: ghost\nchecks:\n  - criterion: alpha\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		mustPassAudit(t, opts)
+	})
+	t.Run("malformed case YAML is a plain error", func(t *testing.T) {
+		assertPlainAuditError(t, auditCase{prompt: prompt, table: row("alpha", "case:basic"),
+			rawCases: map[string]string{"broken.yaml": "name: [unterminated\nchecks: {"}}.write(t), "broken.yaml")
+	})
+	t.Run("case file without a name is a plain error", func(t *testing.T) {
+		assertPlainAuditError(t, auditCase{prompt: prompt, table: row("alpha", "case:basic"),
+			rawCases: map[string]string{"nameless.yaml": "agent: demo\nchecks:\n  - criterion: alpha\n"}}.write(t), "nameless.yaml")
+	})
+	t.Run("same name in two files merges criteria", func(t *testing.T) {
+		wantPass(t, auditCase{prompt: prompt, table: row("beta", "case:dup"),
+			caseChecks: map[string][]string{"dup": {"alpha"}},
+			rawCases:   map[string]string{"dup-b.yaml": "name: dup\nchecks:\n  - criterion: beta\n    type: changed_files\n"}})
+	})
+	t.Run("unknown case fields are ignored", func(t *testing.T) {
+		wantPass(t, auditCase{prompt: prompt, table: row("alpha", "case:basic"), caseChecks: map[string][]string{},
+			rawCases: map[string]string{"x.yaml": "name: basic\nsomething_new: 1\nchecks:\n  - criterion: alpha\n    type: made_up\n    extra: true\n"}})
+	})
+	t.Run("missing table reports no evidence violations", func(t *testing.T) {
+		_, ae := runAudit(t, auditCase{prompt: prompt}.write(t))
+		if auditHas(ae, "table", "Evidence") {
+			t.Errorf("no table, no evidence validation: %v", ae)
+		}
+	})
+}
+
+func TestAuditEvidenceFixtures(t *testing.T) {
+	type want struct {
+		fixture string
+		table   []string // substrings, each must be in a distinct table violation
+	}
+	tests := []want{
+		{"evidence-missing", []string{
+			"3: table: row 3: Evidence must name at least one case of agent \"selftest\" as case:<case-name>",
+			"4: table: row 4: Evidence must name at least one case of agent \"selftest\" as case:<case-name>",
+		}},
+		{"evidence-unknown-case", []string{`4: table: row 4: evidence names case "ghost" which is not a case of agent "selftest"`}},
+		{"evidence-unchecked-criterion", []string{`5: table: row 5: case "alpha-only" has no check on criterion "beta"`}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.fixture, func(t *testing.T) {
+			opts := auditFlatFixtureOpts(tt.fixture)
+			out, ae := runAuditAgent(t, "selftest", opts)
+			if ae == nil {
+				t.Fatalf("%s must fail; output:\n%s", tt.fixture, out)
+			}
+			tablePath := filepath.Join(opts.IterationsDir, "selftest", "load-bearing.md")
+			got := ae.Error()
+			for _, w := range tt.table {
+				if want := tablePath + ":" + w; !strings.Contains(got, want) {
+					t.Errorf("error missing %q\n got:\n%s", want, got)
+				}
+			}
+			if n := len(tableViolations(ae)); n != len(tt.table) || len(ae.Violations) != n {
+				t.Errorf("want exactly %d violations, all table; got %d table of %d:\n%s", len(tt.table), n, len(ae.Violations), got)
+			}
+			if !strings.Contains(out, "coverage=100.0%") {
+				t.Errorf("fixture isolates evidence (full coverage):\n%s", out)
+			}
+		})
+	}
+}
+
+func TestAuditDuplicates(t *testing.T) {
+	const skillFile = "cmd/kairon/templates/kiro/skills/eng/SKILL.md"
+	promptOf := func(opts AuditOptions) string { return filepath.Join(opts.EvalsDir, "agents", "demo-prompt.md") }
+	// dupViolations returns the "duplicate" violations of ae.
+	dupViolations := func(ae *AuditError) []AuditViolation {
+		var out []AuditViolation
+		if ae == nil {
+			return nil
+		}
+		for _, v := range ae.Violations {
+			if v.Rule == "duplicate" {
+				out = append(out, v)
+			}
+		}
+		return out
+	}
+
+	t.Run("repeat in the prompt names both lines", func(t *testing.T) {
+		// auditRTCC is 4 lines, so the rules are on lines 5, 6 and 7.
+		opts := auditCase{
+			prompt: auditRTCC + "Rule one.\nRule two.\nRule one.\n",
+			table:  auditTable("Rule one.=>alpha", "Rule two.=>beta"),
+		}.write(t)
+		out, ae := runAudit(t, opts)
+		dv := dupViolations(ae)
+		if len(dv) != 1 {
+			t.Fatalf("want exactly one duplicate violation, got %d (err: %v)", len(dv), ae)
+		}
+		p := promptOf(opts)
+		if dv[0].File != p || dv[0].Line != 7 {
+			t.Errorf("violation at %s:%d, want %s:7", dv[0].File, dv[0].Line, p)
+		}
+		if want := fmt.Sprintf(`duplicate of %s:5: "Rule one."`, p); dv[0].Message != want {
+			t.Errorf("message = %q, want %q", dv[0].Message, want)
+		}
+		if want := fmt.Sprintf(`%s:7: duplicate: duplicate of %s:5: "Rule one."`, p, p); !strings.Contains(ae.Error(), want) {
+			t.Errorf("error missing %q\n got:\n%s", want, ae.Error())
+		}
+		// The repeat is still counted, and fully mapped coverage does not hide it.
+		if !strings.Contains(out, "Instructions: total=3 mapped=3 duplicates=1 coverage=100.0% (threshold 90%)") {
+			t.Errorf("report line wrong:\n%s", out)
+		}
+		if strings.Contains(out, "OK demo") {
+			t.Errorf("duplicates must prevent the OK line:\n%s", out)
+		}
+	})
+
+	t.Run("third occurrence names the first, not the second", func(t *testing.T) {
+		opts := auditCase{
+			prompt: auditRTCC + "Rule one.\nRule one.\nRule one.\n",
+			table:  auditTable("Rule one.=>alpha"),
+		}.write(t)
+		out, ae := runAudit(t, opts)
+		dv := dupViolations(ae)
+		if len(dv) != 2 {
+			t.Fatalf("want two duplicate violations, got %d (err: %v)", len(dv), ae)
+		}
+		p := promptOf(opts)
+		for i, line := range []int{6, 7} {
+			if dv[i].Line != line {
+				t.Errorf("violation %d at line %d, want %d", i, dv[i].Line, line)
+			}
+			if want := fmt.Sprintf("duplicate of %s:5:", p); !strings.Contains(dv[i].Message, want) {
+				t.Errorf("violation %d message %q must name the first occurrence (%s)", i, dv[i].Message, want)
+			}
+		}
+		if !strings.Contains(out, "total=3 mapped=3 duplicates=2 coverage=100.0%") {
+			t.Errorf("report line wrong:\n%s", out)
+		}
+	})
+
+	t.Run("comparison uses the trimmed text", func(t *testing.T) {
+		opts := auditCase{
+			prompt: auditRTCC + "Rule one.\n   Rule one.\t\n",
+			table:  auditTable("Rule one.=>alpha"),
+		}.write(t)
+		_, ae := runAudit(t, opts)
+		if len(dupViolations(ae)) != 1 {
+			t.Errorf("want one duplicate for the indented repeat, got %v", ae)
+		}
+	})
+
+	t.Run("engine skill repeating a prompt line", func(t *testing.T) {
+		opts := auditCase{
+			prompt:    auditRTCC + "Rule one.\n",
+			table:     auditTable("Rule one.=>alpha"),
+			resources: []string{"eng"},
+			skills:    map[string]string{"eng": "---\nname: eng\n---\nRule one.\n"},
+		}.write(t)
+		out, ae := runAudit(t, opts)
+		dv := dupViolations(ae)
+		if len(dv) != 1 {
+			t.Fatalf("want one duplicate violation, got %d (err: %v)", len(dv), ae)
+		}
+		if dv[0].File != skillFile || dv[0].Line != 4 {
+			t.Errorf("violation at %s:%d, want %s:4", dv[0].File, dv[0].Line, skillFile)
+		}
+		if want := fmt.Sprintf(`duplicate of %s:5: "Rule one."`, promptOf(opts)); dv[0].Message != want {
+			t.Errorf("message = %q, want %q", dv[0].Message, want)
+		}
+		if !strings.Contains(out, "total=2 mapped=2 duplicates=1") {
+			t.Errorf("report line wrong:\n%s", out)
+		}
+	})
+
+	t.Run("fenced code and headings are never duplicates", func(t *testing.T) {
+		prompt := auditRTCC + "Rule one.\n```\nRule one.\nRule one.\n```\n## Task\n## Task\n### Rule one.\n"
+		opts := auditCase{prompt: prompt, table: auditTable("Rule one.=>alpha")}.write(t)
+		_, ae := runAudit(t, opts)
+		if dv := dupViolations(ae); len(dv) != 0 {
+			t.Errorf("fences and headings must not be duplicates: %v", dv)
+		}
+	})
+
+	t.Run("distinct lines are not duplicates", func(t *testing.T) {
+		opts := auditCase{
+			prompt: auditRTCC + "Rule one.\nRule two.\n",
+			table:  auditTable("Rule one.=>alpha", "Rule two.=>beta"),
+		}.write(t)
+		out := mustPassAudit(t, opts)
+		if !strings.Contains(out, "duplicates=0") {
+			t.Errorf("want duplicates=0:\n%s", out)
+		}
+	})
+
+	t.Run("reported even when coverage is far above the threshold", func(t *testing.T) {
+		// 20 distinct mapped rules plus one repeat: 21/21 mapped.
+		var p strings.Builder
+		p.WriteString(auditRTCC)
+		var rows []string
+		for i := 0; i < 20; i++ {
+			fmt.Fprintf(&p, "Rule %02d.\n", i)
+			rows = append(rows, fmt.Sprintf("Rule %02d.=>alpha", i))
+		}
+		p.WriteString("Rule 00.\n")
+		_, ae := runAudit(t, auditCase{prompt: p.String(), table: auditTable(rows...)}.write(t))
+		if ae == nil || len(dupViolations(ae)) != 1 {
+			t.Fatalf("want exactly one duplicate violation, got %v", ae)
+		}
+		if got := auditRules(ae); !reflect.DeepEqual(got, []string{"duplicate"}) {
+			t.Errorf("rules = %v, want only [duplicate]", got)
+		}
+	})
+
+	t.Run("repeat of an unmapped line is a duplicate and counted unmapped", func(t *testing.T) {
+		opts := auditCase{
+			prompt: auditRTCC + "Mapped.\nOrphan.\nOrphan.\n",
+			table:  auditTable("Mapped.=>alpha"),
+		}.write(t)
+		out, ae := runAudit(t, opts)
+		if ae == nil || len(dupViolations(ae)) != 1 {
+			t.Fatalf("want one duplicate violation, got %v", ae)
+		}
+		if !strings.Contains(out, "total=3 mapped=1 duplicates=1 coverage=33.3%") {
+			t.Errorf("counting must be unchanged:\n%s", out)
+		}
+	})
+}
+
+func TestAuditDuplicateRuleOrder(t *testing.T) {
+	// Same file and line: table < duplicate < unmapped.
+	rank, ok := auditRuleOrder["duplicate"]
+	if !ok || !(auditRuleOrder[auditRuleTable] < rank && rank < auditRuleOrder[auditRuleUnmapped]) {
+		t.Errorf("duplicate must rank after table and before unmapped: %v", auditRuleOrder)
+	}
+	// An unmapped repeat sorts duplicate before unmapped on the same line.
+	_, ae := runAudit(t, auditCase{prompt: auditRTCC + "Orphan.\nOrphan.\n", table: auditTable("Other.=>alpha")}.write(t))
+	if ae == nil {
+		t.Fatal("want violations")
+	}
+	var got []string
+	for _, v := range ae.Violations {
+		if v.Line == 6 {
+			got = append(got, v.Rule)
+		}
+	}
+	if want := []string{"duplicate", "unmapped"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("line 6 rules = %v, want %v", got, want)
+	}
+}
+
+func TestAuditReportDuplicates(t *testing.T) {
+	t.Run("clean prompt prints duplicates=0", func(t *testing.T) {
+		out := mustPassAudit(t, auditCase{prompt: auditRTCC + "Rule one.\n", table: auditTable("Rule one.=>alpha")}.write(t))
+		want := "Instructions: total=1 mapped=1 duplicates=0 coverage=100.0% (threshold 90%)\n"
+		if !strings.Contains(out, want) {
+			t.Errorf("report missing %q:\n%s", want, out)
+		}
+	})
+	t.Run("exact line with repeats", func(t *testing.T) {
+		out, _ := runAudit(t, auditCase{prompt: auditRTCC + "A.\nA.\nA.\nB.\n", table: auditTable("A.=>alpha")}.write(t))
+		want := "Instructions: total=4 mapped=3 duplicates=2 coverage=75.0% (threshold 90%)\n"
+		if !strings.Contains(out, want) {
+			t.Errorf("report missing %q:\n%s", want, out)
+		}
+	})
+}
+
+func TestAuditDuplicateLineFixture(t *testing.T) {
+	opts := auditFlatFixtureOpts("duplicate-line")
+	out, ae := runAuditAgent(t, "selftest", opts)
+	if ae == nil {
+		t.Fatalf("duplicate-line must fail; output:\n%s", out)
+	}
+	prompt := filepath.Join(opts.EvalsDir, "agents", "selftest-prompt.md")
+	want := fmt.Sprintf(`%s:9: duplicate: duplicate of %s:8: "Never skip validation."`, prompt, prompt)
+	if !strings.Contains(ae.Error(), want) {
+		t.Errorf("error missing %q\n got:\n%s", want, ae.Error())
+	}
+	if len(ae.Violations) != 1 {
+		t.Errorf("want only the duplicate violation, got:\n%s", ae.Error())
+	}
+	if !strings.Contains(out, "Instructions: total=5 mapped=5 duplicates=1 coverage=100.0% (threshold 90%)") {
+		t.Errorf("report must print duplicates=1:\n%s", out)
 	}
 }

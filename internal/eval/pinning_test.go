@@ -52,6 +52,8 @@ func setupPinProject(t *testing.T, agentJSON, evalsYAML string) {
 		agentJSON = `{"name":"architect","model":"claude-sonnet-5.5","prompt":"inline"}`
 	}
 	writeProjectFile(t, ".kiro/agents/architect.json", agentJSON)
+	// Only git-tracked project .kiro files are staged (and so hashed).
+	gitTrack(t, ".kiro/agents/architect.json")
 	writeProjectFile(t, ".kairon/evals/rubrics/architect.yaml",
 		"agent: architect\ncriteria:\n  - name: clarity\n    description: d\n    scoring: 1-5\n")
 	writeProjectFile(t, ".kairon/evals/cases/architect/c1.yaml",
@@ -344,7 +346,18 @@ func TestCallRecordsSelfTestProvenance(t *testing.T) {
 		t.Errorf("resources_present = %#v, want []", res.ResourcesPresent)
 	}
 
+	const fixtureCase, fixtureRes = "stub-conventions-fixture", "skill://.kiro/skills/selftest-conventions/SKILL.md"
 	for _, c := range res.Cases {
+		// Per-case provenance: the baseline everywhere except the case whose
+		// fixture supplies the conventions skill.
+		if c.CaseName == fixtureCase {
+			if len(c.ResourcesPresent) != 1 || c.ResourcesPresent[0] != fixtureRes || c.PromptSHA256 == res.PromptSHA256 {
+				t.Errorf("case %s provenance = %q %v, want %s and a hash differing from the agent-level %q",
+					c.CaseName, c.PromptSHA256, c.ResourcesPresent, fixtureRes, res.PromptSHA256)
+			}
+		} else if c.PromptSHA256 != res.PromptSHA256 || c.ResourcesPresent == nil || len(c.ResourcesPresent) != 0 {
+			t.Errorf("case %s provenance = %q %#v, want the agent-level baseline and []", c.CaseName, c.PromptSHA256, c.ResourcesPresent)
+		}
 		var agents, judges, routes int
 		for _, call := range c.Calls {
 			// Only the stub-usage (model stub-model) and stub-price-unknown
@@ -358,7 +371,9 @@ func TestCallRecordsSelfTestProvenance(t *testing.T) {
 			switch call.Role {
 			case "agent":
 				agents++
-				if call.PromptSHA256 != res.PromptSHA256 || call.Agent != "selftest" {
+				// The call record carries its case's hash: the agent-level
+				// baseline, except where a fixture changes the workspace.
+				if call.PromptSHA256 != c.PromptSHA256 || call.Agent != "selftest" {
 					t.Errorf("case %s agent record = %+v", c.CaseName, call)
 				}
 				// Cases whose stub turn reports usage are "reported".
@@ -377,9 +392,10 @@ func TestCallRecordsSelfTestProvenance(t *testing.T) {
 					continue
 				}
 				// The legacy judge scores clarity once per case. The
-				// check-judge-* cases also record one yes/no judge call
-				// for the criterion that carries their judge checks.
-				if strings.HasPrefix(c.CaseName, "check-judge-") && call.Criterion == "structural_completeness" {
+				// check-judge-* cases (and multi-turn-judge, sim-judge) also
+				// record one yes/no judge call per judge check for the
+				// criterion that carries them.
+				if (strings.HasPrefix(c.CaseName, "check-judge-") || c.CaseName == "multi-turn-judge" || c.CaseName == "sim-judge") && call.Criterion == "structural_completeness" {
 					if call.PromptSHA256 != "" || !call.Estimated {
 						t.Errorf("case %s judge-check record = %+v", c.CaseName, call)
 					}
@@ -398,7 +414,7 @@ func TestCallRecordsSelfTestProvenance(t *testing.T) {
 		}
 		// A simulated case routes every agent turn except the last of its
 		// simulated phase.
-		if wantRoutes := map[string]int{"sim-routes": 2, "sim-stop-when": 1}[c.CaseName]; routes != wantRoutes {
+		if wantRoutes := map[string]int{"sim-routes": 2, "sim-stop-when": 1, "sim-judge": 2}[c.CaseName]; routes != wantRoutes {
 			t.Errorf("case %s: %d routing records, want %d", c.CaseName, routes, wantRoutes)
 		}
 	}
@@ -452,8 +468,12 @@ func TestProvenancePromptEditChangesHash(t *testing.T) {
 
 func TestProvenanceMissingConventionsResourceOmitted(t *testing.T) {
 	setupPinProject(t, `{"name":"architect","model":"claude-sonnet-5.5","prompt":"inline",
-		"resources":["file://README.md","skill://.kiro/skills/architect-conventions/SKILL.md"]}`, "")
-	writeProjectFile(t, "README.md", "hi")
+		"resources":["file://.kiro/skills/engine/SKILL.md","skill://.kiro/skills/architect-conventions/SKILL.md"]}`, "")
+	writeProjectFile(t, ".kiro/skills/engine/SKILL.md", "hi")
+	gitTrack(t, ".kiro/skills/engine/SKILL.md")
+	// A project override hook is never staged, so it is never listed.
+	writeProjectFile(t, ".kiro/skills/architect-conventions/SKILL.md", "project override")
+	gitTrack(t, ".kiro/skills/architect-conventions/SKILL.md")
 	installFakeKiroCLI(t, pinFakeKiroBody)
 	// The fake judge scores 80%, below the default threshold: expected here.
 	if err := RunWithOptions("architect", "c1", RunOptions{}); !errors.Is(err, ErrThresholdFailed) {
@@ -462,7 +482,7 @@ func TestProvenanceMissingConventionsResourceOmitted(t *testing.T) {
 	dirs, _ := filepath.Glob(".kairon/evals/results/*")
 	var res AgentResult
 	readJSON(t, filepath.Join(dirs[0], "architect.json"), &res)
-	if len(res.ResourcesPresent) != 1 || res.ResourcesPresent[0] != "file://README.md" {
+	if len(res.ResourcesPresent) != 1 || res.ResourcesPresent[0] != "file://.kiro/skills/engine/SKILL.md" {
 		t.Errorf("resources_present = %v", res.ResourcesPresent)
 	}
 }
@@ -501,6 +521,7 @@ func TestSummaryMultiAgentOmitsTopLevelAgentFields(t *testing.T) {
 func TestPinResumeRefusedWhenPromptOrModelsChanged(t *testing.T) {
 	setupPinProject(t, `{"name":"architect","model":"claude-sonnet-5.5","prompt":"file://p.md"}`, "")
 	writeProjectFile(t, ".kiro/agents/p.md", "v1")
+	gitTrack(t, ".kiro/agents/p.md")
 	installFakeKiroCLI(t, pinFakeKiroBody)
 
 	// The fake judge scores 80%, below the default threshold: expected here.
@@ -611,8 +632,11 @@ func TestCheckResumeIntegrityRefusesSandboxModeChange(t *testing.T) {
 	}
 
 	// Interrupted run was sandboxed and has a saved case; resuming native (false) is refused.
+	// The result carries a containment record (the realistic shape for a
+	// post-containment-tracking sandbox run), so this exercises the sandbox-mode
+	// guard rather than the nil-containment guard.
 	writeProjectFile(t, filepath.Join(resultsDir, "architect.json"),
-		`{"agent":"architect","git_hash":"g","agent_model":"claude-sonnet-5.5","judge_model":"claude-sonnet-5.5","prompt_sha256":"h","sandbox":true,"cases":[{"case_name":"c1"}]}`)
+		`{"agent":"architect","git_hash":"g","agent_model":"claude-sonnet-5.5","judge_model":"claude-sonnet-5.5","prompt_sha256":"h","sandbox":true,"containment":{"tool_trust":[],"fake_gh":true,"read_only_fs":true,"kairon_binary":true,"network":"unrestricted"},"cases":[{"case_name":"c1"}]}`)
 	err := checkResumeIntegrity(resultsDir, "architect", false)
 	if err == nil || !strings.Contains(err.Error(), "sandbox mode changed") {
 		t.Fatalf("err = %v, want sandbox-mode refusal", err)
@@ -638,6 +662,84 @@ func TestCheckResumeIntegrityRefusesSandboxModeChange(t *testing.T) {
 		err := checkResumeIntegrity(resultsDir, "architect", mode)
 		if err == nil || !strings.Contains(err.Error(), "predates sandbox-mode tracking") {
 			t.Fatalf("legacy file (mode=%t) err = %v, want predates-tracking refusal", mode, err)
+		}
+	}
+}
+
+// TestSelfTestKeptWorkspacesAreClean runs the self-test in a project that has
+// override hooks and an untracked local file, and checks what a case gets:
+// no project *-conventions skill and no untracked .kiro file in any kept
+// workspace (only the fixture-supplied hook), and an agent-level provenance
+// that does not move when a project selftest-conventions file is created.
+func TestSelfTestKeptWorkspacesAreClean(t *testing.T) {
+	evalsDir := copySelfTestEvals(t) // before chdir: the fixtures are package-relative
+	chdirTemp(t)
+	initTempGitRepo(t)
+	t.Setenv(workspaceRootEnv, t.TempDir())
+	t.Cleanup(resetConfig)
+	for _, name := range []string{"builder", "planner", "validator"} {
+		p := ".kiro/skills/" + name + "-conventions/SKILL.md"
+		writeProjectFile(t, p, "project override "+name)
+		gitTrack(t, p)
+	}
+	writeProjectFile(t, ".kiro/settings/probe.json", `{"probe":true}`) // untracked
+
+	run := func() (AgentResult, Summary) {
+		res := runEvalIn(t, evalsDir, "selftest", RunOptions{NoSandbox: true, KeepWorkspaces: true})
+		for _, c := range res.Cases {
+			cleanupWorkspace(t, c)
+		}
+		dirs, _ := filepath.Glob(filepath.Join(evalsDir, "results", "*"))
+		var sum Summary
+		readJSON(t, filepath.Join(dirs[len(dirs)-1], "summary.json"), &sum)
+		return res, sum
+	}
+
+	base, baseSum := run()
+	if len(base.Cases) == 0 {
+		t.Fatal("no cases ran")
+	}
+	for _, c := range base.Cases {
+		ws := c.WorkspaceDir
+		if ws == "" {
+			t.Fatalf("case %s has no kept workspace", c.CaseName)
+		}
+		// AC1: only the fixture-supplied hook survives.
+		found, _ := filepath.Glob(filepath.Join(ws, ".kiro", "skills", "*-conventions"))
+		for _, f := range found {
+			if c.CaseName != "stub-conventions-fixture" || filepath.Base(f) != "selftest-conventions" {
+				t.Errorf("case %s workspace contains %s", c.CaseName, f)
+			}
+		}
+		if c.CaseName == "stub-conventions-fixture" && len(found) != 1 {
+			t.Errorf("fixture case workspace has %v, want exactly selftest-conventions", found)
+		}
+		// AC2: the untracked local file never reaches a workspace.
+		if pathExists(filepath.Join(ws, ".kiro", "settings", "probe.json")) {
+			t.Errorf("case %s workspace contains the untracked .kiro/settings/probe.json", c.CaseName)
+		}
+	}
+
+	// AC4: creating a project selftest-conventions file leaves the agent-level
+	// provenance (result and summary) at the baseline.
+	writeProjectFile(t, ".kiro/skills/selftest-conventions/SKILL.md", "project override selftest")
+	gitTrack(t, ".kiro/skills/selftest-conventions/SKILL.md")
+	after, afterSum := run()
+	if after.PromptSHA256 != base.PromptSHA256 || afterSum.PromptSHA256 != baseSum.PromptSHA256 {
+		t.Errorf("agent-level prompt_sha256 moved: %s -> %s (summary %s -> %s)",
+			base.PromptSHA256, after.PromptSHA256, baseSum.PromptSHA256, afterSum.PromptSHA256)
+	}
+	if after.ResourcesPresent == nil || len(after.ResourcesPresent) != 0 || len(afterSum.ResourcesPresent) != 0 {
+		t.Errorf("agent-level resources_present = %#v / %#v, want []", after.ResourcesPresent, afterSum.ResourcesPresent)
+	}
+	// The fixture case still stages its own file, not the project's.
+	for _, c := range after.Cases {
+		if c.CaseName != "stub-conventions-fixture" {
+			continue
+		}
+		got := readFileT(t, filepath.Join(c.WorkspaceDir, ".kiro", "skills", "selftest-conventions", "SKILL.md"))
+		if strings.Contains(got, "project override") {
+			t.Errorf("fixture case got the project's selftest-conventions: %q", got)
 		}
 	}
 }

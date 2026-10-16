@@ -15,6 +15,12 @@ type Rubric struct {
 	Criteria []Criterion `yaml:"criteria" json:"criteria"`
 	// PassThreshold is the percent (0-100] a case must reach to pass; nil means DefaultPassThreshold.
 	PassThreshold *float64 `yaml:"pass_threshold,omitempty" json:"pass_threshold,omitempty"`
+	// ChecksOnly scores every case from its pass/fail checks alone. A non-cost
+	// criterion with no checks in a case is skipped (no CriterionScore, nothing
+	// added to the case or agent score or maximum), and neither the legacy LLM
+	// judge nor the keyword heuristic runs. Every case of the agent must have at
+	// least one check, or loading it fails. Default false.
+	ChecksOnly bool `yaml:"checks_only,omitempty" json:"checks_only,omitempty"`
 }
 
 // DefaultPassThreshold is the pass threshold (percent) used when a rubric sets no pass_threshold.
@@ -305,6 +311,34 @@ type CaseResult struct {
 	// Run is the 1-based repeat number of this result (see RunOptions.Repeat).
 	// A result file written before repeats existed has no run; it is read as 1.
 	Run int `json:"run,omitempty"`
+	// PromptSHA256 and ResourcesPresent are the case's provenance, computed
+	// from the case's own staged workspace (so a fixture that supplies a
+	// *-conventions skill is reflected). They are set only for a pinned run
+	// and are the same value the case's agent call records carry. See
+	// MarshalJSON for the serialisation rule.
+	PromptSHA256     string   `json:"prompt_sha256,omitempty"`
+	ResourcesPresent []string `json:"resources_present,omitempty"`
+}
+
+// MarshalJSON emits resources_present whenever prompt_sha256 is set, including
+// as [] when the list is empty, and omits both fields otherwise, so a result
+// from an unpinned run (or one written before per-case provenance existed)
+// keeps its shape. A plain omitempty tag would drop the empty list, hiding
+// "every declared resource was missing in this case's workspace".
+func (c CaseResult) MarshalJSON() ([]byte, error) {
+	type plain CaseResult
+	aux := struct {
+		plain
+		ResourcesPresent *[]string `json:"resources_present,omitempty"`
+	}{plain: plain(c)}
+	if c.PromptSHA256 != "" {
+		rp := c.ResourcesPresent
+		if rp == nil {
+			rp = []string{}
+		}
+		aux.ResourcesPresent = &rp
+	}
+	return json.Marshal(aux)
 }
 
 // ErrorContext captures execution details for debugging failed tests.
@@ -434,6 +468,10 @@ type Containment struct {
 	ToolTrust  []string `json:"tool_trust"`
 	FakeGH     bool     `json:"fake_gh"`
 	ReadOnlyFS bool     `json:"read_only_fs"`
+	// KaironBinary is whether the linux kairon binary is mounted read-only on
+	// PATH inside the container. Always written (not omitempty); a result
+	// recorded before this fact existed decodes as false.
+	KaironBinary bool `json:"kairon_binary"`
 	// Network is always "unrestricted": Kairon makes no network containment
 	// guarantee. It is not the container runtime's NetworkMode.
 	Network string `json:"network"`
