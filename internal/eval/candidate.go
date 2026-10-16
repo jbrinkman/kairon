@@ -125,10 +125,17 @@ func candidatePromptDest(configPath, promptRef string) (string, error) {
 // Any existing entry at the destination is removed first, so a symlink or
 // hard link there is replaced rather than written through.
 func stageCandidatePrompt(w *caseWorkspace, cand *candidatePrompt) error {
+	return stageCandidatePromptInto(w.KiroDir, cand, false)
+}
+
+// stageCandidatePromptInto is stageCandidatePrompt for any staged .kiro
+// directory. ignoreOverlay selects the agent config exactly as
+// locateAgentConfig does.
+func stageCandidatePromptInto(kiroDir string, cand *candidatePrompt, ignoreOverlay bool) error {
 	if cand == nil {
 		return nil
 	}
-	configPath, err := locateAgentConfig(cand.Agent, false)
+	configPath, err := locateAgentConfig(cand.Agent, ignoreOverlay)
 	if err != nil {
 		return err
 	}
@@ -144,7 +151,7 @@ func stageCandidatePrompt(w *caseWorkspace, cand *candidatePrompt) error {
 	if err != nil {
 		return err
 	}
-	dest := filepath.Join(w.KiroDir, filepath.FromSlash(rel))
+	dest := filepath.Join(kiroDir, filepath.FromSlash(rel))
 	if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
 		return fmt.Errorf("staging candidate prompt: %w", err)
 	}

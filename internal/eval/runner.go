@@ -268,8 +268,8 @@ func runSingleTestCase(agent string, testcase string, cConfig *ContainerConfig) 
 	}
 
 	timestamp := generateTimestampPrefix()
-	resultsDir := evalsPath("results", timestamp)
-	if err := os.MkdirAll(resultsDir, 0755); err != nil {
+	resultsDir, err := makeUniqueResultsDir(evalsPath("results"), timestamp)
+	if err != nil {
 		return fmt.Errorf("failed to create results directory: %w", err)
 	}
 
@@ -341,6 +341,14 @@ func prepareBaseImage(cConfig *ContainerConfig) (*sandbox.ImageManager, error) {
 	if cConfig == nil {
 		return nil, nil
 	}
+	// Resolve the linux kairon binary first (cheap, memoised): every container
+	// run bind-mounts it, so a missing binary must fail here, before the image
+	// manager is created and before any case starts.
+	if kaironBinaryMounted {
+		if _, err := resolveLinuxBinary(cConfig.Platform); err != nil {
+			return nil, fmt.Errorf("preparing the kairon binary for the sandbox (%s): %w", cConfig.Platform, err)
+		}
+	}
 	imageManager, err := sandbox.NewImageManager("", cConfig.Debug)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create image manager: %w", err)
@@ -411,8 +419,8 @@ func Run(agent string, cConfig *ContainerConfig) error {
 	}
 
 	timestamp := generateTimestampPrefix()
-	resultsDir := evalsPath("results", timestamp+"-"+gitHash)
-	if err := os.MkdirAll(resultsDir, 0755); err != nil {
+	resultsDir, err := makeUniqueResultsDir(evalsPath("results"), timestamp+"-"+gitHash)
+	if err != nil {
 		return fmt.Errorf("failed to create results directory: %w", err)
 	}
 
@@ -692,7 +700,7 @@ func requestTurn(turn int) int {
 // natively; container id/image in a container) and may be nil; the fields the
 // backend reported (command, stderr, exit code) are filled into it.
 func completeAgentCall(req inference.Request, resp inference.Response, err error, wall time.Duration, baseEC *ErrorContext) (string, CostInfo, inference.CallRecord, *ErrorContext, error) {
-	cost := costFromUsage(resp.Model, resp.Usage)
+	cost := costFromUsage(servedModel(req, resp), resp.Usage)
 	rec := newCallRecord(req, resp, err, wall, cost)
 	rec.PromptSHA256 = cfg.pins.agentPromptSHA(req.Agent)
 
@@ -797,10 +805,12 @@ func createContainerConfig(sandboxCfg *config.SandboxConfig, resourceLimits map[
 	return config
 }
 
-// containerHelperPath is where the kairon helper binary is bind-mounted
-// (read-only) in the container for non-kiro-cli backends. Nothing is copied
-// into the running container.
-const containerHelperPath = "/opt/kairon/kairon"
+// containerHelperPath is where the linux kairon binary is bind-mounted
+// (read-only) in the container for every backend. /usr/local/bin is on
+// containerPath, so agents can run a bare `kairon`; the stub backend runs
+// `kairon inference-exec` from here. Nothing is copied into the running
+// container.
+const containerHelperPath = "/usr/local/bin/kairon"
 
 // containerBinDir is where the per-case bin directory (holding the fake gh) is
 // bind-mounted read-only. It is first on the container PATH.
@@ -834,9 +844,8 @@ const helperExecGrace = 10 * time.Second
 
 // buildContainerMounts returns the bind mounts for one case: the staged
 // .kiro read-only, the workspace and its .eval/ read-write, the fake-gh bin
-// directory read-only, and, for non-kiro-cli backends, the kairon helper
-// read-only. There is deliberately
-// no tmpfs at the workspace path.
+// directory read-only, and the linux kairon binary read-only (for every
+// backend). There is deliberately no tmpfs at the workspace path.
 func buildContainerMounts(ws *caseWorkspace, cConfig *ContainerConfig, backendName string) ([]sandbox.Mount, error) {
 	if ws == nil {
 		return nil, fmt.Errorf("container run needs a case workspace")
@@ -850,18 +859,18 @@ func buildContainerMounts(ws *caseWorkspace, cConfig *ContainerConfig, backendNa
 	if fakeGHInstalled {
 		mounts = append(mounts, sandbox.Mount{HostPath: ws.BinDir, ContainerPath: containerBinDir, ReadOnly: true})
 	}
-	if backendName != inference.NameKiroCLI {
+	if kaironBinaryMounted {
 		bin, err := resolveLinuxBinary(cConfig.Platform)
 		if err != nil {
-			return nil, fmt.Errorf("preparing %s helper for the container: %w", backendName, err)
+			return nil, fmt.Errorf("preparing the kairon binary for the container: %w", err)
 		}
 		info, err := os.Stat(bin)
 		if err != nil {
-			return nil, fmt.Errorf("preparing %s helper for the container: %w", backendName, err)
+			return nil, fmt.Errorf("preparing the kairon binary for the container: %w", err)
 		}
 		// The sandbox user (uid 1000) is not the owner: it needs r-x for others.
 		if info.Mode().Perm()&0o005 != 0o005 {
-			return nil, fmt.Errorf("%s helper %s (mode %v) is not readable and executable by the container user; chmod 755 it", backendName, bin, info.Mode().Perm())
+			return nil, fmt.Errorf("kairon binary %s (mode %v) is not readable and executable by the container user; chmod 755 it", bin, info.Mode().Perm())
 		}
 		mounts = append(mounts, sandbox.Mount{HostPath: bin, ContainerPath: containerHelperPath, ReadOnly: true})
 	}
@@ -1584,7 +1593,7 @@ ACTUAL OUTPUT TO EVALUATE:
 	}
 	wallStart := time.Now()
 	resp, err := cfg.backend.Invoke(context.Background(), req)
-	rec := newCallRecord(req, resp, err, time.Since(wallStart), costFromUsage(resp.Model, resp.Usage))
+	rec := newCallRecord(req, resp, err, time.Since(wallStart), costFromUsage(servedModel(req, resp), resp.Usage))
 	rec.Criterion = criterion.Name
 	// On a failed or unparseable call this returns CostInfo{} (zero), so the
 	// case's judge_cost deliberately keeps its historical zero-on-failure
@@ -1617,22 +1626,24 @@ ACTUAL OUTPUT TO EVALUATE:
 	}
 
 	score := max(1, min(response.Score, 5))
-	cost := costFromUsage(resp.Model, resp.Usage)
+	cost := costFromUsage(servedModel(req, resp), resp.Usage)
 	return cost, score, response.Reasoning, false, rec
 }
 
-// newCallRecord builds the audit record for one backend call. Model is the
-// served model when the backend reports one, else the pinned (requested) one;
+// newCallRecord builds the audit record for one backend call. Model is
+// servedModel (the backend's model, else the requested one), the same value
+// cost was priced under; CostUnknown is set when that model had no price;
 // DurationMS prefers the backend's measurement over the wall clock (the stub
 // reports 0). A failed call is still recorded, with Error set.
 func newCallRecord(req inference.Request, resp inference.Response, err error, wall time.Duration, cost CostInfo) inference.CallRecord {
 	rec := inference.CallRecord{
 		Role:         string(req.Role),
-		Model:        resp.Model,
+		Model:        servedModel(req, resp),
 		Agent:        req.Agent,
 		InputTokens:  cost.TokensIn,
 		OutputTokens: cost.TokensOut,
 		CostUSD:      cost.EstimatedUSD,
+		CostUnknown:  cost.CostIncomplete,
 		Estimated:    resp.Usage.Source != inference.UsageReported,
 		DurationMS:   resp.Duration.Milliseconds(),
 	}
@@ -1642,9 +1653,6 @@ func newCallRecord(req inference.Request, resp inference.Response, err error, wa
 	}
 	if len(resp.ToolDenials) > 0 {
 		rec.ToolDenials = append([]inference.ToolDenial(nil), resp.ToolDenials...)
-	}
-	if rec.Model == "" {
-		rec.Model = req.Model
 	}
 	if resp.Duration == 0 {
 		rec.DurationMS = wall.Milliseconds()
@@ -1967,6 +1975,18 @@ func checkResumeIntegrity(resultsDir, agent string, sandbox bool) error {
 				// A legacy file (no recorded repeat) holds one run per case.
 				return fmt.Errorf("❌ cannot resume: repeat changed since the interrupted run of %s (recorded repeat=%d; now %d) — resume with --repeat %d or start a fresh run",
 					agent, effectiveRepeat(existing.Repeat), runRepeat(), effectiveRepeat(existing.Repeat))
+			case sandbox && existing.Containment == nil:
+				// sandbox-mode tracking predates the containment record, so a
+				// sandbox result written in that window has Sandbox=true but
+				// no containment. Its completed cases' tool-trust and
+				// kairon-binary state is unknown, and the comparisons below
+				// (both gated on Containment != nil) cannot verify it.
+				// Resuming would let applyRunContext stamp the current
+				// containment onto them, claiming facts they never ran under —
+				// the same drift those comparisons rule out. Refuse, like the
+				// Sandbox==nil legacy guard.
+				return fmt.Errorf("❌ cannot resume: %s.json records sandbox cases but no containment metadata (it predates containment tracking); their containment cannot be verified — start a fresh run (without --resume)",
+					agent)
 			case sandbox && existing.Containment != nil &&
 				trustString(existing.Containment.ToolTrust) != trustString(containmentFor(agent).ToolTrust):
 				// A sandbox run records containment.tool_trust from the
@@ -1977,6 +1997,16 @@ func checkResumeIntegrity(resultsDir, agent string, sandbox bool) error {
 				// AC1/AC2 rule out. Refuse, like the mode/model guards.
 				return fmt.Errorf("❌ cannot resume: tool-trust set changed since the interrupted run of %s (recorded tool_trust=%s; now %s) — resume with the same trust set or start a fresh run",
 					agent, trustString(existing.Containment.ToolTrust), trustString(containmentFor(agent).ToolTrust))
+			case sandbox && existing.Containment != nil &&
+				existing.Containment.KaironBinary != containmentFor(agent).KaironBinary:
+				// kairon_binary is stamped from the current kaironBinaryMounted
+				// const. A result recorded before the binary mount existed
+				// decodes it as false; re-stamping it true would claim the
+				// completed cases ran with the binary on PATH when they did
+				// not — the same provenance drift the tool-trust guard rules
+				// out. Refuse, like the guards above.
+				return fmt.Errorf("❌ cannot resume: kairon-binary mount changed since the interrupted run of %s (recorded kairon_binary=%t; now %t) — resume with the same mount or start a fresh run",
+					agent, existing.Containment.KaironBinary, containmentFor(agent).KaironBinary)
 			}
 		}
 	}

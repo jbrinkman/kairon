@@ -94,7 +94,8 @@ func newCheckJudge(tc TestCase, cr *CaseResult) JudgeFunc {
 		}
 		wallStart := time.Now()
 		resp, err := cfg.backend.Invoke(context.Background(), req)
-		rec := newCallRecord(req, resp, err, time.Since(wallStart), costFromUsage(resp.Model, resp.Usage))
+		cost := costFromUsage(servedModel(req, resp), resp.Usage)
+		rec := newCallRecord(req, resp, err, time.Since(wallStart), cost)
 		rec.Criterion = q.Criterion
 		cr.Calls = append(cr.Calls, rec)
 		if err != nil {
@@ -104,7 +105,7 @@ func newCheckJudge(tc TestCase, cr *CaseResult) JudgeFunc {
 		if perr != nil {
 			return JudgeVerdict{}, perr
 		}
-		cr.JudgeCost.Add(costFromUsage(resp.Model, resp.Usage))
+		cr.JudgeCost.Add(cost)
 		return verdict, nil
 	}
 }

@@ -1,0 +1,23 @@
+name: stub-price-sonnet
+description: "Self-test: a configured model is priced at its per-model price (1000 in / 500 out -> 0.0105 USD)"
+agent: selftest
+input: |
+  Describe what the self-test verifies.
+context:
+  - "This case runs against the deterministic stub backend"
+expected_output: |
+  A short description with a top-level section and at least one subsection.
+stub:
+  turns:
+    - response: |
+        ## Self-test
+
+        The self-test verifies the harness runs end to end without a real model.
+
+        ### Pricing
+
+        Cost is price times tokens for the model.
+      model: claude-sonnet-5.5
+      usage:
+        input_tokens: 1000
+        output_tokens: 500

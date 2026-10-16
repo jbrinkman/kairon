@@ -154,7 +154,21 @@ func diffTo(w io.Writer, runA, runB string) error {
 	tokenDelta := (summaryB.TotalCost.TokensIn + summaryB.TotalCost.TokensOut) -
 		(summaryA.TotalCost.TokensIn + summaryA.TotalCost.TokensOut)
 	fmt.Fprintf(w, "  Tokens: %+d\n", tokenDelta)
-	fmt.Fprintf(w, "  Cost:   %+.6f USD\n", costDelta)
+	var incompleteSides []string
+	if summaryA.TotalCost.CostIncomplete {
+		incompleteSides = append(incompleteSides, runA)
+	}
+	if summaryB.TotalCost.CostIncomplete {
+		incompleteSides = append(incompleteSides, runB)
+	}
+	anyIncomplete := len(incompleteSides) > 0
+	costNote := ""
+	qualityNote := ""
+	if anyIncomplete {
+		costNote = " (incomplete: " + strings.Join(incompleteSides, ", ") + ")"
+		qualityNote = " (cost incomplete)"
+	}
+	fmt.Fprintf(w, "  Cost:   %+.6f USD%s\n", costDelta, costNote)
 
 	// Cost trends (agent vs judge)
 	fmt.Fprintf(w, "\nCost Trends:\n")
@@ -165,10 +179,10 @@ func diffTo(w io.Writer, runA, runB string) error {
 	avgA := avgScore(summaryA.AgentScores)
 	avgB := avgScore(summaryB.AgentScores)
 	if summaryA.TotalCost.EstimatedUSD > 0 {
-		fmt.Fprintf(w, "  %s: %.2f quality/$ \n", runA, avgA/summaryA.TotalCost.EstimatedUSD)
+		fmt.Fprintf(w, "  %s: %.2f quality/$%s\n", runA, avgA/summaryA.TotalCost.EstimatedUSD, qualityNote)
 	}
 	if summaryB.TotalCost.EstimatedUSD > 0 {
-		fmt.Fprintf(w, "  %s: %.2f quality/$\n", runB, avgB/summaryB.TotalCost.EstimatedUSD)
+		fmt.Fprintf(w, "  %s: %.2f quality/$%s\n", runB, avgB/summaryB.TotalCost.EstimatedUSD, qualityNote)
 	}
 
 	return nil
@@ -323,13 +337,8 @@ func calculateAgentJudgeCosts(runDir, resultsDir string) (CostInfo, CostInfo) {
 		}
 
 		for _, c := range result.Cases {
-			agentCost.TokensIn += c.AgentCost.TokensIn
-			agentCost.TokensOut += c.AgentCost.TokensOut
-			agentCost.EstimatedUSD += c.AgentCost.EstimatedUSD
-
-			judgeCost.TokensIn += c.JudgeCost.TokensIn
-			judgeCost.TokensOut += c.JudgeCost.TokensOut
-			judgeCost.EstimatedUSD += c.JudgeCost.EstimatedUSD
+			agentCost.addTotals(c.AgentCost)
+			judgeCost.addTotals(c.JudgeCost)
 		}
 	}
 

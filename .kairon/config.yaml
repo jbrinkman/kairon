@@ -35,6 +35,34 @@ logging:
 #   memory_mb: 1024                # Memory limit in megabytes
 #   timeout: "5m"                  # Maximum execution time
 
+# Model pricing (optional). Used to turn token counts into a dollar cost.
+# - Keys are EXACT model ids, matched as written (no trimming, no case folding).
+# - Prices are USD per million tokens, for input and output separately.
+# - A model with no entry has an UNKNOWN cost: it is reported as unknown and
+#   its runs are marked cost-incomplete. It is never priced as another model.
+# - Setting this key REPLACES the built-in defaults (it is not merged with
+#   them), so remove an entry to make that model's cost unknown. If the key is
+#   omitted entirely, the built-in Sonnet defaults below apply.
+# - claude-haiku-4.5 is intentionally unpriced: it may run (it is in
+#   evals.allowed_models) but its cost is reported as unknown until you add a
+#   price for it.
+pricing:
+  claude-sonnet-5.5:
+    input_usd_per_mtok: 3
+    output_usd_per_mtok: 15
+  claude-sonnet-5:
+    input_usd_per_mtok: 3
+    output_usd_per_mtok: 15
+  claude-sonnet-4.6:
+    input_usd_per_mtok: 3
+    output_usd_per_mtok: 15
+  claude-sonnet-4.5:
+    input_usd_per_mtok: 3
+    output_usd_per_mtok: 15
+  claude-sonnet-4:
+    input_usd_per_mtok: 3
+    output_usd_per_mtok: 15
+
 # Eval model pinning (optional). Applies to `kairon eval`.
 # Every agent call and judge call is pinned to a model; a run is refused before
 # any case starts if the effective agent model or the judge model is empty,

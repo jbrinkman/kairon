@@ -1,0 +1,14 @@
+agent: selftest
+criteria:
+  - name: alpha
+    description: Alpha criterion.
+    scoring: "1-5"
+  - name: beta
+    description: Beta criterion.
+    scoring: "1-5"
+  - name: gamma
+    description: Gamma criterion.
+    scoring: "1-5"
+  - name: cost
+    description: Cost criterion.
+    type: cost

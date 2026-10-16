@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -83,7 +84,7 @@ func TestScoreCaseChecksOnlySkipsUncheckedCriteria(t *testing.T) {
 	if as != 2 || am != 2 {
 		t.Errorf("agentScoreTotals = %v/%v, want 2/2", as, am)
 	}
-	if len(cr.Calls) != 0 || cr.JudgeCost != (CostInfo{}) {
+	if len(cr.Calls) != 0 || !reflect.DeepEqual(cr.JudgeCost, CostInfo{}) {
 		t.Errorf("calls = %+v, judge cost = %+v, want none", cr.Calls, cr.JudgeCost)
 	}
 	if got := readCalls(t, calls); len(got) != 0 {

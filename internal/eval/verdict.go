@@ -201,9 +201,8 @@ func caseAccounting(ar AgentResult, agentThreshold float64) (total, failed int) 
 func agentCostTotals(ar AgentResult) CostInfo {
 	var cost CostInfo
 	for _, c := range ar.Cases {
-		cost.TokensIn += c.AgentCost.TokensIn + c.JudgeCost.TokensIn
-		cost.TokensOut += c.AgentCost.TokensOut + c.JudgeCost.TokensOut
-		cost.EstimatedUSD += c.AgentCost.EstimatedUSD + c.JudgeCost.EstimatedUSD
+		cost.addTotals(c.AgentCost)
+		cost.addTotals(c.JudgeCost)
 	}
 	return cost
 }
@@ -220,10 +219,7 @@ func setAgentVerdict(s *Summary, ar AgentResult) {
 
 	var total CostInfo
 	for _, agent := range sortedVerdictAgents(s.AgentVerdicts) {
-		c := s.AgentVerdicts[agent].Cost
-		total.TokensIn += c.TokensIn
-		total.TokensOut += c.TokensOut
-		total.EstimatedUSD += c.EstimatedUSD
+		total.addTotals(s.AgentVerdicts[agent].Cost)
 	}
 	s.TotalCost = total
 }
@@ -310,8 +306,9 @@ func (e *ThresholdError) Unwrap() error { return ErrThresholdFailed }
 
 // printAgentVerdict writes the single PASS/FAIL line for an agent. The line
 // starts with the verdict word so it can be matched with grep '^PASS \|^FAIL '.
-// When criteria are below the floor, they are named after the existing text; with
-// repeats (Repeat > 1) the spread is appended last.
+// When criteria are below the floor, they are named after the existing text;
+// with repeats (Repeat > 1) the spread is appended next, followed by a
+// cost-incomplete marker when a call's model had no price.
 func printAgentVerdict(w io.Writer, agent string, v AgentVerdict) {
 	word := "FAIL"
 	if v.Passed {
@@ -334,11 +331,23 @@ func printAgentVerdict(w io.Writer, agent string, v AgentVerdict) {
 	if v.Repeat > 1 {
 		suffix += fmt.Sprintf(" [repeat %d: min %.1f%%, max %.1f%%]", v.Repeat, v.ScoreMin, v.ScoreMax)
 	}
+	if v.Cost.CostIncomplete {
+		suffix += " " + costIncompleteNote(v.Cost)
+	}
 	fmt.Fprintf(w, "%s %s: %.1f%% (threshold %.1f%%), %d/%d cases failed%s\n",
 		word, agent, v.Score, v.Threshold, v.CasesFailed, v.CasesTotal, suffix)
 	for _, c := range v.Criteria {
 		fmt.Fprintf(w, "  %s: %d/%d (%.1f%%)\n", c.Name, c.Score, c.MaxScore, c.Percent)
 	}
+}
+
+// costIncompleteNote is the human-visible marker for a cost that omits calls
+// whose model has no configured price.
+func costIncompleteNote(c CostInfo) string {
+	if len(c.UnpricedModels) == 0 {
+		return "[cost incomplete: no price for an unnamed model]"
+	}
+	return "[cost incomplete: no price for " + strings.Join(c.UnpricedModels, ", ") + "]"
 }
 
 // thresholdFailure returns a *ThresholdError for the failed agents, or nil when
