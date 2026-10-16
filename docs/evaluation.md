@@ -77,9 +77,26 @@ criteria:
     type: cost
 ```
 
+A rubric can also require that no single criterion is neglected, even when the agent's overall score is high, by setting `min_criterion_score`:
+
+```yaml
+agent: builder
+checks_only: true
+pass_threshold: 60
+min_criterion_score: 50    # Optional: every scored criterion must reach 50% on its own (default: unset)
+criteria:
+  - name: file_written
+    description: "The expected file exists in the workspace"
+    scoring: 1-5
+  - name: report_marker
+    description: "The agent's report carries the expected marker"
+    scoring: 1-5
+```
+
 Fields:
 - `agent` — which agent this rubric evaluates
 - `pass_threshold` — (optional) the percent a case, and the agent as a whole, must reach to pass. It must be greater than 0 and at most 100 (`(0, 100]`); the default is `95`. A value of `0` or below, above `100`, or NaN makes loading the rubric fail with an error that names the rubric file. A case can override it with `min_score` (see [Test Case Format](#test-case-format) and [Pass/Fail Verdict and Exit Status](#passfail-verdict-and-exit-status)).
+- `min_criterion_score` — (optional) a per-criterion floor, in percent. When set, the agent fails if any non-cost criterion's pooled percent is below it, even when the agent's overall `score` meets `pass_threshold` (see [Agent verdict](#agent-verdict)). It is unset by default and must be greater than 0 and at most 100 (`(0, 100]`). A value of `0` or below, above `100`, or NaN makes loading the rubric fail with an error that names the rubric file and the field (`invalid rubric <file>: min_criterion_score must be a percent in (0, 100], got <value>`); `0` is rejected rather than read as "off", so leave the field out to turn the floor off. The comparison is `>=`: a criterion exactly at the floor passes. A rubric without the field is judged exactly as before.
 - `checks_only` — (optional, boolean, default `false`) when `true`, every case of the agent is scored from its [checks](#checks) alone. A non-cost criterion that a case has no checks for is **not scored** in that case: it gets no entry in the case's scores and adds nothing to the case or agent score or maximum. Neither the legacy LLM judge nor the keyword heuristic runs for it, so no legacy judge call is made. [`judge` checks](#the-judge-check) are still checks and remain allowed. Every case of the agent must have at least one check; a case without any is rejected when the cases are loaded, before any case runs, with an error that names the case file (see [`checks_only` rubrics](#checks_only-rubrics)). Omitting the field leaves scoring unchanged.
 - `criteria[].name` — unique identifier for the criterion
 - `criteria[].description` — what is being measured
@@ -871,6 +888,7 @@ A rubric with `checks_only: true` scores every case from its checks alone:
 
 - **Unchecked criteria are not scored.** A non-cost criterion that a case has no checks for gets no entry in that case's scores (it is absent from `scores`, not recorded as `0` or skipped). It adds nothing to the case score, the case maximum, the agent score or the agent maximum, so it can neither raise nor lower a result.
 - **No legacy scoring runs.** The legacy 1–5 LLM judge is never called and the keyword heuristic never runs for such a criterion, whether or not it is marked `deterministic`. The rubric's `scoring` and `deterministic` fields are ignored; a checked criterion's maximum is its number of checks, as before.
+- **A criterion adds nothing to its maximum in a case it is not scored in.** Because an unchecked criterion has no entry in a case's scores, it contributes neither points nor maximum for that case. The criterion's pooled maximum in the [verdict's `criteria`](#agent-verdict) is therefore its number of checks across the cases that checked it, not a fixed figure per case. For example, with `file_written` checked twice in one case and once in another, and `report_marker` checked only in the second, `file_written` has a maximum of 3 and `report_marker` a maximum of 1.
 - **`judge` checks remain allowed.** A [`judge` check](#the-judge-check) is a check, so it is scored `passed`/`total` like the others and still makes its one yes/no judge call. `checks_only` removes the legacy judge, not the `judge` check type.
 - **A case without checks is rejected.** Every case of an agent whose rubric sets `checks_only` must have at least one check. A check-less case would have nothing to score, so it is a fatal load error that names the case file and wraps the same invalid-checks error as a malformed `checks` block, for example `…: no-checks.yaml: rubric for agent selftest-checks sets checks_only but the case has no checks`. A `kairon eval` run over several agents checks every `checks_only` agent up front, so the rejection happens **before any case runs**, including cases of agents that come earlier in the run. A single-case run and `--list` hit the same error when the cases load.
 - **No output still scores zero.** A checked criterion is not rescued when the agent produced no output: it records `0/N` (not skipped) with the reasoning `agent produced no output; checks not run`, exactly as described in [When the agent failed](#when-the-agent-failed), and the run fails its threshold.
@@ -925,7 +943,7 @@ A case passes when it produced output and `case score / case max * 100 >= thresh
 
 ### Agent verdict
 
-An agent passes when its aggregate score is at least its threshold:
+An agent passes when its aggregate score is at least its threshold (and, if the rubric sets [`min_criterion_score`](#per-criterion-scores-and-the-floor), no criterion is below that floor):
 
 ```
 score = sum of case scores / sum of case maxima * 100   (all non-cost criteria of all cases)
@@ -936,6 +954,24 @@ passed = score >= threshold
 - **With `--repeat`, `score` is the mean over the repeats.** The sums run over every run of every case; each repeat has the same cases and the same maxima, so this equals the arithmetic mean of the per-repeat scores. `passed` is decided on that mean: a single repeat above the threshold does not rescue a mean below it. The spread is reported next to it in `score_min`, `score_max` and `repeat_scores`, and the number of repeats in `repeat` (see [Repeat runs](#repeat-runs---repeat)). Without `--repeat` the run is one repeat and `score_min == score == score_max`.
 - `cases_total` is the number of distinct cases and `cases_failed` the number that did not pass their own threshold. A case with several runs counts as failed when its score pooled over its runs is below its threshold. `cases_failed` is informational: it does not fail the agent by itself, the aggregate score does.
 - **Fail closed.** If nothing was scored (the denominator is 0, for example a rubric with only cost criteria), the agent gets `score`, `score_min` and `score_max` of 0, `passed: false`, and no `agent_scores` entry.
+
+#### Per-criterion scores and the floor
+
+The agent `score` pools points across every check of every case, so a criterion with few checks counts for little: one criterion at 0 out of 1 beside 19 passing checks still gives an agent 95%. To make that visible, every verdict carries a `criteria` array with one entry per criterion, and a rubric can turn it into a gate with [`min_criterion_score`](#rubric-format).
+
+- **Per-criterion totals.** For each non-cost criterion the verdict pools `score` and `max_score` (points, not percent) over **every case and every repeat** of the agent, and reports `percent = score * 100 / max_score`. The criteria that are listed are summed to the same totals as the agent `score` (a skipped criterion counts `0` and keeps its maximum), so the sum of the listed `score`s and of the listed `max_score`s equals the numerator and denominator of `score`. `criteria` is always present and is `[]` when nothing was scored. Entries are in first-seen order, which for a normal rubric is rubric order. Cost criteria are never listed.
+- **Unscored criteria are not listed.** A criterion that no case scored has nothing measured (a maximum of 0), so it has no entry and is never judged against the floor. This happens for a [`checks_only`](#checks_only-rubrics) criterion that none of the cases has checks for. A criterion scored in only some cases is listed, and its maximum counts only those cases (see [How Scoring Works](#how-scoring-works)).
+- **The floor rule.** When the rubric sets `min_criterion_score`, the agent **fails if any listed criterion's pooled percent is below it**, even when the overall `score` meets the threshold:
+
+  ```
+  criteria_below_floor = criteria whose percent < min_criterion_score
+  passed = score >= threshold && criteria_below_floor is empty
+  ```
+
+  The comparison is exact, with the same boundary behaviour as `pass_threshold`: a criterion exactly at the floor passes, and 49 out of 100 fails a floor of 50. `score`, `threshold`, `cases_total` and `cases_failed` are computed exactly as before; the floor only decides `passed`. A floor failure does not make any case fail by itself, so `cases_failed` can be `0` for a failing agent.
+- **Repeats.** With `--repeat N` the floor is judged on the **pooled** percent, which is the mean over the repeats (the maximum is N times the single-run maximum and the percent equals the mean of the per-repeat percents). A criterion that is low in one repeat but high in the others is judged on its mean, not on its worst repeat.
+- **Single-case runs.** `kairon eval <agent> <case>` (and `--case`) computes the verdict from the one case that ran, so the floor applies to that case's criteria. A criterion the case did not score is not listed and not judged.
+- **No floor, no change.** Without `min_criterion_score` nothing is judged against a floor: `passed` is `score >= threshold` as before, and `criteria` is informational. With a floor set and nothing scored, the agent already fails closed and no criterion is named.
 
 ### Output and exit status
 
@@ -954,6 +990,25 @@ FAIL selftest-fail: 50.0% (threshold 95.0%), 1/1 cases failed [repeat 2: min 0.0
 
 With no `--repeat` (or `--repeat 1`) there is no suffix and the line is exactly as above.
 
+When the verdict has `criteria`, one indented line per criterion follows the verdict line, in `criteria` order: `  <criterion>: <score>/<max_score> (<percent>%)`, with one decimal for the percent. The lines start with spaces, not `PASS ` or `FAIL `, so `grep '^PASS \|^FAIL '` still finds only the verdict lines:
+
+```
+PASS selftest: 100.0% (threshold 95.0%), 0/25 cases failed
+  structural_completeness: 66/66 (100.0%)
+  clarity: 125/125 (100.0%)
+```
+
+When the rubric sets `min_criterion_score` and criteria are below it, the `FAIL` line gains a suffix naming each one with its percent and `score/max_score`, after the existing text and **before** any `[repeat …]` suffix. One criterion reads `; criterion below floor <floor>%: <name> <percent>% (<score>/<max_score>)`; several use `criteria below floor` and are joined with `, ` in `criteria` order:
+
+```
+FAIL selftest-floor: 66.7% (threshold 60.0%), 0/1 cases failed; criterion below floor 50.0%: report_marker 0.0% (0/1)
+  file_written: 2/2 (100.0%)
+  report_marker: 0/1 (0.0%)
+FAIL demo: 80.4% (threshold 60.0%), 0/2 cases failed; criteria below floor 50.0%: a 10.0% (2/20), b 0.0% (0/2) [repeat 2: min 80.4%, max 80.4%]
+```
+
+The overall score on those first lines met its threshold; the floor alone failed the agent. Without a floor failure the first line is unchanged. In the second example `--repeat 2` doubled the pooled score and maximum (`2/20` rather than `1/10`) while the percent is the mean over the repeats.
+
 | Exit status | Meaning |
 |-------------|---------|
 | `0` | every evaluated agent passed |
@@ -964,6 +1019,14 @@ When an agent fails, the results, `summary.json` and the performance report are 
 ```
 Error: eval failed: 1 of 2 agents below their pass threshold: selftest-fail (4.0% < 95.0%)
 ```
+
+An agent that failed only because of the floor is named by its criteria instead, so the error never prints a misleading `97.0% < 95.0%` when the overall score met the threshold:
+
+```
+Error: eval failed: 1 of 2 agents below their pass threshold: selftest-floor (criterion report_marker 0.0% < floor 50.0%)
+```
+
+A threshold-only failure is printed exactly as before. The exit status is `1` in both cases.
 
 Usage text is not printed for this error. The same lines and exit status apply to a single-case run (`kairon eval <agent> <case>` / `--case`) and to `--resume`.
 
@@ -978,6 +1041,9 @@ The verdict uses **percent**, `agent_scores` in `summary.json` uses a **0–1 fr
 | `agent_verdicts.<agent>.score_min`, `.score_max` | percent (0–100) | `92`, `100` |
 | `agent_verdicts.<agent>.repeat_scores` | list of percent (0–100) | `[92, 96, 100]` |
 | `agent_verdicts.<agent>.threshold` | percent (0–100) | `95` |
+| `agent_verdicts.<agent>.min_criterion_score` | percent (0–100) | `50` |
+| `agent_verdicts.<agent>.criteria[].percent` | percent (0–100) | `66.7` |
+| `agent_verdicts.<agent>.criteria[].score`, `.max_score` | **points** (integers), not percent | `2`, `3` |
 
 `agent_scores` keeps its earlier meaning so that `kairon eval diff` reads old and new runs alike. Because it pools every result of the agent, with `--repeat` it is also the mean (as a fraction). See [Run summary](#run-summary-summaryjson) for the full JSON.
 
@@ -1300,8 +1366,10 @@ A `--prompt-file` run additionally carries `"prompt_file": "<path>"` (and a `pro
   "total_cost": { "tokens_in": 4210, "tokens_out": 980, "estimated_usd": 0.0273 },
   "agent_scores": { "architect": 0.85, "builder": 0.8 },
   "agent_verdicts": {
-    "architect": { "score": 85, "threshold": 95, "passed": false, "cases_total": 4, "cases_failed": 1, "cost": { "tokens_in": 2100, "tokens_out": 500, "estimated_usd": 0.0138 }, "repeat": 1, "score_min": 85, "score_max": 85, "repeat_scores": [85] },
-    "builder":   { "score": 80, "threshold": 95, "passed": false, "cases_total": 3, "cases_failed": 1, "cost": { "tokens_in": 2110, "tokens_out": 480, "estimated_usd": 0.0135 }, "repeat": 1, "score_min": 80, "score_max": 80, "repeat_scores": [80] }
+    "architect": { "score": 85, "threshold": 95, "passed": false, "cases_total": 4, "cases_failed": 1, "cost": { "tokens_in": 2100, "tokens_out": 500, "estimated_usd": 0.0138 }, "repeat": 1, "score_min": 85, "score_max": 85, "repeat_scores": [85],
+                    "criteria": [ { "name": "task_decomposition", "score": 40, "max_score": 50, "percent": 80 }, { "name": "completeness", "score": 45, "max_score": 50, "percent": 90 } ] },
+    "builder":   { "score": 80, "threshold": 95, "passed": false, "cases_total": 3, "cases_failed": 1, "cost": { "tokens_in": 2110, "tokens_out": 480, "estimated_usd": 0.0135 }, "repeat": 1, "score_min": 80, "score_max": 80, "repeat_scores": [80],
+                    "criteria": [ { "name": "code_correctness", "score": 40, "max_score": 50, "percent": 80 }, { "name": "spec_adherence", "score": 40, "max_score": 50, "percent": 80 } ] }
   },
   "judge_model": "claude-sonnet-5.5",
   "agents": {
@@ -1340,6 +1408,13 @@ A `--prompt-file` run additionally carries `"prompt_file": "<path>"` (and a `pro
 | `score_min` | number, **percent** (0–100) | The lowest repeat score. Always written, including `0`; equals `score` for a plain run. |
 | `score_max` | number, **percent** (0–100) | The highest repeat score. Always written; equals `score` for a plain run. |
 | `repeat_scores` | array of **percent** numbers | The repeat scores in run order, one per completed repeat (`[score]` for a plain run). Always written. |
+| `criteria` | array of objects | The agent's non-cost criteria pooled over every case and every repeat, in first-seen order (see [Per-criterion scores and the floor](#per-criterion-scores-and-the-floor)). Always written; `[]` when nothing was scored. Fields below. |
+| `criteria[].name` | string | The criterion's name in the rubric. |
+| `criteria[].score` | integer, **points** (not percent) | Points the criterion earned, summed over all cases and repeats. A skipped criterion counts `0`. |
+| `criteria[].max_score` | integer, **points** (not percent) | The criterion's maximum, summed over the same cases and repeats. With `--repeat N` it is N times the single-run maximum. A criterion a `checks_only` rubric did not score in a case adds nothing to it. Never `0`: such entries are not listed. |
+| `criteria[].percent` | number, **percent** (0–100) | `score * 100 / max_score`. With `--repeat` it is the mean over the repeats. This is what `min_criterion_score` is compared with. |
+| `min_criterion_score` | number, **percent** (0–100) | The rubric's floor, echoed from the result. Omitted when the rubric sets none. |
+| `criteria_below_floor` | array of strings | Names of the criteria whose `percent` is below `min_criterion_score`, in `criteria` order. Omitted when there are none (and always when no floor is set). Any entry makes `passed` `false`. |
 
 `score`, `score_min`, `score_max`, `repeat_scores` and `threshold` are percent, while `agent_scores` is a 0–1 fraction (an `agent_scores` of `0.85` is an `agent_verdicts` score of `85`). See [Pass/Fail Verdict and Exit Status](#passfail-verdict-and-exit-status).
 
@@ -1352,7 +1427,21 @@ A `--repeat 3` run of one agent records, for example (the three repeats scored 9
 }
 ```
 
-**New fields in `<agent>.json`.** The agent result carries `threshold` (the agent's pass threshold, percent) and `repeat` (see above). Each case carries `threshold` (the case's resolved threshold, percent), `passed` (whether it was met) and `run` (1-based run number; with `--repeat 3` a case name appears three times, with `run` 1, 2 and 3):
+A verdict that failed on the floor alone (overall `66.7` against a threshold of `60`, but `report_marker` at `0%` under a floor of `50`) records:
+
+```json
+"agent_verdicts": {
+  "selftest-floor": { "score": 66.7, "threshold": 60, "passed": false, "cases_total": 1, "cases_failed": 0, "cost": { … },
+                      "repeat": 1, "score_min": 66.7, "score_max": 66.7, "repeat_scores": [66.7],
+                      "criteria": [ { "name": "file_written", "score": 2, "max_score": 2, "percent": 100 },
+                                    { "name": "report_marker", "score": 0, "max_score": 1, "percent": 0 } ],
+                      "min_criterion_score": 50, "criteria_below_floor": ["report_marker"] }
+}
+```
+
+`score`, `max_score` and `percent` in `criteria` are the pooled totals over every case and repeat, so the verdict `score` stays a percent while a criterion's `score` is points (the listed `score`s and `max_score`s add up to the numerator and denominator of the verdict `score`). `agent_scores` is unchanged.
+
+**New fields in `<agent>.json`.** The agent result carries `threshold` (the agent's pass threshold, percent), `min_criterion_score` (the rubric's per-criterion floor in percent, at the top level; omitted when the rubric sets none, which a result file written before the floor existed also lacks, meaning no floor) and `repeat` (see above). Each case carries `threshold` (the case's resolved threshold, percent), `passed` (whether it was met) and `run` (1-based run number; with `--repeat 3` a case name appears three times, with `run` 1, 2 and 3):
 
 ```json
 {
@@ -2006,11 +2095,15 @@ internal/eval/testdata/evals/
   agents/selftest-checks-prompt.md
   agents/selftest-checks-fail.json  # checks_only agent whose case is expected to FAIL
   agents/selftest-checks-fail-prompt.md
+  agents/selftest-floor.json        # checks_only agent with a min_criterion_score floor; expected to FAIL (see below)
+  agents/selftest-floor-prompt.md
   rubrics/selftest-checks.yaml      # checks_only: true; file_written, report_marker (both 1-5, neither deterministic), cost_efficiency (cost)
   rubrics/selftest-checks-fail.yaml # checks_only: true; same criteria
+  rubrics/selftest-floor.yaml       # checks_only: true; pass_threshold 60, min_criterion_score 50; file_written, report_marker (1-5), cost_efficiency (cost)
   cases/selftest-checks/check-one-criterion.yaml   # checks on file_written only: report_marker is not scored
   cases/selftest-checks/check-both-criteria.yaml   # checks on both criteria, all passing
   cases/selftest-checks-fail/stub-empty-response.yaml  # empty stub response: each checked criterion scores 0/N (expected to FAIL)
+  cases/selftest-floor/floor-one-criterion-zero.yaml   # file_written 2/2, report_marker 0/1: 66.7% overall passes 60%, but report_marker is below the 50% floor (expected to FAIL)
   fixtures/selftest-input.md        # referenced as .kairon/evals/fixtures/selftest-input.md
   fixtures/mock-cli.sh              # byte-identical copy of .kairon/evals/fixtures/mock-cli.sh (this evals dir resolves case scripts here)
   fixtures/hidden/hidden_test.go    # file injected by the check-command-inject case (see Checks); the agent never sees it
@@ -2114,7 +2207,15 @@ go run ./cmd/kairon eval --backend stub --evals-dir internal/eval/testdata/evals
 go run ./cmd/kairon eval --backend stub --evals-dir internal/eval/testdata/checks-only-invalid selftest-checks   # error naming no-checks.yaml, exit 1
 ```
 
-Like `selftest-fail`, `selftest-checks-fail` is an expected-to-fail agent, and `checks-only-invalid` is an expected-to-be-rejected fixture; neither is a regression when it fails.
+The `selftest-floor` agent exercises [`min_criterion_score`](#per-criterion-scores-and-the-floor). Its rubric (`rubrics/selftest-floor.yaml`) is `checks_only` with `pass_threshold: 60` and `min_criterion_score: 50`, and its one case, `cases/selftest-floor/floor-one-criterion-zero.yaml`, runs `echo hi > marker.txt` and responds with text that does not contain `output marker alpha`. `file_written` has two passing checks (`file_exists marker.txt` and `file_contains marker.txt`), so it scores `2/2` (100%); `report_marker` has one `output_contains "output marker alpha"` check, which fails, so it scores `0/1` (0%). The overall score is 2/3 = 66.7%, **above** the 60% threshold, and the case itself passes (`cases_failed` is `0`), but `report_marker` is below the 50% floor. `selftest-floor` is therefore **expected to FAIL** (exit `1`): the failure is the proof that the floor, not the overall score, decides the verdict.
+
+```bash
+go run ./cmd/kairon eval --backend stub --evals-dir internal/eval/testdata/evals selftest-floor   # FAIL, exit 1
+```
+
+It prints `FAIL selftest-floor: 66.7% (threshold 60.0%), 0/1 cases failed; criterion below floor 50.0%: report_marker 0.0% (0/1)` followed by the two criterion lines, and the saved `summary.json` verdict has `passed: false`, `min_criterion_score: 50` and `criteria_below_floor: ["report_marker"]`. Removing the `min_criterion_score` line from a copy of the rubric makes the same run pass with the same score.
+
+`selftest-fail`, `selftest-checks-fail` and `selftest-floor` are expected-to-fail agents, and `checks-only-invalid` is an expected-to-be-rejected fixture; none of them is a regression when it fails.
 
 The self-test runs with the stub backend, so its per-call `model` values are `stub` / `stub-model` (what the stub reports) rather than the pinned names. The pinned models still appear in the run-level `agent_model` and `judge_model` fields.
 
