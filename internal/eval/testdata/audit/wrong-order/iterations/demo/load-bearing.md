@@ -1,6 +1,6 @@
 | Instruction | Criterion | Evidence |
 |---|---|---|
-| Role line. | alpha | e |
-| Context line. | alpha | e |
-| Task line. | alpha | e |
-| Constraints line. | alpha | e |
+| Role line. | alpha | case:basic |
+| Context line. | alpha | case:basic |
+| Task line. | alpha | case:basic |
+| Constraints line. | alpha | case:basic |

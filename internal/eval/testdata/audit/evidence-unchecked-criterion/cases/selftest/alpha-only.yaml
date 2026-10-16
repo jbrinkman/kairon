@@ -1,0 +1,7 @@
+name: alpha-only
+agent: selftest
+input: Do the task.
+checks:
+  - criterion: alpha
+    type: changed_files
+    allow: [README.md]
