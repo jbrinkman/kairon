@@ -179,8 +179,8 @@ func TestSandboxHomeWritableAsSandboxUser(t *testing.T) {
 	require.NoError(t, err)
 
 	require.NoError(t, c.Create(ctx, config, hostConfig))
-	require.NoError(t, c.Start(ctx))
 	defer c.Cleanup(ctx)
+	require.NoError(t, c.Start(ctx))
 
 	t.Run("home is writable and readable", func(t *testing.T) {
 		out, err := c.ExecWithOutput(ctx, []string{"sh", "-c",
