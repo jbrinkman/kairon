@@ -341,6 +341,14 @@ func prepareBaseImage(cConfig *ContainerConfig) (*sandbox.ImageManager, error) {
 	if cConfig == nil {
 		return nil, nil
 	}
+	// Resolve the linux kairon binary first (cheap, memoised): every container
+	// run bind-mounts it, so a missing binary must fail here, before the image
+	// manager is created and before any case starts.
+	if kaironBinaryMounted {
+		if _, err := resolveLinuxBinary(cConfig.Platform); err != nil {
+			return nil, fmt.Errorf("preparing the kairon binary for the sandbox (%s): %w", cConfig.Platform, err)
+		}
+	}
 	imageManager, err := sandbox.NewImageManager("", cConfig.Debug)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create image manager: %w", err)
@@ -796,10 +804,12 @@ func createContainerConfig(sandboxCfg *config.SandboxConfig, resourceLimits map[
 	return config
 }
 
-// containerHelperPath is where the kairon helper binary is bind-mounted
-// (read-only) in the container for non-kiro-cli backends. Nothing is copied
-// into the running container.
-const containerHelperPath = "/opt/kairon/kairon"
+// containerHelperPath is where the linux kairon binary is bind-mounted
+// (read-only) in the container for every backend. /usr/local/bin is on
+// containerPath, so agents can run a bare `kairon`; the stub backend runs
+// `kairon inference-exec` from here. Nothing is copied into the running
+// container.
+const containerHelperPath = "/usr/local/bin/kairon"
 
 // containerBinDir is where the per-case bin directory (holding the fake gh) is
 // bind-mounted read-only. It is first on the container PATH.
@@ -833,9 +843,8 @@ const helperExecGrace = 10 * time.Second
 
 // buildContainerMounts returns the bind mounts for one case: the staged
 // .kiro read-only, the workspace and its .eval/ read-write, the fake-gh bin
-// directory read-only, and, for non-kiro-cli backends, the kairon helper
-// read-only. There is deliberately
-// no tmpfs at the workspace path.
+// directory read-only, and the linux kairon binary read-only (for every
+// backend). There is deliberately no tmpfs at the workspace path.
 func buildContainerMounts(ws *caseWorkspace, cConfig *ContainerConfig, backendName string) ([]sandbox.Mount, error) {
 	if ws == nil {
 		return nil, fmt.Errorf("container run needs a case workspace")
@@ -849,18 +858,18 @@ func buildContainerMounts(ws *caseWorkspace, cConfig *ContainerConfig, backendNa
 	if fakeGHInstalled {
 		mounts = append(mounts, sandbox.Mount{HostPath: ws.BinDir, ContainerPath: containerBinDir, ReadOnly: true})
 	}
-	if backendName != inference.NameKiroCLI {
+	if kaironBinaryMounted {
 		bin, err := resolveLinuxBinary(cConfig.Platform)
 		if err != nil {
-			return nil, fmt.Errorf("preparing %s helper for the container: %w", backendName, err)
+			return nil, fmt.Errorf("preparing the kairon binary for the container: %w", err)
 		}
 		info, err := os.Stat(bin)
 		if err != nil {
-			return nil, fmt.Errorf("preparing %s helper for the container: %w", backendName, err)
+			return nil, fmt.Errorf("preparing the kairon binary for the container: %w", err)
 		}
 		// The sandbox user (uid 1000) is not the owner: it needs r-x for others.
 		if info.Mode().Perm()&0o005 != 0o005 {
-			return nil, fmt.Errorf("%s helper %s (mode %v) is not readable and executable by the container user; chmod 755 it", backendName, bin, info.Mode().Perm())
+			return nil, fmt.Errorf("kairon binary %s (mode %v) is not readable and executable by the container user; chmod 755 it", bin, info.Mode().Perm())
 		}
 		mounts = append(mounts, sandbox.Mount{HostPath: bin, ContainerPath: containerHelperPath, ReadOnly: true})
 	}
