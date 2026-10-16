@@ -146,7 +146,7 @@ Because `verify-log` reports every violation, one run shows everything to fix.
 
 ## Load-bearing table
 
-`kairon eval audit <agent>` checks that at least 90% of an agent's instructions are **load-bearing**: each one serves at least one evaluation criterion. The mapping from instruction to criterion is a hand-written table at:
+`kairon eval audit <agent>` checks that at least 90% of an agent's instructions are **load-bearing**: each one serves at least one evaluation criterion, and the table names the eval case that proves it. It also rejects instructions that are repeated. The mapping from instruction to criterion and case is a hand-written table at:
 
 ```
 .kairon/iterations/<agent>/load-bearing.md
@@ -166,34 +166,76 @@ The file holds a Markdown table whose header row is exactly:
 |--------|---------|
 | `Instruction` | The instruction text, copied **verbatim** from the prompt or skill (see "Verbatim match" below). |
 | `Criterion` | The `name` of a criterion in `<evals-dir>/rubrics/<agent>.yaml`. |
-| `Evidence` | Free text saying why removing the instruction would lower that criterion's score. The column must exist, but the audit does not check its content: it is the justification a human reviewer reads. |
+| `Evidence` | Names the eval case that proves the instruction matters, as `case:<case-name>`. Other text is allowed in the cell (for example a short justification). The audit verifies the case; see "Evidence format" below. |
 
 Text outside the table (a title, notes) is allowed and ignored. Rows before the header row are ignored. Every pipe-delimited row after the header is a data row, apart from the `|---|---|---|` separator row. A data row must have exactly three cells, and its `Instruction` and `Criterion` cells must not be empty.
 
+### Evidence format
+
+Every Evidence cell names at least one case with the token `case:<case-name>`, where `<case-name>` is the `name:` of a case of the same agent. Other text in the cell is allowed, so `Covered by case:basic (alpha checks)` and `` `case:basic` `` both name the case `basic`.
+
+The audit verifies each named case:
+
+1. The case exists: some `<evals-dir>/cases/<agent>/*.yaml` file (default `.kairon/evals/cases/<agent>/`; non-recursive, `.yaml` only) has `name: <case-name>`. The case is identified by its `name:` field, not by its file name.
+2. The case has at least one `checks:` entry whose `criterion` equals the row's `Criterion`. Any check type counts. A criterion that is scored only by the LLM judge, with no entry under `checks:`, does not prove the instruction.
+
+Token grammar:
+
+- Names are matched exactly and case-sensitively. A name is made of letters, digits, `_`, `.` and `-`; spaces, commas, semicolons, parentheses and backticks end it.
+- `case:` must start the cell or follow a character that is not a letter, digit or `_`, so `showcase:basic` does not name a case.
+- A trailing `.` or `-` is dropped (sentence punctuation), so `case:basic.` names `basic`. A case whose own name ends in `.` or `-` cannot be referenced.
+- A cell may name several cases, for example `case:basic, case:strict`. Each one is verified, and a repeated name is verified once.
+- Like every cell, Evidence must not contain an unescaped `|`.
+
+A problem is reported as a `table` violation at the table line (`<table>:<line>: table: ...`), and every row with a non-empty `Instruction` and `Criterion` is checked, including a second row for an instruction that was already mapped. These violations are always reported, whatever the coverage:
+
+| Problem | Message |
+|---------|---------|
+| No `case:<case-name>` token (including an empty cell) | `row <N>: Evidence must name at least one case of agent "<agent>" as case:<case-name>` |
+| The named case does not exist | `row <N>: evidence names case "<name>" which is not a case of agent "<agent>" (looked in <cases-dir>)` |
+| The case has no check on the row's `Criterion` | `row <N>: case "<name>" has no check on criterion "<criterion>"` |
+
+If the `Criterion` is not in the rubric, the row is already an `unknown-criterion` problem, so the "no check on criterion" test is skipped for it. A missing `cases/<agent>/` directory means the agent has no cases, so every Evidence reference fails as "not a case". A case file that is not valid YAML, or has no `name:`, stops the audit with an error instead of a violation.
+
 ### Example
 
-For an agent `demo` whose rubric `rubrics/demo.yaml` defines the criteria `alpha` and `beta`:
+For an agent `demo` whose rubric `rubrics/demo.yaml` defines the criteria `alpha` and `beta`, and which has one case `basic` with a check on each criterion:
+
+```yaml
+# <evals-dir>/cases/demo/basic.yaml
+name: basic
+agent: demo
+input: Do the task.
+checks:
+  - criterion: alpha
+    type: changed_files
+    allow: [README.md]
+  - criterion: beta
+    type: changed_files
+    allow: [README.md]
+```
 
 ```markdown
 | Instruction | Criterion | Evidence |
 |---|---|---|
-| Be careful. | alpha | Cases that skip verification lose points on alpha. |
-| \| a \| b \| | alpha | Escaped pipes: the prompt line is a literal pipe-delimited `a`/`b` row. |
-| Use `a \| b` carefully. | beta | Escaped pipe inside inline code in the prompt line. |
-| Read the code. | beta | Cases that answer without reading the code lose points on beta. |
-| Do not guess. | beta | Guessed answers fail the beta checks. |
+| Be careful. | alpha | case:basic |
+| \| a \| b \| | alpha | case:basic |
+| Use `a \| b` carefully. | beta | case:basic |
+| Read the code. | beta | case:basic |
+| Do not guess. | beta | case:basic |
 ```
 
-This table is modelled on the `fence-and-table` audit fixture (see `internal/eval/testdata/audit/fence-and-table/`). Its prompt contains the lines `Be careful.`, `| a | b |`, ``Use `a | b` carefully.``, `Read the code.` and `Do not guess.`. The pipes in the 2nd and 3rd instructions are written `\|` in the table. An `Evidence` cell must not contain an unescaped `|` either, because it would add a fourth cell.
+This table and case are the `fence-and-table` audit fixture (see `internal/eval/testdata/audit/fence-and-table/`): the table is `iterations/demo/load-bearing.md` and the case is `evals/cases/demo/basic.yaml`. Its prompt contains the lines `Be careful.`, `| a | b |`, ``Use `a | b` carefully.``, `Read the code.` and `Do not guess.`. The pipes in the 2nd and 3rd instructions are written `\|` in the table. An `Evidence` cell must not contain an unescaped `|` either, because it would add a fourth cell.
 
 ### Rules
 
-- **What counts as an instruction.** Every physical line of the agent prompt, and of each audited engine skill, that is non-blank after trimming, outside a fenced code block, not an ATX heading (`#` to `######`) and not a table separator row (`|---|---|`). Each occurrence counts separately: a line that appears three times is three instructions.
+- **What counts as an instruction.** Every physical line of the agent prompt, and of each audited engine skill, that is non-blank after trimming, outside a fenced code block, not an ATX heading (`#` to `######`) and not a table separator row (`|---|---|`). Each occurrence counts separately: a line that appears three times is three instructions, and every occurrence after the first is also a `duplicate` violation (see "Duplicates").
 - **Front-matter is skipped.** A leading YAML front-matter block (the file starts with `---` and ends at the next `---` line) is metadata, not instructions, and is not counted. This keeps every `SKILL.md` from needing rows for `---` and `name:`. Any other `---` line (a horizontal rule) is an ordinary instruction line.
 - **Verbatim match.** An instruction is mapped when its trimmed text equals the trimmed `Instruction` cell exactly. There is no case folding, no whitespace collapsing and no Markdown rendering, so copy the line as it is in the file, bullet markers and backticks included.
 - **Escaped pipes.** A `|` inside an `Instruction` cell must be written `\|`, otherwise it ends the cell. The audit turns `\|` back into `|` before it compares.
 - **Criterion rule.** The `Criterion` cell must be the `name` of a criterion in `<evals-dir>/rubrics/<agent>.yaml` (default `.kairon/evals/rubrics/<agent>.yaml`). A row that names a criterion that is not in the rubric does not count as mapped.
-- **Duplicate rows.** The first row for an instruction wins. A second row for the same instruction with a **different** criterion is a `table` violation.
+- **Duplicate rows.** The first row for an instruction wins. A second row for the same instruction with a **different** criterion is a `table` violation. The Evidence cell of every row, including a second row, is verified.
+- **Duplicates.** A prompt or skill must not repeat an instruction (Stage 3: no dead weight). An instruction whose trimmed text equals an earlier one is a `duplicate` violation, reported at the repeat as `<file>:<line>: duplicate: duplicate of <first-file>:<first-line>: "<text>"`. "Earlier" means earlier in the prompt, then in the audited engine skills in the order they are audited, so a prompt line repeated in a skill is flagged in the skill. Every repeat names the **first** occurrence, so three copies give two violations. The check is on the exact trimmed text, with the same matching as the table, and it covers any short repeated line, a `---` horizontal rule included. Reword or drop the repeat. Duplicates are always reported, whatever the coverage, and a mapped repeat does not help. The report counts them in `duplicates=<D>`; `total` and `mapped` still count every occurrence.
 - **Hooks are excluded.** Skills whose name ends in `-conventions` (for example `builder-conventions`) are per-project override hooks. They are never read, never scored and need no rows. Engine skills that the agent lists in `resources` (for example `sentinel-protocol`) are audited together with the prompt, so their lines need rows too.
 - **Threshold.** The audit passes when **at least 90%** of all counted instructions are mapped (`mapped * 100 >= 90 * total`, integer arithmetic). Exactly 90% passes and 89% fails. The percentage is printed truncated to one decimal, so 899 of 1000 shows as `89.9%` and fails. A prompt with no instructions fails.
 

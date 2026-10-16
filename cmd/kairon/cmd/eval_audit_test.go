@@ -54,6 +54,98 @@ func runAuditFixture(t *testing.T, set string) (string, error) {
 	return runAudit(t, "demo", auditFixtures+"/"+set+"/evals", auditFixtures+"/"+set+"/iterations", "")
 }
 
+// runAuditFlatFixture audits agent "selftest" against one of the flat-layout
+// fixtures, where --iterations-dir and --evals-dir are the same directory
+// (the form used by the issue #338 verify commands).
+func runAuditFlatFixture(t *testing.T, set string) (string, error) {
+	t.Helper()
+	dir := auditFixtures + "/" + set
+	return runAudit(t, "selftest", dir, dir, "")
+}
+
+func TestAuditFlatFixtureEvidenceAndDuplicates(t *testing.T) {
+	const table = "selftest/load-bearing.md"
+	const prompt = "agents/selftest-prompt.md"
+
+	tests := []struct {
+		fixture string
+		// wantErr must all appear in the returned error text.
+		wantErr []string
+		// wantOut must all appear on stdout.
+		wantOut []string
+	}{
+		{
+			// Row 3 has an empty Evidence cell, row 4 has text without case:.
+			fixture: "evidence-missing",
+			wantErr: []string{
+				table + ":3: table:",
+				table + ":4: table:",
+				"Evidence must name at least one case",
+				"case:<case-name>",
+			},
+			wantOut: []string{"Audit: selftest"},
+		},
+		{
+			fixture: "evidence-unknown-case",
+			wantErr: []string{
+				table + ":4: table:",
+				`"ghost"`,
+				"not a case of agent",
+			},
+			wantOut: []string{"Audit: selftest"},
+		},
+		{
+			fixture: "evidence-unchecked-criterion",
+			wantErr: []string{
+				table + ":5: table:",
+				`"alpha-only"`,
+				`"beta"`,
+				"no check on criterion",
+			},
+			wantOut: []string{"Audit: selftest"},
+		},
+		{
+			// The repeat is on line 9 and refers to the first occurrence on line 8.
+			fixture: "duplicate-line",
+			wantErr: []string{
+				prompt + ":9: duplicate:",
+				"duplicate of",
+				prompt + ":8:",
+				"Never skip validation.",
+			},
+			wantOut: []string{"duplicates=1", "total=5", "mapped=5"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.fixture, func(t *testing.T) {
+			out, err := runAuditFlatFixture(t, tt.fixture)
+			if err == nil {
+				t.Fatalf("%s: expected a non-nil audit error, got nil\noutput:\n%s", tt.fixture, out)
+			}
+			for _, want := range tt.wantErr {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("error missing %q:\n%s", want, err)
+				}
+			}
+			for _, want := range tt.wantOut {
+				if !strings.Contains(out, want) {
+					t.Errorf("stdout missing %q:\n%s", want, out)
+				}
+			}
+		})
+	}
+}
+
+func TestAuditHelpDescribesEvidenceAndDuplicates(t *testing.T) {
+	long := auditCmd.Long
+	for _, want := range []string{"case:<case-name>", "Evidence", "Repeated instructions fail"} {
+		if !strings.Contains(long, want) {
+			t.Errorf("audit help missing %q:\n%s", want, long)
+		}
+	}
+}
+
 func TestAuditFlagsRegistered(t *testing.T) {
 	found := false
 	for _, c := range evalCmd.Commands() {
