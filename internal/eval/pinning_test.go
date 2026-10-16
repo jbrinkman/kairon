@@ -52,6 +52,8 @@ func setupPinProject(t *testing.T, agentJSON, evalsYAML string) {
 		agentJSON = `{"name":"architect","model":"claude-sonnet-5.5","prompt":"inline"}`
 	}
 	writeProjectFile(t, ".kiro/agents/architect.json", agentJSON)
+	// Only git-tracked project .kiro files are staged (and so hashed).
+	gitTrack(t, ".kiro/agents/architect.json")
 	writeProjectFile(t, ".kairon/evals/rubrics/architect.yaml",
 		"agent: architect\ncriteria:\n  - name: clarity\n    description: d\n    scoring: 1-5\n")
 	writeProjectFile(t, ".kairon/evals/cases/architect/c1.yaml",
@@ -446,8 +448,12 @@ func TestProvenancePromptEditChangesHash(t *testing.T) {
 
 func TestProvenanceMissingConventionsResourceOmitted(t *testing.T) {
 	setupPinProject(t, `{"name":"architect","model":"claude-sonnet-5.5","prompt":"inline",
-		"resources":["file://README.md","skill://.kiro/skills/architect-conventions/SKILL.md"]}`, "")
-	writeProjectFile(t, "README.md", "hi")
+		"resources":["file://.kiro/skills/engine/SKILL.md","skill://.kiro/skills/architect-conventions/SKILL.md"]}`, "")
+	writeProjectFile(t, ".kiro/skills/engine/SKILL.md", "hi")
+	gitTrack(t, ".kiro/skills/engine/SKILL.md")
+	// A project override hook is never staged, so it is never listed.
+	writeProjectFile(t, ".kiro/skills/architect-conventions/SKILL.md", "project override")
+	gitTrack(t, ".kiro/skills/architect-conventions/SKILL.md")
 	installFakeKiroCLI(t, pinFakeKiroBody)
 	// The fake judge scores 80%, below the default threshold: expected here.
 	if err := RunWithOptions("architect", "c1", RunOptions{}); !errors.Is(err, ErrThresholdFailed) {
@@ -456,7 +462,7 @@ func TestProvenanceMissingConventionsResourceOmitted(t *testing.T) {
 	dirs, _ := filepath.Glob(".kairon/evals/results/*")
 	var res AgentResult
 	readJSON(t, filepath.Join(dirs[0], "architect.json"), &res)
-	if len(res.ResourcesPresent) != 1 || res.ResourcesPresent[0] != "file://README.md" {
+	if len(res.ResourcesPresent) != 1 || res.ResourcesPresent[0] != "file://.kiro/skills/engine/SKILL.md" {
 		t.Errorf("resources_present = %v", res.ResourcesPresent)
 	}
 }
@@ -495,6 +501,7 @@ func TestSummaryMultiAgentOmitsTopLevelAgentFields(t *testing.T) {
 func TestPinResumeRefusedWhenPromptOrModelsChanged(t *testing.T) {
 	setupPinProject(t, `{"name":"architect","model":"claude-sonnet-5.5","prompt":"file://p.md"}`, "")
 	writeProjectFile(t, ".kiro/agents/p.md", "v1")
+	gitTrack(t, ".kiro/agents/p.md")
 	installFakeKiroCLI(t, pinFakeKiroBody)
 
 	// The fake judge scores 80%, below the default threshold: expected here.
