@@ -441,6 +441,49 @@ func TestCheckResumeIntegrityKaironBinaryChange(t *testing.T) {
 	}
 }
 
+// TestCheckResumeIntegritySandboxNilContainment verifies a sandbox resume is
+// refused when the saved result has completed cases but no containment record.
+// sandbox-mode tracking (#306) predates the containment record (#310), so a
+// result written in that window has Sandbox=true and a provenance hash yet
+// Containment==nil. Both containment comparisons are gated on
+// `existing.Containment != nil`, so without this guard such a resume slips
+// through and applyRunContext stamps a fabricated containment (kairon_binary,
+// tool_trust) onto cases whose real state is unknown.
+func TestCheckResumeIntegritySandboxNilContainment(t *testing.T) {
+	t.Cleanup(resetConfig)
+	dir := t.TempDir()
+	cfg.pins = nil
+
+	// A saved sandbox run with completed cases but no containment record (the
+	// field did not exist when it was written).
+	saved := AgentResult{
+		Agent:   "builder",
+		Sandbox: boolPtr(true),
+		Cases:   []CaseResult{{CaseName: "c1"}},
+	}
+	data, err := json.Marshal(saved)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "builder.json"), data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// A sandbox resume of a containment-less result is refused.
+	err = checkResumeIntegrity(dir, "builder", true)
+	if err == nil || !strings.Contains(err.Error(), "no containment metadata") {
+		t.Fatalf("err = %v, want nil-containment refusal", err)
+	}
+
+	// A native resume (sandbox=false) is not containment-checked: native runs
+	// record no containment, so a nil containment is expected, not drift.
+	if err := checkResumeIntegrity(dir, "builder", false); err == nil ||
+		!strings.Contains(err.Error(), "sandbox mode changed") {
+		// Caught by the mode guard first (saved sandbox=true vs now false).
+		t.Errorf("native resume of sandbox run: err = %v, want sandbox-mode refusal", err)
+	}
+}
+
 // TestCheckResumeIntegritySiblingModeFallback verifies that when summary.json
 // records no run-wide mode (a run interrupted before summary-level mode
 // tracking), a resume of a not-yet-started agent is still refused if a sibling

@@ -606,8 +606,11 @@ func TestCheckResumeIntegrityRefusesSandboxModeChange(t *testing.T) {
 	}
 
 	// Interrupted run was sandboxed and has a saved case; resuming native (false) is refused.
+	// The result carries a containment record (the realistic shape for a
+	// post-containment-tracking sandbox run), so this exercises the sandbox-mode
+	// guard rather than the nil-containment guard.
 	writeProjectFile(t, filepath.Join(resultsDir, "architect.json"),
-		`{"agent":"architect","git_hash":"g","agent_model":"claude-sonnet-5.5","judge_model":"claude-sonnet-5.5","prompt_sha256":"h","sandbox":true,"cases":[{"case_name":"c1"}]}`)
+		`{"agent":"architect","git_hash":"g","agent_model":"claude-sonnet-5.5","judge_model":"claude-sonnet-5.5","prompt_sha256":"h","sandbox":true,"containment":{"tool_trust":[],"fake_gh":true,"read_only_fs":true,"kairon_binary":true,"network":"unrestricted"},"cases":[{"case_name":"c1"}]}`)
 	err := checkResumeIntegrity(resultsDir, "architect", false)
 	if err == nil || !strings.Contains(err.Error(), "sandbox mode changed") {
 		t.Fatalf("err = %v, want sandbox-mode refusal", err)

@@ -1972,6 +1972,18 @@ func checkResumeIntegrity(resultsDir, agent string, sandbox bool) error {
 				// A legacy file (no recorded repeat) holds one run per case.
 				return fmt.Errorf("❌ cannot resume: repeat changed since the interrupted run of %s (recorded repeat=%d; now %d) — resume with --repeat %d or start a fresh run",
 					agent, effectiveRepeat(existing.Repeat), runRepeat(), effectiveRepeat(existing.Repeat))
+			case sandbox && existing.Containment == nil:
+				// sandbox-mode tracking predates the containment record, so a
+				// sandbox result written in that window has Sandbox=true but
+				// no containment. Its completed cases' tool-trust and
+				// kairon-binary state is unknown, and the comparisons below
+				// (both gated on Containment != nil) cannot verify it.
+				// Resuming would let applyRunContext stamp the current
+				// containment onto them, claiming facts they never ran under —
+				// the same drift those comparisons rule out. Refuse, like the
+				// Sandbox==nil legacy guard.
+				return fmt.Errorf("❌ cannot resume: %s.json records sandbox cases but no containment metadata (it predates containment tracking); their containment cannot be verified — start a fresh run (without --resume)",
+					agent)
 			case sandbox && existing.Containment != nil &&
 				trustString(existing.Containment.ToolTrust) != trustString(containmentFor(agent).ToolTrust):
 				// A sandbox run records containment.tool_trust from the
