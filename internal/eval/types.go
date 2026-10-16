@@ -248,6 +248,34 @@ type CaseResult struct {
 	// Run is the 1-based repeat number of this result (see RunOptions.Repeat).
 	// A result file written before repeats existed has no run; it is read as 1.
 	Run int `json:"run,omitempty"`
+	// PromptSHA256 and ResourcesPresent are the case's provenance, computed
+	// from the case's own staged workspace (so a fixture that supplies a
+	// *-conventions skill is reflected). They are set only for a pinned run
+	// and are the same value the case's agent call records carry. See
+	// MarshalJSON for the serialisation rule.
+	PromptSHA256     string   `json:"prompt_sha256,omitempty"`
+	ResourcesPresent []string `json:"resources_present,omitempty"`
+}
+
+// MarshalJSON emits resources_present whenever prompt_sha256 is set, including
+// as [] when the list is empty, and omits both fields otherwise, so a result
+// from an unpinned run (or one written before per-case provenance existed)
+// keeps its shape. A plain omitempty tag would drop the empty list, hiding
+// "every declared resource was missing in this case's workspace".
+func (c CaseResult) MarshalJSON() ([]byte, error) {
+	type plain CaseResult
+	aux := struct {
+		plain
+		ResourcesPresent *[]string `json:"resources_present,omitempty"`
+	}{plain: plain(c)}
+	if c.PromptSHA256 != "" {
+		rp := c.ResourcesPresent
+		if rp == nil {
+			rp = []string{}
+		}
+		aux.ResourcesPresent = &rp
+	}
+	return json.Marshal(aux)
 }
 
 // ErrorContext captures execution details for debugging failed tests.

@@ -346,7 +346,18 @@ func TestCallRecordsSelfTestProvenance(t *testing.T) {
 		t.Errorf("resources_present = %#v, want []", res.ResourcesPresent)
 	}
 
+	const fixtureCase, fixtureRes = "stub-conventions-fixture", "skill://.kiro/skills/selftest-conventions/SKILL.md"
 	for _, c := range res.Cases {
+		// Per-case provenance: the baseline everywhere except the case whose
+		// fixture supplies the conventions skill.
+		if c.CaseName == fixtureCase {
+			if len(c.ResourcesPresent) != 1 || c.ResourcesPresent[0] != fixtureRes || c.PromptSHA256 == res.PromptSHA256 {
+				t.Errorf("case %s provenance = %q %v, want %s and a hash differing from the agent-level %q",
+					c.CaseName, c.PromptSHA256, c.ResourcesPresent, fixtureRes, res.PromptSHA256)
+			}
+		} else if c.PromptSHA256 != res.PromptSHA256 || c.ResourcesPresent == nil || len(c.ResourcesPresent) != 0 {
+			t.Errorf("case %s provenance = %q %#v, want the agent-level baseline and []", c.CaseName, c.PromptSHA256, c.ResourcesPresent)
+		}
 		var agents, judges, routes int
 		for _, call := range c.Calls {
 			if call.Model == "" || call.InputTokens == 0 || call.OutputTokens == 0 || call.CostUSD == 0 {
@@ -355,7 +366,9 @@ func TestCallRecordsSelfTestProvenance(t *testing.T) {
 			switch call.Role {
 			case "agent":
 				agents++
-				if call.PromptSHA256 != res.PromptSHA256 || call.Agent != "selftest" {
+				// The call record carries its case's hash: the agent-level
+				// baseline, except where a fixture changes the workspace.
+				if call.PromptSHA256 != c.PromptSHA256 || call.Agent != "selftest" {
 					t.Errorf("case %s agent record = %+v", c.CaseName, call)
 				}
 				wantEst := c.CaseName != "stub-usage"
@@ -639,6 +652,84 @@ func TestCheckResumeIntegrityRefusesSandboxModeChange(t *testing.T) {
 		err := checkResumeIntegrity(resultsDir, "architect", mode)
 		if err == nil || !strings.Contains(err.Error(), "predates sandbox-mode tracking") {
 			t.Fatalf("legacy file (mode=%t) err = %v, want predates-tracking refusal", mode, err)
+		}
+	}
+}
+
+// TestSelfTestKeptWorkspacesAreClean runs the self-test in a project that has
+// override hooks and an untracked local file, and checks what a case gets:
+// no project *-conventions skill and no untracked .kiro file in any kept
+// workspace (only the fixture-supplied hook), and an agent-level provenance
+// that does not move when a project selftest-conventions file is created.
+func TestSelfTestKeptWorkspacesAreClean(t *testing.T) {
+	evalsDir := copySelfTestEvals(t) // before chdir: the fixtures are package-relative
+	chdirTemp(t)
+	initTempGitRepo(t)
+	t.Setenv(workspaceRootEnv, t.TempDir())
+	t.Cleanup(resetConfig)
+	for _, name := range []string{"builder", "planner", "validator"} {
+		p := ".kiro/skills/" + name + "-conventions/SKILL.md"
+		writeProjectFile(t, p, "project override "+name)
+		gitTrack(t, p)
+	}
+	writeProjectFile(t, ".kiro/settings/probe.json", `{"probe":true}`) // untracked
+
+	run := func() (AgentResult, Summary) {
+		res := runEvalIn(t, evalsDir, "selftest", RunOptions{NoSandbox: true, KeepWorkspaces: true})
+		for _, c := range res.Cases {
+			cleanupWorkspace(t, c)
+		}
+		dirs, _ := filepath.Glob(filepath.Join(evalsDir, "results", "*"))
+		var sum Summary
+		readJSON(t, filepath.Join(dirs[len(dirs)-1], "summary.json"), &sum)
+		return res, sum
+	}
+
+	base, baseSum := run()
+	if len(base.Cases) == 0 {
+		t.Fatal("no cases ran")
+	}
+	for _, c := range base.Cases {
+		ws := c.WorkspaceDir
+		if ws == "" {
+			t.Fatalf("case %s has no kept workspace", c.CaseName)
+		}
+		// AC1: only the fixture-supplied hook survives.
+		found, _ := filepath.Glob(filepath.Join(ws, ".kiro", "skills", "*-conventions"))
+		for _, f := range found {
+			if c.CaseName != "stub-conventions-fixture" || filepath.Base(f) != "selftest-conventions" {
+				t.Errorf("case %s workspace contains %s", c.CaseName, f)
+			}
+		}
+		if c.CaseName == "stub-conventions-fixture" && len(found) != 1 {
+			t.Errorf("fixture case workspace has %v, want exactly selftest-conventions", found)
+		}
+		// AC2: the untracked local file never reaches a workspace.
+		if pathExists(filepath.Join(ws, ".kiro", "settings", "probe.json")) {
+			t.Errorf("case %s workspace contains the untracked .kiro/settings/probe.json", c.CaseName)
+		}
+	}
+
+	// AC4: creating a project selftest-conventions file leaves the agent-level
+	// provenance (result and summary) at the baseline.
+	writeProjectFile(t, ".kiro/skills/selftest-conventions/SKILL.md", "project override selftest")
+	gitTrack(t, ".kiro/skills/selftest-conventions/SKILL.md")
+	after, afterSum := run()
+	if after.PromptSHA256 != base.PromptSHA256 || afterSum.PromptSHA256 != baseSum.PromptSHA256 {
+		t.Errorf("agent-level prompt_sha256 moved: %s -> %s (summary %s -> %s)",
+			base.PromptSHA256, after.PromptSHA256, baseSum.PromptSHA256, afterSum.PromptSHA256)
+	}
+	if after.ResourcesPresent == nil || len(after.ResourcesPresent) != 0 || len(afterSum.ResourcesPresent) != 0 {
+		t.Errorf("agent-level resources_present = %#v / %#v, want []", after.ResourcesPresent, afterSum.ResourcesPresent)
+	}
+	// The fixture case still stages its own file, not the project's.
+	for _, c := range after.Cases {
+		if c.CaseName != "stub-conventions-fixture" {
+			continue
+		}
+		got := readFileT(t, filepath.Join(c.WorkspaceDir, ".kiro", "skills", "selftest-conventions", "SKILL.md"))
+		if strings.Contains(got, "project override") {
+			t.Errorf("fixture case got the project's selftest-conventions: %q", got)
 		}
 	}
 }

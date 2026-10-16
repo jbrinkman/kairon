@@ -62,8 +62,8 @@ func checkedScore(t *testing.T, c CaseResult) CriterionScore {
 func TestSelfTestChecksPassingCases(t *testing.T) {
 	res := runSelfTestAgent(t, "selftest")
 
-	if got, want := len(res.Cases), 5+11+2+3+2; got != want {
-		t.Errorf("selftest has %d cases, want %d (5 legacy + 11 check + 2 multi-turn + 3 judge + 2 simulated-user)", got, want)
+	if got, want := len(res.Cases), 5+1+11+2+3+2; got != want {
+		t.Errorf("selftest has %d cases, want %d (5 legacy + 1 conventions-fixture + 11 check + 2 multi-turn + 3 judge + 2 simulated-user)", got, want)
 	}
 
 	seen := map[CheckType]bool{}
