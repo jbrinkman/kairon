@@ -1273,6 +1273,9 @@ The per-agent result file always carries:
 | `sandbox` | Execution mode as a **boolean**: `true` for a `--sandbox` (container) run, `false` for a native run. Written by every run, including single-case (`--testcase`) runs. Absent in files written before mode tracking. Note that `summary.json` spells the same fact as a string (`"native"` / `"container"`); see below. |
 | `containment` | What contained this agent's cases (see [Execution mode and containment](#execution-mode-and-containment)). Present for container runs only; absent for native runs. |
 | `repeat` | Number of times every case was run (`--repeat`; see [Repeat runs](#repeat-runs---repeat)). Written as `1` for a plain run; omitted when `0`, and absent in files written before repeats existed, which count as `1`. Each entry of `cases` then carries `run` (1-based). |
+| `suite_sha256` | Identity of the agent's eval suite: a 64-character lowercase hex SHA-256 over its rubric, case files and the fixtures those cases reference (see [Run coverage](#run-coverage-suite_sha256-complete-and-case_filter)). Absent in files written before coverage tracking. |
+| `complete` | `true` only when every case of the agent has a result for every repeat **and** `case_filter` is empty. `false` is written explicitly. Absent in files written before coverage tracking. |
+| `case_filter` | The `--case` value (`kairon eval <agent> <case>`), `""` for a full run. `""` is written explicitly. Absent in files written before coverage tracking. |
 
 ```json
 {
@@ -1284,6 +1287,9 @@ The per-agent result file always carries:
   "sandbox": false,
   "resources_present": [],
   "repeat": 1,
+  "suite_sha256": "5c0e…",
+  "complete": true,
+  "case_filter": "",
   "cases": [ … ]
 }
 ```
@@ -1320,7 +1326,7 @@ In the self-test, `stub-conventions-fixture` shows this: its workspace fixture s
 
 #### Run summary (`summary.json`)
 
-`summary.json` always carries `judge_model` and an `agents` map with `agent_model`, `prompt_sha256` and `resources_present` per agent (plus `prompt_file` for a [candidate prompt run](#evaluating-a-candidate-prompt---prompt-file)). These are the agent-level baseline values; per-case values live only in `<agent>.json` (see [Per-case fields](#per-case-fields-in-agentjson)). It also records the run's execution mode in `sandbox` and, for container runs, a per-agent `containment` map. The example below is a `--sandbox` (container) run (the `tool_trust` values are illustrative; they follow each agent's trust set, see [Tool trust](#tool-trust)):
+`summary.json` always carries `judge_model` and an `agents` map with `agent_model`, `prompt_sha256` and `resources_present` per agent (plus `prompt_file` for a [candidate prompt run](#evaluating-a-candidate-prompt---prompt-file), and the run-coverage fields `suite_sha256`, `complete` and `case_filter`, see [Run coverage](#run-coverage-suite_sha256-complete-and-case_filter)). These are the agent-level baseline values; per-case values live only in `<agent>.json` (see [Per-case fields](#per-case-fields-in-agentjson)). It also records the run's execution mode in `sandbox` and, for container runs, a per-agent `containment` map. The example below is a `--sandbox` (container) run (the `tool_trust` values are illustrative; they follow each agent's trust set, see [Tool trust](#tool-trust)):
 
 ```json
 {
@@ -1333,8 +1339,8 @@ In the self-test, `stub-conventions-fixture` shows this: its workspace fixture s
   },
   "judge_model": "claude-sonnet-5.5",
   "agents": {
-    "architect": { "agent_model": "claude-sonnet-5.5", "prompt_sha256": "…", "resources_present": [] },
-    "builder":   { "agent_model": "claude-sonnet-5.5", "prompt_sha256": "…", "resources_present": [] }
+    "architect": { "agent_model": "claude-sonnet-5.5", "prompt_sha256": "…", "resources_present": [], "suite_sha256": "…", "complete": true, "case_filter": "" },
+    "builder":   { "agent_model": "claude-sonnet-5.5", "prompt_sha256": "…", "resources_present": [], "suite_sha256": "…", "complete": true, "case_filter": "" }
   },
   "sandbox": "container",
   "containment": {
@@ -1433,6 +1439,52 @@ The daemon-gated test `TestProvenanceParitySandbox` (run by `task eval:selftest:
 
 **The per-agent threshold verdict is part of that parity.** The per-agent pass/fail verdict, the `PASS`/`FAIL` line and the non-zero exit status are computed from the same shared score and denominator code as the printed case result and `agent_scores` (see [Pass/Fail Verdict and Exit Status](#passfail-verdict-and-exit-status)). Because the parity test compares the whole `Summary`, `agent_verdicts` and the accumulated `total_cost` are compared on both paths, and the threshold outcome of each agent is the same natively and under `--sandbox`.
 
+#### Run coverage: `suite_sha256`, `complete` and `case_filter`
+
+`prompt_sha256` says which prompt produced a score. Three more per-agent facts say **what the run measured**, so that [`verify-log`](#iteration-logs-and-verify-log) can prove that the only thing that changed between two runs is the thing an iteration claims to have changed.
+
+| Field | Type | Meaning |
+|-------|------|---------|
+| `suite_sha256` | string, 64 lowercase hex | Identity of the agent's eval suite (below). |
+| `complete` | boolean | `true` only when every case of the agent has a result for every repeat **and** `case_filter` is empty. |
+| `case_filter` | string | The `--case` value (`kairon eval <agent> <case>` or `--case`); `""` for a full run. |
+
+They are written to `<agent>.json` and to `summary.json` under `agents.<agent>`, always together. The top-level single-agent mirror fields of `summary.json` (`prompt_sha256`, `agent_model`, ...) are **not** extended: the coverage fields live only in `agents.<agent>` and `<agent>.json`. `complete: false` and `case_filter: ""` are written explicitly, so a recorded `false` or `""` is distinguishable from a result that never recorded the fields (a run made before this tracking existed, or a direct library call that bypasses `kairon eval`), which has none of the three. `verify-log` reads that second case as "not recorded".
+
+**What `complete` and `case_filter` mean.**
+
+- A case counts as covered when it has a saved result for every run `1..repeat` (a result with no `run` counts as run 1). An agent with no cases is never complete.
+- **A `--case` run is never complete**, even if the agent has exactly one case: "full run" means "no filter and every case covered". It records `case_filter: <case name>` and `complete: false`.
+- Every progressive save records its own coverage. A run interrupted after the first of several cases is left with `complete: false`; the final save of a finished run records `complete: true`. A resumed run recomputes `complete` over the saved and the new results together.
+- `verify-log` does not look at the `.progress` marker. `complete` is per agent and is the single signal, so an agent that finished in a multi-agent run whose other agent was interrupted is still usable.
+
+**How `suite_sha256` is computed.** It is a lowercase hex SHA-256 of the agent's eval suite, computed from the active evals directory (so it honours [`--evals-dir`](#evals-directory---evals-dir)) before any case starts. Only the bytes of these inputs are hashed:
+
+1. **The rubric.** Every `rubrics/*.yaml` whose parsed `agent` equals the agent (the same selection the rubric loader makes).
+2. **The case files.** Every `cases/<agent>/*.yaml` (non-recursive, `.yaml` only). This covers the whole agent suite whatever `--case` selects, so a filtered run and a full run of the same suite hash alike.
+3. **What those cases reference:**
+   - `workspace: <name>`: every regular file under `fixtures/workspaces/<name>/`. Symlinks and other non-regular entries are skipped, as when the workspace is built, and a file's execute bit is part of its identity because the workspace builder preserves it.
+   - `checks[].inject` entries: `fixtures/hidden/<entry>`.
+   - `mocks[].script`: `<evals-dir>/<script>`.
+   - `setup[]` entries of `type: file`: the `path`, rebased onto `--evals-dir` like the prompt assembly does (so the default `.kairon/evals/fixtures/selftest-input.md` follows the chosen evals directory).
+
+How the hash is built:
+
+- Each input is one length-framed part (the same framing as [`prompt_sha256`](#how-prompt_sha256-is-computed)), after a leading domain part (`suite` / `v1`) that separates this hash from `prompt_sha256`. The part's kind carries the logical name: `rubric <rel>`, `case <rel>`, `file <rel>`, `file+x <rel>` or `missing <rel>`.
+- `<rel>` is slash-separated and relative to the evals directory, so the hash does not depend on where that directory lives. A `setup` file outside the evals directory uses its cleaned path as written.
+- Inputs are de-duplicated (a fixture shared by several cases counts once) and sorted by kind and name, so discovery order does not matter.
+- Contents are hashed as raw bytes, with no line-ending normalisation.
+- A referenced file that does not exist is hashed as `missing <rel>` and is **not** an error: the case reports the problem when it runs, and the suite identity stays stable. Any other read error stops the run before any case starts. An agent whose rubric or cases cannot be loaded is skipped here (it records no coverage), so the existing, more specific error or warning for it is unchanged.
+
+Deliberately **not** part of the suite:
+
+- The agent config, its prompt and its `resources`: that is `prompt_sha256`.
+- The models (`agent_model`, `judge_model`) and the sandbox mode, which `verify-log` compares separately.
+- The rubrics and cases of other agents.
+- Workspace fixtures that no case references, and files in `fixtures/hidden/` that no check injects.
+
+So editing a case, the rubric or a fixture a case uses changes `suite_sha256` and leaves `prompt_sha256` unchanged, and editing the prompt does the reverse.
+
 #### How `prompt_sha256` is computed
 
 `prompt_sha256` is a lowercase hex SHA-256 (64 characters). It is a hash only; the prompt text itself is not stored.
@@ -1484,6 +1536,20 @@ The agent runs in its case workspace, whose `.kiro/` is staged by the harness (s
 The comparison uses the agent-level (baseline) values only; per-case `prompt_sha256` values are not compared. Because the baseline is hashed over the staged workspace, a change to something that is not staged (an untracked file, a project `*-conventions` skill) cannot cause this refusal, while a change to a tracked `.kiro` file or to the `<evals-dir>/agents/` overlay can. An interrupted run that was started before the staging change described in the [migration note](#migration-note-staged-kiro-and-provenance) is refused with this message whenever its recorded hash differs from the new one.
 
 Start a fresh run (without `--resume`) after changing a prompt, a resource or `evals`. A result file written before provenance existed (no `prompt_sha256`) is **refused when it already holds saved cases** — resuming would attribute those scores to the current prompt and models, which were unknown when they were produced; an empty legacy file is allowed. An unchanged resume continues as before.
+
+**Eval suite.** Resume also refuses to continue into a result file that holds saved cases recorded under a different eval suite, because the resumed run would stamp the current `suite_sha256` onto cases that ran under the old one (see [Run coverage](#run-coverage-suite_sha256-complete-and-case_filter)). The comparison is against the `suite_sha256` in the existing `<agent>.json`:
+
+```
+❌ cannot resume: eval suite changed since the interrupted run of architect (recorded suite_sha256=…; now …) — resume with the same suite or start a fresh run
+```
+
+A file that holds cases but records no `suite_sha256` (written before suite tracking existed) is refused too, since the suite it ran under cannot be verified:
+
+```
+❌ cannot resume: architect.json predates eval suite tracking and has 3 saved case(s); the suite they ran under cannot be verified (now suite_sha256=…) — start a fresh run (without --resume)
+```
+
+An empty result file is never refused, and nothing is checked for an agent that has no pinned suite (its rubric or cases could not be loaded). Edit a case, the rubric or a fixture, or add a case, and the interrupted run can no longer be resumed: start a fresh one.
 
 **Execution mode.** Resume also refuses to switch between native and `--sandbox`, because scoring `requires_sandbox` cases under the other mode would mark them completed under the wrong execution model. The check is made at two levels:
 
@@ -1656,9 +1722,12 @@ The command takes exactly one argument, the agent name (a single path element: n
 | `chain` | For iteration `k > 0`, `baseline_run` is not iteration `k-1`'s `result_run`. |
 | `chronology` | Iteration `k`'s `date` is earlier than iteration `k-1`'s. |
 | `run-exists` | `baseline_run` or `result_run` is not a directory under `<evals-dir>/results/`. Runs are matched by exact directory name; unlike `eval diff`, a hash-only name is not resolved. |
-| `run-data` | A referenced run records no score for the agent or, for `change_type: prompt`, no `prompt_sha256` for the agent. Fails closed: an unverifiable change is a violation. |
+| `run-data` | A referenced run records no score for the agent, or does not record `prompt_sha256`, `suite_sha256` or `complete` for the agent; one violation per run lists every missing field, for both change types. Fails closed: an unverifiable change is a violation. A run recorded before run coverage existed lacks `suite_sha256` and `complete` and fails here (see the [migration note](#migration-note-run-coverage-and-verify-log)). |
+| `run-complete` | A referenced run records `complete: false` for the agent: it is a `--case` run or an interrupted run, and only full runs can be compared. The message names the run, `complete=false` and the recorded `case_filter`. Reported for each such run. A run that records no `complete` at all is `run-data`, not this rule. |
+| `run-config` | Both runs exist and differ in `agent_model` or `sandbox` (`native` or `container`), or, for `change_type: prompt` only, in `judge_model`. The message names the field and both values. A fact recorded by one run and not by the other counts as a difference; a fact recorded by neither is equal. A `change_type: eval` iteration may change the judge, so its `judge_model` is not compared here. |
 | `score-match` | A claimed score differs from the run's recorded score by more than 0.1 percentage points (exactly 0.1 passes). The message names the field, the claimed value, the recorded value and the run. The recorded score is not rounded before the comparison. |
-| `prompt-change` | For `change_type: prompt`, `baseline_run` and `result_run` record the same `prompt_sha256` for the agent. A `change_type: eval` iteration may keep the same hash. |
+| `prompt-change` | The prompt relation does not match `change_type`, when both runs record `prompt_sha256` for the agent. `prompt`: the two runs record the same `prompt_sha256`. `eval`: the two runs record different `prompt_sha256` (the prompt must stay the same). |
+| `suite-change` | The suite relation does not match `change_type`, when both runs record `suite_sha256` for the agent. `prompt`: the two runs record different `suite_sha256` (the eval suite must stay the same). `eval`: the two runs record the same `suite_sha256` **and** the same `judge_model` (both recorded identical, or both not recorded), so neither the suite nor the judge changed. |
 | `min-iterations` | There are fewer iteration logs than `--min-iterations` (default `2`). |
 
 ### Where the recorded score comes from
@@ -1673,6 +1742,26 @@ If none of them is available the run has no recorded score for the agent, which 
 
 `prompt_sha256` is read from `<agent>.json` and, if absent there, from `summary.json` → `agents.<agent>.prompt_sha256` (see [How `prompt_sha256` is computed](#how-prompt_sha256-is-computed)). A `--prompt-file` run hashes the candidate's bytes, so evaluating a changed candidate yields a different hash than the baseline.
 
+The other facts `verify-log` compares are read the same way, field by field: `<agent>.json` first, then `summary.json`. A fact that neither file records is "not recorded".
+
+| Fact | `<agent>.json` | `summary.json` |
+|------|----------------|----------------|
+| `agent_model` | `agent_model` | `agents.<agent>.agent_model` |
+| `judge_model` | `judge_model` | `judge_model` |
+| `sandbox` | `sandbox` (boolean: `true` is `container`, `false` is `native`) | `sandbox` (string: `native` or `container`) |
+| `suite_sha256`, `complete`, `case_filter` | the same names | `agents.<agent>.<name>` |
+
+### What `change_type` requires
+
+`verify-log` enforces the meaning of `change_type` against the two runs of each iteration. Every iteration needs both runs to be complete full runs (`run-complete`) with the same `agent_model` and `sandbox` (`run-config`). Beyond that:
+
+| `change_type` | `prompt_sha256` | `suite_sha256` | `judge_model` |
+|---------------|-----------------|----------------|---------------|
+| `prompt` | must differ (`prompt-change`) | must be the same (`suite-change`) | must be the same (`run-config`) |
+| `eval` | must be the same (`prompt-change`) | the suite **or** the judge must change: the same `suite_sha256` with the same `judge_model` fails (`suite-change`) | may change; it is how an `eval` iteration changes the judge |
+
+So a `prompt` iteration proves the prompt changed while the suite, the judge, the models and the sandbox mode did not, and an `eval` iteration proves the prompt did not change while the suite or the judge did. A pairwise rule runs whenever both runs record the facts it needs; a missing fact is reported once by `run-data` instead of cascading into the other rules.
+
 ### Exit status
 
 | Exit status | Meaning |
@@ -1682,9 +1771,18 @@ If none of them is available the run has no recorded score for the agent, which 
 
 Usage text is not printed for a verification failure.
 
+### Migration note: run coverage and `verify-log`
+
+Runs now record `suite_sha256`, `complete` and `case_filter` (see [Run coverage](#run-coverage-suite_sha256-complete-and-case_filter)), and `verify-log` requires them. Consequences for runs and logs that already exist:
+
+- **A run recorded before this change fails `run-data`.** It has no `suite_sha256` and no `complete`, so `verify-log` cannot prove that its suite was full and unchanged. This is deliberate: an unverifiable run is a violation, not a pass. Re-record it by running `kairon eval <agent>` again on the commit you want to measure, commit the new run under `<evals-dir>/results/`, and point `baseline_run` / `result_run` (and the claimed scores) of the iteration logs at the re-recorded runs. Because each iteration's `baseline_run` must equal the previous iteration's `result_run`, re-recording a run that sits in the middle of a chain means updating both logs that reference it.
+- **An `eval` iteration now needs `prompt_sha256` on both runs.** It has to prove that the prompt did not change, so a run without a prompt hash fails `run-data` for either `change_type`. Before this change only `change_type: prompt` required it.
+- **A `--case` run or an interrupted run cannot be used.** It records `complete: false` and fails `run-complete`. Use a full run.
+- **A resume of a result file written before this change is refused** when it holds saved cases (see [Resume refusal](#resume-refusal)). Start a fresh run.
+
 ### Verifying the verifier
 
-The verifier ships with fixtures under `internal/eval/testdata/verifylog/`: shared result runs in `evals/results/` and one log set per rule. Run the passing set with:
+The verifier ships with fixtures under `internal/eval/testdata/verifylog/`: shared result runs in `evals/results/` and one log set per rule. Every run records the coverage fields except two that are legacy-shaped on purpose: `260630-100000-fffffff` (no coverage fields and no models) and `260705-170000-8888888` (a prompt hash but no `suite_sha256` and no `complete`). Run the passing set with:
 
 ```bash
 go run ./cmd/kairon eval verify-log selftest \
@@ -1692,7 +1790,7 @@ go run ./cmd/kairon eval verify-log selftest \
   --evals-dir internal/eval/testdata/verifylog/evals
 ```
 
-This exits 0 and prints `OK selftest: 3 iterations verified`. The other sets each violate one rule and exit non-zero, naming the file and the rule:
+This exits 0 and prints `OK selftest: 3 iterations verified`. In the `valid` set, iteration 02 is a `change_type: eval` iteration whose runs record the same `prompt_sha256` and different `suite_sha256`. The other sets each violate one rule and exit non-zero, naming the file and the rule. The eight sets for run coverage each hold `iteration-00.md` (a valid `prompt` iteration) and an `iteration-01.md` that is the only one with a violation, so they pass the default `--min-iterations 2`:
 
 | Set | Rule reported |
 |-----|---------------|
@@ -1701,6 +1799,14 @@ This exits 0 and prints `OK selftest: 3 iterations verified`. The other sets eac
 | `gap` | `sequence` |
 | `broken-chain` | `chain` |
 | `no-prompt-change` | `prompt-change` |
+| `partial-run` | `run-complete`: `prompt` iteration whose result run records `complete: false` and `case_filter: stub-basic` |
+| `model-mismatch` | `run-config`: the result run's `agent_model` differs; the message names `agent_model` |
+| `sandbox-mismatch` | `run-config`: the result run was `container`, the baseline `native`; the message names `sandbox` |
+| `judge-mismatch` | `run-config`: `prompt` iteration whose runs record different `judge_model`; the message names `judge_model` |
+| `suite-changed` | `suite-change`: `prompt` iteration whose runs record different `suite_sha256` |
+| `eval-prompt-changed` | `prompt-change`: `eval` iteration whose runs record different `prompt_sha256` |
+| `eval-nothing-changed` | `suite-change`: `eval` iteration whose runs record the same `prompt_sha256`, `suite_sha256` and `judge_model` |
+| `legacy-run` | `run-data`: the result run records no `suite_sha256` and no `complete`; the message names both |
 
 ```bash
 go run ./cmd/kairon eval verify-log selftest --min-iterations 5 \

@@ -33,7 +33,7 @@ The file must start with `---`; the front-matter ends at the next `---` line. Al
 |-----|--------|---------|
 | `iteration` | integer, equal to `NN` in the file name | Position of this log in the sequence. |
 | `date` | `YYYY-MM-DD`, a real calendar date | When the iteration was measured. Dates must not go backwards from one iteration to the next. |
-| `change_type` | `prompt` or `eval` | `prompt`: the agent prompt changed, so the two runs must record different `prompt_sha256`. `eval`: the rubric, cases or judge changed; the prompt may be identical. |
+| `change_type` | `prompt` or `eval` | `prompt`: the agent prompt changed and nothing else did. The two runs must record different `prompt_sha256` and the same `suite_sha256`, `judge_model`, `agent_model` and sandbox mode. `eval`: the rubric, cases or judge changed and the prompt did not. The two runs must record the same `prompt_sha256`, and a different `suite_sha256` or a different `judge_model` (changing neither fails); `agent_model` and the sandbox mode must still be the same. For either type both runs must be complete full runs. |
 | `baseline_run` | name of a directory under `<evals-dir>/results/` | The run measured before the change. A single path element: no `/`, `\` or `..`. |
 | `result_run` | same | The run measured after the change. |
 | `baseline_score` | percent, exactly one decimal, `0.0`-`100.0` (`72.5`, `100.0`, `5.0`) | The agent score of `baseline_run`. Not `85`, not `97.25`, not `101.0`. |
@@ -106,7 +106,12 @@ Runs are produced by `kairon eval` and stored, one directory per run, under `.ka
   2. `agent_scores.<agent>` in `summary.json` (a 0-1 fraction; multiplied by 100). Older runs.
   3. Recomputed from the per-case scores in `<agent>.json`. Runs with neither summary field.
 - Prompt identity: `prompt_sha256` for the agent, from `<agent>.json`, falling back to `agents.<agent>.prompt_sha256` in `summary.json`. A `--prompt-file` run hashes the candidate file's bytes, so a changed candidate yields a different hash.
+- Suite identity and coverage: `suite_sha256`, `complete` and `case_filter` for the agent, from `<agent>.json`, falling back to `agents.<agent>.<name>` in `summary.json`.
+  - `suite_sha256` is a hash of the agent's rubric file(s), its case files (`cases/<agent>/*.yaml`) and every workspace fixture file, hidden (`inject`) file, mock script and `setup` file those cases reference. It does **not** cover the agent config, prompt or resources (that is `prompt_sha256`), the models, other agents' files, or fixtures no case references. Editing a case changes it and leaves `prompt_sha256` alone; editing the prompt does the reverse.
+  - `complete` is `true` only when every case ran for every `--repeat` and `case_filter` is empty. A run made with `--case` (`kairon eval <agent> <case>`) is **never** complete, even if the agent has a single case, and records the case name in `case_filter`. An interrupted run is saved with `complete: false`.
+- Models and mode: `agent_model`, `judge_model` and the sandbox mode (`native` or `container`), from `<agent>.json`, falling back to `summary.json` (`agents.<agent>.agent_model`, `judge_model`, `sandbox`).
 - **Commit the runs your logs reference.** Result directories must be checked in under `.kairon/evals/results/`, otherwise the log cannot be verified by anyone else.
+- **Runs recorded before run coverage existed fail `run-data`.** They record no `suite_sha256` and no `complete`, so they cannot be verified. Re-record them with `kairon eval <agent>`, commit the new runs, and update `baseline_run`, `result_run` and the scores of every log that referenced the old ones (an iteration's `baseline_run` must still equal the previous iteration's `result_run`). A `change_type: eval` iteration now also needs `prompt_sha256` on both runs, because it has to prove the prompt did not change. The full definitions are in [docs/evaluation.md](../../docs/evaluation.md) under "Run coverage" and "Migration note: run coverage and `verify-log`".
 
 ## Candidate prompt files
 
@@ -137,9 +142,12 @@ On success it prints `OK <agent>: N iterations verified` and exits 0. Otherwise 
 | `chain` | For iteration `k > 0`, `baseline_run` is not iteration `k-1`'s `result_run`. |
 | `chronology` | The `date` of iteration `k` is earlier than that of iteration `k-1`. |
 | `run-exists` | `baseline_run` or `result_run` is not a directory under `<evals-dir>/results/`. |
-| `run-data` | A referenced run records no score for the agent, or (for `change_type: prompt`) records no `prompt_sha256` for the agent. An unverifiable change fails closed. |
+| `run-data` | A referenced run records no score for the agent, or does not record `prompt_sha256`, `suite_sha256` or `complete` for the agent; one violation per run lists every missing field, for both change types. An unverifiable change fails closed. Runs recorded before run coverage existed fail here and must be re-recorded. |
+| `run-complete` | A referenced run records `complete: false` for the agent (a `--case` run or an interrupted run). Only full runs can be compared. A run that records no `complete` at all is `run-data` instead. |
+| `run-config` | The two runs differ in `agent_model` or `sandbox` (`native` or `container`), or, for `change_type: prompt` only, in `judge_model`. A fact recorded by one run and not the other counts as a difference; recorded by neither is equal. |
 | `score-match` | A claimed score differs from the run's recorded score by more than 0.1 percentage points. A difference of exactly 0.1 passes; the tolerance only covers the one-decimal rounding of claimed scores. |
-| `prompt-change` | For `change_type: prompt`, `baseline_run` and `result_run` record the same `prompt_sha256` for the agent. |
+| `prompt-change` | The prompt relation does not match `change_type`, when both runs record `prompt_sha256`. `prompt`: the two runs record the same `prompt_sha256`. `eval`: the two runs record different `prompt_sha256`. |
+| `suite-change` | The suite relation does not match `change_type`, when both runs record `suite_sha256`. `prompt`: the two runs record different `suite_sha256`. `eval`: the two runs record the same `suite_sha256` and the same `judge_model` (neither the suite nor the judge changed). |
 | `min-iterations` | Fewer iteration logs exist than `--min-iterations` (default `2`). |
 
 Because `verify-log` reports every violation, one run shows everything to fix.
