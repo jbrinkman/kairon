@@ -21,16 +21,16 @@ type auditCase struct {
 	table     string // "" => no load-bearing.md
 	resources []string
 	skills    map[string]string // skill name -> SKILL.md content, served via SkillsFS
-	rubric    string            // "" => criteria alpha, beta
+	rubric    string            // "" => criteria alpha, beta, gamma
 	// caseChecks maps case name -> criteria the case has a check on; it is
 	// written to cases/demo/<name>.yaml. nil => one case "basic" with checks on
-	// alpha and beta.
+	// alpha, beta and gamma (each with a distinct check body).
 	caseChecks map[string][]string
 	noCases    bool              // true => no cases/ directory at all
 	rawCases   map[string]string // file name -> raw YAML written to cases/demo/ (for malformed input)
 }
 
-const auditDefaultRubric = "agent: demo\ncriteria:\n  - name: alpha\n    description: a\n    scoring: \"1-5\"\n  - name: beta\n    description: b\n    scoring: \"1-5\"\n"
+const auditDefaultRubric = "agent: demo\ncriteria:\n  - name: alpha\n    description: a\n    scoring: \"1-5\"\n  - name: beta\n    description: b\n    scoring: \"1-5\"\n  - name: gamma\n    description: c\n    scoring: \"1-5\"\n"
 
 // auditTable renders a load-bearing table from "instruction|criterion" rows
 // ("=>" separates instruction from criterion; pipes in the instruction are escaped).
@@ -76,14 +76,14 @@ func (c auditCase) write(t *testing.T) AuditOptions {
 	}
 	caseChecks := c.caseChecks
 	if caseChecks == nil {
-		caseChecks = map[string][]string{"basic": {"alpha", "beta"}}
+		caseChecks = map[string][]string{"basic": {"alpha", "beta", "gamma"}}
 	}
 	if !c.noCases {
 		for name, criteria := range caseChecks {
 			var b strings.Builder
 			fmt.Fprintf(&b, "name: %s\nagent: demo\ninput: x\nchecks:\n", name)
 			for _, crit := range criteria {
-				fmt.Fprintf(&b, "  - criterion: %s\n    type: changed_files\n    allow: [README.md]\n", crit)
+				fmt.Fprintf(&b, "  - criterion: %s\n    type: changed_files\n    allow: [%s.md]\n", crit, crit)
 			}
 			mustWrite("evals/cases/demo/"+name+".yaml", b.String())
 		}
@@ -741,7 +741,7 @@ func TestAuditEvidence(t *testing.T) {
 	})
 	t.Run("dotted and dashed case names", func(t *testing.T) {
 		wantPass(t, auditCase{prompt: prompt, table: row("alpha", "case:my-case.v2"),
-			caseChecks: map[string][]string{"my-case.v2": {"alpha"}}})
+			caseChecks: map[string][]string{"my-case.v2": {"alpha"}, "rest": {"beta", "gamma"}}})
 	})
 	t.Run("case name is matched by name, not file name", func(t *testing.T) {
 		c := auditCase{prompt: prompt, table: row("alpha", "case:renamed"), noCases: false,
@@ -796,7 +796,7 @@ func TestAuditEvidence(t *testing.T) {
 	})
 	t.Run("several named cases all checking the criterion pass", func(t *testing.T) {
 		wantPass(t, auditCase{prompt: prompt, table: row("beta", "case:b-one case:b-too"),
-			caseChecks: map[string][]string{"b-one": {"beta"}, "b-too": {"alpha", "beta"}}})
+			caseChecks: map[string][]string{"b-one": {"beta"}, "b-too": {"alpha", "beta"}, "g-case": {"gamma"}}})
 	})
 	t.Run("every named case must check the criterion", func(t *testing.T) {
 		wantOne(t, auditCase{prompt: prompt, table: row("beta", "case:a-only case:b-too"),
@@ -895,11 +895,11 @@ func TestAuditEvidence(t *testing.T) {
 	})
 	t.Run("same name in two files merges criteria", func(t *testing.T) {
 		wantPass(t, auditCase{prompt: prompt, table: row("beta", "case:dup"),
-			caseChecks: map[string][]string{"dup": {"alpha"}},
+			caseChecks: map[string][]string{"dup": {"alpha"}, "g-case": {"gamma"}},
 			rawCases:   map[string]string{"dup-b.yaml": "name: dup\nchecks:\n  - criterion: beta\n    type: changed_files\n"}})
 	})
 	t.Run("unknown case fields are ignored", func(t *testing.T) {
-		wantPass(t, auditCase{prompt: prompt, table: row("alpha", "case:basic"), caseChecks: map[string][]string{},
+		wantPass(t, auditCase{prompt: prompt, table: row("alpha", "case:basic"), caseChecks: map[string][]string{"rest": {"beta", "gamma"}},
 			rawCases: map[string]string{"x.yaml": "name: basic\nsomething_new: 1\nchecks:\n  - criterion: alpha\n    type: made_up\n    extra: true\n"}})
 	})
 	t.Run("missing table reports no evidence violations", func(t *testing.T) {
@@ -1161,5 +1161,432 @@ func TestAuditDuplicateLineFixture(t *testing.T) {
 	}
 	if !strings.Contains(out, "Instructions: total=5 mapped=5 duplicates=1 coverage=100.0% (threshold 90%)") {
 		t.Errorf("report must print duplicates=1:\n%s", out)
+	}
+}
+
+// auditRubricOf renders a rubric for agent "demo". Each entry is a criterion
+// name, or "name:cost" for a criterion of type cost.
+func auditRubricOf(entries ...string) string {
+	var b strings.Builder
+	b.WriteString("agent: demo\ncriteria:\n")
+	for _, e := range entries {
+		name, typ, _ := strings.Cut(e, ":")
+		fmt.Fprintf(&b, "  - name: %s\n    description: d\n", name)
+		if typ == "cost" {
+			b.WriteString("    type: cost\n")
+		} else {
+			b.WriteString("    scoring: \"1-5\"\n")
+		}
+	}
+	return b.String()
+}
+
+// auditRubricPath is where auditCase.write puts the rubric.
+func auditRubricPath(opts AuditOptions) string {
+	return filepath.Join(opts.EvalsDir, "rubrics", "demo.yaml")
+}
+
+// auditRuleViolations returns the violations of ae with the given rule.
+func auditRuleViolations(ae *AuditError, rule string) []AuditViolation {
+	var out []AuditViolation
+	if ae == nil {
+		return nil
+	}
+	for _, v := range ae.Violations {
+		if v.Rule == rule {
+			out = append(out, v)
+		}
+	}
+	return out
+}
+
+// auditRawCase renders a case file whose checks are given verbatim (each entry
+// is the YAML of one list item, without the leading "- ").
+func auditRawCase(name string, checks ...string) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "name: %s\nagent: demo\ninput: x\nchecks:\n", name)
+	for _, c := range checks {
+		lines := strings.Split(strings.TrimRight(c, "\n"), "\n")
+		b.WriteString("  - " + lines[0] + "\n")
+		for _, l := range lines[1:] {
+			b.WriteString("    " + l + "\n")
+		}
+	}
+	return b.String()
+}
+
+// auditCriteriaCase is a passing-by-default agent whose cases are given raw.
+func auditCriteriaCase(rubric string, rawCases map[string]string) auditCase {
+	return auditCase{
+		prompt:     auditRTCC + "Rule one.\n",
+		table:      auditTable("Rule one.=>alpha"),
+		rubric:     rubric,
+		caseChecks: map[string][]string{}, // only rawCases
+		rawCases:   rawCases,
+	}
+}
+
+func TestAuditRubricMinimumCriteria(t *testing.T) {
+	prompt := auditRTCC + "Rule one.\n"
+	table := auditTable("Rule one.=>alpha")
+	run := func(t *testing.T, rubric string) (AuditOptions, *AuditError) {
+		t.Helper()
+		opts := auditCase{prompt: prompt, table: table, rubric: rubric}.write(t)
+		_, ae := runAudit(t, opts)
+		return opts, ae
+	}
+	wantRubric := func(t *testing.T, rubric string, substrs ...string) {
+		t.Helper()
+		opts, ae := run(t, rubric)
+		vs := auditRuleViolations(ae, auditRuleRubric)
+		if len(vs) != 1 {
+			t.Fatalf("want exactly one rubric violation, got %d (err: %v)", len(vs), ae)
+		}
+		if vs[0].File != auditRubricPath(opts) || vs[0].Line != 0 {
+			t.Errorf("violation = %s:%d, want %s with no line", vs[0].File, vs[0].Line, auditRubricPath(opts))
+		}
+		for _, s := range substrs {
+			if !strings.Contains(vs[0].Message, s) {
+				t.Errorf("message %q does not contain %q", vs[0].Message, s)
+			}
+		}
+	}
+	wantNone := func(t *testing.T, rubric string) {
+		t.Helper()
+		_, ae := run(t, rubric)
+		if vs := auditRuleViolations(ae, auditRuleRubric); len(vs) != 0 {
+			t.Errorf("want no rubric violation, got %v", vs)
+		}
+	}
+
+	t.Run("two non-cost", func(t *testing.T) {
+		wantRubric(t, auditRubricOf("alpha", "beta"), "has 2 ", "alpha", "beta", "at least 3")
+	})
+	t.Run("one non-cost", func(t *testing.T) {
+		wantRubric(t, auditRubricOf("alpha"), "has 1 ", "alpha", "at least 3")
+	})
+	t.Run("cost criterion does not count", func(t *testing.T) {
+		wantRubric(t, auditRubricOf("alpha", "beta", "cost:cost"), "has 2 ", "alpha", "beta", "at least 3")
+	})
+	t.Run("only cost", func(t *testing.T) {
+		wantRubric(t, auditRubricOf("cost:cost"), "has 0 ", "at least 3")
+	})
+	t.Run("duplicate names count once", func(t *testing.T) {
+		wantRubric(t, auditRubricOf("alpha", "beta", "alpha"), "has 2 ")
+	})
+	t.Run("three non-cost", func(t *testing.T) {
+		wantNone(t, auditRubricOf("alpha", "beta", "gamma"))
+	})
+	t.Run("three non-cost plus cost", func(t *testing.T) {
+		wantNone(t, auditRubricOf("alpha", "beta", "gamma", "cost:cost"))
+	})
+	t.Run("more than three", func(t *testing.T) {
+		wantNone(t, auditRubricOf("alpha", "beta", "gamma", "delta"))
+	})
+	t.Run("reported even at full coverage", func(t *testing.T) {
+		out, ae := runAudit(t, auditCase{prompt: prompt, table: table, rubric: auditRubricOf("alpha", "beta")}.write(t))
+		if ae == nil || len(auditRuleViolations(ae, auditRuleRubric)) != 1 {
+			t.Fatalf("want a rubric violation, got %v", ae)
+		}
+		if !strings.Contains(out, "coverage=100.0%") {
+			t.Errorf("coverage must be unaffected:\n%s", out)
+		}
+	})
+}
+
+func TestAuditUncheckedCriterion(t *testing.T) {
+	prompt := auditRTCC + "Rule one.\n"
+	table := auditTable("Rule one.=>alpha")
+	run := func(t *testing.T, c auditCase) (AuditOptions, *AuditError) {
+		t.Helper()
+		c.prompt, c.table = prompt, table
+		opts := c.write(t)
+		_, ae := runAudit(t, opts)
+		return opts, ae
+	}
+	// unchecked returns the criterion name quoted in each unchecked violation.
+	unchecked := func(opts AuditOptions, ae *AuditError) []string {
+		var out []string
+		for _, v := range auditRuleViolations(ae, auditRuleUnchecked) {
+			if v.File != auditRubricPath(opts) || v.Line != 0 {
+				t.Errorf("violation = %s:%d, want %s with no line", v.File, v.Line, auditRubricPath(opts))
+			}
+			for _, n := range []string{"alpha", "beta", "gamma", "cost"} {
+				if strings.Contains(v.Message, `"`+n+`"`) {
+					out = append(out, n)
+				}
+			}
+		}
+		return out
+	}
+
+	t.Run("criterion without any check", func(t *testing.T) {
+		opts, ae := run(t, auditCase{caseChecks: map[string][]string{"basic": {"alpha", "beta"}}})
+		if got := unchecked(opts, ae); !reflect.DeepEqual(got, []string{"gamma"}) {
+			t.Fatalf("unchecked = %v, want [gamma] (err: %v)", got, ae)
+		}
+		v := auditRuleViolations(ae, auditRuleUnchecked)[0]
+		if dir := filepath.Join(opts.EvalsDir, "cases", "demo"); !strings.Contains(v.Message, dir) {
+			t.Errorf("message %q does not name the cases directory %q", v.Message, dir)
+		}
+	})
+	t.Run("checked only in the second of two cases", func(t *testing.T) {
+		opts, ae := run(t, auditCase{caseChecks: map[string][]string{"basic": {"alpha", "beta"}, "second": {"gamma"}}})
+		if got := unchecked(opts, ae); len(got) != 0 {
+			t.Errorf("unchecked = %v, want none", got)
+		}
+	})
+	t.Run("no cases directory", func(t *testing.T) {
+		opts, ae := run(t, auditCase{noCases: true})
+		if got := unchecked(opts, ae); !reflect.DeepEqual(got, []string{"alpha", "beta", "gamma"}) {
+			t.Errorf("unchecked = %v, want [alpha beta gamma]", got)
+		}
+	})
+	t.Run("checks on unknown criteria satisfy nothing", func(t *testing.T) {
+		opts, ae := run(t, auditCase{caseChecks: map[string][]string{"basic": {"alpha", "beta", "zeta"}}})
+		if got := unchecked(opts, ae); !reflect.DeepEqual(got, []string{"gamma"}) {
+			t.Errorf("unchecked = %v, want [gamma]", got)
+		}
+	})
+	t.Run("cost criterion without checks is not reported", func(t *testing.T) {
+		opts, ae := run(t, auditCase{rubric: auditRubricOf("alpha", "beta", "gamma", "cost:cost")})
+		if got := unchecked(opts, ae); len(got) != 0 {
+			t.Errorf("unchecked = %v, want none", got)
+		}
+		if ae != nil {
+			t.Errorf("want the audit to pass, got %v", ae)
+		}
+	})
+	t.Run("cost criterion with checks is not reported", func(t *testing.T) {
+		opts, ae := run(t, auditCase{
+			rubric:     auditRubricOf("alpha", "beta", "gamma", "cost:cost"),
+			caseChecks: map[string][]string{"basic": {"alpha", "beta", "gamma", "cost"}},
+		})
+		if got := unchecked(opts, ae); len(got) != 0 {
+			t.Errorf("unchecked = %v, want none", got)
+		}
+	})
+}
+
+func TestAuditIdenticalCriteria(t *testing.T) {
+	const (
+		alpha = "criterion: alpha\ntype: changed_files\nallow: [alpha.md]"
+		x     = "type: changed_files\nallow: [x.md]"
+		y     = "type: changed_files\nallow: [y.md]"
+	)
+	crit := func(name, body string) string { return "criterion: " + name + "\n" + body }
+	run := func(t *testing.T, rubric string, cases map[string]string) (AuditOptions, *AuditError) {
+		t.Helper()
+		opts := auditCriteriaCase(rubric, cases).write(t)
+		_, ae := runAudit(t, opts)
+		return opts, ae
+	}
+	// wantPairs asserts the identical violations: each entry is "first,repeat"
+	// and the message must name both, in quotes.
+	wantPairs := func(t *testing.T, opts AuditOptions, ae *AuditError, pairs ...[2]string) {
+		t.Helper()
+		vs := auditRuleViolations(ae, auditRuleIdentical)
+		if len(vs) != len(pairs) {
+			t.Fatalf("want %d identical violations, got %d (err: %v)", len(pairs), len(vs), ae)
+		}
+		for i, p := range pairs {
+			v := vs[i]
+			if v.File != auditRubricPath(opts) || v.Line != 0 {
+				t.Errorf("violation = %s:%d, want %s with no line", v.File, v.Line, auditRubricPath(opts))
+			}
+			for _, n := range p {
+				if !strings.Contains(v.Message, `"`+n+`"`) {
+					t.Errorf("message %q does not name %q", v.Message, n)
+				}
+			}
+		}
+	}
+	wantNone := func(t *testing.T, ae *AuditError) {
+		t.Helper()
+		if vs := auditRuleViolations(ae, auditRuleIdentical); len(vs) != 0 {
+			t.Errorf("want no identical violation, got %v", vs)
+		}
+	}
+	rubric := auditRubricOf("alpha", "beta", "gamma")
+
+	t.Run("same body in the only case", func(t *testing.T) {
+		opts, ae := run(t, rubric, map[string]string{"basic.yaml": auditRawCase("basic", alpha, crit("beta", x), crit("gamma", x))})
+		wantPairs(t, opts, ae, [2]string{"beta", "gamma"})
+	})
+	t.Run("field order does not matter", func(t *testing.T) {
+		opts, ae := run(t, rubric, map[string]string{"basic.yaml": auditRawCase("basic", alpha,
+			"criterion: beta\ntype: changed_files\nallow: [x.md]",
+			"allow: [x.md]\ncriterion: gamma\ntype: changed_files")})
+		wantPairs(t, opts, ae, [2]string{"beta", "gamma"})
+	})
+	t.Run("flow versus quoted list is the same", func(t *testing.T) {
+		opts, ae := run(t, rubric, map[string]string{"basic.yaml": auditRawCase("basic", alpha,
+			"criterion: beta\ntype: changed_files\nallow: [x.md]",
+			"criterion: gamma\ntype: changed_files\nallow:\n  - \"x.md\"")})
+		wantPairs(t, opts, ae, [2]string{"beta", "gamma"})
+	})
+	t.Run("check order within a case does not matter", func(t *testing.T) {
+		opts, ae := run(t, rubric, map[string]string{"basic.yaml": auditRawCase("basic", alpha,
+			crit("beta", x), crit("beta", y), crit("gamma", y), crit("gamma", x))})
+		wantPairs(t, opts, ae, [2]string{"beta", "gamma"})
+	})
+	t.Run("different value", func(t *testing.T) {
+		_, ae := run(t, rubric, map[string]string{"basic.yaml": auditRawCase("basic", alpha, crit("beta", x), crit("gamma", y))})
+		wantNone(t, ae)
+	})
+	t.Run("different type", func(t *testing.T) {
+		_, ae := run(t, rubric, map[string]string{"basic.yaml": auditRawCase("basic", alpha,
+			crit("beta", x), crit("gamma", "type: file_exists\nallow: [x.md]"))})
+		wantNone(t, ae)
+	})
+	t.Run("extra field", func(t *testing.T) {
+		_, ae := run(t, rubric, map[string]string{"basic.yaml": auditRawCase("basic", alpha,
+			crit("beta", x), crit("gamma", x+"\nextra: 1"))})
+		wantNone(t, ae)
+	})
+	t.Run("same in one case, different in another", func(t *testing.T) {
+		_, ae := run(t, rubric, map[string]string{
+			"basic.yaml":  auditRawCase("basic", alpha, crit("beta", x), crit("gamma", x)),
+			"second.yaml": auditRawCase("second", crit("beta", x), crit("gamma", y)),
+		})
+		wantNone(t, ae)
+	})
+	t.Run("same in every case", func(t *testing.T) {
+		opts, ae := run(t, rubric, map[string]string{
+			"basic.yaml":  auditRawCase("basic", alpha, crit("beta", x), crit("gamma", x)),
+			"second.yaml": auditRawCase("second", crit("beta", y), crit("gamma", y)),
+		})
+		wantPairs(t, opts, ae, [2]string{"beta", "gamma"})
+	})
+	t.Run("checked in a subset of the cases", func(t *testing.T) {
+		_, ae := run(t, rubric, map[string]string{
+			"basic.yaml":  auditRawCase("basic", alpha, crit("beta", x), crit("gamma", x)),
+			"second.yaml": auditRawCase("second", crit("beta", x)),
+		})
+		wantNone(t, ae)
+	})
+	t.Run("check counts differ", func(t *testing.T) {
+		_, ae := run(t, rubric, map[string]string{"basic.yaml": auditRawCase("basic", alpha,
+			crit("beta", x), crit("gamma", x), crit("gamma", x))})
+		wantNone(t, ae)
+	})
+	t.Run("three identical", func(t *testing.T) {
+		opts, ae := run(t, rubric, map[string]string{"basic.yaml": auditRawCase("basic", crit("alpha", x), crit("beta", x), crit("gamma", x))})
+		wantPairs(t, opts, ae, [2]string{"alpha", "beta"}, [2]string{"alpha", "gamma"})
+	})
+	t.Run("criteria without checks are unchecked, not identical", func(t *testing.T) {
+		_, ae := run(t, rubric, map[string]string{"basic.yaml": auditRawCase("basic", alpha)})
+		wantNone(t, ae)
+		if n := len(auditRuleViolations(ae, auditRuleUnchecked)); n != 2 {
+			t.Errorf("want 2 unchecked violations (beta, gamma), got %d: %v", n, ae)
+		}
+	})
+	t.Run("cost criterion is never identical", func(t *testing.T) {
+		_, ae := run(t, auditRubricOf("alpha", "beta", "gamma", "cost:cost"), map[string]string{"basic.yaml": auditRawCase("basic",
+			crit("alpha", x), crit("beta", y), crit("gamma", "type: file_exists\nallow: [z.md]"), crit("cost", x))})
+		wantNone(t, ae)
+	})
+}
+
+func TestAuditReportCriteria(t *testing.T) {
+	prompt := auditRTCC + "Rule one.\n"
+	table := auditTable("Rule one.=>alpha")
+	t.Run("pass lists every non-cost criterion in rubric order", func(t *testing.T) {
+		out := mustPassAudit(t, auditCase{
+			prompt: prompt, table: table,
+			rubric:     auditRubricOf("alpha", "beta", "cost:cost", "gamma"),
+			caseChecks: map[string][]string{"basic": {"alpha", "alpha", "beta", "gamma"}, "second": {"alpha"}},
+		}.write(t))
+		want := "Criteria: non-cost=3 (need at least 3)\n  alpha: checks=3 cases=2\n  beta: checks=1 cases=1\n  gamma: checks=1 cases=1\n"
+		if !strings.Contains(out, want) {
+			t.Errorf("report missing %q:\n%s", want, out)
+		}
+		if strings.Contains(out, "cost:") && strings.Contains(out, "  cost") {
+			t.Errorf("cost criterion must not be listed:\n%s", out)
+		}
+		if i, j := strings.Index(out, "Instructions:"), strings.Index(out, "Criteria:"); i < 0 || j < i {
+			t.Errorf("Criteria block must follow the Instructions line:\n%s", out)
+		}
+	})
+	t.Run("rubric order, not alphabetical", func(t *testing.T) {
+		out := mustPassAudit(t, auditCase{prompt: prompt, table: table, rubric: auditRubricOf("gamma", "alpha", "beta")}.write(t))
+		want := "  gamma: checks=1 cases=1\n  alpha: checks=1 cases=1\n  beta: checks=1 cases=1\n"
+		if !strings.Contains(out, want) {
+			t.Errorf("report missing %q:\n%s", want, out)
+		}
+	})
+	t.Run("printed on failure too", func(t *testing.T) {
+		out, ae := runAudit(t, auditCase{prompt: prompt, table: table, rubric: auditRubricOf("alpha", "beta", "cost:cost")}.write(t))
+		if ae == nil {
+			t.Fatal("want a rubric violation")
+		}
+		want := "Criteria: non-cost=2 (need at least 3)\n  alpha: checks=1 cases=1\n  beta: checks=1 cases=1\n"
+		if !strings.Contains(out, want) {
+			t.Errorf("report missing %q:\n%s", want, out)
+		}
+	})
+	t.Run("unchecked criterion shows zero counts", func(t *testing.T) {
+		out, _ := runAudit(t, auditCase{prompt: prompt, table: table, noCases: true}.write(t))
+		want := "  gamma: checks=0 cases=0\n"
+		if !strings.Contains(out, want) {
+			t.Errorf("report missing %q:\n%s", want, out)
+		}
+	})
+	t.Run("no non-cost criteria", func(t *testing.T) {
+		out, _ := runAudit(t, auditCase{prompt: prompt, table: table, rubric: auditRubricOf("cost:cost")}.write(t))
+		if !strings.Contains(out, "Criteria: non-cost=0 (need at least 3)\n") {
+			t.Errorf("report missing the Criteria header:\n%s", out)
+		}
+	})
+}
+
+func TestAuditCriteriaFixtures(t *testing.T) {
+	tests := []struct {
+		fixture string
+		rule    string   // "" => the audit must pass
+		substrs []string // message substrings of the single violation
+		report  string   // must be in the report
+	}{
+		{"two-criteria", auditRuleRubric, []string{"has 2 ", "alpha", "beta", "at least 3"},
+			"Criteria: non-cost=2 (need at least 3)\n  alpha: checks=1 cases=1\n  beta: checks=1 cases=1\n"},
+		{"unchecked-criterion", auditRuleUnchecked, []string{`"gamma"`},
+			"  gamma: checks=0 cases=0\n"},
+		{"identical-criteria", auditRuleIdentical, []string{`"beta"`, `"gamma"`},
+			"  beta: checks=1 cases=1\n  gamma: checks=1 cases=1\n"},
+		{"three-criteria-ok", "", nil,
+			"Criteria: non-cost=3 (need at least 3)\n  alpha: checks=3 cases=2\n  beta: checks=1 cases=1\n  gamma: checks=1 cases=1\n"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.fixture, func(t *testing.T) {
+			opts := auditFlatFixtureOpts(tt.fixture)
+			out, ae := runAuditAgent(t, "selftest", opts)
+			if !strings.Contains(out, tt.report) {
+				t.Errorf("report missing %q:\n%s", tt.report, out)
+			}
+			if !strings.Contains(out, "coverage=100.0%") {
+				t.Errorf("fixture isolates the criteria rules (full coverage):\n%s", out)
+			}
+			if tt.rule == "" {
+				if ae != nil {
+					t.Fatalf("%s must pass, got:\n%s", tt.fixture, ae.Error())
+				}
+				return
+			}
+			if ae == nil {
+				t.Fatalf("%s must fail; output:\n%s", tt.fixture, out)
+			}
+			if len(ae.Violations) != 1 || ae.Violations[0].Rule != tt.rule {
+				t.Fatalf("want exactly one %s violation, got:\n%s", tt.rule, ae.Error())
+			}
+			v := ae.Violations[0]
+			if want := filepath.Join(opts.EvalsDir, "rubrics", "selftest.yaml"); v.File != want || v.Line != 0 {
+				t.Errorf("violation = %s:%d, want %s with no line", v.File, v.Line, want)
+			}
+			for _, s := range tt.substrs {
+				if !strings.Contains(v.Message, s) {
+					t.Errorf("message %q does not contain %q", v.Message, s)
+				}
+			}
+		})
 	}
 }
