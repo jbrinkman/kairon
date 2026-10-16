@@ -298,7 +298,7 @@ checks:
 - **Why workspace checks cannot take it.** The workspace is inspected once, at the end of the case, so a `file_*`, `changed_files` or `command` check cannot honestly be pinned to an earlier turn. A `turn: 1` on such a check would silently test the final workspace, so it is rejected loudly instead.
 - **1-based.** `turn` counts from 1, the same numbering as the position in `turns`. `turn: 0` (or a negative value) is a load error.
 - **Default: the last turn.** A check without `turn` reads the last turn's output and the final gh log (a `judge` check judges the last turn's reply and sees the whole conversation, see [The `judge` check](#the-judge-check)), which is exactly what a single-turn case has always done.
-- **Range.** `turn` must not exceed the number of turns of the case. A single-turn case has one turn, so `turn: 1` is legal there. An out-of-range `turn` is a load error naming the case, the 1-based check number and the type. A hand-built check passed to `EvaluateChecks` with an out-of-range turn yields a failed result with a detail (`turn 4 is out of range: the case has 3 turn(s)`), never a panic or a silent pass.
+- **Range.** `turn` must not exceed the number of turns of the case. A single-turn case has one turn, so `turn: 1` is legal there. An out-of-range `turn` is a load error naming the case, the 1-based check number and the type. A hand-built check passed to `checks.Evaluate` with an out-of-range turn yields a failed result with a detail (`turn 4 is out of range: the case has 3 turn(s)`), never a panic or a silent pass.
 - **gh log per turn.** `.eval/gh.log` is one append-only file, so per-turn visibility is a **snapshot taken after each turn returns and before the next turn starts**. A `gh_log_*` check with `turn: N` reads the snapshot of turn N: the log up to the end of that turn, **cumulative** (calls from earlier turns are in it too). Snapshotting the content, rather than remembering an offset into the final file, means a later turn that rewrites or truncates the log cannot change what an earlier turn saw. The last turn's snapshot equals the final log. Each snapshot is capped at 10 MiB like the final log; an oversized snapshot fails the `gh_log_*` check that reads it.
 - **Labels.** A check with `turn` set shows it in its label (`#3 gh_log_contains pattern=/issue create/ turn=3`), so `reasoning`, `checks[].label` and the printed `✗` lines show which turn failed.
 
@@ -445,10 +445,10 @@ A check that names a criterion missing from the scored rubric (only possible for
 
 ### Using the evaluator elsewhere
 
-The evaluator is a plain function in `internal/eval` with no knowledge of the harness, so it can score any directory:
+The check engine lives in its own package, `internal/checks` (import `github.com/jbrinkman/kairon/internal/checks`). It has no knowledge of the eval harness: it imports only the standard library, `gopkg.in/yaml.v3` and `internal/inference`, and never `internal/eval` or `internal/eval/sandbox` (a test enforces this). Other packages, such as the workflow engine, can therefore use it without linking the harness, and it can score any directory. `internal/eval` is a client of it and keeps thin aliases and wrappers for its own code and tests; new code should use `internal/checks` directly. To run a checks file from the command line, see [Running checks on any directory](#running-checks-on-any-directory-kairon-check).
 
 ```go
-results := eval.EvaluateChecks(checks, eval.CheckInput{
+results := checks.Evaluate(list, checks.Input{
     Dir:       workspaceDir, // directory the file_*, changed_files and command checks look at
     Output:    agentOutput,  // text for output_contains / output_not_contains
     GHLog:     ghLogText,    // text for gh_log_contains / gh_log_not_contains
@@ -456,15 +456,15 @@ results := eval.EvaluateChecks(checks, eval.CheckInput{
     Turns:     nil,          // optional per-turn evidence: Turns[i] is turn i+1 (see below)
     UserTurns: nil,          // optional: UserTurns[i] is the user message that produced Turns[i].Output
     Input:     caseInput,    // optional: the case input shown to judge checks
-    Judge:     judgeFn,      // optional: eval.JudgeFunc that answers judge checks
+    Judge:     judgeFn,      // optional: checks.JudgeFunc that answers judge checks
 })
 ```
 
-`Input`, `UserTurns` and `Judge` are only used by `judge` checks. `Judge` is a `JudgeFunc`, `func(JudgeQuery) (JudgeVerdict, error)`: it receives the criterion, question, input, output, the loaded `Files` (`Path`, `Content`, `Truncated`, `Size`) and, for a multi-turn case, the `Turn` being judged and the `Transcript`, and returns `JudgeVerdict{Yes, Reasoning}`. Return an error for a failed call; it fails the check as `judge call failed: <error>`. (Inside the package an error wrapping `errJudgeParse` is reported as `judge parse error` instead.) A `judge` check evaluated with `Judge == nil` **fails** with `no judge configured`; it is never skipped and never passes silently, so callers that use no `judge` checks are unaffected. In a normal run, `scoreCase` builds the `JudgeFunc`: it calls the configured backend on the pinned judge model and records the call and its cost.
+`Input`, `UserTurns` and `Judge` are only used by `judge` checks. `Judge` is a `checks.JudgeFunc`, `func(JudgeQuery) (JudgeVerdict, error)`: it receives the criterion, question, input, output, the loaded `Files` (`Path`, `Content`, `Truncated`, `Size`) and, for a multi-turn case, the `Turn` being judged and the `Transcript`, and returns `JudgeVerdict{Yes, Reasoning}`. Return an error for a failed call; it fails the check as `judge call failed: <error>`. (An error wrapping `checks.ErrJudgeParse` is reported as `judge parse error` instead.) A `judge` check evaluated with `Judge == nil` **fails** with `no judge configured`; it is never skipped and never passes silently, so callers that use no `judge` checks are unaffected. In a normal eval run, `scoreCase` builds the `JudgeFunc`: it calls the configured backend on the pinned judge model and records the call and its cost. Callers outside the harness can build one with `checks.InferenceJudge{Backend, Model, Stub, Debug, OnCall}.Func()`, which sends the yes/no prompt (`checks.BuildYesNoPrompt`) to an `inference.Backend` with a 2-minute timeout and parses the reply (`checks.ParseYesNo`); `kairon check` does exactly that.
 
-`EvaluateChecks` never reads the config, the case or the rubric, and returns one `CheckResult` per check in list order. A hand-built check is validated lazily: an invalid one yields a failed result with an explanation, never a panic and never a silent pass. `eval.ValidateChecks` validates and compiles checks loaded from a case file. In a normal run `Base` is the fixture commit of the case workspace, so a change the agent committed is still detected.
+`checks.Evaluate` never reads the config, the case or the rubric, and returns one `checks.Result` per check in list order. A hand-built check is validated lazily: an invalid one yields a failed result with an explanation, never a panic and never a silent pass. `checks.Validate(file, list, checks.ValidateOptions{HiddenDir, Criterion, OptionalCriterion})` validates and compiles checks loaded from a file: `HiddenDir` is where `inject` sources are resolved (empty means `inject` is not allowed), `Criterion` is an optional callback that rejects a criterion (the eval harness passes its rubric cross-check) and `OptionalCriterion` lets a check omit `criterion`. Its errors wrap `checks.ErrInvalid` and read `invalid checks: <file>: check #<n> (<type>): <reason>`. `checks.LoadFile(path)` reads a standalone checks file (see [Checks file format](#checks-file-format)). In a normal eval run `Base` is the fixture commit of the case workspace, so a change the agent committed is still detected; when `Base` is empty `changed_files` diffs against `HEAD`.
 
-`Turns` is a `[]eval.TurnEvidence{Output, GHLog, GHLogOversized}`, one entry per turn, and is what `turn` checks read. When `Turns` is empty (a single-turn case) every `output_*` / `gh_log_*` check reads `Output` / `GHLog` exactly as above. When it is set, a check that names a `turn` reads `Turns[turn-1]` and a check without `turn` reads the last entry; the harness fills `Turns` for `turns` cases only.
+`Turns` is a `[]checks.TurnEvidence{Output, GHLog, GHLogOversized}`, one entry per turn, and is what `turn` checks read. When `Turns` is empty (a single-turn case) every `output_*` / `gh_log_*` check reads `Output` / `GHLog` exactly as above. When it is set, a check that names a `turn` reads `Turns[turn-1]` and a check without `turn` reads the last entry; the harness fills `Turns` for `turns` cases only.
 
 `UserTurns` pairs the user messages with `Turns`: `UserTurns[i]` is the message that produced `Turns[i].Output`. For a simulated-user case the harness passes the messages actually sent. A `judge` check reads both to build its conversation. A message missing from `UserTurns` is rendered empty rather than failing the check.
 
@@ -480,6 +480,126 @@ type JudgeTurn struct {
 - `Turn` is the 1-based turn being judged and `Transcript` holds turns 1 to `Turn` in order (`Transcript[i]` is turn i+1). In that form `Output` is the reply of `Turn`, not the case's final output.
 - When `len(Turns) >= 2`, `Turn` is the check's `turn` (default: `len(Turns)`). A `turn` outside `1..len(Turns)` fails the check with `turn N is out of range: the case has M turn(s)` before `Judge` is called and before any file is read.
 - When `Turns` has fewer than two entries (a classic case, a one-element `turns` list, or a hand-built input with no per-turn evidence) `Turn` is 0 and `Transcript` is empty; `Input` and `Output` are filled as before, and the single-turn prompt is unchanged. The case then counts as one turn: `turn: 1` is accepted and `turn: 2` fails with `the case has 1 turn(s)`.
+
+### Running checks on any directory (`kairon check`)
+
+`kairon check` runs a checks file against a real directory with no eval case, rubric, workspace or agent involved. Use it as a guardrail in a script or a workflow step: "did this directory end up the way I expect?".
+
+```bash
+kairon check --checks <file> --dir <dir> [--output <file>] [--gh-log <file>] [--hidden-dir <dir>] [--backend <name>]
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--checks` | *required* | YAML file holding the list of checks to run (see [Checks file format](#checks-file-format)). |
+| `--dir` | *required* | Directory the `file_*`, `changed_files`, `command`, `judge` (`files`) and `fact_*` checks look at. It must be an existing directory. |
+| `--output` | none | File whose text `output_contains` / `output_not_contains` (and the text a `judge` check is shown as the output) read. Omitted means empty text. |
+| `--gh-log` | none | File whose text `gh_log_contains` / `gh_log_not_contains` read. Capped at 10 MiB: a larger file sets the same oversized flag as in eval, so `gh_log_*` checks fail explicitly. Omitted means empty text. |
+| `--hidden-dir` | none | Directory that `inject` entries are resolved against and copied from. Without it, a check that uses `inject` is invalid. |
+| `--backend` | `kiro-cli` | Inference backend that answers `judge` checks. Valid values are the same as for `kairon eval --backend`: `kiro-cli`, `stub`. An unknown value fails before any check runs. |
+
+`--checks` and `--dir` are required (omitting one is a usage error), and the command takes no positional arguments.
+
+#### Checks file format
+
+A checks file is a **top-level YAML list** of the check mappings documented in [Checks](#checks): the same entries as the value of a case's `checks:` key, without the `checks:` key itself. The fields and the per-type rules are the same as in a case, with two differences: `criterion` is optional (there is no rubric to name), and `turn` has nothing to refer to (a checks file is evaluated as a single-turn case, so `turn: 1` is accepted and a higher value fails the check with `the case has 1 turn(s)`; leave it out). A misspelled key is rejected, as in case files, and a file with no checks is an error (`no checks in <file>`), so a guardrail that checks nothing can never pass. The file must be a regular file of at most 10 MiB.
+
+```yaml
+- type: file_exists
+  path: hello.txt
+- type: file_contains
+  path: hello.txt
+  pattern: 'hello'
+- type: file_absent
+  path: missing.txt
+- type: command
+  run: "grep -q hello hello.txt"
+```
+
+The command ships fixtures in `internal/eval/testdata/check-cli/` (`dir/` is the directory under test) that the examples below use.
+
+#### Output and exit status
+
+The whole file is validated before any check runs. Then the checks are evaluated against `--dir` as described in [Evaluation order](#evaluation-order) (non-`command` checks first, then `command` checks), and one line per check is printed to stdout **in the order they are written**, with whitespace collapsed to a single line:
+
+```
+PASS #1 file_exists path=hello.txt
+FAIL #2 file_exists path=missing.txt: file does not exist
+```
+
+- `PASS <label>` or `FAIL <label>: <detail>`. The label is the same `#<n> <type> <key fields>` string used in eval results, so a failing check is named by its 1-based position, type and key field. A passing `judge` check appends the judge's reasoning as its detail.
+- When every check passes, exactly one `PASS` line per check is printed and nothing else.
+- When a check fails, the `FAIL` lines are followed by `Error: <n> of <m> checks failed` on stderr. Usage text is not printed.
+
+| Exit status | Meaning |
+|-------------|---------|
+| `0` | every check passed |
+| `1` | at least one check failed, **or** any other error: a missing required flag, an invalid checks file (before any check runs), an unreadable or empty checks file, an unknown `--backend`, a `--dir` that is not an existing directory, an unreadable `--output`, `--gh-log` or `--hidden-dir`, or a refused judge model |
+
+An invalid file is reported with the same text as an invalid eval case, naming the file, the 1-based check number and the type, and **no check runs**. This matters for `command` checks: an earlier, valid `command` check is not executed when a later check in the file is invalid.
+
+```bash
+# All four checks pass: four PASS lines, exit 0
+kairon check --checks internal/eval/testdata/check-cli/pass.yaml --dir internal/eval/testdata/check-cli/dir
+
+# Check #2 fails: prints "FAIL #2 file_exists path=missing.txt: …", then "Error: 1 of 2 checks failed", exit 1
+kairon check --checks internal/eval/testdata/check-cli/fail.yaml --dir internal/eval/testdata/check-cli/dir
+
+# Check #2 is invalid: "invalid checks: …/invalid.yaml: check #2 (file_contains): pattern is required", exit 1, no check ran
+kairon check --checks internal/eval/testdata/check-cli/invalid.yaml --dir internal/eval/testdata/check-cli/dir
+```
+
+#### Evidence flags: `--output`, `--gh-log`, `--hidden-dir`
+
+`--output`, `--gh-log` and `--hidden-dir` supply the evidence that, in an eval run, the harness would collect itself. The text of the files is used verbatim.
+
+```bash
+# output_contains reads output.txt, gh_log_contains reads gh.log, and the command check injects hidden/injected.txt
+kairon check --checks internal/eval/testdata/check-cli/evidence.yaml \
+  --dir internal/eval/testdata/check-cli/dir \
+  --output internal/eval/testdata/check-cli/output.txt \
+  --gh-log internal/eval/testdata/check-cli/gh.log \
+  --hidden-dir internal/eval/testdata/check-cli/hidden
+```
+
+- Without `--hidden-dir`, `evidence.yaml` is invalid because its `command` check uses `inject`.
+- Without `--output`, an `output_contains` check fails (the output is empty text), and likewise `gh_log_contains` without `--gh-log`. `output_not_contains` and `gh_log_not_contains` pass vacuously on empty text, exactly as in a native eval run.
+- `inject` works as in eval (see [Hidden files and `inject`](#hidden-files-and-inject)): each entry is copied from `--hidden-dir` into `--dir` immediately before the `command` runs and the directory is restored right after.
+
+#### `changed_files` base
+
+`changed_files` diffs `--dir` against the `HEAD` of the git repository at `--dir`, because `kairon check` leaves `Base` empty. `--dir` must therefore be the repository root, and a change that is already committed to `HEAD` is not seen. There is no eval fixture commit here. Added, modified, deleted and untracked paths all count, and paths that git ignores are invisible, as described in [How `changed_files` sees changes](#how-changed_files-sees-changes). If `--dir` is not a git repository the check fails with the git error.
+
+#### Judge checks, `--backend` and model pinning
+
+A `judge` check asks the judge model a yes/no question (see [The `judge` check](#the-judge-check)). In `kairon check` it behaves like the check in an eval run, with these specifics:
+
+- **Model pinning.** The judge model is pinned exactly as in `kairon eval`: `evals.judge_model` from `./.kairon/config.yaml` (the built-in default when the file or the key is missing), validated against `evals.allowed_models` (see [Model Pinning and Run Provenance](#model-pinning-and-run-provenance)). It is passed to the backend as the request's model, and the call runs on the host with the 2-minute judge timeout. A model that is empty, `auto` or not in the allowlist **refuses the run before any check starts**, with a message such as:
+
+  ```
+  ❌ eval model pinning refused the run before any check started:
+    - evals.judge_model: <reason>
+  Edit the evals block in .kairon/config.yaml (judge_model, allowed_models)
+  ```
+
+- **Only when needed.** The config is read, the model is checked and the backend is used only if the file contains a `judge` check. A file without one never reads `.kairon/config.yaml`, so a broken config does not matter, and it does not need the `kiro-cli` binary even though `--backend` defaults to `kiro-cli`.
+- **Fail closed.** A `judge` check is never skipped and never passes by default. With a real backend, a failed call (`judge call failed: …`) or an unparseable answer (`judge parse error: …`) fails the check, as in eval.
+- **`--backend stub` is a test double.** The stub backend makes **no model call**: `kairon check` supplies it with a built-in script that answers `yes` to every `judge` check, so each one passes with the reasoning `stub judge: yes`. It exists to exercise the command (and scripts around it) without a model, like `task eval:selftest`; it says nothing about the directory, so do not use it as a guardrail. It is selected only by `--backend stub`; `kiro-cli` always asks the real model. Unlike an eval case, you cannot script other answers: there is no case to carry a `stub.judge` list.
+
+```bash
+# No model call: the stub answers "yes", so this prints a PASS line and exits 0
+kairon check --backend stub --checks internal/eval/testdata/check-cli/judge.yaml --dir internal/eval/testdata/check-cli/dir
+
+# Real judge: asks the model pinned by evals.judge_model (requires an authenticated kiro-cli)
+kairon check --checks internal/eval/testdata/check-cli/judge.yaml --dir internal/eval/testdata/check-cli/dir
+```
+
+#### Safety
+
+> **Warning: `command` checks run on the host, in `--dir`.**
+> `kairon check` runs each `command` check with `sh -c` in `--dir` and your privileges, as described in [Command checks run on the host](#command-checks-run-on-the-host): stdin closed, GitHub credential variables (`GH_TOKEN`, `GITHUB_TOKEN`, `GH_ENTERPRISE_TOKEN`, `GITHUB_ENTERPRISE_TOKEN`, `GH_HOST`) removed from the environment, its own process group killed after 5 minutes. None of this is a sandbox, and there is no `--sandbox` for this command. Treat a checks file like a script: only run files you trust, against directories you are prepared to run code from. File-based checks (`file_*`, `changed_files`) and the `output_*` / `gh_log_*` checks only read.
+
+`kairon check` opens no network listener and has no authentication surface of its own. Its only network use is the judge call, made by the selected `--backend` and only when the file has a `judge` check. The `judge` prompt includes the contents of the files listed in `files` and the `--output` text, so do not point a real backend at secrets you would not send to the model.
 
 ## Multi-turn cases
 

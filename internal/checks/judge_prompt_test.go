@@ -1,4 +1,4 @@
-package eval
+package checks
 
 import (
 	"strings"
@@ -51,7 +51,7 @@ func TestBuildYesNoPromptSingleTurnGolden(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := buildYesNoPrompt(tt.q); got != tt.want {
+			if got := BuildYesNoPrompt(tt.q); got != tt.want {
 				t.Errorf("single-turn prompt changed.\n got: %q\nwant: %q", got, tt.want)
 			}
 		})
@@ -73,7 +73,7 @@ func twoTurnQuery() JudgeQuery {
 }
 
 func TestBuildYesNoPromptTranscriptOrderAndFences(t *testing.T) {
-	got := buildYesNoPrompt(twoTurnQuery())
+	got := BuildYesNoPrompt(twoTurnQuery())
 
 	labels := []struct{ label, body string }{
 		{"TURN 1 USER MESSAGE", "USER-ONE"},
@@ -105,7 +105,7 @@ func TestBuildYesNoPromptTranscriptOrderAndFences(t *testing.T) {
 }
 
 func TestBuildYesNoPromptTranscriptOmitsSingleTurnBlocks(t *testing.T) {
-	got := buildYesNoPrompt(twoTurnQuery())
+	got := BuildYesNoPrompt(twoTurnQuery())
 	for _, banned := range []string{"AGENT FINAL OUTPUT", "BEGIN INPUT GIVEN TO THE AGENT", "SHOULD-NOT-APPEAR-INPUT"} {
 		if strings.Contains(got, banned) {
 			t.Errorf("transcript prompt contains %q:\n%s", banned, got)
@@ -120,7 +120,7 @@ func TestBuildYesNoPromptTranscriptTurnOneExcludesTurnTwo(t *testing.T) {
 		Turn:       1,
 		Transcript: []JudgeTurn{{User: "USER-ONE", Agent: "REPLY-ONE"}},
 	}
-	got := buildYesNoPrompt(q)
+	got := BuildYesNoPrompt(q)
 	for _, want := range []string{"TURN 1 USER MESSAGE", "USER-ONE", "TURN 1 AGENT REPLY", "REPLY-ONE"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("prompt missing %q:\n%s", want, got)
@@ -138,7 +138,7 @@ func TestBuildYesNoPromptTranscriptMarkerCount(t *testing.T) {
 	// FILE fences: a body containing a literal end marker is not escaped (a
 	// documented limitation). The builder itself emits exactly one BEGIN and
 	// one END per transcript entry.
-	got := buildYesNoPrompt(twoTurnQuery())
+	got := BuildYesNoPrompt(twoTurnQuery())
 	if n := strings.Count(got, "===BEGIN TURN "); n != 4 {
 		t.Errorf("BEGIN TURN markers = %d, want 4", n)
 	}

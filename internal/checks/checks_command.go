@@ -1,4 +1,4 @@
-package eval
+package checks
 
 import (
 	"context"
@@ -57,7 +57,7 @@ func checkCommandEnv() []string {
 	var env []string
 	for _, kv := range os.Environ() {
 		name, _, _ := strings.Cut(kv, "=")
-		if blockedContainerEnv[name] {
+		if GitHubCredentialEnv[name] {
 			continue
 		}
 		env = append(env, kv)

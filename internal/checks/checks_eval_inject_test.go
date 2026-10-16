@@ -1,4 +1,4 @@
-package eval
+package checks
 
 import (
 	"os"
@@ -28,7 +28,7 @@ func TestEvaluateChecks_InjectPresentDuringCommandGoneAfter(t *testing.T) {
 
 	r := evalOne(t, injectCheck(hidden,
 		"grep -q hidden hidden_test.go && grep -q x sub/dir/x.txt && ls -R > seen.txt",
-		"hidden_test.go", "sub/dir/x.txt"), CheckInput{Dir: dir})
+		"hidden_test.go", "sub/dir/x.txt"), Input{Dir: dir})
 	wantPass(t, r)
 
 	if _, err := os.Lstat(filepath.Join(dir, "hidden_test.go")); !os.IsNotExist(err) {
@@ -48,7 +48,7 @@ func TestEvaluateChecks_InjectPresentDuringCommandGoneAfter(t *testing.T) {
 func TestEvaluateChecks_InjectRestoredOnFailureAndTimeout(t *testing.T) {
 	dir, hidden := t.TempDir(), t.TempDir()
 	writeEvalFile(t, hidden, "h.txt", "hidden\n")
-	in := CheckInput{Dir: dir}
+	in := Input{Dir: dir}
 
 	wantFail(t, evalOne(t, injectCheck(hidden, "exit 5", "h.txt"), in), "exit status 5")
 	if _, err := os.Lstat(filepath.Join(dir, "h.txt")); !os.IsNotExist(err) {
@@ -72,7 +72,7 @@ func TestEvaluateChecks_InjectRestoresPreexistingFile(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	wantPass(t, evalOne(t, injectCheck(hidden, `test "$(cat h.txt)" = FIXTURE && echo mutated > h.txt`, "h.txt"), CheckInput{Dir: dir}))
+	wantPass(t, evalOne(t, injectCheck(hidden, `test "$(cat h.txt)" = FIXTURE && echo mutated > h.txt`, "h.txt"), Input{Dir: dir}))
 	if got := readInjT(t, agent); got != "agent wrote this\n" {
 		t.Fatalf("content = %q", got)
 	}
@@ -90,7 +90,7 @@ func TestEvaluateChecks_InjectCommandReplacesFileWithSymlink(t *testing.T) {
 		t.Fatal(err)
 	}
 	run := "rm h.txt && ln -s " + filepath.Join(outside, "target.txt") + " h.txt"
-	evalOne(t, injectCheck(hidden, run, "h.txt"), CheckInput{Dir: dir})
+	evalOne(t, injectCheck(hidden, run, "h.txt"), Input{Dir: dir})
 
 	if got := readInjT(t, filepath.Join(outside, "target.txt")); got != "untouched\n" {
 		t.Fatalf("restore wrote through a symlink: %q", got)
@@ -114,7 +114,7 @@ func TestEvaluateChecks_InjectRefusesSymlinkDestinations(t *testing.T) {
 	if err := os.Symlink(filepath.Join(outside, "top.txt"), filepath.Join(dir, "top.txt")); err != nil {
 		t.Fatal(err)
 	}
-	in := CheckInput{Dir: dir}
+	in := Input{Dir: dir}
 	ran := filepath.Join(dir, "ran.txt")
 
 	r := evalOne(t, injectCheck(hidden, "touch ran.txt", "out/h.txt"), in)
@@ -148,7 +148,7 @@ func TestEvaluateChecks_InjectRestoresWhenCommandRemovesParent(t *testing.T) {
 
 	wantPass(t, evalOne(t, injectCheck(hidden,
 		`test "$(cat sub/h.txt)" = FIXTURE && rm sub/h.txt && rmdir sub`, "sub/h.txt"),
-		CheckInput{Dir: dir}))
+		Input{Dir: dir}))
 
 	// sub must be a directory again, holding the restored original file.
 	subPath := filepath.Join(dir, "sub")
@@ -168,7 +168,7 @@ func TestEvaluateChecks_InjectRefusesBadSources(t *testing.T) {
 	dir, hidden := t.TempDir(), t.TempDir()
 	writeEvalFile(t, hidden, ".git/config", "x")
 	writeEvalFile(t, hidden, "real.txt", "x")
-	in := CheckInput{Dir: dir}
+	in := Input{Dir: dir}
 	wantFail(t, evalOne(t, injectCheck(hidden, "true", ".git/config"), in), "reserved")
 	wantFail(t, evalOne(t, injectCheck(hidden, "true", "missing.txt"), in), "source")
 	wantFail(t, evalOne(t, injectCheck(hidden, "true", "../escape"), in), "inject")

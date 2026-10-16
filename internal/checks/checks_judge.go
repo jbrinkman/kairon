@@ -1,4 +1,4 @@
-package eval
+package checks
 
 import (
 	"encoding/json"
@@ -18,10 +18,10 @@ const (
 	judgeMaxTotalBytes = 256 << 10
 )
 
-// errJudgeParse marks a judge answer that could not be read as a yes/no
+// ErrJudgeParse marks a judge answer that could not be read as a yes/no
 // verdict. A JudgeFunc returns an error wrapping it for an unparseable answer
 // (as opposed to a failed call).
-var errJudgeParse = errors.New("judge parse error")
+var ErrJudgeParse = errors.New("judge parse error")
 
 // JudgeFile is one workspace file shown to the judge. Content holds at most
 // the capped prefix of the file; when the file was cut, Truncated is set, Size
@@ -64,7 +64,7 @@ type JudgeVerdict struct {
 }
 
 // JudgeFunc answers a judge check. (It is not called CheckJudge: that name is
-// the check-type constant.) A returned error wrapping errJudgeParse is
+// the check-type constant.) A returned error wrapping ErrJudgeParse is
 // reported as a parse error, any other error as a failed call.
 type JudgeFunc func(JudgeQuery) (JudgeVerdict, error)
 
@@ -104,7 +104,7 @@ func validateJudgeCheck(c *Check) error {
 // turns 1..N, where N is the check's turn (default: the last), and the reply of
 // turn N as the output under review. Any other input keeps the single-turn
 // query unchanged.
-func evalJudge(c Check, in CheckInput) (bool, string) {
+func evalJudge(c Check, in Input) (bool, string) {
 	if in.Judge == nil {
 		return false, "no judge configured"
 	}
@@ -143,8 +143,8 @@ func evalJudge(c Check, in CheckInput) (bool, string) {
 	}
 	verdict, err := in.Judge(q)
 	if err != nil {
-		if errors.Is(err, errJudgeParse) {
-			return false, "judge parse error: " + strings.TrimPrefix(err.Error(), errJudgeParse.Error()+": ")
+		if errors.Is(err, ErrJudgeParse) {
+			return false, "judge parse error: " + strings.TrimPrefix(err.Error(), ErrJudgeParse.Error()+": ")
 		}
 		return false, "judge call failed: " + err.Error()
 	}
@@ -269,37 +269,38 @@ func trimToLastWholeRune(b []byte) []byte {
 	return b
 }
 
+// JudgeStart and JudgeEnd delimit the JSON object in a judge reply.
 const (
-	judgeStart = "===JSON_START==="
-	judgeEnd   = "===JSON_END==="
+	JudgeStart = "===JSON_START==="
+	JudgeEnd   = "===JSON_END==="
 )
 
-// parseYesNo reads a judge reply of the form
+// ParseYesNo reads a judge reply of the form
 // ===JSON_START==={"reasoning": "...", "answer": "yes"|"no"}===JSON_END===.
 // The last START delimiter and the first END after it are used, ANSI escapes
 // are stripped, and the answer must be exactly yes or no (any case, surrounding
-// whitespace ignored). Every error wraps errJudgeParse.
-func parseYesNo(raw string) (JudgeVerdict, error) {
-	start := strings.LastIndex(raw, judgeStart)
+// whitespace ignored). Every error wraps ErrJudgeParse.
+func ParseYesNo(raw string) (JudgeVerdict, error) {
+	start := strings.LastIndex(raw, JudgeStart)
 	if start < 0 {
-		return JudgeVerdict{}, fmt.Errorf("%w: JSON delimiters not found in output", errJudgeParse)
+		return JudgeVerdict{}, fmt.Errorf("%w: JSON delimiters not found in output", ErrJudgeParse)
 	}
-	body := raw[start+len(judgeStart):]
-	end := strings.Index(body, judgeEnd)
+	body := raw[start+len(JudgeStart):]
+	end := strings.Index(body, JudgeEnd)
 	if end < 0 {
-		return JudgeVerdict{}, fmt.Errorf("%w: JSON delimiters not found in output", errJudgeParse)
+		return JudgeVerdict{}, fmt.Errorf("%w: JSON delimiters not found in output", ErrJudgeParse)
 	}
-	body = stripANSISequences(strings.TrimSpace(body[:end]))
+	body = StripANSI(strings.TrimSpace(body[:end]))
 
 	var reply struct {
 		Reasoning string  `json:"reasoning"`
 		Answer    *string `json:"answer"`
 	}
 	if err := json.Unmarshal([]byte(strings.TrimSpace(body)), &reply); err != nil {
-		return JudgeVerdict{}, fmt.Errorf("%w: invalid JSON: %v", errJudgeParse, err)
+		return JudgeVerdict{}, fmt.Errorf("%w: invalid JSON: %v", ErrJudgeParse, err)
 	}
 	if reply.Answer == nil {
-		return JudgeVerdict{}, fmt.Errorf("%w: answer is missing", errJudgeParse)
+		return JudgeVerdict{}, fmt.Errorf("%w: answer is missing", ErrJudgeParse)
 	}
 	switch strings.ToLower(strings.TrimSpace(*reply.Answer)) {
 	case "yes":
@@ -307,5 +308,5 @@ func parseYesNo(raw string) (JudgeVerdict, error) {
 	case "no":
 		return JudgeVerdict{Yes: false, Reasoning: reply.Reasoning}, nil
 	}
-	return JudgeVerdict{}, fmt.Errorf("%w: answer must be yes or no, got %q", errJudgeParse, shorten(*reply.Answer, 40))
+	return JudgeVerdict{}, fmt.Errorf("%w: answer must be yes or no, got %q", ErrJudgeParse, Shorten(*reply.Answer, 40))
 }

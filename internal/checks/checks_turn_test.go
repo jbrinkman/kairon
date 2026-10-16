@@ -1,4 +1,4 @@
-package eval
+package checks
 
 import (
 	"strings"
@@ -33,7 +33,7 @@ func TestCheckTurnValidateAllowedTypes(t *testing.T) {
 	for _, typ := range []string{"output_contains", "output_not_contains", "gh_log_contains", "gh_log_not_contains"} {
 		t.Run(typ, func(t *testing.T) {
 			checks := decodeChecks(t, "- {criterion: c, type: "+typ+", pattern: x, turn: 2}\n")
-			if err := ValidateChecks("f.yaml", checks, "", nil); err != nil {
+			if err := Validate("f.yaml", checks, ValidateOptions{}); err != nil {
 				t.Fatalf("turn should be valid for %s: %v", typ, err)
 			}
 		})
@@ -51,7 +51,7 @@ func TestCheckTurnValidateRejectedTypes(t *testing.T) {
 	}
 	for typ, src := range cases {
 		t.Run(typ, func(t *testing.T) {
-			err := ValidateChecks("f.yaml", decodeChecks(t, "- "+src+"\n"), "", nil)
+			err := Validate("f.yaml", decodeChecks(t, "- "+src+"\n"), ValidateOptions{})
 			if err == nil {
 				t.Fatalf("turn on %s must be a load error", typ)
 			}
@@ -67,7 +67,7 @@ func TestCheckTurnValidateRejectsBelowOne(t *testing.T) {
 	for _, n := range []string{"0", "-1"} {
 		t.Run(n, func(t *testing.T) {
 			checks := decodeChecks(t, "- {criterion: c, type: output_contains, pattern: x, turn: "+n+"}\n")
-			err := ValidateChecks("f.yaml", checks, "", nil)
+			err := Validate("f.yaml", checks, ValidateOptions{})
 			if err == nil {
 				t.Fatalf("turn: %s must be rejected", n)
 			}
@@ -79,8 +79,8 @@ func TestCheckTurnValidateRejectsBelowOne(t *testing.T) {
 }
 
 // threeTurns is shared evidence: `gh issue create` only happens in turn 3.
-func threeTurns() CheckInput {
-	return CheckInput{
+func threeTurns() Input {
+	return Input{
 		Output: "out3",
 		GHLog:  "gh issue create --title t\n",
 		Turns: []TurnEvidence{
@@ -95,7 +95,7 @@ func TestCheckTurnEvalPerTurnGHLog(t *testing.T) {
 	in := threeTurns()
 	notCreate := Check{Criterion: "c", Type: CheckGHLogNotContains, Pattern: "issue create", Turn: turnPtr(1)}
 	create3 := Check{Criterion: "c", Type: CheckGHLogContains, Pattern: "issue create", Turn: turnPtr(3)}
-	rs := EvaluateChecks([]Check{notCreate, create3}, in)
+	rs := Evaluate([]Check{notCreate, create3}, in)
 	wantPass(t, rs[0])
 	wantPass(t, rs[1])
 
@@ -117,7 +117,7 @@ func TestCheckTurnEvalPerTurnOutput(t *testing.T) {
 func TestCheckTurnEvalDefaultsToLastTurn(t *testing.T) {
 	// Top-level Output/GHLog deliberately differ from the last turn's evidence
 	// so we can tell which one a no-turn check read.
-	in := CheckInput{
+	in := Input{
 		Output: "top-level",
 		GHLog:  "top-level-log",
 		Turns: []TurnEvidence{
@@ -131,7 +131,7 @@ func TestCheckTurnEvalDefaultsToLastTurn(t *testing.T) {
 }
 
 func TestCheckTurnEvalEmptyTurnsUsesTopLevel(t *testing.T) {
-	in := CheckInput{Output: "hello", GHLog: "gh issue create"}
+	in := Input{Output: "hello", GHLog: "gh issue create"}
 	wantPass(t, evalOne(t, Check{Type: CheckOutputContains, Pattern: "hello"}, in))
 	wantPass(t, evalOne(t, Check{Type: CheckGHLogContains, Pattern: "issue create"}, in))
 	// With no per-turn evidence, an explicit turn falls back to the legacy fields.
@@ -153,7 +153,7 @@ func TestCheckTurnEvalOutOfRangeFailsWithDetail(t *testing.T) {
 }
 
 func TestCheckTurnEvalOversizedGHLogIsPerTurn(t *testing.T) {
-	in := CheckInput{
+	in := Input{
 		GHLog: "tail",
 		Turns: []TurnEvidence{
 			{GHLog: "small"},

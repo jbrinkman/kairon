@@ -1,4 +1,4 @@
-package eval
+package checks
 
 import (
 	"errors"
@@ -12,26 +12,26 @@ import (
 )
 
 // checkCommandTimeout bounds one `command` check. It is a variable so tests
-// can shorten it; it is not a schema field.
+// can Shorten it; it is not a schema field.
 var checkCommandTimeout = 5 * time.Minute
 
 const (
 	// maxCheckFileBytes caps what file_contains / file_not_contains read.
 	maxCheckFileBytes = 10 << 20
-	// maxCheckDetail caps CheckResult.Detail.
+	// maxCheckDetail caps Result.Detail.
 	maxCheckDetail = 2048
 )
 
 // errPathSymlink marks a path that traverses (or ends in) a symlink.
 var errPathSymlink = errors.New("path traverses a symlink")
 
-// EvaluateChecks evaluates checks against in and returns one result per check
+// Evaluate evaluates checks against in and returns one result per check
 // in list order (Index is 1-based). Non-command checks run first, against the
 // workspace exactly as the agent left it; command checks then run in listed
-// order. It looks only at CheckInput: it never touches cfg, a case workspace
+// order. It looks only at Input: it never touches a case workspace
 // or a rubric. An invalid check yields a failed result, never a panic.
-func EvaluateChecks(checks []Check, in CheckInput) []CheckResult {
-	results := make([]CheckResult, len(checks))
+func Evaluate(checks []Check, in Input) []Result {
+	results := make([]Result, len(checks))
 	for _, commands := range []bool{false, true} {
 		for i := range checks {
 			if (checks[i].Type == CheckCommand) != commands {
@@ -44,8 +44,8 @@ func EvaluateChecks(checks []Check, in CheckInput) []CheckResult {
 }
 
 // evaluateOne validates (and compiles) a copy of c and runs it.
-func evaluateOne(index int, c Check, in CheckInput) (res CheckResult) {
-	res = CheckResult{Index: index, Type: c.Type, Label: checkLabel(index, c)}
+func evaluateOne(index int, c Check, in Input) (res Result) {
+	res = Result{Index: index, Type: c.Type, Label: checkLabel(index, c)}
 	defer func() {
 		if r := recover(); r != nil { // defensive: never crash a run on a bad check
 			res.Passed = false
@@ -60,7 +60,7 @@ func evaluateOne(index int, c Check, in CheckInput) (res CheckResult) {
 	if cp.Criterion == "" {
 		cp.Criterion = "-"
 	}
-	if err := validateCheck(&cp, cp.injectDir, nil); err != nil {
+	if err := validateCheck(&cp, ValidateOptions{HiddenDir: cp.injectDir}); err != nil {
 		res.Detail = truncateDetail("invalid check: " + err.Error())
 		return res
 	}
@@ -71,7 +71,7 @@ func evaluateOne(index int, c Check, in CheckInput) (res CheckResult) {
 	return res
 }
 
-func runCheck(c Check, in CheckInput) (bool, string) {
+func runCheck(c Check, in Input) (bool, string) {
 	switch c.Type {
 	case CheckFileExists, CheckFileAbsent, CheckFileContains, CheckFileNotContains, CheckChangedFiles, CheckCommand, CheckFactAsked, CheckFactNotAsked:
 		if err := checkDir(in.Dir); err != nil {
@@ -118,7 +118,7 @@ func runCheck(c Check, in CheckInput) (bool, string) {
 // evidence (a classic case) it is the top-level Output / GHLog. With it, a
 // check reads its own turn, or the last turn when it names none. A non-empty
 // detail means the check cannot be evaluated (turn out of range).
-func turnEvidence(c Check, in CheckInput) (TurnEvidence, string) {
+func turnEvidence(c Check, in Input) (TurnEvidence, string) {
 	if len(in.Turns) == 0 {
 		return TurnEvidence{Output: in.Output, GHLog: in.GHLog, GHLogOversized: in.GHLogOversized}, ""
 	}
@@ -247,15 +247,15 @@ func matchDetail(c Check, text, what string, wantMatch bool) (bool, string) {
 	loc := c.re.FindStringIndex(text)
 	switch {
 	case wantMatch && loc == nil:
-		return false, fmt.Sprintf("pattern /%s/ not found in %s", shorten(c.Pattern, 80), what)
+		return false, fmt.Sprintf("pattern /%s/ not found in %s", Shorten(c.Pattern, 80), what)
 	case !wantMatch && loc != nil:
-		return false, fmt.Sprintf("pattern /%s/ matched in %s: %q", shorten(c.Pattern, 80), what, shorten(text[loc[0]:loc[1]], 80))
+		return false, fmt.Sprintf("pattern /%s/ matched in %s: %q", Shorten(c.Pattern, 80), what, Shorten(text[loc[0]:loc[1]], 80))
 	}
 	return true, ""
 }
 
-// shorten truncates s to at most n bytes (on a rune boundary), adding "…".
-func shorten(s string, n int) string {
+// Shorten truncates s to at most n bytes (on a rune boundary), adding "…".
+func Shorten(s string, n int) string {
 	if len(s) <= n {
 		return s
 	}
@@ -273,7 +273,7 @@ func truncateDetail(s string) string {
 	if len(s) <= maxCheckDetail {
 		return s
 	}
-	return shorten(s, maxCheckDetail)
+	return Shorten(s, maxCheckDetail)
 }
 
 // checkLabel names a check for results and reasoning: its 1-based position,
@@ -283,19 +283,19 @@ func checkLabel(index int, c Check) string {
 	fmt.Fprintf(&b, "#%d %s", index, c.Type)
 	switch c.Type {
 	case CheckCommand:
-		fmt.Fprintf(&b, " %q", shorten(c.Run, 80))
+		fmt.Fprintf(&b, " %q", Shorten(c.Run, 80))
 	case CheckChangedFiles:
-		fmt.Fprintf(&b, " allow=[%s]", shorten(strings.Join(c.Allow, " "), 80))
+		fmt.Fprintf(&b, " allow=[%s]", Shorten(strings.Join(c.Allow, " "), 80))
 	case CheckJudge:
-		fmt.Fprintf(&b, " question=%q", shorten(c.Question, 80))
+		fmt.Fprintf(&b, " question=%q", Shorten(c.Question, 80))
 	case CheckFactAsked, CheckFactNotAsked:
-		fmt.Fprintf(&b, " fact=%s", shorten(c.Fact, 80))
+		fmt.Fprintf(&b, " fact=%s", Shorten(c.Fact, 80))
 	default:
 		if c.Path != "" {
-			fmt.Fprintf(&b, " path=%s", shorten(c.Path, 80))
+			fmt.Fprintf(&b, " path=%s", Shorten(c.Path, 80))
 		}
 		if c.Pattern != "" {
-			fmt.Fprintf(&b, " pattern=/%s/", shorten(c.Pattern, 80))
+			fmt.Fprintf(&b, " pattern=/%s/", Shorten(c.Pattern, 80))
 		}
 	}
 	if c.Turn != nil {

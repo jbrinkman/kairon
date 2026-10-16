@@ -1,6 +1,6 @@
 //go:build unix
 
-package eval
+package checks
 
 import (
 	"os/exec"

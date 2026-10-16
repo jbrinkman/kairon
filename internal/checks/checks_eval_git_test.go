@@ -1,4 +1,4 @@
-package eval
+package checks
 
 import (
 	"os"
@@ -9,8 +9,8 @@ import (
 
 func TestEvaluateChecks_ChangedFilesClean(t *testing.T) {
 	dir, base := evalRepo(t)
-	wantPass(t, evalOne(t, Check{Type: CheckChangedFiles, Allow: []string{}}, CheckInput{Dir: dir, Base: base}))
-	wantPass(t, evalOne(t, Check{Type: CheckChangedFiles, Allow: []string{}}, CheckInput{Dir: dir})) // Base defaults to HEAD
+	wantPass(t, evalOne(t, Check{Type: CheckChangedFiles, Allow: []string{}}, Input{Dir: dir, Base: base}))
+	wantPass(t, evalOne(t, Check{Type: CheckChangedFiles, Allow: []string{}}, Input{Dir: dir})) // Base defaults to HEAD
 }
 
 func TestEvaluateChecks_ChangedFilesKinds(t *testing.T) {
@@ -22,7 +22,7 @@ func TestEvaluateChecks_ChangedFilesKinds(t *testing.T) {
 	writeEvalFile(t, dir, "staged.txt", "s\n") // added (staged)
 	chkGit(t, dir, "add", "staged.txt")
 	writeEvalFile(t, dir, "extra/new.txt", "n\n") // untracked
-	in := CheckInput{Dir: dir, Base: base}
+	in := Input{Dir: dir, Base: base}
 
 	r := evalOne(t, Check{Type: CheckChangedFiles, Allow: []string{}}, in)
 	wantFail(t, r, "README.md")
@@ -46,10 +46,10 @@ func TestEvaluateChecks_ChangedFilesIgnoresEvalDir(t *testing.T) {
 	dir, base := evalRepo(t)
 	writeEvalFile(t, dir, ".eval/gh.log", "log\n")
 	writeEvalFile(t, dir, ".eval/note.txt", "n\n")
-	wantPass(t, evalOne(t, Check{Type: CheckChangedFiles, Allow: []string{}}, CheckInput{Dir: dir, Base: base}))
+	wantPass(t, evalOne(t, Check{Type: CheckChangedFiles, Allow: []string{}}, Input{Dir: dir, Base: base}))
 	// Even when .eval/ is not excluded by git and gets staged.
 	chkGit(t, dir, "add", "-f", ".eval")
-	wantPass(t, evalOne(t, Check{Type: CheckChangedFiles, Allow: []string{}}, CheckInput{Dir: dir, Base: base}))
+	wantPass(t, evalOne(t, Check{Type: CheckChangedFiles, Allow: []string{}}, Input{Dir: dir, Base: base}))
 }
 
 func TestEvaluateChecks_ChangedFilesDetectsAgentCommit(t *testing.T) {
@@ -58,23 +58,23 @@ func TestEvaluateChecks_ChangedFilesDetectsAgentCommit(t *testing.T) {
 	chkGit(t, dir, "add", "-A")
 	chkGit(t, dir, "-c", "user.name=a", "-c", "user.email=a@example.com", "commit", "-q", "-m", "agent")
 
-	wantFail(t, evalOne(t, Check{Type: CheckChangedFiles, Allow: []string{}}, CheckInput{Dir: dir, Base: base}), "modified README.md")
-	wantPass(t, evalOne(t, Check{Type: CheckChangedFiles, Allow: []string{"README.md"}}, CheckInput{Dir: dir, Base: base}))
+	wantFail(t, evalOne(t, Check{Type: CheckChangedFiles, Allow: []string{}}, Input{Dir: dir, Base: base}), "modified README.md")
+	wantPass(t, evalOne(t, Check{Type: CheckChangedFiles, Allow: []string{"README.md"}}, Input{Dir: dir, Base: base}))
 	// Without Base the default is HEAD, which already contains the commit.
-	wantPass(t, evalOne(t, Check{Type: CheckChangedFiles, Allow: []string{}}, CheckInput{Dir: dir}))
+	wantPass(t, evalOne(t, Check{Type: CheckChangedFiles, Allow: []string{}}, Input{Dir: dir}))
 }
 
 func TestEvaluateChecks_ChangedFilesGitErrors(t *testing.T) {
 	// Not a git repository.
-	wantFail(t, evalOne(t, Check{Type: CheckChangedFiles, Allow: []string{}}, CheckInput{Dir: t.TempDir()}), "git")
+	wantFail(t, evalOne(t, Check{Type: CheckChangedFiles, Allow: []string{}}, Input{Dir: t.TempDir()}), "git")
 
 	dir, _ := evalRepo(t)
 	// A directory inside a repo that is not itself the repo root.
 	sub := filepath.Join(dir, "docs")
-	wantFail(t, evalOne(t, Check{Type: CheckChangedFiles, Allow: []string{"**"}}, CheckInput{Dir: sub}), "repository root")
+	wantFail(t, evalOne(t, Check{Type: CheckChangedFiles, Allow: []string{"**"}}, Input{Dir: sub}), "repository root")
 	// Unknown base revision and option-looking base.
-	wantFail(t, evalOne(t, Check{Type: CheckChangedFiles, Allow: []string{"**"}}, CheckInput{Dir: dir, Base: "no-such-rev"}), "git")
-	wantFail(t, evalOne(t, Check{Type: CheckChangedFiles, Allow: []string{"**"}}, CheckInput{Dir: dir, Base: "--output=pwned"}), "base")
+	wantFail(t, evalOne(t, Check{Type: CheckChangedFiles, Allow: []string{"**"}}, Input{Dir: dir, Base: "no-such-rev"}), "git")
+	wantFail(t, evalOne(t, Check{Type: CheckChangedFiles, Allow: []string{"**"}}, Input{Dir: dir, Base: "--output=pwned"}), "base")
 	if _, err := os.Stat(filepath.Join(dir, "pwned")); err == nil {
 		t.Fatal("option injection via Base wrote a file")
 	}
@@ -87,7 +87,7 @@ func TestEvaluateChecks_ChangedFilesIgnoresRepoConfigCommands(t *testing.T) {
 	chkGit(t, dir, "config", "core.fsmonitor", "touch "+marker+"; echo")
 	chkGit(t, dir, "config", "diff.external", "touch "+marker)
 	writeEvalFile(t, dir, "README.md", "changed\n")
-	evalOne(t, Check{Type: CheckChangedFiles, Allow: []string{}}, CheckInput{Dir: dir, Base: base})
+	evalOne(t, Check{Type: CheckChangedFiles, Allow: []string{}}, Input{Dir: dir, Base: base})
 	if _, err := os.Stat(marker); err == nil {
 		t.Fatal("repository config command was executed")
 	}

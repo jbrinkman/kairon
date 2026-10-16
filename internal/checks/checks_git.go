@@ -1,4 +1,4 @@
-package eval
+package checks
 
 import (
 	"bytes"
@@ -39,7 +39,7 @@ func runGit(dir string, args ...string) ([]byte, error) {
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "git", gitArgs(args...)...)
 	cmd.Dir = dir
-	cmd.Env = hermeticGitEnv()
+	cmd.Env = HermeticGitEnv()
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	if err := cmd.Run(); err != nil {
@@ -47,7 +47,7 @@ func runGit(dir string, args ...string) ([]byte, error) {
 		if ctx.Err() != nil {
 			msg = "timed out"
 		}
-		return nil, fmt.Errorf("git %s failed: %v: %s", args[0], err, shorten(msg, 300))
+		return nil, fmt.Errorf("git %s failed: %v: %s", args[0], err, Shorten(msg, 300))
 	}
 	return stdout.Bytes(), nil
 }
@@ -129,7 +129,7 @@ func sameDir(a, b string) bool {
 
 const maxReportedChanges = 20
 
-func evalChangedFiles(c Check, in CheckInput) (bool, string) {
+func evalChangedFiles(c Check, in Input) (bool, string) {
 	paths, err := changedPaths(in.Dir, in.Base)
 	if err != nil {
 		return false, err.Error()

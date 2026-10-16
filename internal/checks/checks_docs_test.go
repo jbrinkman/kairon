@@ -1,4 +1,4 @@
-package eval
+package checks
 
 import (
 	"os"
@@ -120,7 +120,7 @@ func TestChecksDocsCoversEveryCheckType(t *testing.T) {
 func TestChecksDocsExamplesAreValid(t *testing.T) {
 	doc := readEvaluationDoc(t)
 	found := documentedChecks(t, doc)
-	hidden := filepath.Join("testdata", "evals", "fixtures", "hidden")
+	hidden := filepath.Join("..", "eval", "testdata", "evals", "fixtures", "hidden")
 
 	for ct, examples := range found {
 		if _, known := checkSpecs[ct]; !known {
@@ -129,7 +129,7 @@ func TestChecksDocsExamplesAreValid(t *testing.T) {
 		}
 		for i, ex := range examples {
 			c := ex.check
-			if err := ValidateChecks("docs/evaluation.md", []Check{c}, hidden, nil); err != nil {
+			if err := Validate("docs/evaluation.md", []Check{c}, ValidateOptions{HiddenDir: hidden}); err != nil {
 				t.Errorf("example #%d for %s is not a valid check: %v", i+1, ct, err)
 			}
 		}
@@ -147,7 +147,7 @@ func TestChecksDocsStatesKeyRules(t *testing.T) {
 		"legacy heuristics",
 		"Evaluation order",
 		"fixtures/hidden/",
-		"EvaluateChecks",
+		"Evaluate",
 		"agent produced no output; checks not run",
 	} {
 		if !strings.Contains(doc, want) {

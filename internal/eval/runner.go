@@ -11,7 +11,6 @@ import (
 	"os/exec"
 	"path"
 	"path/filepath"
-	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -24,9 +23,6 @@ import (
 	"github.com/jbrinkman/kairon/internal/inference"
 	"gopkg.in/yaml.v3"
 )
-
-// ansiRegex matches all CSI (Control Sequence Introducer) escape sequences.
-var ansiRegex = regexp.MustCompile(`\x1b\[[0-9;]*[a-zA-Z]`)
 
 // checkDockerAvailability verifies a container daemon (Podman or Docker) is
 // running and accessible. It delegates to sandbox.EnsureContainerDaemon so the
@@ -808,17 +804,6 @@ const containerBinDir = "/opt/kairon/bin"
 // containerPath is the container PATH: the fake-gh directory first, then the
 // base image's default PATH (where the real, unauthenticated gh lives).
 const containerPath = containerBinDir + ":/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-
-// blockedContainerEnv are GitHub credential/host variables that never reach
-// the container, even if a caller puts them in ContainerConfig.Environment, so
-// the real gh stays unauthenticated.
-var blockedContainerEnv = map[string]bool{
-	"GH_TOKEN":                true,
-	"GITHUB_TOKEN":            true,
-	"GH_ENTERPRISE_TOKEN":     true,
-	"GITHUB_ENTERPRISE_TOKEN": true,
-	"GH_HOST":                 true,
-}
 
 // containerUser is the unprivileged user every container runs as.
 const containerUser = "sandbox"
@@ -1779,10 +1764,6 @@ func loadCases(agent string) ([]TestCase, error) {
 	}
 
 	return cases, nil
-}
-
-func stripANSISequences(s string) string {
-	return ansiRegex.ReplaceAllString(s, "")
 }
 
 // caseThreshold returns the success threshold (percent) for a test case:

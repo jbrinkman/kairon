@@ -1,0 +1,13 @@
+- criterion: demo
+  type: file_exists
+  path: hello.txt
+- criterion: demo
+  type: file_contains
+  path: hello.txt
+  pattern: hello
+- criterion: demo
+  type: file_absent
+  path: missing.txt
+- criterion: demo
+  type: command
+  run: grep -q hello hello.txt

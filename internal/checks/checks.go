@@ -1,4 +1,4 @@
-package eval
+package checks
 
 import (
 	"errors"
@@ -9,15 +9,9 @@ import (
 	"strings"
 )
 
-// errInvalidChecks is wrapped by every checks validation failure so callers
-// can tell an invalid `checks` block (fatal) from other case-loading errors.
-var errInvalidChecks = errors.New("invalid checks")
-
-// errMalformedCase is wrapped by a case-file YAML decode failure so callers can
-// tell a malformed case file (fatal: the author wrote something the loader
-// could not decode, e.g. expect_exit: abc or a misspelled key) from a
-// genuinely absent/empty cases directory (skippable).
-var errMalformedCase = errors.New("malformed case file")
+// ErrInvalid is wrapped by every checks validation failure so callers
+// can tell an invalid `checks` block (fatal) from other loading errors.
+var ErrInvalid = errors.New("invalid checks")
 
 // CheckType names one kind of deterministic pass/fail check.
 type CheckType string
@@ -38,7 +32,7 @@ const (
 	CheckFactNotAsked      CheckType = "fact_not_asked"
 )
 
-// Check is one declarative pass/fail assertion attached to a rubric criterion.
+// Check is one declarative pass/fail assertion, optionally attached to a rubric criterion.
 type Check struct {
 	Criterion  string    `yaml:"criterion" json:"criterion"`
 	Type       CheckType `yaml:"type" json:"type"`
@@ -58,8 +52,8 @@ type Check struct {
 	injectDir string
 }
 
-// CheckResult is the outcome of one check.
-type CheckResult struct {
+// Result is the outcome of one check.
+type Result struct {
 	Index  int       `json:"index"`
 	Type   CheckType `json:"type"`
 	Label  string    `json:"label"`
@@ -67,8 +61,8 @@ type CheckResult struct {
 	Detail string    `json:"detail,omitempty"`
 }
 
-// CheckInput is everything a check may look at.
-type CheckInput struct {
+// Input is everything a check may look at.
+type Input struct {
 	Dir    string
 	Output string
 	GHLog  string
@@ -156,27 +150,8 @@ func (c Check) present() checkFields {
 	}
 }
 
-// ValidateChecks validates checks loaded from the case file `file` and
-// compiles them in place: it compiles patterns and allow globs, resolves
-// inject sources against hiddenDir and defaults expect_exit to 0 for command
-// checks. When rubric is non-nil every check's criterion must be one of its
-// non-cost criteria. Every error wraps errInvalidChecks and names the case
-// file, the 1-based check index and the check type.
-func ValidateChecks(file string, checks []Check, hiddenDir string, rubric *Rubric) error {
-	for i := range checks {
-		if err := validateCheck(&checks[i], hiddenDir, rubric); err != nil {
-			typ := string(checks[i].Type)
-			if typ == "" {
-				typ = "?"
-			}
-			return fmt.Errorf("%w: %s: check #%d (%s): %s", errInvalidChecks, file, i+1, typ, err)
-		}
-	}
-	return nil
-}
-
-func validateCheck(c *Check, hiddenDir string, rubric *Rubric) error {
-	if c.Criterion == "" {
+func validateCheck(c *Check, opts ValidateOptions) error {
+	if c.Criterion == "" && !opts.OptionalCriterion {
 		return errors.New("criterion is required")
 	}
 	if c.Type == "" {
@@ -211,8 +186,8 @@ func validateCheck(c *Check, hiddenDir string, rubric *Rubric) error {
 		}
 	}
 
-	if rubric != nil {
-		if err := checkCriterion(c.Criterion, rubric); err != nil {
+	if opts.Criterion != nil {
+		if err := opts.Criterion(c.Criterion); err != nil {
 			return err
 		}
 	}
@@ -257,7 +232,7 @@ func validateCheck(c *Check, hiddenDir string, rubric *Rubric) error {
 			c.ExpectExit = &zero
 		}
 		if have.inject {
-			dir, err := resolveInjects(c.Inject, hiddenDir)
+			dir, err := resolveInjects(c.Inject, opts.HiddenDir)
 			if err != nil {
 				return err
 			}
@@ -265,20 +240,6 @@ func validateCheck(c *Check, hiddenDir string, rubric *Rubric) error {
 		}
 	}
 	return nil
-}
-
-// checkCriterion requires name to be a non-cost criterion of rubric.
-func checkCriterion(name string, rubric *Rubric) error {
-	for _, cr := range rubric.Criteria {
-		if cr.Name != name {
-			continue
-		}
-		if cr.Type == "cost" {
-			return fmt.Errorf("criterion %q is a cost criterion and cannot have checks", name)
-		}
-		return nil
-	}
-	return fmt.Errorf("criterion %q is not in the rubric for agent %q", name, rubric.Agent)
 }
 
 // reservedInjectRoots are workspace entries an inject destination must never

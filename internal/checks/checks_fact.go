@@ -1,4 +1,4 @@
-package eval
+package checks
 
 import (
 	"bytes"
@@ -10,8 +10,8 @@ import (
 	"strings"
 )
 
-// simLogRel is the workspace-relative path of the simulated-user decision log.
-const simLogRel = ".eval/sim-log.jsonl"
+// SimLogRel is the workspace-relative path of the simulated-user decision log.
+const SimLogRel = ".eval/sim-log.jsonl"
 
 // SimDecision is one routing decision of the simulated user: the agent turn
 // whose output was routed, an excerpt of the question, the fact id it was
@@ -23,12 +23,12 @@ type SimDecision struct {
 	Discoverable *bool  `json:"discoverable,omitempty"`
 }
 
-// readSimLog reads <dir>/.eval/sim-log.jsonl: a regular, non-symlink file of
+// ReadSimLog reads <dir>/.eval/sim-log.jsonl: a regular, non-symlink file of
 // at most maxCheckFileBytes, one JSON SimDecision per line (blank lines are
 // ignored). Any problem is an error whose text is fit for a check detail; the
 // fact checks fail on it rather than passing silently.
-func readSimLog(dir string) ([]SimDecision, error) {
-	abs, info, err := resolveInDir(dir, simLogRel)
+func ReadSimLog(dir string) ([]SimDecision, error) {
+	abs, info, err := resolveInDir(dir, SimLogRel)
 	switch {
 	case err != nil:
 		return nil, fmt.Errorf("sim log unreadable: %w", err)
@@ -76,8 +76,8 @@ func readSimLog(dir string) ([]SimDecision, error) {
 }
 
 // evalFact evaluates fact_asked / fact_not_asked against the sim log.
-func evalFact(c Check, in CheckInput) (bool, string) {
-	decisions, err := readSimLog(in.Dir)
+func evalFact(c Check, in Input) (bool, string) {
+	decisions, err := ReadSimLog(in.Dir)
 	if err != nil {
 		return false, err.Error()
 	}

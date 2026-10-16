@@ -1,4 +1,4 @@
-package eval
+package checks
 
 import (
 	"os"
@@ -9,26 +9,26 @@ import (
 )
 
 // evalOne evaluates a single check and returns its only result.
-func evalOne(t *testing.T, c Check, in CheckInput) CheckResult {
+func evalOne(t *testing.T, c Check, in Input) Result {
 	t.Helper()
 	if c.Criterion == "" {
 		c.Criterion = "crit"
 	}
-	rs := EvaluateChecks([]Check{c}, in)
+	rs := Evaluate([]Check{c}, in)
 	if len(rs) != 1 {
 		t.Fatalf("want 1 result, got %d", len(rs))
 	}
 	return rs[0]
 }
 
-func wantPass(t *testing.T, r CheckResult) {
+func wantPass(t *testing.T, r Result) {
 	t.Helper()
 	if !r.Passed {
 		t.Fatalf("want pass, got fail: %q (%s)", r.Detail, r.Label)
 	}
 }
 
-func wantFail(t *testing.T, r CheckResult, detailSub string) {
+func wantFail(t *testing.T, r Result, detailSub string) {
 	t.Helper()
 	if r.Passed {
 		t.Fatalf("want fail, got pass (%s)", r.Label)
@@ -53,7 +53,7 @@ func chkGit(t *testing.T, dir string, args ...string) string {
 	t.Helper()
 	cmd := exec.Command("git", args...)
 	cmd.Dir = dir
-	cmd.Env = hermeticGitEnv()
+	cmd.Env = HermeticGitEnv()
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("git %v: %v: %s", args, err, out)
@@ -77,7 +77,7 @@ func evalRepo(t *testing.T) (dir, base string) {
 func TestEvaluateChecks_FileExists(t *testing.T) {
 	dir := t.TempDir()
 	writeEvalFile(t, dir, "a/b.txt", "x")
-	in := CheckInput{Dir: dir}
+	in := Input{Dir: dir}
 	wantPass(t, evalOne(t, Check{Type: CheckFileExists, Path: "a/b.txt"}, in))
 	wantPass(t, evalOne(t, Check{Type: CheckFileExists, Path: "a"}, in)) // any entry type
 	wantFail(t, evalOne(t, Check{Type: CheckFileExists, Path: "missing.txt"}, in), "does not exist")
@@ -91,7 +91,7 @@ func TestEvaluateChecks_FileExists(t *testing.T) {
 func TestEvaluateChecks_FileAbsent(t *testing.T) {
 	dir := t.TempDir()
 	writeEvalFile(t, dir, "marker.txt", "x")
-	in := CheckInput{Dir: dir}
+	in := Input{Dir: dir}
 	wantPass(t, evalOne(t, Check{Type: CheckFileAbsent, Path: "missing.txt"}, in))
 	wantFail(t, evalOne(t, Check{Type: CheckFileAbsent, Path: "marker.txt"}, in), "exists")
 	// A path below a regular file cannot exist.
@@ -104,7 +104,7 @@ func TestEvaluateChecks_PathThroughSymlinkRefused(t *testing.T) {
 	if err := os.Symlink(outside, filepath.Join(dir, "link")); err != nil {
 		t.Fatal(err)
 	}
-	in := CheckInput{Dir: dir}
+	in := Input{Dir: dir}
 	for _, c := range []Check{
 		{Type: CheckFileExists, Path: "link/secret.txt"},
 		{Type: CheckFileAbsent, Path: "link/nothing.txt"},
@@ -118,7 +118,7 @@ func TestEvaluateChecks_PathThroughSymlinkRefused(t *testing.T) {
 func TestEvaluateChecks_FileContains(t *testing.T) {
 	dir := t.TempDir()
 	writeEvalFile(t, dir, "out.txt", "hello\nworld 42\n")
-	in := CheckInput{Dir: dir}
+	in := Input{Dir: dir}
 	wantPass(t, evalOne(t, Check{Type: CheckFileContains, Path: "out.txt", Pattern: `world \d+`}, in))
 	wantPass(t, evalOne(t, Check{Type: CheckFileContains, Path: "out.txt", Pattern: `(?m)^hello$`}, in))
 	wantFail(t, evalOne(t, Check{Type: CheckFileContains, Path: "out.txt", Pattern: `absent`}, in), "not found")
@@ -129,7 +129,7 @@ func TestEvaluateChecks_FileContains(t *testing.T) {
 func TestEvaluateChecks_FileNotContains(t *testing.T) {
 	dir := t.TempDir()
 	writeEvalFile(t, dir, "out.txt", "hello world\n")
-	in := CheckInput{Dir: dir}
+	in := Input{Dir: dir}
 	wantPass(t, evalOne(t, Check{Type: CheckFileNotContains, Path: "out.txt", Pattern: `secret`}, in))
 	wantFail(t, evalOne(t, Check{Type: CheckFileNotContains, Path: "out.txt", Pattern: `wor.d`}, in), "matched")
 	// A missing file must not pass vacuously.
@@ -142,7 +142,7 @@ func TestEvaluateChecks_FileContentRefusesSymlinkAndHugeFiles(t *testing.T) {
 	if err := os.Symlink(filepath.Join(outside, "host.txt"), filepath.Join(dir, "out.txt")); err != nil {
 		t.Fatal(err)
 	}
-	in := CheckInput{Dir: dir}
+	in := Input{Dir: dir}
 	wantFail(t, evalOne(t, Check{Type: CheckFileContains, Path: "out.txt", Pattern: `host`}, in), "symlink")
 	wantFail(t, evalOne(t, Check{Type: CheckFileNotContains, Path: "out.txt", Pattern: `zzz`}, in), "symlink")
 
@@ -170,7 +170,7 @@ func TestEvaluateChecks_FileContentRefusesSymlinkAndHugeFiles(t *testing.T) {
 }
 
 func TestEvaluateChecks_OutputAndGHLog(t *testing.T) {
-	in := CheckInput{Output: "## Done\nall good\n", GHLog: "gh issue create --title t\n"}
+	in := Input{Output: "## Done\nall good\n", GHLog: "gh issue create --title t\n"}
 	wantPass(t, evalOne(t, Check{Type: CheckOutputContains, Pattern: `## Done`}, in))
 	wantFail(t, evalOne(t, Check{Type: CheckOutputContains, Pattern: `PASS`}, in), "not found")
 	wantPass(t, evalOne(t, Check{Type: CheckOutputNotContains, Pattern: `PASS`}, in))
@@ -181,7 +181,7 @@ func TestEvaluateChecks_OutputAndGHLog(t *testing.T) {
 	wantPass(t, evalOne(t, Check{Type: CheckGHLogNotContains, Pattern: `gh pr merge`}, in))
 	wantFail(t, evalOne(t, Check{Type: CheckGHLogNotContains, Pattern: `issue create`}, in), "matched")
 	// Empty gh log: not_contains passes vacuously, contains fails.
-	empty := CheckInput{}
+	empty := Input{}
 	wantPass(t, evalOne(t, Check{Type: CheckGHLogNotContains, Pattern: `x`}, empty))
 	wantFail(t, evalOne(t, Check{Type: CheckGHLogContains, Pattern: `x`}, empty), "not found")
 }
@@ -191,43 +191,13 @@ func TestEvaluateChecks_OutputAndGHLog(t *testing.T) {
 // rather than scoring the truncated prefix — a forbidden call past the cap
 // must not make gh_log_not_contains pass incorrectly.
 func TestEvaluateChecks_OversizedGHLogFailsChecks(t *testing.T) {
-	in := CheckInput{GHLog: "gh issue create\n", GHLogOversized: true}
+	in := Input{GHLog: "gh issue create\n", GHLogOversized: true}
 	wantFail(t, evalOne(t, Check{Type: CheckGHLogContains, Pattern: `gh issue create`}, in), "exceeds 10 MiB")
 	wantFail(t, evalOne(t, Check{Type: CheckGHLogNotContains, Pattern: `gh pr merge`}, in), "exceeds 10 MiB")
 }
 
-// TestReadGHLogDetectsOversize verifies readGHLog flags a log past the cap and
-// returns only the truncated prefix, while an at-cap log is not flagged.
-func TestReadGHLogDetectsOversize(t *testing.T) {
-	dir := t.TempDir()
-	logPath := filepath.Join(dir, ".eval", "gh.log")
-	if err := os.MkdirAll(filepath.Dir(logPath), 0o755); err != nil {
-		t.Fatal(err)
-	}
-
-	// Over the cap by one byte: flagged, content truncated to the cap.
-	if err := os.WriteFile(logPath, make([]byte, maxGHLogBytes+1), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	got, oversized := readGHLog(dir)
-	if !oversized {
-		t.Fatal("over-cap log not flagged oversized")
-	}
-	if len(got) != maxGHLogBytes {
-		t.Fatalf("truncated length = %d, want %d", len(got), maxGHLogBytes)
-	}
-
-	// Exactly at the cap: not flagged.
-	if err := os.WriteFile(logPath, make([]byte, maxGHLogBytes), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if _, oversized := readGHLog(dir); oversized {
-		t.Fatal("at-cap log wrongly flagged oversized")
-	}
-}
-
 func TestEvaluateChecks_InvalidCheckFailsWithDetail(t *testing.T) {
-	in := CheckInput{Dir: t.TempDir(), Output: "x"}
+	in := Input{Dir: t.TempDir(), Output: "x"}
 	for name, c := range map[string]Check{
 		"unknown type": {Type: "bogus"},
 		"empty":        {},
@@ -250,10 +220,10 @@ func TestEvaluateChecks_InvalidCheckFailsWithDetail(t *testing.T) {
 }
 
 func TestEvaluateChecks_ResultsKeepListOrderAndLabels(t *testing.T) {
-	rs := EvaluateChecks([]Check{
+	rs := Evaluate([]Check{
 		{Criterion: "c", Type: CheckOutputContains, Pattern: "x"},
 		{Criterion: "c", Type: CheckFileExists, Path: "missing.txt"},
-	}, CheckInput{Dir: t.TempDir(), Output: "x"})
+	}, Input{Dir: t.TempDir(), Output: "x"})
 	if len(rs) != 2 || rs[0].Index != 1 || rs[1].Index != 2 {
 		t.Fatalf("results = %+v", rs)
 	}
@@ -263,13 +233,13 @@ func TestEvaluateChecks_ResultsKeepListOrderAndLabels(t *testing.T) {
 	if !rs[0].Passed || rs[1].Passed {
 		t.Fatalf("passed = %v %v", rs[0].Passed, rs[1].Passed)
 	}
-	if got := EvaluateChecks(nil, CheckInput{}); got == nil || len(got) != 0 {
+	if got := Evaluate(nil, Input{}); got == nil || len(got) != 0 {
 		t.Fatalf("nil checks -> %#v", got)
 	}
 }
 
 func TestEvaluateChecks_MissingDirFailsFileChecks(t *testing.T) {
-	wantFail(t, evalOne(t, Check{Type: CheckFileExists, Path: "a"}, CheckInput{}), "directory")
-	wantFail(t, evalOne(t, Check{Type: CheckCommand, Run: "true"}, CheckInput{}), "directory")
-	wantFail(t, evalOne(t, Check{Type: CheckChangedFiles, Allow: []string{}}, CheckInput{Dir: filepath.Join(t.TempDir(), "nope")}), "directory")
+	wantFail(t, evalOne(t, Check{Type: CheckFileExists, Path: "a"}, Input{}), "directory")
+	wantFail(t, evalOne(t, Check{Type: CheckCommand, Run: "true"}, Input{}), "directory")
+	wantFail(t, evalOne(t, Check{Type: CheckChangedFiles, Allow: []string{}}, Input{Dir: filepath.Join(t.TempDir(), "nope")}), "directory")
 }

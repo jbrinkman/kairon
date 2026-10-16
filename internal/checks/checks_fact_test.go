@@ -1,4 +1,4 @@
-package eval
+package checks
 
 import (
 	"os"
@@ -28,9 +28,9 @@ func factCheck(typ CheckType, fact string) Check {
 	return Check{Criterion: "c", Type: typ, Fact: fact}
 }
 
-func evalOneFact(t *testing.T, dir string, c Check) CheckResult {
+func evalOneFact(t *testing.T, dir string, c Check) Result {
 	t.Helper()
-	res := EvaluateChecks([]Check{c}, CheckInput{Dir: dir})
+	res := Evaluate([]Check{c}, Input{Dir: dir})
 	if len(res) != 1 {
 		t.Fatalf("got %d results, want 1", len(res))
 	}
@@ -144,7 +144,7 @@ func TestFactChecks_ValidateFields(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			err := ValidateChecks("f.yaml", decodeChecks(t, "- "+tc.src+"\n"), "", nil)
+			err := Validate("f.yaml", decodeChecks(t, "- "+tc.src+"\n"), ValidateOptions{})
 			switch {
 			case tc.want == "" && err != nil:
 				t.Fatalf("unexpected error: %v", err)
@@ -172,7 +172,7 @@ func TestFactChecks_Label(t *testing.T) {
 
 func TestSimDecisionJSONKeys(t *testing.T) {
 	dir := writeSimLog(t, `{"turn":3,"question":"q","fact":"f9","discoverable":true}`+"\n")
-	decisions, err := readSimLog(dir)
+	decisions, err := ReadSimLog(dir)
 	if err != nil {
 		t.Fatal(err)
 	}

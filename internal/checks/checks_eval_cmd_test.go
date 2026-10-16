@@ -1,6 +1,6 @@
 //go:build unix
 
-package eval
+package checks
 
 import (
 	"os"
@@ -15,7 +15,7 @@ import (
 func intp(n int) *int { return &n }
 
 func TestEvaluateChecks_CommandExitCodes(t *testing.T) {
-	in := CheckInput{Dir: t.TempDir()}
+	in := Input{Dir: t.TempDir()}
 	wantPass(t, evalOne(t, Check{Type: CheckCommand, Run: "true"}, in))
 	wantPass(t, evalOne(t, Check{Type: CheckCommand, Run: "exit 3", ExpectExit: intp(3)}, in))
 	wantPass(t, evalOne(t, Check{Type: CheckCommand, Run: "false", ExpectExit: intp(1)}, in))
@@ -29,7 +29,7 @@ func TestEvaluateChecks_CommandExitCodes(t *testing.T) {
 
 func TestEvaluateChecks_CommandRunsInDirWithoutStdin(t *testing.T) {
 	dir := t.TempDir()
-	in := CheckInput{Dir: dir}
+	in := Input{Dir: dir}
 	wantPass(t, evalOne(t, Check{Type: CheckCommand, Run: "pwd -P > where.txt; cat > /dev/null"}, in))
 	got, err := os.ReadFile(filepath.Join(dir, "where.txt"))
 	if err != nil {
@@ -46,7 +46,7 @@ func TestEvaluateChecks_CommandEnvironment(t *testing.T) {
 	t.Setenv("GITHUB_TOKEN", "secret-b")
 	t.Setenv("GH_ENTERPRISE_TOKEN", "secret-c")
 	t.Setenv("KAIRON_CHECK_TEST", "yes")
-	in := CheckInput{Dir: t.TempDir()}
+	in := Input{Dir: t.TempDir()}
 	wantPass(t, evalOne(t, Check{Type: CheckCommand,
 		Run: `test -z "$GH_TOKEN" && test -z "$GITHUB_TOKEN" && test -z "$GH_ENTERPRISE_TOKEN" && test "$KAIRON_CHECK_TEST" = yes`}, in))
 }
@@ -85,7 +85,7 @@ func TestEvaluateChecks_CommandTimeoutKillsProcessGroup(t *testing.T) {
 	dir := t.TempDir()
 
 	start := time.Now()
-	r := evalOne(t, Check{Type: CheckCommand, Run: "sleep 60 & echo $! > pid.txt; wait"}, CheckInput{Dir: dir})
+	r := evalOne(t, Check{Type: CheckCommand, Run: "sleep 60 & echo $! > pid.txt; wait"}, Input{Dir: dir})
 	if el := time.Since(start); el > 15*time.Second {
 		t.Fatalf("timeout not enforced: took %s", el)
 	}
@@ -95,7 +95,7 @@ func TestEvaluateChecks_CommandTimeoutKillsProcessGroup(t *testing.T) {
 
 func TestEvaluateChecks_CommandStrayBackgroundProcessKilled(t *testing.T) {
 	dir := t.TempDir()
-	r := evalOne(t, Check{Type: CheckCommand, Run: "sleep 60 & echo $! > pid.txt"}, CheckInput{Dir: dir})
+	r := evalOne(t, Check{Type: CheckCommand, Run: "sleep 60 & echo $! > pid.txt"}, Input{Dir: dir})
 	wantPass(t, r)
 	waitDead(t, readPID(t, filepath.Join(dir, "pid.txt")))
 }
@@ -103,11 +103,11 @@ func TestEvaluateChecks_CommandStrayBackgroundProcessKilled(t *testing.T) {
 func TestEvaluateChecks_NonCommandChecksRunBeforeCommands(t *testing.T) {
 	dir := t.TempDir()
 	writeEvalFile(t, dir, "keep.txt", "k")
-	rs := EvaluateChecks([]Check{
+	rs := Evaluate([]Check{
 		{Criterion: "c", Type: CheckCommand, Run: "touch made.txt; rm keep.txt"},
 		{Criterion: "c", Type: CheckFileAbsent, Path: "made.txt"},
 		{Criterion: "c", Type: CheckFileExists, Path: "keep.txt"},
-	}, CheckInput{Dir: dir})
+	}, Input{Dir: dir})
 	for i, r := range rs {
 		if r.Index != i+1 || !r.Passed {
 			t.Fatalf("result %d = %+v", i, r)
