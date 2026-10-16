@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -213,6 +214,11 @@ func assertSelfTestResults(t *testing.T, evalsDir string, res AgentResult) {
 	if usage.AgentCost.Model != "stub-model" {
 		t.Errorf("stub-usage model = %q, want stub-model", usage.AgentCost.Model)
 	}
+	// stub-model has no configured price: the cost is unknown, not Sonnet's.
+	if usage.AgentCost.EstimatedUSD != 0 || !usage.AgentCost.CostIncomplete ||
+		!reflect.DeepEqual(usage.AgentCost.UnpricedModels, []string{"stub-model"}) {
+		t.Errorf("stub-usage agent_cost = %+v, want 0 USD, cost_incomplete, unpriced [stub-model]", usage.AgentCost)
+	}
 
 	for _, name := range []string{"stub-basic", "stub-quoted-input", markerCase, seededCase} {
 		if got := byName[name].AgentCost.UsageSource; got != "estimated" {
@@ -263,8 +269,13 @@ func assertSelfTestResults(t *testing.T, evalsDir string, res AgentResult) {
 		if judged != 1 {
 			t.Errorf("case %s: found %d judge-scored clarity criteria, want 1", c.CaseName, judged)
 		}
-		if c.JudgeCost.Model != "stub" {
-			t.Errorf("case %s judge model = %q, want stub", c.CaseName, c.JudgeCost.Model)
+		// The stub judge reports the pinned judge model (the default,
+		// claude-sonnet-5.5), which is priced, so judge_cost is complete.
+		if c.JudgeCost.Model != "claude-sonnet-5.5" {
+			t.Errorf("case %s judge model = %q, want claude-sonnet-5.5", c.CaseName, c.JudgeCost.Model)
+		}
+		if c.JudgeCost.CostIncomplete {
+			t.Errorf("case %s judge_cost marked incomplete: %+v", c.CaseName, c.JudgeCost)
 		}
 	}
 }

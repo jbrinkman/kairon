@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -50,7 +51,11 @@ func useRecording(t *testing.T, b inference.Backend) {
 	resetConfig()
 	t.Cleanup(resetConfig)
 	cfg.backend = b
-	cfg.pins = &runPins{Judge: "pinned-judge-model"}
+	price := inference.Price{InputUSDPerMTok: 3, OutputUSDPerMTok: 15}
+	cfg.pins = &runPins{Judge: "pinned-judge-model", Prices: inference.PriceTable{
+		"pinned-judge-model": price,
+		"served-model":       price,
+	}}
 }
 
 func captureDebug(t *testing.T) *bytes.Buffer {
@@ -167,7 +172,7 @@ func TestJudgeCheckParseFailureKeepsRecordZeroCost(t *testing.T) {
 	if cr.Calls[0].InputTokens != 500 || cr.Calls[0].CostUSD <= 0 {
 		t.Errorf("record should carry the spent tokens: %+v", cr.Calls[0])
 	}
-	if cr.JudgeCost != (CostInfo{}) {
+	if !reflect.DeepEqual(cr.JudgeCost, CostInfo{}) {
 		t.Errorf("JudgeCost = %+v, want zero on parse failure", cr.JudgeCost)
 	}
 	s := scoreByName(t, cr, "clarity")
@@ -188,7 +193,7 @@ func TestJudgeCheckBackendErrorRecorded(t *testing.T) {
 	if len(cr.Calls) != 1 || cr.Calls[0].Error != "boom" || cr.Calls[0].Model != "pinned-judge-model" {
 		t.Fatalf("Calls = %+v, want one record with Error=boom and the pinned model", cr.Calls)
 	}
-	if cr.JudgeCost != (CostInfo{}) {
+	if !reflect.DeepEqual(cr.JudgeCost, CostInfo{}) {
 		t.Errorf("JudgeCost = %+v, want zero", cr.JudgeCost)
 	}
 	s := scoreByName(t, cr, "clarity")

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strings"
 	"testing"
@@ -118,7 +119,7 @@ func TestSelftestSandbox(t *testing.T) {
 			if s.ActualOutput != n.ActualOutput {
 				t.Errorf("actual_output differs\n native: %q\nsandbox: %q", n.ActualOutput, s.ActualOutput)
 			}
-			if s.AgentCost != n.AgentCost {
+			if !reflect.DeepEqual(s.AgentCost, n.AgentCost) {
 				t.Errorf("agent_cost differs\n native: %+v\nsandbox: %+v", n.AgentCost, s.AgentCost)
 			}
 			if got, want := agentCallModel(s), agentCallModel(n); got != want {

@@ -954,6 +954,14 @@ FAIL selftest-fail: 50.0% (threshold 95.0%), 1/1 cases failed [repeat 2: min 0.0
 
 With no `--repeat` (or `--repeat 1`) there is no suffix and the line is exactly as above.
 
+When the agent's cost is incomplete (a call used a model with no configured price), the line also ends with ` [cost incomplete: no price for <models>]`, listing the unpriced model ids, after any repeat suffix. The line still starts with the verdict word:
+
+```
+PASS selftest: 100.0% (threshold 95.0%), 0/25 cases failed [cost incomplete: no price for claude-haiku-4.5]
+```
+
+See [Unknown cost](#unknown-cost).
+
 | Exit status | Meaning |
 |-------------|---------|
 | `0` | every evaluated agent passed |
@@ -1011,7 +1019,7 @@ kairon eval architect --case decompose-feature --repeat 3   # repeats that one c
 
 All four new fields are always written, including a legitimate `score_min` of `0`. A plain run writes `repeat: 1`, `score_min == score_max == score` and `repeat_scores: [score]`. Nothing scored fails closed with all of them `0`. `cases_total` counts distinct case names; see [Agent verdict](#agent-verdict) for `cases_failed`. These fields are the stable contract that promotion tooling can read from `summary.json`.
 
-**Cost** is the cost of all repeats: `cost` and `total_cost` sum every run, so `--repeat 3` costs about three times a single run.
+**Cost** is the cost of all repeats: `cost` and `total_cost` sum every run, so `--repeat 3` costs about three times a single run. If any repeat had an unknown cost the sum is marked `cost_incomplete` (see [Unknown cost](#unknown-cost)).
 
 **Output.** A plain run prints exactly what it always did. With `--repeat N` (N > 1) each case line is followed by one `run k/N` line per run with its usual status, and the agent line ends with the `[repeat N: min X%, max Y%]` suffix described in [Output and exit status](#output-and-exit-status).
 
@@ -1069,7 +1077,7 @@ stub:
 | Field | Required | Description |
 |-------|----------|-------------|
 | `stub.turns[].response` | yes | Text returned as the agent output. |
-| `stub.turns[].model` | no | Model name recorded in `agent_cost.model`. |
+| `stub.turns[].model` | no | Model name recorded in `agent_cost.model` and on the agent call record. It is also the model the call is **priced** under (see [Pricing](#pricing)): a model with no configured price (such as `stub-model`) gives an unknown cost. When omitted, the recorded model is empty, but the call is **priced under the run's pinned agent model** (the served model falls back to the pinned `evals.agent_model`, usually a Sonnet id with a known price) — so omitting the model does *not* by itself make the cost unknown. Set an unpriced model id such as `stub-model` to exercise the unknown-cost path. |
 | `stub.turns[].usage.input_tokens` / `output_tokens` | no | If present, these counts are used verbatim and marked `reported`. If absent, usage is estimated from text length. |
 | `stub.turns[].commands` | no | Shell commands, each run with `sh -c` in the case workspace (the request's `WorkDir`), in order, before the response is returned. This lets a stub case simulate an agent that edits files. In a multi-turn case the workspace is shared, so a later turn's commands see the files of earlier turns. They are scripted environment actions, **not** tool calls, so the trust gate never applies to them. |
 | `stub.turns[].tool_calls[]` | no | Scripted tool calls, each `{tool, command}`. They run after `commands`, in order. Each runs `sh -c <command>` in the workspace only if the tool is in the request's trust set; otherwise the command is skipped and a denial is recorded (see [Tool trust](#tool-trust)). With no trust set (every native run) every tool call runs. |
@@ -1105,9 +1113,10 @@ Each `agent_cost` and `judge_cost` in a result file carries `model` (when known)
 | `estimated` | Token counts were estimated as roughly 4 characters per token (`len/4`) of the prompt and the output. |
 
 - `kiro-cli` exposes neither the served model nor token counts, so its usage is always `estimated`. The `model` it records is the model the process was *launched with* (the value passed as `--model`, i.e. the pinned model), not a model confirmed by the service. It is empty (omitted from JSON) only for unpinned calls, such as code paths that do not go through `kairon eval`.
-- `estimated_usd` is always computed from the token counts at a fixed $3 / $15 per million input / output tokens, whether the counts were reported or estimated.
-- When several judge calls are accumulated into `judge_cost`, the merged `usage_source` is `reported` only if every contributing call was `reported`; otherwise it is `estimated`. The stub judge always produces estimated usage with model `stub`.
-- `summary.json` totals only `tokens_in`, `tokens_out` and `estimated_usd` (plus the provenance, execution-mode and containment fields described below).
+- `estimated_usd` is computed from the token counts at the **configured price of the model that served the call** (see [Pricing](#pricing)), whether the counts were reported or estimated. There is no single fixed rate: a call on `claude-haiku-4.5` is never priced as Sonnet.
+- **A model with no configured price has an unknown cost.** Its call contributes `0` to `estimated_usd`, which is *not* a real zero, and the cost is flagged `cost_incomplete` with the model named in `unpriced_models` (see [Unknown cost](#unknown-cost)). A call that spent no tokens at all costs a known `0`: nothing was spent, so nothing is unknown.
+- When several judge calls are accumulated into `judge_cost`, the merged `usage_source` is `reported` only if every contributing call was `reported`; otherwise it is `estimated`. The stub judge always produces estimated usage; its model is the pinned judge model when the request is pinned (as in every `kairon eval` run, so it is priced like the real judge) and `stub` otherwise.
+- `summary.json` totals `tokens_in`, `tokens_out` and `estimated_usd`, plus `cost_incomplete` and `unpriced_models` when a contributing cost was unknown (and the provenance, execution-mode and containment fields described below).
 - The individual calls behind `agent_cost` and `judge_cost` are listed in each case's `calls` array (see [Per-call records](#per-call-records-calls)).
 
 Example from the self-test `stub-usage` case:
@@ -1116,11 +1125,71 @@ Example from the self-test `stub-usage` case:
 "agent_cost": {
   "tokens_in": 123,
   "tokens_out": 45,
-  "estimated_usd": 0.001044,
+  "estimated_usd": 0,
   "model": "stub-model",
-  "usage_source": "reported"
+  "usage_source": "reported",
+  "cost_incomplete": true,
+  "unpriced_models": ["stub-model"]
 }
 ```
+
+`stub-model` has no configured price, so the tokens are recorded but the cost is unknown. The self-test case `stub-price-sonnet` (model `claude-sonnet-5.5`, 1000 input / 500 output tokens) is priced: `1000 * 3 / 1e6 + 500 * 15 / 1e6` = `0.0105`, with no `cost_incomplete`. `stub-price-unknown` (model `claude-haiku-4.5`, same tokens) has an unknown cost.
+
+### Pricing
+
+Cost is `tokens x price` for the model that served each call. Prices come from a top-level `pricing:` block in `.kairon/config.yaml` (not under `evals:`, so production code that shares the `inference.CallRecord` format can use the same block). The arithmetic lives in `internal/inference` (`PriceTable.Cost`); `internal/eval` only looks prices up and holds no price constants.
+
+```yaml
+pricing:
+  claude-sonnet-5.5:
+    input_usd_per_mtok: 3
+    output_usd_per_mtok: 15
+  claude-sonnet-5:
+    input_usd_per_mtok: 3
+    output_usd_per_mtok: 15
+  # ... claude-sonnet-4.6, claude-sonnet-4.5, claude-sonnet-4 at the same 3 / 15
+```
+
+| Rule | Behaviour |
+|------|-----------|
+| Keys | **Exact** model ids, matched as written: no trimming and no case folding (`Claude-Sonnet-5.5` does not match `claude-sonnet-5.5`). An empty key or one with leading or trailing whitespace is rejected when the config is loaded. |
+| Unit | USD **per million tokens**, `input_usd_per_mtok` and `output_usd_per_mtok`. Both are required for an entry; negative, `NaN` and infinite values are rejected. The error names the model id. |
+| Formula | `input_tokens * input_usd_per_mtok / 1e6 + output_tokens * output_usd_per_mtok / 1e6`. |
+| Unpriced model | No entry means an **unknown** cost (see [Unknown cost](#unknown-cost)). The harness never falls back to another model's price. |
+| Defaults | When the `pricing` key is **absent** (or the config file is missing) the built-in defaults apply: the five Sonnet ids in `evals.allowed_models` (`claude-sonnet-5.5`, `claude-sonnet-5`, `claude-sonnet-4.6`, `claude-sonnet-4.5`, `claude-sonnet-4`) at 3 / 15. `kairon init` writes the same block, active, into new projects, and `.kairon/config.yaml` carries it too. |
+| Replace, not merge | When the `pricing` key is **present** it replaces the defaults entirely. Remove an entry and that model's cost becomes unknown; an empty mapping (`pricing: {}`) prices nothing. |
+| Haiku | `claude-haiku-4.5` is allowed to run (it is in `evals.allowed_models`) but is **intentionally unpriced**: add an entry to price it. |
+
+`kairon eval` reads the block once, in the pre-flight, and pins it for the run. A config that cannot be read or parsed, or a `pricing` entry that is invalid, refuses the run with `cannot load pricing: ...` before any case starts and before any model call, like an invalid `evals` block.
+
+#### Unknown cost
+
+When a call used tokens on a model with no price, its cost cannot be computed. The harness records that fact instead of a plausible-looking number:
+
+- **Call record** (`calls[]`): `cost_usd` is `0` and `cost_unknown` is `true`. A reader must **not** sum a `cost_usd` of `0` with `cost_unknown: true` as a real price. `cost_unknown` is omitted when the cost is known, so records written before this field existed read as known, which is what they were.
+- **Cost objects** (`agent_cost`, `judge_cost`, `agent_verdicts.<agent>.cost`, `summary.total_cost`): `estimated_usd` holds the sum of the *known* costs, `cost_incomplete` is `true`, and `unpriced_models` lists the model ids that had no price (sorted, de-duplicated; empty ids are left out). Both fields are omitted when every contributing cost was known. The flags propagate upward: one unpriced call makes its case's cost, its agent's verdict cost and the run's `total_cost` incomplete, so `total_cost.estimated_usd` is then a **lower bound**, not a total.
+- **Call record model and priced model are the same value.** The model of a call is the model the backend reports, else the model the request was pinned to; the price lookup and the `model` in the record both use it, so a record cannot say "model X" while its cost was priced under another id.
+
+```json
+"calls": [
+  { "role": "agent", "model": "claude-haiku-4.5", "input_tokens": 1000, "output_tokens": 500,
+    "cost_usd": 0, "cost_unknown": true, "estimated": false }
+],
+"agent_cost": {
+  "tokens_in": 1000, "tokens_out": 500, "estimated_usd": 0,
+  "model": "claude-haiku-4.5", "usage_source": "reported",
+  "cost_incomplete": true, "unpriced_models": ["claude-haiku-4.5"]
+}
+```
+
+Where the incompleteness is shown to a human:
+
+- **Verdict line.** The `PASS`/`FAIL` line of an agent whose cost is incomplete ends with `[cost incomplete: no price for <models>]`, for example `PASS selftest: 100.0% (threshold 95.0%), 0/25 cases failed [cost incomplete: no price for claude-haiku-4.5]`. The line still starts with `PASS ` or `FAIL `, so `grep '^PASS \|^FAIL '` keeps working (see [Output and exit status](#output-and-exit-status)).
+- **`eval diff`.** If either run's `total_cost` is incomplete, the `Cost:` delta line is suffixed ` (incomplete: <side(s)>)` naming which run(s) are incomplete, and the quality-per-dollar lines are suffixed ` (cost incomplete)`, because a ratio over a lower bound overstates quality per dollar (see [Comparing Runs](#comparing-runs)).
+
+**Failed calls stay outside `judge_cost`.** This is unchanged by pricing. A judge call that failed, or whose reply could not be parsed, still has its `calls[]` record (with its tokens, and its `cost_usd` / `cost_unknown`), but adds nothing to the case's `judge_cost`, so `judge_cost` can be lower than the sum of the `calls[]` costs. Likewise a failed agent call is in `calls[]` only. Pricing does not change which calls are counted, only how each counted call is priced.
+
+**Out of scope.** `kiro-cli` reports neither tokens nor the served model, so its usage stays *estimated* (about 4 characters per token) and its model is the one it was launched with. Pricing makes the cost correct for whatever usage a backend reports and visible when it is unknown; it does not make a `kiro-cli` token count exact.
 
 ## Model Pinning and Run Provenance
 
@@ -1153,6 +1222,7 @@ evals:
 | `evals.trust_tools` | none | Map of agent name to the tool names that agent is trusted to use in a `--sandbox` run. It **overrides** the agent config's `allowedTools` for that agent; an empty list (`builder: []`) trusts nothing. `*` and empty entries are rejected. Has no effect on native runs. See [Tool trust](#tool-trust). |
 
 Notes:
+- Prices are configured separately, in the top-level `pricing` block (see [Pricing](#pricing)), not under `evals`.
 - A user-supplied `allowed_models` list **replaces** the default list; it is not appended to it. Omit the key to keep the defaults.
 - All values are whitespace-trimmed, and empty `allowed_models` entries are dropped. For `trust_tools`, agent and tool names are trimmed and entries with an empty agent name are dropped.
 - Use `agent_model` to run on a model that is available on your machine without editing agent configs (for example `agent_model: claude-sonnet-4.5` when `claude-sonnet-5.5` is not available). The override must itself be in `allowed_models`.
@@ -1208,13 +1278,14 @@ Each case in `<agent>.json` carries a `calls` array with one record per agent ca
 | Field | Description |
 |-------|-------------|
 | `role` | `agent` or `judge`. |
-| `model` | The model that served the call when the backend reports one, otherwise the pinned (requested) model. `kiro-cli` cannot report the served model, so its records carry the pinned model; the stub records `stub` / `stub-model`. |
+| `model` | The model that served the call when the backend reports one, otherwise the pinned (requested) model. `kiro-cli` cannot report the served model, so its records carry the pinned model. The stub agent records the scripted `stub.turns[].model` (e.g. `stub-model`, possibly empty); the stub judge records the pinned judge model, else `stub`. The price lookup uses this same value. |
 | `agent` | Agent name (agent calls only). |
 | `turn` | 1-based user turn of the call. Present only on agent calls of a `turns` or simulated-user case (see [Multi-turn cases](#multi-turn-cases)); omitted for single-turn cases and judge calls. |
 | `criterion` | Rubric criterion being judged (judge calls only). |
 | `purpose` | Why a judge call was made when it is not a criterion check. Currently only `simulated_user`, the routing call of a [simulated-user case](#routing). Omitted otherwise. |
 | `input_tokens` / `output_tokens` | Token counts for the call. |
-| `cost_usd` | Cost of the call, using the same fixed $3 / $15 per million tokens estimate as `agent_cost` / `judge_cost`. |
+| `cost_usd` | Cost of the call: tokens times the configured price of `model` (see [Pricing](#pricing)), the same price used for `agent_cost` / `judge_cost`. `0` when the model has no configured price; see `cost_unknown`. |
+| `cost_unknown` | `true` when `cost_usd` is `0` only because `model` has no configured price (the call used tokens). Omitted when the cost is known. Do not sum such a `cost_usd` as a real price. See [Unknown cost](#unknown-cost). |
 | `estimated` | `true` unless the usage was `reported` by the backend. |
 | `duration_ms` | Call duration in milliseconds: the backend's measurement, or wall-clock time when the backend reports none (the stub). |
 | `prompt_sha256` | Hash of the agent's prompt inputs (agent calls only). It is the **case's own** `prompt_sha256` (see [Per-case fields](#per-case-fields-in-agentjson)), computed from that case's staged workspace. It equals the file-level `prompt_sha256` unless the case's fixture overrides `.kiro` content. |
@@ -1225,7 +1296,7 @@ Each case in `<agent>.json` carries a `calls` array with one record per agent ca
 Details:
 - `agent_cost` and `judge_cost` are unchanged; `calls` is the per-call breakdown behind them.
 - No agent record is written when prompt assembly failed, because no call was made. A `turns` case writes one agent record per turn that ran (the failed turn included), each with its `turn`.
-- A judge call is recorded even when its output could not be parsed (the tokens were spent). Its cost appears in that call's `calls[]` record but **not** in the case's `judge_cost`, which keeps a zero cost for a failed or unparseable judge call — so for such a case the sum of `calls[].cost_usd` can exceed `judge_cost`.
+- A judge call is recorded even when its output could not be parsed (the tokens were spent). Its cost appears in that call's `calls[]` record but **not** in the case's `judge_cost`, which keeps a zero cost for a failed or unparseable judge call — so for such a case the sum of `calls[].cost_usd` can exceed `judge_cost`. Failed judge calls remain outside `judge_cost` whatever the model's price (see [Unknown cost](#unknown-cost)).
 - A `--sandbox` run builds its agent record exactly like a native one, from the same request and the same completion logic: the cost comes from the backend's reported or estimated usage, `model` is the served model when the backend reports one (the stub) or the pinned model (`kiro-cli`), and `estimated` is `true` unless the usage was `reported`. For the same case the sandboxed and native `output`, `agent_cost`, call record `model` and `prompt_sha256` match. The sandboxed agent record additionally carries `trusted_tools`; the only other differences between a native and a container run are the run-level `sandbox` and `containment` fields (see [Execution mode and containment](#execution-mode-and-containment) and [Parity between native and container runs](#parity-between-native-and-container-runs)).
 
 The per-call records (field values below are illustrative):
@@ -1240,14 +1311,15 @@ The per-call records (field values below are illustrative):
       "agent": "selftest",
       "input_tokens": 123,
       "output_tokens": 45,
-      "cost_usd": 0.001044,
+      "cost_usd": 0,
+      "cost_unknown": true,
       "estimated": false,
       "duration_ms": 0,
       "prompt_sha256": "9f2c…"
     },
     {
       "role": "judge",
-      "model": "stub",
+      "model": "claude-sonnet-5.5",
       "criterion": "clarity",
       "input_tokens": 210,
       "output_tokens": 18,
@@ -1325,7 +1397,7 @@ In the self-test, `stub-conventions-fixture` shows this: its workspace fixture s
 ```json
 {
   "git_hash": "a1b2c3d",
-  "total_cost": { "tokens_in": 4210, "tokens_out": 980, "estimated_usd": 0.0273 },
+  "total_cost": { "tokens_in": 4210, "tokens_out": 980, "estimated_usd": 0.0273, "cost_incomplete": true, "unpriced_models": ["claude-haiku-4.5"] },
   "agent_scores": { "architect": 0.85, "builder": 0.8 },
   "agent_verdicts": {
     "architect": { "score": 85, "threshold": 95, "passed": false, "cases_total": 4, "cases_failed": 1, "cost": { "tokens_in": 2100, "tokens_out": 500, "estimated_usd": 0.0138 }, "repeat": 1, "score_min": 85, "score_max": 85, "repeat_scores": [85] },
@@ -1347,7 +1419,7 @@ In the self-test, `stub-conventions-fixture` shows this: its workspace fixture s
 | Field | Description |
 |-------|-------------|
 | `git_hash`, `total_cost`, `agent_scores` | Run totals. `agent_scores` is score / maximum per agent as a **0–1 fraction**; skipped criteria count as 0 and stay in the maximum (see [Skipped Criteria](#skipped-criteria)). An agent with a zero denominator has no entry. |
-| `total_cost` | Sum of the `cost` of every entry in `agent_verdicts` (`tokens_in`, `tokens_out`, `estimated_usd`; `model` and `usage_source` are not aggregated). It accumulates across agents and is recomputed from the verdicts on every save, so repeated progressive saves of the same agent and `--resume` do not double count it. |
+| `total_cost` | Sum of the `cost` of every entry in `agent_verdicts` (`tokens_in`, `tokens_out`, `estimated_usd`; `model` and `usage_source` are not aggregated). It accumulates across agents and is recomputed from the verdicts on every save, so repeated progressive saves of the same agent and `--resume` do not double count it. When any contributing call had an unknown cost it also carries `cost_incomplete: true` and the union of `unpriced_models`, and `estimated_usd` is then a lower bound (see [Unknown cost](#unknown-cost)); both keys are omitted otherwise. |
 | `agent_verdicts` | Map of agent name to its pass/fail verdict (fields below). One entry per evaluated agent. Absent in a `summary.json` written before verdicts existed. |
 | `judge_model`, `agents` | Run-level provenance, as described above. |
 | `prompt_file` | The `--prompt-file` path of a candidate prompt run, normalised as in `<agent>.json`. Written at the top level only under the single-agent rule below (a `--prompt-file` run always names one agent, so it is always present for such a run), and per agent as `agents.<agent>.prompt_file`. Omitted entirely when no `--prompt-file` was used. |
@@ -1363,7 +1435,7 @@ In the self-test, `stub-conventions-fixture` shows this: its workspace fixture s
 | `passed` | boolean | `score >= threshold`, on the mean. `false` when nothing was scored. |
 | `cases_total` | integer | Number of distinct cases evaluated (a case run N times counts once). |
 | `cases_failed` | integer | Number of cases that did not pass their own threshold; for a case with several runs, its score pooled over the runs is compared to its threshold. Informational. |
-| `cost` | object | The agent's cost (agent and judge calls of every run of every case): `tokens_in`, `tokens_out`, `estimated_usd`. |
+| `cost` | object | The agent's cost (agent and judge calls of every run of every case): `tokens_in`, `tokens_out`, `estimated_usd`, plus `cost_incomplete` and `unpriced_models` when a contributing call had an unknown cost (omitted otherwise; see [Unknown cost](#unknown-cost)). |
 | `repeat` | integer | Number of repeats (`--repeat`; `1` for a plain run). Always written. |
 | `score_min` | number, **percent** (0–100) | The lowest repeat score. Always written, including `0`; equals `score` for a plain run. |
 | `score_max` | number, **percent** (0–100) | The highest repeat score. Always written; equals `score` for a plain run. |
@@ -2033,7 +2105,9 @@ internal/eval/testdata/evals/
   rubrics/selftest.yaml             # structural_completeness (deterministic), clarity (LLM-judged), cost_efficiency (cost)
   rubrics/selftest-fail.yaml        # structural_completeness (deterministic), cost_efficiency (cost)
   cases/selftest/stub-basic.yaml    # no stub usage -> estimated; setup file exercises path rebasing
-  cases/selftest/stub-usage.yaml    # stub model + usage 123/45 -> reported
+  cases/selftest/stub-usage.yaml    # stub model + usage 123/45 -> reported; stub-model has no price, so the cost is unknown
+  cases/selftest/stub-price-sonnet.yaml   # model claude-sonnet-5.5, usage 1000/500 -> priced, cost 0.0105
+  cases/selftest/stub-price-unknown.yaml  # model claude-haiku-4.5, usage 1000/500 -> unpriced, cost unknown (cost_unknown, cost_incomplete)
   cases/selftest/stub-quoted-input.yaml  # input with quotes, newlines, $(...) and backticks; must reach the backend verbatim
   cases/selftest/stub-marker.yaml   # stub turn command 'echo hi > marker.txt' leaves marker.txt in the case workspace
   cases/selftest/stub-seeded-workspace.yaml  # workspace: seeded; the stub appends to README.md -> ' M README.md'
@@ -2082,7 +2156,7 @@ internal/eval/testdata/evals/
 
 `selftest.json` declares a `model` so the self-test passes the model-pinning pre-flight, and lists a `skill://.kiro/skills/selftest-conventions/SKILL.md` resource that no project file provides. It exercises the "missing resources are normal" rule: the run succeeds and the agent-level `resources_present` is `[]`, even if you create `.kiro/skills/selftest-conventions/SKILL.md` in the repository, because a project `*-conventions` skill is never staged. Only the `stub-conventions-fixture` case, whose workspace fixture supplies that file, lists it in its own per-case `resources_present` (see [Per-case fields](#per-case-fields-in-agentjson)).
 
-The `selftest` agent has twenty-six cases and all of them pass (`task eval:selftest`): the six `stub-*` cases (five original ones, which carry no `checks` and keep their pinned scores, plus `stub-conventions-fixture`), fourteen `check-*` cases that exercise [checks](#checks) (ten per-type cases, `check-command-inject`, and three `judge` cases: `check-judge-yes`, `check-judge-files` and `check-judge-mixed`), three [multi-turn](#multi-turn-cases) cases (`multi-turn-gh-log`, `multi-turn-judge`, `multi-turn-workspace`) and three [simulated-user](#simulated-user-elicitation-cases) cases (`sim-routes`, `sim-stop-when`, `sim-judge`). The `selftest-fail` agent is deliberately separate, so `selftest` keeps meaning "everything passes". It has twenty-one cases. Twenty are **expected to fail** on a plain run: sixteen `check-*` cases (ten per-type cases and five of the six `check-judge-*` cases) plus `check-partial`, all built so that checks fail. The sixth, `check-judge-repeat`, is the exception: its `stub.judge: [yes, no]` answers `yes` on the first run, so a plain run (no `--repeat`) scores it `1/1` and the agent reports `20/21 cases failed`; only under [`--repeat 2`](#repeat-runs---repeat) does it show the `1/1` then `0/1` spread that pools to a failing 50% (see the `judge` paragraph below). The agent still ends below threshold either way. The rest are `stub-timeout`, which records a timeout failure (empty `actual_output`, `error_context.stderr` containing `timeout after 1s`) in about a second; `stub-empty-response`, whose stub returns an empty response, so the case has no output, every criterion scores 0 out of its maximum, and it still counts toward the agent's score; `multi-turn-wrong-turn`; and `sim-fact-not-asked`, both described below. Run it with:
+The `selftest` agent has twenty-eight cases and all of them pass (`task eval:selftest`): eight `stub-*` cases — the five original ones (`stub-basic`, `stub-marker`, `stub-quoted-input`, `stub-seeded-workspace`, `stub-usage`), which carry no `checks` and keep their pinned scores, `stub-conventions-fixture`, and the two pricing cases `stub-price-sonnet` and `stub-price-unknown` (see [Pricing](#pricing)); fourteen `check-*` cases that exercise [checks](#checks) (ten per-type cases, `check-command-inject`, and three `judge` cases: `check-judge-yes`, `check-judge-files` and `check-judge-mixed`); three [multi-turn](#multi-turn-cases) cases (`multi-turn-gh-log`, `multi-turn-judge`, `multi-turn-workspace`); and three [simulated-user](#simulated-user-elicitation-cases) cases (`sim-routes`, `sim-stop-when`, `sim-judge`). The `selftest-fail` agent is deliberately separate, so `selftest` keeps meaning "everything passes". It has twenty-one cases. Twenty are **expected to fail** on a plain run: sixteen `check-*` cases (ten per-type cases and five of the six `check-judge-*` cases) plus `check-partial`, all built so that checks fail. The sixth, `check-judge-repeat`, is the exception: its `stub.judge: [yes, no]` answers `yes` on the first run, so a plain run (no `--repeat`) scores it `1/1` and the agent reports `20/21 cases failed`; only under [`--repeat 2`](#repeat-runs---repeat) does it show the `1/1` then `0/1` spread that pools to a failing 50% (see the `judge` paragraph below). The agent still ends below threshold either way. The rest are `stub-timeout`, which records a timeout failure (empty `actual_output`, `error_context.stderr` containing `timeout after 1s`) in about a second; `stub-empty-response`, whose stub returns an empty response, so the case has no output, every criterion scores 0 out of its maximum, and it still counts toward the agent's score; `multi-turn-wrong-turn`; and `sim-fact-not-asked`, both described below. Run it with:
 
 ```bash
 go run ./cmd/kairon eval --backend stub --no-sandbox --evals-dir internal/eval/testdata/evals selftest-fail
@@ -2178,7 +2252,7 @@ go run ./cmd/kairon eval --backend stub --evals-dir internal/eval/testdata/check
 
 Like `selftest-fail`, `selftest-checks-fail` is an expected-to-fail agent, and `checks-only-invalid` is an expected-to-be-rejected fixture; neither is a regression when it fails.
 
-The self-test runs with the stub backend, so its per-call `model` values are `stub` / `stub-model` (what the stub reports) rather than the pinned names. The pinned models still appear in the run-level `agent_model` and `judge_model` fields.
+The self-test runs with the stub backend. Its agent calls record the scripted `stub.turns[].model` (for example `stub-model`) rather than the pinned name, and its judge calls record the pinned judge model (so they are priced like the real judge). The pinned models also appear in the run-level `agent_model` and `judge_model` fields. Because `stub-model` has no configured price, the `stub-usage` case has an unknown cost, so a full `selftest` run reports `cost_incomplete`; the single-case runs `selftest stub-price-sonnet` (priced, `0.0105`) and `selftest stub-price-unknown` (unpriced `claude-haiku-4.5`) show the two outcomes without that noise (see [Pricing](#pricing)).
 
 To list the self-test cases: `kairon eval --evals-dir internal/eval/testdata/evals --list selftest`.
 
@@ -2941,6 +3015,8 @@ The `eval diff` command shows, in this order:
 - Per-criterion score deltas per agent
 - Token and cost deltas
 - Quality-per-dollar assessment
+
+**Incomplete costs.** If either run's `total_cost` is `cost_incomplete` (a call used a model with no configured price, see [Unknown cost](#unknown-cost)), the diff says so instead of comparing two lower bounds as if they were totals: the `Cost:` delta line is suffixed ` (incomplete: <side(s)>)`, naming which run(s) are incomplete, and each quality-per-dollar line is suffixed ` (cost incomplete)`. Runs written before cost marking existed have no `cost_incomplete` and are read as complete, so they diff exactly as before.
 
 Runs made with [`--repeat`](#repeat-runs---repeat) diff like any other. The per-criterion averages and the cost cover every result of the run (so they are means and totals over the repeats), and the case output comparison uses run 1 of each case, so it does not depend on how many repeats either run used. The spread (`score_min`, `score_max`, `repeat_scores`) is not shown by `eval diff`; read it from `summary.json`.
 
