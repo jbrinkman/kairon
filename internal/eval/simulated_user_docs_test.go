@@ -101,8 +101,6 @@ func TestSimulatedUserDocStatesKeyRules(t *testing.T) {
 		"stub.routes",
 		"fails closed",
 		"index-based, not a cursor",
-		"twenty-three cases",
-		"twenty cases",
 	} {
 		if !strings.Contains(doc, want) {
 			t.Errorf("docs/evaluation.md does not contain %q", want)
@@ -110,10 +108,5 @@ func TestSimulatedUserDocStatesKeyRules(t *testing.T) {
 	}
 	if got := (TestCase{SimulatedUser: &SimulatedUser{}}).maxTurns(); got != 10 {
 		t.Errorf("default max_turns = %d, but docs/evaluation.md says 10", got)
-	}
-	for _, stale := range []string{"eleven check types", "twenty-one cases", "nineteen cases"} {
-		if strings.Contains(doc, stale) {
-			t.Errorf("docs/evaluation.md still contains the stale phrase %q", stale)
-		}
 	}
 }

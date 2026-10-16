@@ -147,8 +147,8 @@ func TestSelfTestChecksPassingCases(t *testing.T) {
 func TestSelfTestChecksFailingCases(t *testing.T) {
 	res := runSelfTestAgent(t, "selftest-fail")
 
-	if got, want := len(res.Cases), 10+1+1+1+1+5+1; got != want {
-		t.Errorf("selftest-fail has %d cases, want %d (10 per-type + check-partial + stub-timeout + stub-empty-response + multi-turn-wrong-turn + 5 judge + sim-fact-not-asked)", got, want)
+	if got, want := len(res.Cases), 10+1+1+1+1+6+1; got != want {
+		t.Errorf("selftest-fail has %d cases, want %d (10 per-type + check-partial + stub-timeout + stub-empty-response + multi-turn-wrong-turn + 6 judge + sim-fact-not-asked)", got, want)
 	}
 
 	for _, tt := range selftestCheckTypes {

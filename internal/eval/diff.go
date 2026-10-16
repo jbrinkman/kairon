@@ -244,17 +244,28 @@ func avgScore(scores map[string]float64) float64 {
 	return sum / float64(len(scores))
 }
 
+// runOneOutputs maps case name to the output of its first run.
+func runOneOutputs(r AgentResult) map[string]string {
+	outputs := make(map[string]string)
+	runs := make(map[string]int)
+	for _, c := range r.Cases {
+		run := max(1, c.Run)
+		if prev, seen := runs[c.CaseName]; seen && prev <= run {
+			continue
+		}
+		runs[c.CaseName] = run
+		outputs[c.CaseName] = c.ActualOutput
+	}
+	return outputs
+}
+
 func showOutputChanges(w io.Writer, resultA, resultB AgentResult) {
 	// Compare outputs for cases with same name
-	outputsA := make(map[string]string)
-	outputsB := make(map[string]string)
-
-	for _, c := range resultA.Cases {
-		outputsA[c.CaseName] = c.ActualOutput
-	}
-	for _, c := range resultB.Cases {
-		outputsB[c.CaseName] = c.ActualOutput
-	}
+	// A repeated case has several results; compare run 1 (a legacy result
+	// without a run is run 1) so the comparison does not depend on how many
+	// repeats either side ran.
+	outputsA := runOneOutputs(resultA)
+	outputsB := runOneOutputs(resultB)
 
 	for caseName, outputA := range outputsA {
 		if outputB, exists := outputsB[caseName]; exists && outputA != outputB {

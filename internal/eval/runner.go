@@ -41,6 +41,12 @@ func checkDockerAvailability() error {
 
 // RunWithOptions executes evaluation with extended CLI options.
 func RunWithOptions(agent string, testcase string, options RunOptions) error {
+	// Reject unusable --repeat values before anything else, so a refused run
+	// has changed no state and created no results directory.
+	if err := validateRepeat(options); err != nil {
+		return err
+	}
+
 	// Validate the candidate prompt first: --prompt-file problems (no agent,
 	// unusable file, incompatible mode) are reported before any state is
 	// changed or any case runs.
@@ -438,6 +444,7 @@ func evaluate(rubric Rubric, cases []TestCase, gitHash string, out io.Writer, cC
 		Agent:     rubric.Agent,
 		GitHash:   gitHash,
 		Threshold: rubric.Threshold(),
+		Repeat:    runRepeat(),
 	}
 	applyRunContext(&result, cConfig)
 
@@ -447,21 +454,76 @@ func evaluate(rubric Rubric, cases []TestCase, gitHash string, out io.Writer, cC
 		testStart := time.Now()
 
 		// Task 4: Structured output - Agent → Case execution (workspace, agent
-		// call and criterion-by-criterion scoring in one shared path).
-		cr := executeCase(rubric, tc, cConfig, out, cfg.keepWorkspaces)
-		stampCase(&cr, tc, rubric)
+		// call and criterion-by-criterion scoring in one shared path), once
+		// per --repeat.
+		crs := executeCaseRepeats(rubric, tc, cConfig, out)
 
-		// Task 4: Color-coded final status for the case
-		printCaseResult(out, tc, rubric, cr)
+		// Task 4: Color-coded final status for the case (the last run; the
+		// earlier runs of a repeat were printed as they finished).
+		printCaseResult(out, tc, rubric, crs[len(crs)-1])
 
 		// Track test case completion for performance profiling
 		testDuration := time.Since(testStart)
 		TrackTestCase(tc.Name, testDuration)
 
-		result.Cases = append(result.Cases, cr)
+		result.Cases = append(result.Cases, crs...)
 	}
 
 	return result
+}
+
+// executeCaseRepeats runs tc runRepeat() times through executeCase, each in
+// its own fresh workspace, and returns the stamped results in run order with
+// CaseResult.Run set (1-based). The same TestCase is reused for every run, so
+// state it carries — the stub.judge cursor — continues from one run to the
+// next; callers must therefore load the cases once, not per repeat.
+//
+// With a single run it prints nothing of its own and the caller prints the
+// result, so a plain run's output is unchanged. With several runs it prefixes
+// each run with a `run k/N` line and prints the status of every run but the
+// last; the caller prints the last one (after its progressive save).
+func executeCaseRepeats(rubric Rubric, tc TestCase, cConfig *ContainerConfig, out io.Writer) []CaseResult {
+	n := runRepeat()
+	crs := make([]CaseResult, 0, n)
+	for k := 1; k <= n; k++ {
+		if n > 1 {
+			if k == 1 {
+				fmt.Fprintln(out)
+			}
+			fmt.Fprintf(out, "      run %d/%d", k, n)
+		}
+		cr := executeCase(rubric, tc, cConfig, out, cfg.keepWorkspaces)
+		stampCase(&cr, tc, rubric)
+		cr.Run = k
+		crs = append(crs, cr)
+		if n > 1 && k < n {
+			printCaseResult(out, tc, rubric, cr)
+		}
+	}
+	return crs
+}
+
+// replaceCaseResults returns cases with every result named name replaced by
+// news: the new results take the position of the first existing one, or are
+// appended when there is none. All previous results of the case go, so a
+// re-run never leaves a stale run behind.
+func replaceCaseResults(cases []CaseResult, name string, news []CaseResult) []CaseResult {
+	out := make([]CaseResult, 0, len(cases)+len(news))
+	placed := false
+	for _, c := range cases {
+		if c.CaseName != name {
+			out = append(out, c)
+			continue
+		}
+		if !placed {
+			out = append(out, news...)
+			placed = true
+		}
+	}
+	if !placed {
+		out = append(out, news...)
+	}
+	return out
 }
 
 // assemblePrompt combines setup entries and input into a complete agent prompt
@@ -1878,6 +1940,12 @@ func checkResumeIntegrity(resultsDir, agent string, sandbox bool) error {
 			case *existing.Sandbox != sandbox:
 				return fmt.Errorf("❌ cannot resume: sandbox mode changed since the interrupted run of %s (recorded sandbox=%t; now %t) — resume with the same mode or start a fresh run",
 					agent, *existing.Sandbox, sandbox)
+			case effectiveRepeat(existing.Repeat) != runRepeat():
+				// One result file never mixes repeat counts: the saved runs of
+				// a case would not match the runs the rest of the file gets.
+				// A legacy file (no recorded repeat) holds one run per case.
+				return fmt.Errorf("❌ cannot resume: repeat changed since the interrupted run of %s (recorded repeat=%d; now %d) — resume with --repeat %d or start a fresh run",
+					agent, effectiveRepeat(existing.Repeat), runRepeat(), effectiveRepeat(existing.Repeat))
 			case sandbox && existing.Containment != nil &&
 				trustString(existing.Containment.ToolTrust) != trustString(containmentFor(agent).ToolTrust):
 				// A sandbox run records containment.tool_trust from the
@@ -1972,6 +2040,11 @@ func checkResumeIntegrity(resultsDir, agent string, sandbox bool) error {
 	return nil
 }
 
+// effectiveRepeat is the repeat a result file recorded: 1 when absent.
+func effectiveRepeat(recorded int) int {
+	return max(1, recorded)
+}
+
 // promptFileLabel renders a prompt_file for messages: "(none)" when the run
 // used the live prompt rather than a --prompt-file candidate.
 func promptFileLabel(p string) string {
@@ -2042,6 +2115,7 @@ func evaluateProgressive(rubric Rubric, cases []TestCase, gitHash string, out io
 		Agent:     rubric.Agent,
 		GitHash:   gitHash,
 		Threshold: rubric.Threshold(),
+		Repeat:    runRepeat(),
 	}
 	applyRunContext(&result, cConfig)
 
@@ -2059,6 +2133,9 @@ func evaluateProgressive(rubric Rubric, cases []TestCase, gitHash string, out io
 				// A resumed result may predate verdicts; the threshold is the
 				// current rubric's, like the provenance above.
 				result.Threshold = rubric.Threshold()
+				// checkResumeIntegrity verified the saved repeat equals the
+				// current one (a legacy file's absent repeat is 1).
+				result.Repeat = runRepeat()
 				// Completed cases are skipped below and never reach stampCase,
 				// so a case loaded from a pre-verdict result keeps Passed==nil.
 				// agentVerdict would then recompute it against the agent's
@@ -2083,24 +2160,16 @@ func evaluateProgressive(rubric Rubric, cases []TestCase, gitHash string, out io
 		// Track test case start time for performance profiling
 		testStart := time.Now()
 
-		// Execute and score the test case (shared per-case path)
-		cr := executeCase(rubric, tc, cConfig, out, cfg.keepWorkspaces)
-		stampCase(&cr, tc, rubric)
+		// Execute and score the test case (shared per-case path), once per
+		// --repeat.
+		crs := executeCaseRepeats(rubric, tc, cConfig, out)
 
-		// Add or update the case result
-		found := false
-		for j, existing := range result.Cases {
-			if existing.CaseName == tc.Name {
-				result.Cases[j] = cr
-				found = true
-				break
-			}
-		}
-		if !found {
-			result.Cases = append(result.Cases, cr)
-		}
+		// Add or update the case's results: every earlier result of this case
+		// is replaced by the new runs.
+		result.Cases = replaceCaseResults(result.Cases, tc.Name, crs)
 
-		// Progressive save after each test case
+		// Progressive save after all repeats of the test case, so a saved case
+		// always has every run
 		if err := saveProgressiveResult(resultsDir, rubric.Agent, result, gitHash); err != nil {
 			fmt.Fprintf(out, " ⚠️ (save failed: %v)\n", err)
 		}
@@ -2109,8 +2178,8 @@ func evaluateProgressive(rubric Rubric, cases []TestCase, gitHash string, out io
 		testDuration := time.Since(testStart)
 		TrackTestCase(tc.Name, testDuration)
 
-		// Display result
-		printCaseResult(out, tc, rubric, cr)
+		// Display result (the last run; earlier runs printed as they finished)
+		printCaseResult(out, tc, rubric, crs[len(crs)-1])
 	}
 
 	return result

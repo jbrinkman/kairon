@@ -245,6 +245,9 @@ type CaseResult struct {
 	turnGHLogs []ghLogSnapshot
 	// Calls holds one record per agent call and per judge call, in execution order.
 	Calls []inference.CallRecord `json:"calls,omitempty"`
+	// Run is the 1-based repeat number of this result (see RunOptions.Repeat).
+	// A result file written before repeats existed has no run; it is read as 1.
+	Run int `json:"run,omitempty"`
 }
 
 // ErrorContext captures execution details for debugging failed tests.
@@ -288,8 +291,11 @@ type AgentResult struct {
 	// ResourcesPresent lists the config resources that existed when the hash
 	// was computed. It is not omitempty: a resolved-but-empty list serialises
 	// as [] so that "the missing resource was omitted" is observable.
-	ResourcesPresent []string     `json:"resources_present"`
-	Cases            []CaseResult `json:"cases"`
+	ResourcesPresent []string `json:"resources_present"`
+	// Repeat is how many times each case was run (--repeat). Absent (0) in a
+	// result written before repeats existed, which is read as 1.
+	Repeat int          `json:"repeat,omitempty"`
+	Cases  []CaseResult `json:"cases"`
 }
 
 // RunOptions configures evaluation execution.
@@ -309,6 +315,10 @@ type RunOptions struct {
 	// KeepWorkspaces keeps per-case workspaces after the run instead of
 	// removing them.
 	KeepWorkspaces bool
+
+	// Repeat runs every case this many times (--repeat). 0 means 1; a
+	// negative value is rejected.
+	Repeat int
 }
 
 // Summary holds aggregate results for an eval run.

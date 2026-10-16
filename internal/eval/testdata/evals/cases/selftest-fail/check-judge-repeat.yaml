@@ -1,0 +1,25 @@
+name: check-judge-repeat
+description: "Self-test (fail): stub.judge [yes, no] with one judge check scores 1/1 on the first run and 0/1 on the second, so --repeat 2 shows a spread"
+agent: selftest-fail
+input: |
+  Review the work and report what you found.
+context:
+  - "This case runs against the deterministic stub backend"
+  - "Meant for --repeat 2: the judge answers yes on run 1 and no on run 2 (the case is loaded once, so the stub.judge cursor continues across runs)"
+expected_output: |
+  A short report with a top-level section and at least one subsection.
+stub:
+  judge: [yes, no]
+  turns:
+    - response: |
+        ## Checks
+
+        The stub turn finished and reported output marker alpha.
+
+        ### Details
+
+        This response carries the headings the report format expects.
+checks:
+  - criterion: structural_completeness
+    type: judge
+    question: "Does the report describe what the stub turn finished?"
