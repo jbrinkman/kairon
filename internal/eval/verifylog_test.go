@@ -334,6 +334,8 @@ func TestVerifyLogFixtureSets(t *testing.T) {
 		min        int
 		wantRule   string // "" => success
 		wantSuffix string
+		// wantMentions are substrings the single violation's message must contain.
+		wantMentions []string
 	}{
 		{set: "valid", min: 2},
 		{set: "missing-run", min: 0, wantRule: "run-exists", wantSuffix: "iteration-01.md"},
@@ -341,6 +343,14 @@ func TestVerifyLogFixtureSets(t *testing.T) {
 		{set: "gap", min: 0, wantRule: "sequence", wantSuffix: "iteration-02.md"},
 		{set: "broken-chain", min: 0, wantRule: "chain", wantSuffix: "iteration-01.md"},
 		{set: "no-prompt-change", min: 0, wantRule: "prompt-change", wantSuffix: "iteration-01.md"},
+		{set: "partial-run", min: 2, wantRule: "run-complete", wantSuffix: "iteration-01.md", wantMentions: []string{"260705-100000-1111111", "complete=false", "stub-basic"}},
+		{set: "model-mismatch", min: 2, wantRule: "run-config", wantSuffix: "iteration-01.md", wantMentions: []string{"agent_model"}},
+		{set: "sandbox-mismatch", min: 2, wantRule: "run-config", wantSuffix: "iteration-01.md", wantMentions: []string{"sandbox"}},
+		{set: "judge-mismatch", min: 2, wantRule: "run-config", wantSuffix: "iteration-01.md", wantMentions: []string{"judge_model"}},
+		{set: "suite-changed", min: 2, wantRule: "suite-change", wantSuffix: "iteration-01.md"},
+		{set: "eval-prompt-changed", min: 2, wantRule: "prompt-change", wantSuffix: "iteration-01.md"},
+		{set: "eval-nothing-changed", min: 2, wantRule: "suite-change", wantSuffix: "iteration-01.md"},
+		{set: "legacy-run", min: 2, wantRule: "run-data", wantSuffix: "iteration-01.md", wantMentions: []string{"260705-170000-8888888", "suite_sha256", "complete"}},
 		{set: "valid", min: 5, wantRule: "min-iterations", wantSuffix: filepath.Join("valid", vlAgent)},
 	}
 	for _, tt := range tests {
@@ -355,11 +365,129 @@ func TestVerifyLogFixtureSets(t *testing.T) {
 				}
 				return
 			}
-			vlExpectOnly(t, err, tt.wantRule, tt.wantSuffix)
+			v := vlExpectOnly(t, err, tt.wantRule, tt.wantSuffix)
+			vlMustMention(t, v.Message, tt.wantMentions...)
 			if out != "" {
 				t.Fatalf("nothing should be printed on failure, got %q", out)
 			}
 		})
+	}
+}
+
+// vlLegacyFixtureRuns are the two committed runs that deliberately predate
+// the coverage fields (suite_sha256 / complete / case_filter).
+var vlLegacyFixtureRuns = map[string]bool{
+	"260630-100000-fffffff": true,
+	"260705-170000-8888888": true,
+}
+
+// TestVerifyLogFixtureLegacyRun replaces the old legacy-fixture test: the
+// committed legacy run fffffff must now fail run-data for the missing fields.
+func TestVerifyLogFixtureLegacyRun(t *testing.T) {
+	root := t.TempDir()
+	iters := filepath.Join(root, "iterations")
+	vlWriteFile(t, filepath.Join(iters, vlAgent, "iteration-00.md"),
+		vlDoc(vlFM(0, "2026-07-01", "prompt", "260630-100000-fffffff", "260701-100000-aaaaaaa", "80.0", "60.0"), vlBody))
+	opts := VerifyLogOptions{IterationsDir: iters, EvalsDir: filepath.Join(vlFixtureRoot, "evals")}
+	_, err := vlRunVerify(t, opts)
+	var found bool
+	for _, v := range vlViolations(t, err) {
+		if v.Rule != "run-data" || !strings.Contains(v.Message, "260630-100000-fffffff") {
+			continue
+		}
+		found = true
+		vlMustMention(t, v.Message, "260630-100000-fffffff", vlAgent, "suite_sha256", "complete")
+	}
+	if !found {
+		t.Fatalf("legacy run fffffff should fail run-data, got %v", err)
+	}
+}
+
+// TestVerifyLogFixtureRunsRecordCoverage guards the committed runs: every one
+// except the two legacy runs must record suite_sha256, complete and
+// case_filter for the agent, so a fixture cannot silently drift to legacy shape.
+func TestVerifyLogFixtureRunsRecordCoverage(t *testing.T) {
+	resultsDir := filepath.Join(vlFixtureRoot, "evals", "results")
+	entries, err := os.ReadDir(resultsDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var checked, legacy int
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(resultsDir, e.Name(), "summary.json"))
+		if err != nil {
+			t.Errorf("%s: %v", e.Name(), err)
+			continue
+		}
+		var sum struct {
+			Agents map[string]map[string]json.RawMessage `json:"agents"`
+		}
+		if err := json.Unmarshal(data, &sum); err != nil {
+			t.Errorf("%s: invalid summary.json: %v", e.Name(), err)
+			continue
+		}
+		entry := sum.Agents[vlAgent]
+		if vlLegacyFixtureRuns[e.Name()] {
+			legacy++
+			for _, f := range []string{"suite_sha256", "complete", "case_filter"} {
+				if _, ok := entry[f]; ok {
+					t.Errorf("legacy run %s must not record %s", e.Name(), f)
+				}
+			}
+			continue
+		}
+		checked++
+		for _, f := range []string{"suite_sha256", "complete", "case_filter"} {
+			if _, ok := entry[f]; !ok {
+				t.Errorf("run %s: agents.%s.%s is not recorded (only the legacy runs %v may omit it)", e.Name(), vlAgent, f, vlLegacyFixtureRuns)
+			}
+		}
+	}
+	if legacy != len(vlLegacyFixtureRuns) {
+		t.Errorf("found %d committed legacy runs, want %d", legacy, len(vlLegacyFixtureRuns))
+	}
+	if checked < 12 {
+		t.Errorf("only %d non-legacy runs checked, want at least 12", checked)
+	}
+}
+
+// TestVerifyLogFixtureValidEvalIteration pins the shape of the valid set's
+// eval iteration (c -> d): same prompt hash, different suite hash.
+func TestVerifyLogFixtureValidEvalIteration(t *testing.T) {
+	read := func(run string) (prompt, suite string) {
+		data, err := os.ReadFile(filepath.Join(vlFixtureRoot, "evals", "results", run, "summary.json"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var sum struct {
+			Agents map[string]struct {
+				PromptSHA256 string `json:"prompt_sha256"`
+				SuiteSHA256  string `json:"suite_sha256"`
+			} `json:"agents"`
+		}
+		if err := json.Unmarshal(data, &sum); err != nil {
+			t.Fatal(err)
+		}
+		a := sum.Agents[vlAgent]
+		return a.PromptSHA256, a.SuiteSHA256
+	}
+	pc, sc := read("260703-100000-ccccccc")
+	pd, sd := read("260704-100000-ddddddd")
+	if pc == "" || pc != pd {
+		t.Errorf("eval iteration prompt hashes: %q vs %q, want equal and non-empty", pc, pd)
+	}
+	if sc == "" || sd == "" || sc == sd {
+		t.Errorf("eval iteration suite hashes: %q vs %q, want both set and different", sc, sd)
+	}
+	doc, err := os.ReadFile(filepath.Join(vlFixtureRoot, "valid", vlAgent, "iteration-02.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(doc), "change_type: eval") {
+		t.Error("valid iteration-02 should be an eval iteration")
 	}
 }
 
