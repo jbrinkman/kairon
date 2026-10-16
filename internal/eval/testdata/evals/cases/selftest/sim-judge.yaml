@@ -1,0 +1,48 @@
+name: sim-judge
+description: "Self-test: a simulated-user case with a judge check; the judge prompt carries the user messages actually sent (opener, the verbatim fact answer, the default reply) and every agent reply, fenced and labelled by turn"
+agent: selftest
+input: "I want a feature that exports reports as CSV"
+simulated_user:
+  facts:
+    - id: f1
+      answer: "SIM-F1-ANSWER: comma separated, UTF-8, one header row."
+      discoverable: false
+  default_reply: "SIM-DEFAULT-REPLY: I don't know, use your best judgement."
+  max_turns: 3
+context:
+  - "This case runs against the deterministic stub backend; the judge prompt is visible with --debug"
+  - "The stub routes the first agent question to f1 and the second to none; the third turn ends the simulated phase"
+expected_output: |
+  A short report with a top-level section and at least one subsection.
+stub:
+  judge: yes
+  routes: [f1, none]
+  turns:
+    - response: |
+        ## Questions
+
+        SIM-TURN-ONE-MARKER: which file format should the export use?
+
+        ### Details
+
+        Waiting for the answer before drafting anything.
+    - response: |
+        ## Questions
+
+        SIM-TURN-TWO-MARKER: how large are the reports?
+
+        ### Details
+
+        Still waiting for details.
+    - response: |
+        ## Draft
+
+        SIM-TURN-THREE-MARKER: the draft is ready.
+
+        ### Details
+
+        No further questions.
+checks:
+  - criterion: structural_completeness
+    type: judge
+    question: "Does each reply follow from the user message sent before it?"

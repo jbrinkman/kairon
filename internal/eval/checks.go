@@ -86,6 +86,12 @@ type CheckInput struct {
 	// Input is the case input shown to a judge check. Optional.
 	Input string
 
+	// UserTurns[i] is the user message that produced Turns[i].Output: the
+	// messages actually sent (for a simulated-user case, including the ones the
+	// simulated user wrote). A judge check shows them next to the agent's
+	// replies. Optional; empty for classic cases.
+	UserTurns []string
+
 	// Judge answers judge checks. Optional: a judge check evaluated with a nil
 	// Judge fails ("no judge configured"); other check types ignore it.
 	Judge JudgeFunc
@@ -128,7 +134,7 @@ var checkSpecs = map[CheckType]struct{ required, allowed checkFields }{
 	CheckOutputNotContains: {checkFields{pattern: true}, checkFields{pattern: true, turn: true}},
 	CheckGHLogContains:     {checkFields{pattern: true}, checkFields{pattern: true, turn: true}},
 	CheckGHLogNotContains:  {checkFields{pattern: true}, checkFields{pattern: true, turn: true}},
-	CheckJudge:             {checkFields{question: true}, checkFields{question: true, files: true}},
+	CheckJudge:             {checkFields{question: true}, checkFields{question: true, files: true, turn: true}},
 	CheckFactAsked:         {checkFields{fact: true}, checkFields{fact: true}},
 	CheckFactNotAsked:      {checkFields{fact: true}, checkFields{fact: true}},
 }
