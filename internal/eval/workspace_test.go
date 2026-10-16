@@ -942,3 +942,163 @@ func TestPermWalkMidWalkDeletion(t *testing.T) {
 		}
 	}
 }
+
+// gitInitCwd makes the (temp) cwd a git repository without committing, so
+// tests control exactly which paths are tracked.
+func gitInitCwd(t *testing.T) {
+	t.Helper()
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	wsGit(t, cwd, "init", "--quiet")
+}
+
+// gitTrack adds the given cwd-relative paths to the index.
+func gitTrack(t *testing.T, args ...string) {
+	t.Helper()
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	wsGit(t, cwd, append([]string{"add", "--force"}, args...)...)
+}
+
+func pathExists(p string) bool {
+	_, err := os.Lstat(p)
+	return err == nil
+}
+
+func TestStageKiroSkipsProjectConventions(t *testing.T) {
+	wsEnv(t)
+	gitInitCwd(t)
+	writeCfgFile(t, ".kiro/skills/foo-conventions/SKILL.md", "project override")
+	writeCfgFile(t, ".kiro/skills/engine/SKILL.md", "engine skill")
+	gitTrack(t, ".kiro")
+
+	ws := newWS(t, TestCase{Name: "c"})
+
+	if pathExists(filepath.Join(ws.KiroDir, "skills", "foo-conventions")) {
+		t.Errorf("project *-conventions directory must not be staged")
+	}
+	if got := readFileT(t, filepath.Join(ws.KiroDir, "skills/engine/SKILL.md")); got != "engine skill" {
+		t.Errorf("tracked engine skill = %q", got)
+	}
+}
+
+func TestStageKiroFixtureConventionsOnlyOwnFiles(t *testing.T) {
+	wsEnv(t)
+	gitInitCwd(t)
+	writeCfgFile(t, ".kiro/skills/foo-conventions/SKILL.md", "project override")
+	writeCfgFile(t, ".kiro/skills/foo-conventions/extra.md", "project extra")
+	gitTrack(t, ".kiro")
+	writeCfgFile(t, "evals/fixtures/workspaces/f/.kiro/skills/foo-conventions/SKILL.md", "fixture override")
+
+	ws := newWS(t, TestCase{Name: "c", Workspace: "f"})
+
+	dir := filepath.Join(ws.KiroDir, "skills", "foo-conventions")
+	if got := readFileT(t, filepath.Join(dir, "SKILL.md")); got != "fixture override" {
+		t.Errorf("fixture SKILL.md = %q", got)
+	}
+	if pathExists(filepath.Join(dir, "extra.md")) {
+		t.Errorf("project file leaked into the fixture-supplied conventions directory")
+	}
+}
+
+func TestStageKiroTrackedFilesOnly(t *testing.T) {
+	wsEnv(t)
+	gitInitCwd(t)
+	gitTrack(t, ".kiro")
+	cwd, _ := os.Getwd()
+	wsGit(t, cwd, "-c", "user.name=t", "-c", "user.email=t@example.invalid",
+		"-c", "commit.gpgsign=false", "commit", "--quiet", "-m", "seed")
+
+	// Uncommitted edit to a tracked file, an intent-to-add file, and an
+	// untracked local file.
+	writeCfgFile(t, ".kiro/skills/s/SKILL.md", "edited skill")
+	writeCfgFile(t, ".kiro/skills/added/SKILL.md", "intent to add")
+	wsGit(t, cwd, "add", "-N", ".kiro/skills/added/SKILL.md")
+	writeCfgFile(t, ".kiro/settings/probe.json", `{"probe":true}`)
+
+	ws := newWS(t, TestCase{Name: "c"})
+
+	if pathExists(filepath.Join(ws.KiroDir, "settings", "probe.json")) {
+		t.Errorf("untracked .kiro/settings/probe.json must not be staged")
+	}
+	if got := readFileT(t, filepath.Join(ws.KiroDir, "skills/s/SKILL.md")); got != "edited skill" {
+		t.Errorf("tracked file must be staged with working-tree content, got %q", got)
+	}
+	if got := readFileT(t, filepath.Join(ws.KiroDir, "skills/added/SKILL.md")); got != "intent to add" {
+		t.Errorf("git add -N file must count as tracked, got %q", got)
+	}
+}
+
+func TestStageKiroNonGitStagesWholeTreeExceptConventions(t *testing.T) {
+	cwd := wsEnv(t)
+	// Never let a parent repository of the temp dir make this a git checkout.
+	t.Setenv("GIT_CEILING_DIRECTORIES", filepath.Dir(cwd))
+	writeCfgFile(t, ".kiro/settings/probe.json", `{"probe":true}`)
+	writeCfgFile(t, ".kiro/skills/foo-conventions/SKILL.md", "project override")
+
+	ws := newWS(t, TestCase{Name: "c"})
+
+	if got := readFileT(t, filepath.Join(ws.KiroDir, "settings/probe.json")); got != `{"probe":true}` {
+		t.Errorf("non-git working dir must stage the whole tree, probe.json = %q", got)
+	}
+	if got := readFileT(t, filepath.Join(ws.KiroDir, "skills/s/SKILL.md")); got != "skill" {
+		t.Errorf("skill = %q", got)
+	}
+	if pathExists(filepath.Join(ws.KiroDir, "skills", "foo-conventions")) {
+		t.Errorf("conventions must be skipped even without git")
+	}
+}
+
+func TestStageKiroGitFailureIsAnError(t *testing.T) {
+	wsEnv(t)
+	gitInitCwd(t)
+	gitTrack(t, ".kiro")
+	// A corrupt index makes `git ls-files` fail for a reason other than
+	// "not a git repository"; that must not silently stage the whole tree.
+	if err := os.WriteFile(filepath.Join(".git", "index"), []byte("garbage"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	ws, err := newCaseWorkspace(TestCase{Name: "c"})
+	if err == nil {
+		_ = ws.Remove()
+		t.Fatal("expected an error when git ls-files fails")
+	}
+	if !strings.Contains(err.Error(), "ls-files") {
+		t.Errorf("error should name git ls-files: %v", err)
+	}
+}
+
+func TestStageKiroIntoAnyDirectory(t *testing.T) {
+	wsEnv(t)
+	gitInitCwd(t)
+	writeCfgFile(t, ".kiro/skills/foo-conventions/SKILL.md", "project override")
+	gitTrack(t, ".kiro")
+	writeCfgFile(t, ".kiro/settings/probe.json", "{}")
+
+	dir := filepath.Join(t.TempDir(), "baseline", ".kiro")
+	if err := stageKiroInto(dir, nil, false, nil); err != nil {
+		t.Fatal(err)
+	}
+	if got := readFileT(t, filepath.Join(dir, "agents/builder.json")); got != `{"from":"evals"}` {
+		t.Errorf("evals overlay must win over project, got %q", got)
+	}
+	if pathExists(filepath.Join(dir, "skills", "foo-conventions")) || pathExists(filepath.Join(dir, "settings")) {
+		t.Errorf("baseline staging must apply the same project filters")
+	}
+
+	noOverlay := filepath.Join(t.TempDir(), ".kiro")
+	if err := stageKiroInto(noOverlay, nil, true, nil); err != nil {
+		t.Fatal(err)
+	}
+	if got := readFileT(t, filepath.Join(noOverlay, "agents/builder.json")); got != `{"from":"project"}` {
+		t.Errorf("ignoreOverlay must skip the evals overlay, got %q", got)
+	}
+	if pathExists(filepath.Join(noOverlay, "agents", "extra.json")) {
+		t.Errorf("evals-only agent must not be staged with ignoreOverlay")
+	}
+}
