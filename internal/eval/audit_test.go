@@ -1366,6 +1366,32 @@ func TestAuditUncheckedCriterion(t *testing.T) {
 			t.Errorf("unchecked = %v, want none", got)
 		}
 	})
+	t.Run("padded criterion name matched by a padded check is not unchecked", func(t *testing.T) {
+		// A rubric name and a case check with the same surrounding spaces must
+		// be treated as the same criterion: both sides are trimmed, so the
+		// check counts and the criterion is not reported unchecked.
+		rubric := "agent: demo\ncriteria:\n" +
+			"  - name: alpha\n    scoring: \"1-5\"\n" +
+			"  - name: beta\n    scoring: \"1-5\"\n" +
+			"  - name: \" gamma \"\n    scoring: \"1-5\"\n"
+		cases := map[string]string{
+			"basic.yaml": auditRawCase("basic",
+				"criterion: alpha\ntype: changed_files\nallow: [alpha.md]",
+				"criterion: beta\ntype: changed_files\nallow: [beta.md]",
+				"criterion: \" gamma \"\ntype: changed_files\nallow: [gamma.md]"),
+		}
+		opts := auditCase{
+			prompt:     auditRTCC + "Rule one.\n",
+			table:      auditTable("Rule one.=>alpha"),
+			rubric:     rubric,
+			caseChecks: map[string][]string{},
+			rawCases:   cases,
+		}.write(t)
+		_, ae := runAudit(t, opts)
+		if got := unchecked(opts, ae); len(got) != 0 {
+			t.Fatalf("unchecked = %v, want none (padded name should match padded check); err: %v", got, ae)
+		}
+	})
 }
 
 func TestAuditIdenticalCriteria(t *testing.T) {

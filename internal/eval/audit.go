@@ -591,6 +591,9 @@ func loadAuditCases(evalsDir, agent string) (auditCases, error) {
 		}
 		for _, ch := range c.Checks {
 			criterion, _ := ch["criterion"].(string)
+			// Trim as loadAuditCriteria does, so a rubric name and a check
+			// that differ only by surrounding whitespace are the same criterion.
+			criterion = strings.TrimSpace(criterion)
 			delete(ch, "criterion")
 			byCriterion[criterion] = append(byCriterion[criterion], canonicalAuditCheck(ch))
 		}
