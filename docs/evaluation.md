@@ -1784,11 +1784,12 @@ The unit tests are `go test ./internal/eval/ -run VerifyLog` and `go test ./cmd/
 
 ## Prompt Audit (`kairon eval audit`)
 
-`kairon eval audit` is a static check of an agent's prompt, for the maturity-model Stage 3 requirement that prompts are structured and that most of their instructions earn their place. It checks three things:
+`kairon eval audit` is a static check of an agent's prompt, for the maturity-model Stage 3 requirement that prompts are structured and that most of their instructions earn their place. It checks four things:
 
 1. **RTCC structure.** The prompt has the level-2 headings `## Role`, `## Task`, `## Context` and `## Constraints`, in that order.
 2. **Load-bearing coverage.** At least **90%** of the prompt's instructions are *load-bearing*: each is mapped, in a hand-written table, to a criterion of the agent's rubric. The Evidence column of that table must name, as `case:<case-name>`, a case of the agent that has a check on the row's criterion, and the audit verifies it. The table format is defined in [`.kairon/iterations/README.md`](../.kairon/iterations/README.md#load-bearing-table).
 3. **No duplicates.** An instruction that repeats an earlier one is dead weight and fails the audit, whatever the coverage.
+4. **Distinct criteria.** The agent's rubric has at least **3** non-cost criteria, each is backed by at least one check in the agent's cases, and no two of them carry identical checks (see [Distinct criteria](#distinct-criteria)).
 
 The audit is deterministic. It makes no model call, starts no `kiro-cli` and no container, and reads only the agent config, the prompt, the rubric, the agent's cases and the table. It does not edit anything.
 
@@ -1810,7 +1811,8 @@ The command takes exactly one argument, the agent name (a single path element: n
 - **Engine skills.** Every `skill://.kiro/skills/<name>/SKILL.md` entry in the config's `resources` whose name does **not** end in `-conventions` is an engine skill, such as `sentinel-protocol`. Its lines are audited together with the prompt and count toward the 90%. The skill is read from the copy shipped inside the `kairon` binary (`cmd/kairon/templates/kiro/skills/`), so the audit scores what users actually receive. A skill that is not shipped there cannot be audited and fails with the `resource` rule.
 - **Override hooks.** A resource whose skill name ends in `-conventions` (for example `builder-conventions`) is a per-project override hook. It is listed in the report, never read and never scored.
 - Resources that are not `skill://` strings are listed as ignored and not scored. A skill that appears twice is processed once.
-- **The agent's cases.** `<evals-dir>/cases/<agent>/*.yaml` (non-recursive, `.yaml` only) are read to verify the Evidence column. A case is identified by its `name:` field and counts as a check on a criterion when one of its `checks:` entries has that `criterion`. The audit reads only these two fields, ignores every other field, runs nothing and does not use the eval runner's case loader. A missing `cases/<agent>/` directory means the agent has no cases. A case file that is not valid YAML or has no `name:` is a plain error, like a bad rubric.
+- **The rubric.** `<evals-dir>/rubrics/<agent>.yaml` is read for each criterion's `name` and `type`. The `type` is what tells a cost criterion (`type: cost`) from a non-cost one, which the [Distinct criteria](#distinct-criteria) rules need. Only the audit reads it this way: the eval runner's own rubric loading is unchanged, so a rubric with fewer than three criteria still runs under `kairon eval`.
+- **The agent's cases.** `<evals-dir>/cases/<agent>/*.yaml` (non-recursive, `.yaml` only) are read to verify the Evidence column and the Distinct criteria rules. A case is identified by its `name:` field and counts as a check on a criterion when one of its `checks:` entries has that `criterion`. Besides `name:` and each check's `criterion`, the audit also reads the rest of every check (its `type` and all its other fields) so it can compare checks for equality. It ignores every other field of the case, runs nothing and does not use the eval runner's case loader. A missing `cases/<agent>/` directory means the agent has no cases. A case file that is not valid YAML or has no `name:` is a plain error, like a bad rubric.
 
 ### The RTCC rule
 
@@ -1835,6 +1837,31 @@ The token must start the cell or follow a character that is not a letter, digit 
 
 An instruction whose trimmed text equals an earlier instruction is dead weight (Stage 3 requires no dead weight). "Earlier" means earlier in the prompt, then in the audited engine skills in the order they appear in the report. Each repeat is a `duplicate` violation at the repeat's `file:line` that names the **first** occurrence, so three copies give two violations that both name the first. The check is on the exact trimmed text and works across files (prompt against skill, skill against skill). It also flags short repeated lines such as `---` outside front-matter; reword or drop them. Duplicates are always reported, even at 100% coverage. Counting is unchanged (`total` and `mapped` include every occurrence); the number of duplicate violations is printed as `duplicates=` in the report.
 
+### Distinct criteria
+
+Maturity-model Stage 3 asks for at least three distinct evaluation criteria, each backed by a substantive check. The audit enforces that on the agent's rubric and cases with three rules. Like `duplicate`, they are always reported, whatever the coverage, and they do not change `total`, `mapped` or the coverage percentage.
+
+**Non-cost criteria.** A criterion is *non-cost* when its `type` is not `cost`. Only non-cost criteria count: a `type: cost` criterion is not counted toward the minimum and is never reported as `unchecked` or `identical`. Criteria are de-duplicated by `name` (the first occurrence wins) and a criterion with an empty name is ignored. A check on a criterion that is not in the rubric, or on a `type: cost` criterion, satisfies none of these rules.
+
+**A check on a criterion.** An entry in a case's `checks:` list whose `criterion` equals the criterion's name. The audit counts the checks, and the distinct cases that carry at least one, per criterion (the `checks=` and `cases=` values of the [report](#report-format)).
+
+The rules:
+
+- **`rubric`: at least 3 non-cost criteria.** A rubric with fewer than three distinct non-cost criteria fails. The violation is attributed to the rubric file (`<evals-dir>/rubrics/<agent>.yaml`, no line number) and states how many were found and which. Two non-cost criteria plus a `type: cost` criterion is still a violation.
+- **`unchecked`: every non-cost criterion has a check.** A non-cost criterion with no check in any of the agent's cases fails, once per criterion. The violation names the criterion and the cases directory that was searched. An agent with no cases directory therefore has every non-cost criterion `unchecked`. A criterion scored only by the LLM judge, with no entry under `checks:`, counts as unchecked.
+- **`identical`: no two criteria carry the same checks.** Two non-cost criteria fail when, in **every** case of the agent, they have the same checks. Both must have at least one check: two criteria with no checks are `unchecked`, not `identical`. A group of more than two criteria gives one violation per criterion after the first, each naming itself and the first criterion of the group (as `duplicate` names the first occurrence), so a pair gives exactly one violation that names both.
+
+**What "the same checks" means.** For criteria A and B, and for every case of the agent (cases are keyed by `name:`; two files with the same name are merged), the multiset of A's checks equals the multiset of B's checks. A check is compared by its full contents **except the `criterion` field**: the same `type` and the same other fields with the same values. Consequences:
+
+- The order of the YAML fields in a check does not matter, and neither does the order of the checks inside a case. `allow: [README.md]` and `allow: ["README.md"]` are equal.
+- A check listed twice for one criterion and once for the other differs (multiset, not set).
+- Criteria checked in a different set of cases are not identical, even if every check body is equal. A criterion that has checks in a case where the other has none is also not identical.
+- No defaults are applied. `expect_exit: 0` written explicitly and `expect_exit` omitted are different checks.
+
+**No semantic judging.** "Distinct" is structural. The audit compares the text of the checks, never their meaning: two criteria whose check bodies differ in any field pass, even if they test the same thing in practice. Whether a check is substantive is for the author and reviewer to judge.
+
+**Plain error versus violation.** A rubric with **no** criteria at all still stops the audit with a plain error (`rubric <path> has no criteria`), as before. A rubric with one or two non-cost criteria is not an error: it is reported as a `rubric` violation together with the other violations of the run.
+
 ### Rule IDs
 
 Every violation is printed as `<file>[:<line>]: <rule>: <message>`. The audit collects all of them instead of stopping at the first.
@@ -1848,10 +1875,13 @@ Every violation is printed as `<file>[:<line>]: <rule>: <message>`. The audit co
 | `unmapped` | An instruction (reported at `<file>:<line>`) is not in the table. |
 | `unknown-criterion` | An instruction's row names a criterion that is not in the rubric. The instruction does not count as mapped. |
 | `coverage` | Fewer than 90% of the instructions are mapped, or there are no instructions to audit. |
+| `rubric` | The rubric has fewer than 3 distinct non-cost criteria (`rubric <path> has <N> distinct non-cost criteria (<names>); need at least 3`). A `type: cost` criterion is not counted. Reported at the rubric file, with no line. |
+| `unchecked` | A non-cost criterion has no check in any of the agent's cases (`criterion "<name>" has no check in any case (looked in <cases-dir>)`). Reported at the rubric file, once per criterion; cost criteria are never reported. |
+| `identical` | Two non-cost criteria have the same checks, ignoring the `criterion` field, in every case of the agent (`criterion "<name>" has the same checks as criterion "<first>" in every case (looked in <cases-dir>)`). Reported at the rubric file; each criterion after the first of a group gets one violation naming the first. See [Distinct criteria](#distinct-criteria). |
 
-`unmapped` and `unknown-criterion` are the per-line detail of a coverage failure, so they are reported only when coverage is below 90%. A prompt at or above the threshold passes even if some of its lines are unmapped. The `structure`, `resource`, `table` (including the Evidence problems) and `duplicate` violations are always reported.
+`unmapped` and `unknown-criterion` are the per-line detail of a coverage failure, so they are reported only when coverage is below 90%. A prompt at or above the threshold passes even if some of its lines are unmapped. The `structure`, `resource`, `table` (including the Evidence problems), `duplicate`, `rubric`, `unchecked` and `identical` violations are always reported.
 
-Problems that stop the audit from running at all are plain errors, not rule violations: an invalid agent name, a missing agent config, an unreadable or empty `--prompt-file`, a rubric that is missing, invalid or has no criteria, or a case file in `cases/<agent>/` that is not valid YAML or has no `name:`.
+Problems that stop the audit from running at all are plain errors, not rule violations: an invalid agent name, a missing agent config, an unreadable or empty `--prompt-file`, a rubric that is missing, invalid or has no criteria at all, or a case file in `cases/<agent>/` that is not valid YAML or has no `name:`. A rubric with only one or two non-cost criteria is **not** a plain error: it is a `rubric` violation.
 
 ### Report format
 
@@ -1867,15 +1897,21 @@ Override hooks (excluded from score):
 Ignored resources:
   <resource>
 Instructions: total=<T> mapped=<M> duplicates=<D> coverage=<P>% (threshold 90%)
+Criteria: non-cost=<N> (need at least 3)
+  <criterion>: checks=<C> cases=<K>
 ```
 
-The `Audited resources:`, `Override hooks (excluded from score):` and `Ignored resources:` blocks appear only when they have entries. `duplicates=<D>` is the number of `duplicate` violations, that is, the occurrences after the first of each repeated instruction; it is `0` for a clean prompt. On success one more line follows:
+The `Audited resources:`, `Override hooks (excluded from score):` and `Ignored resources:` blocks appear only when they have entries. `duplicates=<D>` is the number of `duplicate` violations, that is, the occurrences after the first of each repeated instruction; it is `0` for a clean prompt.
+
+The `Criteria:` block follows the `Instructions:` line and is printed whether the audit passes or fails. `non-cost=<N>` is the number of distinct non-cost criteria of the rubric, and there is one indented line per such criterion, in rubric order, with `checks=<C>` (the number of checks on it across all of the agent's cases) and `cases=<K>` (the number of distinct cases with at least one check on it). `checks` and `cases` differ when a case carries several checks on one criterion. Cost criteria are not listed. On success one more line follows:
 
 ```
 OK <agent>: <T> instructions, <P>% load-bearing, RTCC structure present
 ```
 
-On failure the violations are returned as the error, so they are printed on stderr after `Error:`, one per line, ordered by file (prompt, then skills, then the table), then by line, then by rule. Usage text is not printed.
+On failure the violations are returned as the error, so they are printed on stderr after `Error:`, one per line, ordered by file (prompt, then skills, then the table, then the rubric, then the agent config), then by line, then by rule. Usage text is not printed.
+
+The `Error:` block is printed **twice** on stderr, one copy after the other. This is not specific to the audit: the command framework prints a returned error and `main` prints it again. Run through `go run`, as in the examples below, `go run` then adds its own `exit status 1` line, so the last stderr line of a failing run is `exit status 1`. That line comes from `go run`, not from `kairon`; the built `kairon` binary does not print it. The examples below show the captured output as it is, stdout first and then stderr.
 
 ### Exit status
 
@@ -1886,7 +1922,7 @@ On failure the violations are returned as the error, so they are printed on stde
 
 ### Running it on the real agents
 
-Prompts are not edited by the audit feature and no `load-bearing.md` ships yet, so the real agents are expected to **fail** until their tables are written. For example `kairon eval audit builder` lists the engine skill and the hook, and then fails on the missing table:
+Prompts are not edited by the audit feature and no `load-bearing.md` ships yet, so the real agents are expected to **fail** until their tables are written. The shipped rubrics and cases are not changed by the Distinct criteria rules either, so a real agent can also fail those: the shipped `builder` cases carry no `checks:` at all. For example `kairon eval audit builder` lists the engine skill and the hook, reports every non-cost criterion with `checks=0 cases=0`, and then fails:
 
 ```
 Audit: builder
@@ -1896,13 +1932,18 @@ Audited resources:
 Override hooks (excluded from score):
   skill builder-conventions
 Instructions: total=63 mapped=0 duplicates=0 coverage=0.0% (threshold 90%)
+Criteria: non-cost=4 (need at least 3)
+  code_correctness: checks=0 cases=0
+  spec_adherence: checks=0 cases=0
+  code_quality: checks=0 cases=0
+  test_coverage: checks=0 cases=0
 ```
 
-followed on stderr by `.kairon/iterations/builder/load-bearing.md: table: load-bearing table not found` among the other violations. The planner prompt has none of the RTCC headings, so `kairon eval audit planner` exits `1` and names `## Role`, `## Task`, `## Context` and `## Constraints` as missing.
+followed on stderr (the `Error:` block, printed twice, then `go run`'s `exit status 1`) by 4 `structure` violations (`## Role`, `## Task`, `## Context`, `## Constraints` missing), 27 `unmapped` violations for the prompt, 36 for the engine skill, `.kairon/iterations/builder/load-bearing.md: table: load-bearing table not found`, `.kairon/iterations/builder/load-bearing.md: coverage: 0.0% of instructions are load-bearing; need at least 90%` and one `.kairon/evals/rubrics/builder.yaml: unchecked: criterion "<name>" has no check in any case (looked in .kairon/evals/cases/builder)` line per criterion above. The planner prompt has none of the RTCC headings, so `kairon eval audit planner` exits `1` and names `## Role`, `## Task`, `## Context` and `## Constraints` as missing.
 
 ### Verifying the audit
 
-The audit ships with fixtures under `internal/eval/testdata/audit/`. Most case directories hold an agent `demo` (config and prompt in `evals/agents/`, rubric in `evals/rubrics/demo.yaml` with the criteria `alpha` and `beta`, the case `basic` in `evals/cases/demo/basic.yaml` with a check on each criterion) and its table in `iterations/demo/load-bearing.md`, whose Evidence cells are all `case:basic`. The fixture prompts have no engine skills, so the commands do not depend on the shipped templates.
+The audit ships with fixtures under `internal/eval/testdata/audit/`. Most case directories hold an agent `demo` (config and prompt in `evals/agents/`, rubric in `evals/rubrics/demo.yaml` with the criteria `alpha`, `beta` and `gamma`, the case `basic` in `evals/cases/demo/basic.yaml` with one check on each criterion, each with a different `allow` list so the criteria are distinct) and its table in `iterations/demo/load-bearing.md`, whose Evidence cells are all `case:basic`. The table maps instructions to `alpha` and `beta` only; `gamma` is there for the Distinct criteria rules. The fixture prompts have no engine skills, so the commands do not depend on the shipped templates.
 
 **Exactly 90% passes.** The `coverage-90` prompt has 10 instructions and the table maps 9 of them:
 
@@ -1916,6 +1957,10 @@ go run ./cmd/kairon eval audit demo \
 Audit: demo
 Prompt: internal/eval/testdata/audit/coverage-90/evals/agents/demo-prompt.md
 Instructions: total=10 mapped=9 duplicates=0 coverage=90.0% (threshold 90%)
+Criteria: non-cost=3 (need at least 3)
+  alpha: checks=1 cases=1
+  beta: checks=1 cases=1
+  gamma: checks=1 cases=1
 OK demo: 10 instructions, 90.0% load-bearing, RTCC structure present
 exit=0
 ```
@@ -1932,17 +1977,27 @@ go run ./cmd/kairon eval audit demo \
 Audit: demo
 Prompt: internal/eval/testdata/audit/coverage-89/evals/agents/demo-prompt.md
 Instructions: total=100 mapped=89 duplicates=0 coverage=89.0% (threshold 90%)
+Criteria: non-cost=3 (need at least 3)
+  alpha: checks=1 cases=1
+  beta: checks=1 cases=1
+  gamma: checks=1 cases=1
 Error: internal/eval/testdata/audit/coverage-89/evals/agents/demo-prompt.md:94: unmapped: instruction not in load-bearing table: "Instruction 090."
 internal/eval/testdata/audit/coverage-89/evals/agents/demo-prompt.md:95: unmapped: instruction not in load-bearing table: "Instruction 091."
 …
 internal/eval/testdata/audit/coverage-89/evals/agents/demo-prompt.md:104: unmapped: instruction not in load-bearing table: "Instruction 100."
 internal/eval/testdata/audit/coverage-89/iterations/demo/load-bearing.md: coverage: 89.0% of instructions are load-bearing; need at least 90%
+Error: internal/eval/testdata/audit/coverage-89/evals/agents/demo-prompt.md:94: unmapped: instruction not in load-bearing table: "Instruction 090."
+internal/eval/testdata/audit/coverage-89/evals/agents/demo-prompt.md:95: unmapped: instruction not in load-bearing table: "Instruction 091."
+…
+internal/eval/testdata/audit/coverage-89/evals/agents/demo-prompt.md:104: unmapped: instruction not in load-bearing table: "Instruction 100."
+internal/eval/testdata/audit/coverage-89/iterations/demo/load-bearing.md: coverage: 89.0% of instructions are load-bearing; need at least 90%
+exit status 1
 exit=1
 ```
 
-(The `…` stands for the lines for `Instruction 092.` to `Instruction 099.`, which follow the same form. The `Error:` block goes to stderr and the report to stdout.)
+(The `…` stands for the lines for `Instruction 092.` to `Instruction 099.`, which follow the same form, in each copy of the `Error:` block. The `Error:` blocks go to stderr and the report to stdout. See the note under [Report format](#report-format) for why the block appears twice and where `exit status 1` comes from.)
 
-**Evidence and duplicate fixtures.** Four more fixtures use a **flat** layout, so one directory is both the evals directory and the iterations directory. Each holds the agent `selftest` (`agents/selftest.json` and `agents/selftest-prompt.md`), its rubric (`rubrics/selftest.yaml`, criteria `alpha` and `beta`), its cases (`cases/selftest/`) and its table (`selftest/load-bearing.md`). Each must fail, and each is run the same way:
+**Evidence and duplicate fixtures.** Four more fixtures use a **flat** layout, so one directory is both the evals directory and the iterations directory. Each holds the agent `selftest` (`agents/selftest.json` and `agents/selftest-prompt.md`), its rubric (`rubrics/selftest.yaml`, criteria `alpha`, `beta` and `gamma`), its cases (`cases/selftest/`) and its table (`selftest/load-bearing.md`). Each must fail, and each is run the same way:
 
 ```bash
 go run ./cmd/kairon eval audit selftest \
@@ -1963,11 +2018,17 @@ For example `duplicate-line` prints the report on stdout and the violation on st
 Audit: selftest
 Prompt: internal/eval/testdata/audit/duplicate-line/agents/selftest-prompt.md
 Instructions: total=5 mapped=5 duplicates=1 coverage=100.0% (threshold 90%)
+Criteria: non-cost=3 (need at least 3)
+  alpha: checks=1 cases=1
+  beta: checks=1 cases=1
+  gamma: checks=1 cases=1
 Error: internal/eval/testdata/audit/duplicate-line/agents/selftest-prompt.md:9: duplicate: duplicate of internal/eval/testdata/audit/duplicate-line/agents/selftest-prompt.md:8: "Never skip validation."
+Error: internal/eval/testdata/audit/duplicate-line/agents/selftest-prompt.md:9: duplicate: duplicate of internal/eval/testdata/audit/duplicate-line/agents/selftest-prompt.md:8: "Never skip validation."
+exit status 1
 exit=1
 ```
 
-The Evidence fixtures also reach 100% coverage (`total=4 mapped=4 duplicates=0 coverage=100.0%`), so they fail only because of the `table` violations, which are always reported. The `fence-and-table` fixture is the passing counterpart of the README example and exits `0`:
+The Evidence fixtures also reach 100% coverage (`total=4 mapped=4 duplicates=0 coverage=100.0%`), so they fail only because of the `table` violations, which are always reported. `evidence-unchecked-criterion` has a second case, `alpha-only`, so its `Criteria:` block reports `alpha: checks=2 cases=2`. The `fence-and-table` fixture is the passing counterpart of the README example and exits `0`:
 
 ```bash
 go run ./cmd/kairon eval audit demo \
@@ -1979,8 +2040,104 @@ go run ./cmd/kairon eval audit demo \
 Audit: demo
 Prompt: internal/eval/testdata/audit/fence-and-table/evals/agents/demo-prompt.md
 Instructions: total=5 mapped=5 duplicates=0 coverage=100.0% (threshold 90%)
+Criteria: non-cost=3 (need at least 3)
+  alpha: checks=1 cases=1
+  beta: checks=1 cases=1
+  gamma: checks=1 cases=1
 OK demo: 5 instructions, 100.0% load-bearing, RTCC structure present
 exit=0
+```
+
+**Distinct-criteria fixtures.** Four more flat-layout fixtures (agent `selftest`, same layout as above) exercise the [Distinct criteria](#distinct-criteria) rules. Each prompt has four instructions and its table maps all four, so coverage is 100% (`total=4 mapped=4 duplicates=0`) and the only failure is the rule under test. Each is run the same way:
+
+```bash
+go run ./cmd/kairon eval audit selftest \
+  --iterations-dir internal/eval/testdata/audit/<fixture> \
+  --evals-dir internal/eval/testdata/audit/<fixture>; echo $?
+```
+
+| Fixture | What it holds | Result |
+|---------|---------------|--------|
+| `two-criteria` | Rubric `alpha`, `beta` and a `type: cost` criterion `cost`; case `basic` checks `alpha` and `beta` | exit `1`; `…/two-criteria/rubrics/selftest.yaml: rubric: rubric …/two-criteria/rubrics/selftest.yaml has 2 distinct non-cost criteria (alpha, beta); need at least 3` |
+| `unchecked-criterion` | Rubric `alpha`, `beta`, `gamma`; case `basic` checks `alpha` and `beta` only | exit `1`; `…/unchecked-criterion/rubrics/selftest.yaml: unchecked: criterion "gamma" has no check in any case (looked in …/unchecked-criterion/cases/selftest)` |
+| `identical-criteria` | Rubric `alpha`, `beta`, `gamma`; case `basic` gives `beta` and `gamma` the same check (`type: changed_files`, `allow: [shared.md]`) and `alpha` a different one | exit `1`; `…/identical-criteria/rubrics/selftest.yaml: identical: criterion "gamma" has the same checks as criterion "beta" in every case (looked in …/identical-criteria/cases/selftest)` |
+| `three-criteria-ok` | Rubric `alpha`, `beta`, `gamma` and a `type: cost` criterion `cost`; case `basic` has two checks on `alpha` and one each on `beta` and `gamma`; case `second` has one more check on `alpha` | exit `0`; the `Criteria:` block lists `alpha: checks=3 cases=2`, `beta: checks=1 cases=1`, `gamma: checks=1 cases=1` and no line for `cost` |
+
+**Fewer than three non-cost criteria** (`two-criteria`). The `cost` criterion is not counted, so the rubric has two. The cost criterion has no checks and is not reported as `unchecked`:
+
+```bash
+go run ./cmd/kairon eval audit selftest --iterations-dir internal/eval/testdata/audit/two-criteria --evals-dir internal/eval/testdata/audit/two-criteria; echo $?
+```
+
+```
+Audit: selftest
+Prompt: internal/eval/testdata/audit/two-criteria/agents/selftest-prompt.md
+Instructions: total=4 mapped=4 duplicates=0 coverage=100.0% (threshold 90%)
+Criteria: non-cost=2 (need at least 3)
+  alpha: checks=1 cases=1
+  beta: checks=1 cases=1
+Error: internal/eval/testdata/audit/two-criteria/rubrics/selftest.yaml: rubric: rubric internal/eval/testdata/audit/two-criteria/rubrics/selftest.yaml has 2 distinct non-cost criteria (alpha, beta); need at least 3
+Error: internal/eval/testdata/audit/two-criteria/rubrics/selftest.yaml: rubric: rubric internal/eval/testdata/audit/two-criteria/rubrics/selftest.yaml has 2 distinct non-cost criteria (alpha, beta); need at least 3
+exit status 1
+1
+```
+
+**A criterion without a check** (`unchecked-criterion`):
+
+```bash
+go run ./cmd/kairon eval audit selftest --iterations-dir internal/eval/testdata/audit/unchecked-criterion --evals-dir internal/eval/testdata/audit/unchecked-criterion; echo $?
+```
+
+```
+Audit: selftest
+Prompt: internal/eval/testdata/audit/unchecked-criterion/agents/selftest-prompt.md
+Instructions: total=4 mapped=4 duplicates=0 coverage=100.0% (threshold 90%)
+Criteria: non-cost=3 (need at least 3)
+  alpha: checks=1 cases=1
+  beta: checks=1 cases=1
+  gamma: checks=0 cases=0
+Error: internal/eval/testdata/audit/unchecked-criterion/rubrics/selftest.yaml: unchecked: criterion "gamma" has no check in any case (looked in internal/eval/testdata/audit/unchecked-criterion/cases/selftest)
+Error: internal/eval/testdata/audit/unchecked-criterion/rubrics/selftest.yaml: unchecked: criterion "gamma" has no check in any case (looked in internal/eval/testdata/audit/unchecked-criterion/cases/selftest)
+exit status 1
+1
+```
+
+**Two criteria with identical checks** (`identical-criteria`). The violation is reported on the later criterion and names the first one of the pair:
+
+```bash
+go run ./cmd/kairon eval audit selftest --iterations-dir internal/eval/testdata/audit/identical-criteria --evals-dir internal/eval/testdata/audit/identical-criteria; echo $?
+```
+
+```
+Audit: selftest
+Prompt: internal/eval/testdata/audit/identical-criteria/agents/selftest-prompt.md
+Instructions: total=4 mapped=4 duplicates=0 coverage=100.0% (threshold 90%)
+Criteria: non-cost=3 (need at least 3)
+  alpha: checks=1 cases=1
+  beta: checks=1 cases=1
+  gamma: checks=1 cases=1
+Error: internal/eval/testdata/audit/identical-criteria/rubrics/selftest.yaml: identical: criterion "gamma" has the same checks as criterion "beta" in every case (looked in internal/eval/testdata/audit/identical-criteria/cases/selftest)
+Error: internal/eval/testdata/audit/identical-criteria/rubrics/selftest.yaml: identical: criterion "gamma" has the same checks as criterion "beta" in every case (looked in internal/eval/testdata/audit/identical-criteria/cases/selftest)
+exit status 1
+1
+```
+
+**Three distinct, checked criteria** (`three-criteria-ok`). `alpha` has three checks spread over two cases, which shows that `checks` and `cases` count different things. The `cost` criterion is not listed:
+
+```bash
+go run ./cmd/kairon eval audit selftest --iterations-dir internal/eval/testdata/audit/three-criteria-ok --evals-dir internal/eval/testdata/audit/three-criteria-ok; echo $?
+```
+
+```
+Audit: selftest
+Prompt: internal/eval/testdata/audit/three-criteria-ok/agents/selftest-prompt.md
+Instructions: total=4 mapped=4 duplicates=0 coverage=100.0% (threshold 90%)
+Criteria: non-cost=3 (need at least 3)
+  alpha: checks=3 cases=2
+  beta: checks=1 cases=1
+  gamma: checks=1 cases=1
+OK selftest: 4 instructions, 100.0% load-bearing, RTCC structure present
+0
 ```
 
 The other fixture directories each isolate one rule: `no-rtcc`, `partial` and `wrong-order` (the `structure` rule), `unmapped` (both `unmapped` and `unknown-criterion`), `ok-hooks` (an engine skill audited and a hook excluded, library tests only, because it needs its own skills directory), `candidate` (`--prompt-file`) and `fence-and-table` (extraction and escaped pipes). The unit tests are `go test ./internal/eval/ -run Audit` and `go test ./cmd/kairon/cmd/ -run Audit`.

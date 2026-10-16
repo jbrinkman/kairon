@@ -1,0 +1,13 @@
+name: basic
+agent: selftest
+input: Do the task.
+checks:
+  - criterion: alpha
+    type: changed_files
+    allow: [alpha.md]
+  - criterion: beta
+    type: changed_files
+    allow: [shared.md]
+  - criterion: gamma
+    type: changed_files
+    allow: [shared.md]
