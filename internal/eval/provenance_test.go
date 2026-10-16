@@ -170,6 +170,26 @@ func TestProvenanceGlobResourcesExpanded(t *testing.T) {
 	}
 }
 
+// A workspace root containing a literal backslash (possible on Linux) must not
+// hide a plain, non-glob resource. escapeGlobMeta is only for building a glob
+// pattern; the direct os.Stat lookup needs the real, unescaped path.
+func TestResolveResourceFilesInBackslashRootFindsPlainFile(t *testing.T) {
+	if filepath.Separator == '\\' {
+		t.Skip("backslash is the path separator on this platform")
+	}
+	root := filepath.Join(t.TempDir(), `weird\dir`)
+	writeProvFile(t, filepath.Join(root, "res.md"), "resource body")
+
+	files, err := resolveResourceFilesIn(root, "file://res.md")
+	if err != nil {
+		t.Fatalf("resolveResourceFilesIn: %v", err)
+	}
+	want := filepath.Join(root, "res.md")
+	if len(files) != 1 || files[0] != want {
+		t.Errorf("files = %v, want [%s]", files, want)
+	}
+}
+
 func TestProvenanceMissingPromptFileErrors(t *testing.T) {
 	provProject(t, `[]`)
 	if err := os.Remove(".kiro/agents/a-prompt.md"); err != nil {

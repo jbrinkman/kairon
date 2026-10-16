@@ -233,12 +233,20 @@ func resolveResourceFilesIn(root, entry string) ([]string, error) {
 	if p == "" {
 		return nil, nil
 	}
+	globRoot, rel := "", p
 	if root != "" && !filepath.IsAbs(p) {
-		p = filepath.Join(escapeGlobMeta(root), p)
+		globRoot = root
+		p = filepath.Join(root, p)
 	}
 
 	if strings.ContainsAny(p, "*?[") {
-		matches, err := filepath.Glob(p)
+		pattern := p
+		if globRoot != "" {
+			// Escape only the literal root prefix so the staged root is matched
+			// verbatim while the entry keeps its own glob metacharacters.
+			pattern = filepath.Join(escapeGlobMeta(globRoot), rel)
+		}
+		matches, err := filepath.Glob(pattern)
 		if err != nil {
 			return nil, err
 		}
