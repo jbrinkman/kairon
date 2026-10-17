@@ -1,0 +1,4 @@
+- criterion: demo
+  type: judge
+  question: "Does hello.txt greet the world?"
+  files: [hello.txt]

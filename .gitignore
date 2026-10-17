@@ -29,3 +29,6 @@ dist/
 # Kiro runtime artifacts
 .kiro/settings/
 **/.kiro-krew/
+
+# Fixture for kairon check tests (must be tracked despite *.log)
+!internal/eval/testdata/check-cli/gh.log

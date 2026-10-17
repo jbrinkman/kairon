@@ -1,0 +1,10 @@
+- criterion: demo
+  type: output_contains
+  pattern: done
+- criterion: demo
+  type: gh_log_contains
+  pattern: issue edit
+- criterion: demo
+  type: command
+  run: test -f injected.txt
+  inject: [injected.txt]
