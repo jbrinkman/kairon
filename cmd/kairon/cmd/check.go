@@ -83,6 +83,10 @@ func runCheckCommand(cmd *cobra.Command, _ []string) error {
 			return err
 		}
 	}
+	// kairon check runs a single turn. Record it as turn 1 so a text check that
+	// names a turn above 1 fails explicitly (turn out of range) through the same
+	// range check kairon eval uses, rather than silently reading turn-1 evidence.
+	in.Turns = []checks.TurnEvidence{{Output: in.Output, GHLog: in.GHLog, GHLogOversized: in.GHLogOversized}}
 	hidden := ""
 	if checkHiddenDir != "" {
 		hidden, err = filepath.Abs(checkHiddenDir)

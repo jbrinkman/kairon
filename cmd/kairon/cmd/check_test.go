@@ -432,3 +432,56 @@ func TestCheckGHLogOversizedFailsGHLogChecks(t *testing.T) {
 		t.Fatalf("an oversized gh log must fail gh_log checks explicitly; err=%v out=%q", err, out)
 	}
 }
+
+// kairon check runs a single turn. A text check naming a turn above 1 asks for
+// evidence that does not exist and must FAIL explicitly (turn out of range),
+// not silently read turn-1 evidence and pass. A check at turn: 1 must read the
+// supplied --output / --gh-log exactly as a check with no turn does.
+func TestCheckTurnOutOfRangeFails(t *testing.T) {
+	fx := checkFixtures(t)
+	dir := filepath.Join(fx, "dir")
+	outputFile := filepath.Join(fx, "output.txt") // contains "all work done"
+	ghLogFile := filepath.Join(fx, "gh.log")      // contains "gh issue edit 1 --add-label x"
+
+	write := func(t *testing.T, body string) string {
+		p := filepath.Join(t.TempDir(), "checks.yaml")
+		if err := os.WriteFile(p, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+
+	t.Run("output_contains turn 2 fails out of range", func(t *testing.T) {
+		cf := write(t, "- type: output_contains\n  pattern: all work done\n  turn: 2\n")
+		out, err := runCheck(t, "--checks", cf, "--dir", dir, "--output", outputFile)
+		if err == nil {
+			t.Fatalf("turn 2 against a single turn must fail, got success\nstdout:\n%s", out)
+		}
+		line := strings.TrimSpace(out)
+		if !strings.HasPrefix(line, "FAIL #1 output_contains") || !strings.Contains(line, "out of range") {
+			t.Errorf("want a FAIL line saying the turn is out of range, got:\n%s", out)
+		}
+	})
+
+	t.Run("gh_log_contains turn 3 fails out of range", func(t *testing.T) {
+		cf := write(t, "- type: gh_log_contains\n  pattern: issue edit\n  turn: 3\n")
+		out, err := runCheck(t, "--checks", cf, "--dir", dir, "--gh-log", ghLogFile)
+		if err == nil {
+			t.Fatalf("turn 3 against a single turn must fail, got success\nstdout:\n%s", out)
+		}
+		if line := strings.TrimSpace(out); !strings.HasPrefix(line, "FAIL #1 gh_log_contains") || !strings.Contains(line, "out of range") {
+			t.Errorf("want a FAIL line saying the turn is out of range, got:\n%s", out)
+		}
+	})
+
+	t.Run("turn 1 reads the supplied output", func(t *testing.T) {
+		cf := write(t, "- type: output_contains\n  pattern: all work done\n  turn: 1\n")
+		out, err := runCheck(t, "--checks", cf, "--dir", dir, "--output", outputFile)
+		if err != nil {
+			t.Fatalf("turn 1 must read turn-1 evidence and pass: %v\nstdout:\n%s", err, out)
+		}
+		if line := strings.TrimSpace(out); !strings.HasPrefix(line, "PASS #1 output_contains") {
+			t.Errorf("want PASS for turn 1, got:\n%s", out)
+		}
+	})
+}
