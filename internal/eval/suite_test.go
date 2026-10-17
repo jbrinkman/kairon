@@ -200,6 +200,13 @@ func TestSuiteSHA256IgnoresUnrelatedFiles(t *testing.T) {
 			writeEvalFile(t, dir, "fixtures/workspaces/unused/other.txt", "changed\n")
 			writeEvalFile(t, dir, "fixtures/workspaces/unused/added.txt", "added\n")
 		}},
+		{"referenced fixture .git contents", func(t *testing.T, dir string) {
+			// A fixture that is a git checkout: newCaseWorkspace skips .git
+			// via copyTree and runs a fresh gitInit, so the agent never sees
+			// the fixture's own repo. The suite hash must ignore it too.
+			writeEvalFile(t, dir, "fixtures/workspaces/shared/.git/HEAD", "ref: refs/heads/main\n")
+			writeEvalFile(t, dir, "fixtures/workspaces/shared/.git/objects/ab/cdef", "object\n")
+		}},
 		{"another agent's case", func(t *testing.T, dir string) {
 			writeEvalFile(t, dir, "cases/beta/b.yaml", suiteCaseBeta+"# edited\n")
 		}},

@@ -193,12 +193,22 @@ func (c *suiteCollector) workspace(name string) error {
 		if err != nil {
 			return err
 		}
-		if !d.Type().IsRegular() {
-			return nil
-		}
 		rel, err := filepath.Rel(root, p)
 		if err != nil {
 			return err
+		}
+		// Mirror copyTree in newCaseWorkspace: it skips the fixture's root
+		// .git and runs a fresh gitInit, so the agent never sees the fixture's
+		// own repository. Hashing it would change suite_sha256 on an invisible
+		// commit or fetch and needlessly block resume and prompt comparisons.
+		if rel == ".git" {
+			if d.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !d.Type().IsRegular() {
+			return nil
 		}
 		return c.file(relRoot+"/"+filepath.ToSlash(rel), p)
 	})
