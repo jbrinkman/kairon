@@ -14,6 +14,7 @@ import (
 	"strings"
 
 	"github.com/jbrinkman/kairon/internal/config"
+	"github.com/jbrinkman/kairon/internal/inference"
 )
 
 // agentProvenance is the resolved identity of an agent under test: the model
@@ -320,6 +321,17 @@ type runPins struct {
 	// TrustOverrides is evals.trust_tools: agent name -> tool names trusted
 	// in container runs, taking precedence over the agent's allowedTools.
 	TrustOverrides map[string][]string
+	// Prices is the pricing table (top-level `pricing` config key) used to
+	// cost every call in the run.
+	Prices inference.PriceTable
+}
+
+// prices returns the run's price table; nil (prices nothing) when unpinned.
+func (p *runPins) prices() inference.PriceTable {
+	if p == nil {
+		return nil
+	}
+	return p.Prices
 }
 
 // trustOverride returns the evals.trust_tools entry for agent, if any. An
@@ -418,12 +430,17 @@ func pinRun(agent string, opts RunOptions, ignoreOverlay bool) error {
 		return fmt.Errorf("❌ cannot pin eval models: %w", err)
 	}
 
+	prices, err := config.LoadPricing()
+	if err != nil {
+		return fmt.Errorf("❌ cannot load pricing: %w", err)
+	}
+
 	var violations []string
 	if err := ev.CheckModel(ev.JudgeModel); err != nil {
 		violations = append(violations, fmt.Sprintf("evals.judge_model: %v", err))
 	}
 
-	pins := &runPins{Judge: ev.JudgeModel, Agents: map[string]agentPin{}, TrustOverrides: ev.TrustTools}
+	pins := &runPins{Judge: ev.JudgeModel, Agents: map[string]agentPin{}, TrustOverrides: ev.TrustTools, Prices: prices}
 	for _, name := range agentsInScope(agent, opts) {
 		prov, err := resolveAgentProvenance(name, ignoreOverlay)
 		if err != nil {

@@ -1,0 +1,7 @@
+name: second
+agent: selftest
+input: Do the task.
+checks:
+  - criterion: alpha
+    type: changed_files
+    allow: [alpha-second.md]

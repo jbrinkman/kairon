@@ -122,7 +122,7 @@ func TestNewHostConfigWithMounts_Tmpfs(t *testing.T) {
 	want := map[string][]string{
 		"/tmp":          {"rw", "nosuid", "nodev", "mode=1777", "size=" + TmpfsTmpSize},
 		"/var/tmp":      {"rw", "nosuid", "nodev", "mode=1777", "size=" + TmpfsVarTmpSize},
-		"/home/sandbox": {"rw", "nosuid", "nodev", "uid=1000", "gid=1000", "mode=0755", "size=" + TmpfsHomeSize},
+		"/home/sandbox": {"rw", "nosuid", "nodev", "mode=0777", "size=" + TmpfsHomeSize},
 	}
 	for path, opts := range want {
 		got, ok := hc.Tmpfs[path]
@@ -147,11 +147,32 @@ func TestNewHostConfigWithMounts_Tmpfs(t *testing.T) {
 			t.Errorf("tmpfs %s must not set noexec: %q", path, got)
 		}
 	}
-	// Only /home/sandbox is chowned; temp dirs are world-writable sticky.
-	for _, p := range []string{"/tmp", "/var/tmp"} {
-		if strings.Contains(hc.Tmpfs[p], "uid=") || strings.Contains(hc.Tmpfs[p], "gid=") {
-			t.Errorf("tmpfs %s must not set uid/gid: %q", p, hc.Tmpfs[p])
+	// No tmpfs may set uid=/gid=: Podman rejects them ("unknown mount option").
+	// /tmp and /var/tmp are world-writable sticky; /home/sandbox is writable
+	// via its mode alone.
+	for p, got := range hc.Tmpfs {
+		if strings.Contains(got, "uid=") || strings.Contains(got, "gid=") {
+			t.Errorf("tmpfs %s must not set uid/gid: %q", p, got)
 		}
+	}
+}
+
+// TestTmpfsMounts_NoOwnershipOptions pins that no tmpfs entry carries uid= or
+// gid=, which Podman's Docker-compatible API rejects at container create.
+func TestTmpfsMounts_NoOwnershipOptions(t *testing.T) {
+	m := tmpfsMounts()
+	if len(m) != 3 {
+		t.Fatalf("want exactly 3 tmpfs entries, got %v", m)
+	}
+	for path, opts := range m {
+		for _, bad := range []string{"uid=", "gid="} {
+			if strings.Contains(opts, bad) {
+				t.Errorf("tmpfs %s options %q must not contain %q", path, opts, bad)
+			}
+		}
+	}
+	if got, want := m[TmpfsHomePath], "rw,nosuid,nodev,mode=0777,size="+TmpfsHomeSize; got != want {
+		t.Errorf("tmpfs %s = %q, want %q", TmpfsHomePath, got, want)
 	}
 }
 

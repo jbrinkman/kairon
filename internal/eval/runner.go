@@ -11,7 +11,6 @@ import (
 	"os/exec"
 	"path"
 	"path/filepath"
-	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -24,9 +23,6 @@ import (
 	"github.com/jbrinkman/kairon/internal/inference"
 	"gopkg.in/yaml.v3"
 )
-
-// ansiRegex matches all CSI (Control Sequence Introducer) escape sequences.
-var ansiRegex = regexp.MustCompile(`\x1b\[[0-9;]*[a-zA-Z]`)
 
 // checkDockerAvailability verifies a container daemon (Podman or Docker) is
 // running and accessible. It delegates to sandbox.EnsureContainerDaemon so the
@@ -358,7 +354,7 @@ func runSingleTestCase(agent string, testcase string, cConfig *ContainerConfig) 
 	}
 
 	if !verdict.Passed {
-		return thresholdFailure([]AgentFailure{{Agent: agent, Score: verdict.Score, Threshold: verdict.Threshold}}, 1)
+		return thresholdFailure([]AgentFailure{failureOf(agent, verdict)}, 1)
 	}
 	return nil
 }
@@ -481,10 +477,11 @@ func Run(agent string, cConfig *ContainerConfig) error {
 
 func evaluate(rubric Rubric, cases []TestCase, gitHash string, out io.Writer, cConfig *ContainerConfig) AgentResult {
 	result := AgentResult{
-		Agent:     rubric.Agent,
-		GitHash:   gitHash,
-		Threshold: rubric.Threshold(),
-		Repeat:    runRepeat(),
+		Agent:             rubric.Agent,
+		GitHash:           gitHash,
+		Threshold:         rubric.Threshold(),
+		MinCriterionScore: rubric.MinCriterionScore,
+		Repeat:            runRepeat(),
 	}
 	applyRunContext(&result, cConfig)
 
@@ -732,7 +729,7 @@ func requestTurn(turn int) int {
 // natively; container id/image in a container) and may be nil; the fields the
 // backend reported (command, stderr, exit code) are filled into it.
 func completeAgentCall(req inference.Request, resp inference.Response, err error, wall time.Duration, baseEC *ErrorContext) (string, CostInfo, inference.CallRecord, *ErrorContext, error) {
-	cost := costFromUsage(resp.Model, resp.Usage)
+	cost := costFromUsage(servedModel(req, resp), resp.Usage)
 	rec := newCallRecord(req, resp, err, wall, cost)
 	rec.PromptSHA256 = cfg.pins.agentPromptSHA(req.Agent)
 
@@ -851,17 +848,6 @@ const containerBinDir = "/opt/kairon/bin"
 // containerPath is the container PATH: the fake-gh directory first, then the
 // base image's default PATH (where the real, unauthenticated gh lives).
 const containerPath = containerBinDir + ":/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-
-// blockedContainerEnv are GitHub credential/host variables that never reach
-// the container, even if a caller puts them in ContainerConfig.Environment, so
-// the real gh stays unauthenticated.
-var blockedContainerEnv = map[string]bool{
-	"GH_TOKEN":                true,
-	"GITHUB_TOKEN":            true,
-	"GH_ENTERPRISE_TOKEN":     true,
-	"GITHUB_ENTERPRISE_TOKEN": true,
-	"GH_HOST":                 true,
-}
 
 // containerUser is the unprivileged user every container runs as.
 const containerUser = "sandbox"
@@ -1625,7 +1611,7 @@ ACTUAL OUTPUT TO EVALUATE:
 	}
 	wallStart := time.Now()
 	resp, err := cfg.backend.Invoke(context.Background(), req)
-	rec := newCallRecord(req, resp, err, time.Since(wallStart), costFromUsage(resp.Model, resp.Usage))
+	rec := newCallRecord(req, resp, err, time.Since(wallStart), costFromUsage(servedModel(req, resp), resp.Usage))
 	rec.Criterion = criterion.Name
 	// On a failed or unparseable call this returns CostInfo{} (zero), so the
 	// case's judge_cost deliberately keeps its historical zero-on-failure
@@ -1658,22 +1644,24 @@ ACTUAL OUTPUT TO EVALUATE:
 	}
 
 	score := max(1, min(response.Score, 5))
-	cost := costFromUsage(resp.Model, resp.Usage)
+	cost := costFromUsage(servedModel(req, resp), resp.Usage)
 	return cost, score, response.Reasoning, false, rec
 }
 
-// newCallRecord builds the audit record for one backend call. Model is the
-// served model when the backend reports one, else the pinned (requested) one;
+// newCallRecord builds the audit record for one backend call. Model is
+// servedModel (the backend's model, else the requested one), the same value
+// cost was priced under; CostUnknown is set when that model had no price;
 // DurationMS prefers the backend's measurement over the wall clock (the stub
 // reports 0). A failed call is still recorded, with Error set.
 func newCallRecord(req inference.Request, resp inference.Response, err error, wall time.Duration, cost CostInfo) inference.CallRecord {
 	rec := inference.CallRecord{
 		Role:         string(req.Role),
-		Model:        resp.Model,
+		Model:        servedModel(req, resp),
 		Agent:        req.Agent,
 		InputTokens:  cost.TokensIn,
 		OutputTokens: cost.TokensOut,
 		CostUSD:      cost.EstimatedUSD,
+		CostUnknown:  cost.CostIncomplete,
 		Estimated:    resp.Usage.Source != inference.UsageReported,
 		DurationMS:   resp.Duration.Milliseconds(),
 	}
@@ -1683,9 +1671,6 @@ func newCallRecord(req inference.Request, resp inference.Response, err error, wa
 	}
 	if len(resp.ToolDenials) > 0 {
 		rec.ToolDenials = append([]inference.ToolDenial(nil), resp.ToolDenials...)
-	}
-	if rec.Model == "" {
-		rec.Model = req.Model
 	}
 	if resp.Duration == 0 {
 		rec.DurationMS = wall.Milliseconds()
@@ -1751,6 +1736,9 @@ func loadRubrics(agentFilter string) ([]Rubric, error) {
 		// Written as a negated range check so NaN (which fails every comparison) is rejected too.
 		if r.PassThreshold != nil && !(*r.PassThreshold > 0 && *r.PassThreshold <= 100) {
 			return nil, fmt.Errorf("invalid rubric %s: pass_threshold must be a percent in (0, 100], got %v", e.Name(), *r.PassThreshold)
+		}
+		if r.MinCriterionScore != nil && !(*r.MinCriterionScore > 0 && *r.MinCriterionScore <= 100) {
+			return nil, fmt.Errorf("invalid rubric %s: min_criterion_score must be a percent in (0, 100], got %v", e.Name(), *r.MinCriterionScore)
 		}
 
 		if agentFilter == "" || r.Agent == agentFilter {
@@ -1830,10 +1818,6 @@ func loadCases(agent string) ([]TestCase, error) {
 	}
 
 	return cases, nil
-}
-
-func stripANSISequences(s string) string {
-	return ansiRegex.ReplaceAllString(s, "")
 }
 
 // caseThreshold returns the success threshold (percent) for a test case:
@@ -1969,7 +1953,7 @@ func runProgressiveEvaluation(agent, resultsDir string, isResume bool, cConfig *
 		printAgentVerdict(os.Stdout, rubric.Agent, verdict)
 		evaluated++
 		if !verdict.Passed {
-			failed = append(failed, AgentFailure{Agent: rubric.Agent, Score: verdict.Score, Threshold: verdict.Threshold})
+			failed = append(failed, failureOf(rubric.Agent, verdict))
 		}
 	}
 
@@ -2235,10 +2219,11 @@ func stampResumedCases(result *AgentResult, cases []TestCase, rubric Rubric) {
 // evaluateProgressive runs evaluation with progressive result saving after each test case.
 func evaluateProgressive(rubric Rubric, cases []TestCase, gitHash string, out io.Writer, resultsDir string, isResume bool, cConfig *ContainerConfig) AgentResult {
 	result := AgentResult{
-		Agent:     rubric.Agent,
-		GitHash:   gitHash,
-		Threshold: rubric.Threshold(),
-		Repeat:    runRepeat(),
+		Agent:             rubric.Agent,
+		GitHash:           gitHash,
+		Threshold:         rubric.Threshold(),
+		MinCriterionScore: rubric.MinCriterionScore,
+		Repeat:            runRepeat(),
 	}
 	applyRunContext(&result, cConfig)
 
@@ -2256,6 +2241,7 @@ func evaluateProgressive(rubric Rubric, cases []TestCase, gitHash string, out io
 				// A resumed result may predate verdicts; the threshold is the
 				// current rubric's, like the provenance above.
 				result.Threshold = rubric.Threshold()
+				result.MinCriterionScore = rubric.MinCriterionScore
 				// checkResumeIntegrity verified the saved repeat equals the
 				// current one (a legacy file's absent repeat is 1).
 				result.Repeat = runRepeat()

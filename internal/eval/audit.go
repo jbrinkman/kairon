@@ -20,6 +20,10 @@ import (
 // load-bearing (mapped to a rubric criterion) for an audit to pass.
 const auditThresholdPercent = 90
 
+// auditMinCriteria is the minimum number of distinct non-cost criteria a
+// rubric must carry (Stage 3 requires at least three).
+const auditMinCriteria = 3
+
 // auditSkillsDisplayDir is where shipped engine skills live in the source tree;
 // it is only used in messages and file labels.
 const auditSkillsDisplayDir = "cmd/kairon/templates/kiro/skills"
@@ -36,12 +40,16 @@ const (
 	auditRuleUnmapped         = "unmapped"
 	auditRuleUnknownCriterion = "unknown-criterion"
 	auditRuleCoverage         = "coverage"
+	auditRuleRubric           = "rubric"
+	auditRuleUnchecked        = "unchecked"
+	auditRuleIdentical        = "identical"
 )
 
 // auditRuleOrder ranks rules for stable output ordering within a file and line.
 var auditRuleOrder = map[string]int{
 	auditRuleStructure: 0, auditRuleResource: 1, auditRuleTable: 2, auditRuleDuplicate: 3,
 	auditRuleUnmapped: 4, auditRuleUnknownCriterion: 5, auditRuleCoverage: 6,
+	auditRuleRubric: 7, auditRuleUnchecked: 8, auditRuleIdentical: 9,
 }
 
 // rtccHeadings are the level-2 headings a prompt must carry, in this order.
@@ -152,6 +160,7 @@ func Audit(w io.Writer, agent string, opts AuditOptions) error {
 	if err != nil {
 		return err
 	}
+	criterionNames := auditCriterionNames(criteria)
 	cases, err := loadAuditCases(evalsDir, agent)
 	if err != nil {
 		return err
@@ -184,12 +193,16 @@ func Audit(w io.Writer, agent string, opts AuditOptions) error {
 		instructions = append(instructions, s.instructions...)
 	}
 	register(tablePath)
+	register(rubricPath)
 	register(configPath)
 	for _, msg := range resourceProblems {
 		add(configPath, 0, auditRuleResource, "%s", msg)
 	}
 
-	table := loadAuditTable(tablePath, agent, criteria, cases, add)
+	table := loadAuditTable(tablePath, agent, criterionNames, cases, add)
+
+	// Rubric-level rules: always reported, independent of coverage.
+	criterionStats := checkAuditRubric(add, rubricPath, criteria, cases)
 
 	// A later instruction whose text equals an earlier one (prompt first, then
 	// engine skills) is dead weight. Every repeat refers to the first
@@ -216,7 +229,7 @@ func Audit(w io.Writer, agent string, opts AuditOptions) error {
 		case !ok:
 			details = append(details, AuditViolation{File: in.File, Line: in.Line, Rule: auditRuleUnmapped,
 				Message: fmt.Sprintf("instruction not in load-bearing table: %q", in.Text)})
-		case !criteria[row.criterion]:
+		case !criterionNames[row.criterion]:
 			details = append(details, AuditViolation{File: in.File, Line: in.Line, Rule: auditRuleUnknownCriterion,
 				Message: fmt.Sprintf("maps to criterion %q which is not in rubric %s: %q", row.criterion, rubricPath, in.Text)})
 		default:
@@ -236,7 +249,7 @@ func Audit(w io.Writer, agent string, opts AuditOptions) error {
 		}
 	}
 
-	if err := writeAuditReport(w, agent, promptPath, isCandidate, skills, hooks, ignored, total, mapped, duplicates, percent); err != nil {
+	if err := writeAuditReport(w, agent, promptPath, isCandidate, skills, hooks, ignored, total, mapped, duplicates, percent, criterionStats); err != nil {
 		return err
 	}
 
@@ -267,7 +280,7 @@ func auditPercent(mapped, total int) string {
 	return fmt.Sprintf("%d.%d%%", tenths/10, tenths%10)
 }
 
-func writeAuditReport(w io.Writer, agent, promptPath string, isCandidate bool, skills []auditSkill, hooks, ignored []string, total, mapped, duplicates int, percent string) error {
+func writeAuditReport(w io.Writer, agent, promptPath string, isCandidate bool, skills []auditSkill, hooks, ignored []string, total, mapped, duplicates int, percent string, stats []auditCriterionStat) error {
 	var b strings.Builder
 	fmt.Fprintf(&b, "Audit: %s\n", agent)
 	if isCandidate {
@@ -294,6 +307,10 @@ func writeAuditReport(w io.Writer, agent, promptPath string, isCandidate bool, s
 		}
 	}
 	fmt.Fprintf(&b, "Instructions: total=%d mapped=%d duplicates=%d coverage=%s (threshold %d%%)\n", total, mapped, duplicates, percent, auditThresholdPercent)
+	fmt.Fprintf(&b, "Criteria: non-cost=%d (need at least %d)\n", len(stats), auditMinCriteria)
+	for _, st := range stats {
+		fmt.Fprintf(&b, "  %s: checks=%d cases=%d\n", st.name, st.checks, st.cases)
+	}
 	_, err := io.WriteString(w, b.String())
 	return err
 }
@@ -355,8 +372,17 @@ func loadAuditPrompt(agent, configPath string, conf agentConfigFile, promptFile 
 	return p, string(data), false, nil
 }
 
-// loadAuditCriteria returns the set of criterion names of a rubric file.
-func loadAuditCriteria(rubricPath string) (map[string]bool, error) {
+// auditCriterion is one rubric criterion as the audit sees it.
+type auditCriterion struct {
+	name string
+	cost bool // type: cost
+}
+
+// loadAuditCriteria returns the criteria of a rubric file in rubric order,
+// de-duplicated by name (first occurrence wins). Criteria with an empty name
+// are ignored. A criterion is a cost criterion when its type is exactly
+// "cost", as the runner treats it.
+func loadAuditCriteria(rubricPath string) ([]auditCriterion, error) {
 	data, err := os.ReadFile(rubricPath)
 	if err != nil {
 		return nil, fmt.Errorf("reading rubric %s: %w", rubricPath, err)
@@ -368,11 +394,26 @@ func loadAuditCriteria(rubricPath string) (map[string]bool, error) {
 	if len(r.Criteria) == 0 {
 		return nil, fmt.Errorf("rubric %s has no criteria", rubricPath)
 	}
-	names := make(map[string]bool, len(r.Criteria))
+	seen := make(map[string]bool, len(r.Criteria))
+	criteria := make([]auditCriterion, 0, len(r.Criteria))
 	for _, c := range r.Criteria {
-		names[c.Name] = true
+		name := strings.TrimSpace(c.Name)
+		if name == "" || seen[name] {
+			continue
+		}
+		seen[name] = true
+		criteria = append(criteria, auditCriterion{name: name, cost: strings.TrimSpace(c.Type) == "cost"})
 	}
-	return names, nil
+	return criteria, nil
+}
+
+// auditCriterionNames returns the set of criterion names (cost included).
+func auditCriterionNames(criteria []auditCriterion) map[string]bool {
+	names := make(map[string]bool, len(criteria))
+	for _, c := range criteria {
+		names[c.name] = true
+	}
+	return names
 }
 
 // resolveAuditResources classifies the config's resources. Engine skills are
@@ -500,20 +541,23 @@ func isTableSeparator(trimmed string) bool {
 	return tableSeparatorRe.MatchString(trimmed) && strings.Contains(trimmed, "-") && strings.Contains(trimmed, "|")
 }
 
-// auditCases maps a case name to the set of criteria it has at least one
-// check on.
+// auditCases maps a case name to its checks, grouped by criterion. Each check
+// is kept as the canonical JSON of its body without the criterion field (map
+// keys sorted by encoding/json), so equal checks compare equal whatever their
+// YAML field order.
 type auditCases struct {
 	dir   string // <evals-dir>/cases/<agent>, for messages
-	names map[string]map[string]bool
+	names map[string]map[string][]string
 }
 
 // loadAuditCases reads <evalsDir>/cases/<agent>/*.yaml (non-recursive). A case
-// is identified by its name: field and checks only need their criterion. A
-// missing directory means the agent has no cases. Like loadAuditConfig it does
+// is identified by its name: field. Each check is decoded generically (not
+// into Check) so the audit compares exactly the fields the case file carries.
+// A missing directory means the agent has no cases. Like loadAuditConfig it does
 // not use package state, so it cannot share loadCases.
 func loadAuditCases(evalsDir, agent string) (auditCases, error) {
 	dir := filepath.Join(evalsDir, "cases", agent)
-	cases := auditCases{dir: dir, names: map[string]map[string]bool{}}
+	cases := auditCases{dir: dir, names: map[string]map[string][]string{}}
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
@@ -531,10 +575,8 @@ func loadAuditCases(evalsDir, agent string) (auditCases, error) {
 			return auditCases{}, fmt.Errorf("reading case %s: %w", file, err)
 		}
 		var c struct {
-			Name   string `yaml:"name"`
-			Checks []struct {
-				Criterion string `yaml:"criterion"`
-			} `yaml:"checks"`
+			Name   string           `yaml:"name"`
+			Checks []map[string]any `yaml:"checks"`
 		}
 		if err := yaml.Unmarshal(data, &c); err != nil {
 			return auditCases{}, fmt.Errorf("parsing case %s: %w", file, err)
@@ -542,16 +584,39 @@ func loadAuditCases(evalsDir, agent string) (auditCases, error) {
 		if c.Name == "" {
 			return auditCases{}, fmt.Errorf("parsing case %s: empty name", file)
 		}
-		set := cases.names[c.Name]
-		if set == nil {
-			set = map[string]bool{}
-			cases.names[c.Name] = set
+		byCriterion := cases.names[c.Name]
+		if byCriterion == nil {
+			byCriterion = map[string][]string{}
+			cases.names[c.Name] = byCriterion
 		}
 		for _, ch := range c.Checks {
-			set[ch.Criterion] = true
+			criterion, _ := ch["criterion"].(string)
+			// Trim as loadAuditCriteria does, so a rubric name and a check
+			// that differ only by surrounding whitespace are the same criterion.
+			criterion = strings.TrimSpace(criterion)
+			delete(ch, "criterion")
+			canonical, err := canonicalAuditCheck(ch)
+			if err != nil {
+				return auditCases{}, fmt.Errorf("parsing case %s: %w", file, err)
+			}
+			byCriterion[criterion] = append(byCriterion[criterion], canonical)
 		}
 	}
 	return cases, nil
+}
+
+// canonicalAuditCheck encodes a check body (criterion already removed) as JSON
+// with sorted keys, so equal checks compare equal whatever their YAML field
+// order. A body JSON cannot encode is an error rather than a lossy fallback: a
+// format like fmt's %v drops value types and string boundaries, so two
+// different checks could canonicalize identically and wrongly trigger the
+// identical rule.
+func canonicalAuditCheck(body map[string]any) (string, error) {
+	b, err := json.Marshal(body)
+	if err != nil {
+		return "", fmt.Errorf("check body cannot be encoded: %w", err)
+	}
+	return string(b), nil
 }
 
 // evidenceCaseNames returns the distinct case names an Evidence cell names via
@@ -585,7 +650,7 @@ func checkAuditEvidence(add func(file string, line int, rule, format string, arg
 		switch {
 		case !ok:
 			add(tablePath, lineNo, auditRuleTable, "row %d: evidence names case %q which is not a case of agent %q (looked in %s)", lineNo, name, agent, cases.dir)
-		case criteria[criterion] && !checked[criterion]:
+		case criteria[criterion] && len(checked[criterion]) == 0:
 			add(tablePath, lineNo, auditRuleTable, "row %d: case %q has no check on criterion %q", lineNo, name, criterion)
 		}
 	}
@@ -673,4 +738,69 @@ func splitTableRow(row string) []string {
 		cells = append(cells, strings.TrimSpace(cur.String()))
 	}
 	return cells
+}
+
+// auditCriterionStat is the report line of one non-cost criterion.
+type auditCriterionStat struct {
+	name   string
+	checks int // checks on the criterion across all cases
+	cases  int // distinct cases with at least one check on it
+}
+
+// checkAuditRubric applies the rubric-level rules, always reported regardless
+// of coverage, all attributed to the rubric file (no line): rubric (fewer than
+// auditMinCriteria distinct non-cost criteria), unchecked (a non-cost criterion
+// with no check in any case) and identical (two non-cost criteria with the same
+// checks in every case). Cost criteria are never counted or reported. It
+// returns the per-criterion stats of the non-cost criteria in rubric order.
+func checkAuditRubric(add func(file string, line int, rule, format string, args ...any), rubricPath string, criteria []auditCriterion, cases auditCases) []auditCriterionStat {
+	var nonCost []string
+	for _, c := range criteria {
+		if !c.cost {
+			nonCost = append(nonCost, c.name)
+		}
+	}
+	if len(nonCost) < auditMinCriteria {
+		list := "none"
+		if len(nonCost) > 0 {
+			list = strings.Join(nonCost, ", ")
+		}
+		add(rubricPath, 0, auditRuleRubric, "rubric %s has %d distinct non-cost criteria (%s); need at least %d", rubricPath, len(nonCost), list, auditMinCriteria)
+	}
+
+	caseNames := make([]string, 0, len(cases.names))
+	for name := range cases.names {
+		caseNames = append(caseNames, name)
+	}
+	sort.Strings(caseNames)
+
+	stats := make([]auditCriterionStat, 0, len(nonCost))
+	firstWith := map[string]string{} // signature -> first criterion carrying it
+	for _, name := range nonCost {
+		st := auditCriterionStat{name: name}
+		var sig []string
+		for _, caseName := range caseNames {
+			checks := cases.names[caseName][name]
+			if len(checks) == 0 {
+				continue
+			}
+			st.checks += len(checks)
+			st.cases++
+			sorted := append([]string(nil), checks...)
+			sort.Strings(sorted)
+			sig = append(sig, caseName+"\x00"+strings.Join(sorted, "\x01"))
+		}
+		stats = append(stats, st)
+		if st.checks == 0 {
+			add(rubricPath, 0, auditRuleUnchecked, "criterion %q has no check in any case (looked in %s)", name, cases.dir)
+			continue
+		}
+		key := strings.Join(sig, "\x02")
+		if first, dup := firstWith[key]; dup {
+			add(rubricPath, 0, auditRuleIdentical, "criterion %q has the same checks as criterion %q in every case (looked in %s)", name, first, cases.dir)
+			continue
+		}
+		firstWith[key] = name
+	}
+	return stats
 }

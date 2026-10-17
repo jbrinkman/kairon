@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jbrinkman/kairon/internal/checks"
 	"github.com/jbrinkman/kairon/internal/eval/sandbox"
 )
 
@@ -565,24 +566,10 @@ func (w *caseWorkspace) gitInit() error {
 }
 
 // hermeticGitEnv returns the process environment with user and system git
-// configuration disabled and repository-selecting variables removed.
+// configuration disabled and repository-selecting variables removed, and the
+// fixed commit dates so workspace git commits stay reproducible.
 func hermeticGitEnv() []string {
-	var env []string
-	for _, kv := range os.Environ() {
-		name, _, _ := strings.Cut(kv, "=")
-		switch {
-		case name == "GIT_DIR", name == "GIT_WORK_TREE", name == "GIT_INDEX_FILE",
-			name == "GIT_OBJECT_DIRECTORY", name == "GIT_COMMON_DIR",
-			strings.HasPrefix(name, "GIT_CONFIG"), strings.HasPrefix(name, "GIT_AUTHOR_"),
-			strings.HasPrefix(name, "GIT_COMMITTER_"):
-			continue
-		}
-		env = append(env, kv)
-	}
-	return append(env,
-		"GIT_CONFIG_GLOBAL=/dev/null",
-		"GIT_CONFIG_SYSTEM=/dev/null",
-		"GIT_CONFIG_NOSYSTEM=1",
+	return append(checks.HermeticGitEnv(),
 		"GIT_AUTHOR_DATE="+fixedGitDate,
 		"GIT_COMMITTER_DATE="+fixedGitDate,
 	)

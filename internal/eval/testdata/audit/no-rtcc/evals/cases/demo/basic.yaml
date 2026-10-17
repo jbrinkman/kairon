@@ -4,7 +4,10 @@ input: Do the task.
 checks:
   - criterion: alpha
     type: changed_files
-    allow: [README.md]
+    allow: [alpha.md]
   - criterion: beta
     type: changed_files
-    allow: [README.md]
+    allow: [beta.md]
+  - criterion: gamma
+    type: changed_files
+    allow: [gamma.md]

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -153,6 +154,51 @@ func TestResourceLimitsEnforcement(t *testing.T) {
 	output, err := c.ExecWithOutput(ctx, []string{"sh", "-c", "cat /sys/fs/cgroup/memory.max 2>/dev/null || cat /sys/fs/cgroup/memory/memory.limit_in_bytes 2>/dev/null || echo unknown"})
 	assert.NoError(t, err)
 	assert.Contains(t, output, "16777216") // 16MB in bytes
+}
+
+// TestSandboxHomeWritableAsSandboxUser creates a container with the real host
+// config (read-only rootfs + tmpfs mounts), runs as the unprivileged sandbox
+// uid/gid and proves /home/sandbox and /tmp are writable while the rootfs is
+// not. It also guards against runtimes (Podman) rejecting the tmpfs options at
+// container create.
+func TestSandboxHomeWritableAsSandboxUser(t *testing.T) {
+	skipIfNoContainerDaemon(t)
+
+	ctx := context.Background()
+	c, err := NewContainer("alpine:3.19")
+	require.NoError(t, err)
+	defer c.Close()
+
+	config := &container.Config{
+		Image: "alpine:3.19",
+		User:  fmt.Sprintf("%d:%d", SandboxUID, SandboxGID),
+		Cmd:   []string{"sleep", "30"},
+		Env:   []string{"HOME=" + TmpfsHomePath},
+	}
+	hostConfig, err := NewHostConfigWithMounts(DefaultLimits(), nil)
+	require.NoError(t, err)
+
+	require.NoError(t, c.Create(ctx, config, hostConfig))
+	defer c.Cleanup(ctx)
+	require.NoError(t, c.Start(ctx))
+
+	t.Run("home is writable and readable", func(t *testing.T) {
+		out, err := c.ExecWithOutput(ctx, []string{"sh", "-c",
+			"id -u && id -g && echo ok > /home/sandbox/probe && cat /home/sandbox/probe"})
+		require.NoError(t, err, out)
+		assert.Contains(t, out, fmt.Sprintf("%d\n%d\n", SandboxUID, SandboxGID))
+		assert.Contains(t, out, "ok")
+	})
+	t.Run("tmp is writable", func(t *testing.T) {
+		out, err := c.ExecWithOutput(ctx, []string{"sh", "-c", "echo ok > /tmp/probe && cat /tmp/probe"})
+		require.NoError(t, err, out)
+		assert.Contains(t, out, "ok")
+	})
+	t.Run("rootfs is read-only", func(t *testing.T) {
+		_, err := c.ExecWithOutput(ctx, []string{"touch", "/etc/kairon-probe"})
+		require.Error(t, err, "writing to the root filesystem must fail")
+		assert.Contains(t, err.Error(), "Read-only file system")
+	})
 }
 
 func TestContainerTimeout(t *testing.T) {

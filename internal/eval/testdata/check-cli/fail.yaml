@@ -1,0 +1,6 @@
+- criterion: demo
+  type: file_exists
+  path: hello.txt
+- criterion: demo
+  type: file_exists
+  path: missing.txt

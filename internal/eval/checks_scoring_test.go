@@ -3,6 +3,7 @@ package eval
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -96,7 +97,7 @@ func TestChecksScoringCheckedCriterionScoresPassedOverTotal(t *testing.T) {
 	if len(cr.Calls) != 0 {
 		t.Errorf("calls = %+v, want none", cr.Calls)
 	}
-	if cr.JudgeCost != (CostInfo{}) {
+	if !reflect.DeepEqual(cr.JudgeCost, CostInfo{}) {
 		t.Errorf("JudgeCost = %+v, want zero", cr.JudgeCost)
 	}
 	if got := readCalls(t, calls); len(got) != 0 {
@@ -209,21 +210,18 @@ func TestChecksScoringNoOutputOrWorkspaceScoresZero(t *testing.T) {
 	}
 }
 
+// The command runner lives in internal/checks, so this observes the side
+// effect of the command (a marker file) instead of swapping the runner.
 func TestChecksScoringNoCommandRunWithoutOutput(t *testing.T) {
 	chdirTemp(t)
 	useStubBackend(t)
-	orig := runCheckCommand
-	t.Cleanup(func() { runCheckCommand = orig })
-	ran := false
-	runCheckCommand = func(dir, run string) commandOutcome {
-		ran = true
-		return commandOutcome{}
-	}
-	tc := TestCase{Name: "c", Checks: []Check{{Criterion: "clarity", Type: CheckCommand, Run: "true"}}}
-	cr := CaseResult{WorkspaceDir: t.TempDir()}
+	dir := t.TempDir()
+	marker := filepath.Join(dir, "ran.txt")
+	tc := TestCase{Name: "c", Checks: []Check{{Criterion: "clarity", Type: CheckCommand, Run: "touch " + marker}}}
+	cr := CaseResult{WorkspaceDir: dir}
 	scoreCase(checkedRubric(), tc, &cr)
-	if ran {
-		t.Error("runCheckCommand called for a case with no output")
+	if _, err := os.Stat(marker); err == nil {
+		t.Error("command check ran for a case with no output")
 	}
 }
 

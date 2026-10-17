@@ -128,6 +128,9 @@ kairon init
 # Force-update templates (overwrites all files except config.yaml)
 kairon update
 
+# Run a YAML list of checks against a directory (PASS/FAIL per check; exit 0 only if all pass)
+kairon check --checks checks.yaml --dir path/to/dir
+
 # Start interactive REPL (default when no arguments)
 kairon
 ```
@@ -155,6 +158,10 @@ Press **Ctrl+Alt+P** (or **Ctrl+Option+P** on macOS) to toggle between console a
 - **Planning Mode**: Interactive AI-assisted issue creation and planning
 
 Both modes preserve their state when you switch, allowing seamless workflow transitions. See [docs/hotkey-toggle.md](docs/hotkey-toggle.md) for detailed usage information.
+
+### Running Checks Without an Eval
+
+`kairon check` runs a checks file (the YAML list of deterministic checks used by [eval cases](docs/evaluation.md#checks)) against any directory and prints one `PASS`/`FAIL` line per check. It exits 0 only if every check passes, and validates the whole file before running anything. See [docs/evaluation.md](docs/evaluation.md#running-checks-on-any-directory-kairon-check) for the flags, file format and safety notes (`command` checks run on the host).
 
 ## Architecture
 
