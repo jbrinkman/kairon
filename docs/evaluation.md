@@ -2800,12 +2800,13 @@ Every container is created with `ReadonlyRootfs: true`. It is always on; there i
 | `<workspace_dir>/.eval` | bind mount, read-write | Outputs, `gh.log` and `gh-body-<n>.md`. |
 | `/tmp` | tmpfs, `rw,nosuid,nodev,mode=1777,size=256m` | Scratch. |
 | `/var/tmp` | tmpfs, `rw,nosuid,nodev,mode=1777,size=64m` | Scratch. |
-| `/home/sandbox` | tmpfs, `rw,nosuid,nodev,uid=1000,gid=1000,mode=0755,size=256m` | `$HOME`. `kiro-cli` keeps state here, so it must be writable. Ephemeral: it is gone when the container is. |
+| `/home/sandbox` | tmpfs, `rw,nosuid,nodev,mode=0777,size=256m` | `$HOME`. `kiro-cli` keeps state here, so it must be writable. Ephemeral: it is gone when the container is. No `uid=`/`gid=` option (see the notes below). |
 
 Everything else is read-only, including `<workspace_dir>/.kiro`, `/opt/kairon/bin`, `/usr/local/bin/kairon` and the rest of the image. A write outside the writable paths fails with `Read-only file system` (EROFS), which is distinguishable from the `Permission denied` the unprivileged `sandbox` user already got for places like `/etc`.
 
 Notes:
 - `/home/sandbox` is a deliberate hole in "read-only". It is ephemeral and size-capped, and is the reason a real `kiro-cli` run works at all.
+- The `/home/sandbox` tmpfs deliberately has **no `uid=` or `gid=` option**. Docker accepts them, but Podman's Docker-compatible API rejects them at container create (`unknown mount option "uid=1000": invalid mount option`), which would make every sandbox container fail on Podman hosts. The mount uses `mode=0777` instead, so it is writable by the unprivileged `sandbox` user (uid 1000) through the "other" permission bits even though the runtime owns the directory as `root:root`. World-writable is acceptable here because the tmpfs is private to one container, ephemeral, size-capped and used by a single unprivileged user. The same options work on Docker and Podman.
 - `noexec` is not set on the tmpfs mounts: `kiro-cli` and tools may execute from temporary locations.
 - tmpfs memory counts against the container memory limit (see [Resource Limits](#resource-limits)).
 - Not added, and possible further hardening: dropping Linux capabilities, `no-new-privileges` and a pids limit.
