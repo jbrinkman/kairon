@@ -316,7 +316,7 @@ func TestScoringParityEvaluateVsEvaluateProgressive(t *testing.T) {
 
 	var singleOut, progOut strings.Builder
 	single := evaluate(rubric, cases, "abc", &singleOut, nil)
-	prog := evaluateProgressive(rubric, cases, "abc", &progOut, t.TempDir(), false, nil)
+	prog := evalProgressiveOK(t, rubric, cases, "abc", &progOut, t.TempDir(), false, nil)
 
 	if len(single.Cases) != len(cases) || len(prog.Cases) != len(cases) {
 		t.Fatalf("case counts: single=%d progressive=%d, want %d", len(single.Cases), len(prog.Cases), len(cases))

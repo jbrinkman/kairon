@@ -1777,6 +1777,26 @@ Deliberately **not** part of the suite:
 
 So editing a case, the rubric or a fixture a case uses changes `suite_sha256` and leaves `prompt_sha256` unchanged, and editing the prompt does the reverse.
 
+##### Editing the suite during a run
+
+Cases, rubrics and fixtures are read from disk while a run is in progress, but `suite_sha256` is computed once, before the first case starts. So that a recorded hash always identifies the suite that produced the score, the suite is **re-hashed, with the same computation, before every save that stamps `suite_sha256`**: after each case finishes (all its repeats), and in a single-case run before the result file is written. The cost is one read of the suite files per case.
+
+If the re-hash differs from the hash at the start of the run, the run stops and `kairon eval` exits non-zero with:
+
+```
+❌ eval suite of <agent> changed while the run was in progress (suite_sha256 at run start=<hash at start>; now <current hash>) — nothing was saved for the case that finished after the change; restore the suite and start a fresh run
+```
+
+If the suite can no longer be hashed at all (for example a case file was deleted or made malformed mid-run), the run is refused the same way with `❌ cannot re-hash the eval suite of <agent> after a case ran: <error>`.
+
+What is and is not saved:
+
+- **Not saved:** the case that finished after the edit (every repeat of it). The remaining cases do not run and the final save is skipped. A single-case run (`kairon eval <agent> <case>`) writes no result file and no summary.
+- **Still valid:** results saved before the edit. Each was re-hashed at its own save, so the `suite_sha256` in `<agent>.json` and `summary.json` is the hash at the start of the run and matches the suite those cases ran under. The result file is left incomplete (`complete: false`) and the `.progress` marker stays, like any interrupted run.
+- **Resume is refused until the suite is restored.** The saved file keeps the hash from the start of the run, so `--resume` against the edited suite hits the existing [Eval suite](#resume-refusal) check and stops with `cannot resume: eval suite changed since the interrupted run …`. Restore the suite to its earlier content and `--resume` works as before, or start a fresh run. If the edit was caught at the very first case nothing was saved, so there is nothing to refuse.
+
+**Limit.** The check compares the suite's content at each save, so it cannot see an edit that is reverted before the next check. A case that ran while the suite was edited, in a window that closed before its save, is saved under the unchanged hash. Only running from a snapshot of the suite would close that gap. A different `kairon eval` process editing the suite concurrently is out of scope.
+
 #### How `prompt_sha256` is computed
 
 `prompt_sha256` is a lowercase hex SHA-256 (64 characters). It is a hash only; the prompt text itself is not stored.
@@ -1961,7 +1981,7 @@ A file that holds cases but records no `suite_sha256` (written before suite trac
 ❌ cannot resume: architect.json predates eval suite tracking and has 3 saved case(s); the suite they ran under cannot be verified (now suite_sha256=…) — start a fresh run (without --resume)
 ```
 
-An empty result file is never refused, and nothing is checked for an agent that has no pinned suite (its rubric or cases could not be loaded). Edit a case, the rubric or a fixture, or add a case, and the interrupted run can no longer be resumed: start a fresh one.
+An empty result file is never refused, and nothing is checked for an agent that has no pinned suite (its rubric or cases could not be loaded). Edit a case, the rubric or a fixture, or add a case, and the interrupted run can no longer be resumed: start a fresh one. The same check is what refuses a resume after a suite edit made during a run was caught (see [Editing the suite during a run](#editing-the-suite-during-a-run)).
 
 **Execution mode.** Resume also refuses to switch between native and `--sandbox`, because scoring `requires_sandbox` cases under the other mode would mark them completed under the wrong execution model. The check is made at two levels:
 

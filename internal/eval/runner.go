@@ -314,6 +314,12 @@ func runSingleTestCase(agent string, testcase string, cConfig *ContainerConfig) 
 	// Run evaluation on single test case.
 	result := evaluate(*rubric, []TestCase{*targetCase}, gitHash, os.Stdout, cConfig)
 
+	// Refuse to write a result stamped with a suite hash that no longer
+	// matches the suite the case ran against.
+	if err := checkSuiteUnchanged(agent); err != nil {
+		return err
+	}
+
 	// Write result file
 	resultFile := filepath.Join(resultsDir, agent+".json")
 	data, err := json.MarshalIndent(result, "", "  ")
@@ -1939,7 +1945,10 @@ func runProgressiveEvaluation(agent, resultsDir string, isResume bool, cConfig *
 			}
 		}
 
-		result := evaluateProgressive(rubric, cases, gitHash, os.Stdout, resultsDir, isResume, cConfig)
+		result, err := evaluateProgressive(rubric, cases, gitHash, os.Stdout, resultsDir, isResume, cConfig)
+		if err != nil {
+			return err
+		}
 
 		// Final save
 		if err := saveProgressiveResult(resultsDir, rubric.Agent, result, gitHash); err != nil {
@@ -1991,6 +2000,29 @@ func checkResumeSuite(resultsDir, agent string) error {
 	if existing.SuiteSHA256 != now {
 		return fmt.Errorf("❌ cannot resume: eval suite changed since the interrupted run of %s (recorded suite_sha256=%s; now %s) — resume with the same suite or start a fresh run",
 			agent, existing.SuiteSHA256, now)
+	}
+	return nil
+}
+
+// checkSuiteUnchanged re-hashes agent's eval suite and refuses when it no
+// longer matches the hash pinned at the start of the run. Cases, rubrics and
+// fixtures are read from disk while the run is in progress, so an edit made
+// mid-run would otherwise be executed but recorded under the pinned hash.
+// Callers run it before every save that stamps the pinned hash. Nothing is
+// checked when the run pinned no suite for the agent (direct calls that bypass
+// RunWithOptions), the same rule as stampCoverage and checkResumeSuite.
+func checkSuiteUnchanged(agent string) error {
+	pinned, ok := cfg.suites[agent]
+	if !ok {
+		return nil
+	}
+	now, err := suiteSHA256(agent)
+	if err != nil {
+		return fmt.Errorf("❌ cannot re-hash the eval suite of %s after a case ran: %w", agent, err)
+	}
+	if now != pinned {
+		return fmt.Errorf("❌ eval suite of %s changed while the run was in progress (suite_sha256 at run start=%s; now %s) — nothing was saved for the case that finished after the change; restore the suite and start a fresh run",
+			agent, pinned, now)
 	}
 	return nil
 }
@@ -2230,7 +2262,7 @@ func stampResumedCases(result *AgentResult, cases []TestCase, rubric Rubric) {
 }
 
 // evaluateProgressive runs evaluation with progressive result saving after each test case.
-func evaluateProgressive(rubric Rubric, cases []TestCase, gitHash string, out io.Writer, resultsDir string, isResume bool, cConfig *ContainerConfig) AgentResult {
+func evaluateProgressive(rubric Rubric, cases []TestCase, gitHash string, out io.Writer, resultsDir string, isResume bool, cConfig *ContainerConfig) (AgentResult, error) {
 	result := AgentResult{
 		Agent:             rubric.Agent,
 		GitHash:           gitHash,
@@ -2287,6 +2319,14 @@ func evaluateProgressive(rubric Rubric, cases []TestCase, gitHash string, out io
 		// --repeat.
 		crs := executeCaseRepeats(rubric, tc, cConfig, out)
 
+		// Refuse before stamping and saving if the suite was edited since the
+		// pin: the case ran against it, but the save would record the pinned
+		// hash. Earlier saves were each checked at their own save.
+		if err := checkSuiteUnchanged(rubric.Agent); err != nil {
+			fmt.Fprintln(out)
+			return result, err
+		}
+
 		// Add or update the case's results: every earlier result of this case
 		// is replaced by the new runs.
 		result.Cases = replaceCaseResults(result.Cases, tc.Name, crs)
@@ -2308,7 +2348,17 @@ func evaluateProgressive(rubric Rubric, cases []TestCase, gitHash string, out io
 		printCaseResult(out, tc, rubric, crs[len(crs)-1])
 	}
 
-	return result
+	// On a resumed run where every case was already completed, the loop above
+	// skipped every iteration, so the per-case checkSuiteUnchanged never ran.
+	// Re-verify the suite before returning success: otherwise the caller's
+	// final save would record the pinned hash for a suite edited after the pin
+	// (e.g. by a concurrent agent in a multi-agent run). This is a no-op for
+	// unpinned runs and harmless when the loop already checked.
+	if err := checkSuiteUnchanged(rubric.Agent); err != nil {
+		return result, err
+	}
+
+	return result, nil
 }
 
 // acquireResultLock creates an exclusive lock file to prevent concurrent writes.

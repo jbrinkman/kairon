@@ -162,7 +162,7 @@ func TestEvaluateStampsThresholdAndPassed(t *testing.T) {
 
 	var out strings.Builder
 	checkStamped(t, "evaluate", evaluate(verdictRubric(), verdictCases(), "abc", &out, nil))
-	checkStamped(t, "evaluateProgressive", evaluateProgressive(verdictRubric(), verdictCases(), "abc", &out, t.TempDir(), false, nil))
+	checkStamped(t, "evaluateProgressive", evalProgressiveOK(t, verdictRubric(), verdictCases(), "abc", &out, t.TempDir(), false, nil))
 }
 
 func TestEvaluateProgressiveResumeStampsThreshold(t *testing.T) {
@@ -180,7 +180,7 @@ func TestEvaluateProgressiveResumeStampsThreshold(t *testing.T) {
 
 	var out strings.Builder
 	cases := append([]TestCase{{Name: "done-case", Input: "do it"}}, verdictCases()...)
-	res := evaluateProgressive(verdictRubric(), cases, "abc", &out, dir, true, nil)
+	res := evalProgressiveOK(t, verdictRubric(), cases, "abc", &out, dir, true, nil)
 	checkStamped(t, "resume", res)
 
 	// The agent file that was saved carries the threshold too.
@@ -214,7 +214,7 @@ func TestEvaluateProgressiveResumeStampsLegacyCaseAgainstOwnThreshold(t *testing
 
 	var out strings.Builder
 	cases := append([]TestCase{{Name: "lenient-done", Input: "do it", MinScore: floatPtr(60)}}, verdictCases()...)
-	res := evaluateProgressive(verdictRubric(), cases, "abc", &out, dir, true, nil)
+	res := evalProgressiveOK(t, verdictRubric(), cases, "abc", &out, dir, true, nil)
 
 	var legacyCase *CaseResult
 	for i := range res.Cases {

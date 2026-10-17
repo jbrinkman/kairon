@@ -246,7 +246,7 @@ func TestEvaluateStampsMinCriterionScore(t *testing.T) {
 	var out strings.Builder
 	for label, res := range map[string]AgentResult{
 		"evaluate":            evaluate(floorRubric(floatPtr(50)), verdictCases(), "abc", &out, nil),
-		"evaluateProgressive": evaluateProgressive(floorRubric(floatPtr(50)), verdictCases(), "abc", &out, t.TempDir(), false, nil),
+		"evaluateProgressive": evalProgressiveOK(t, floorRubric(floatPtr(50)), verdictCases(), "abc", &out, t.TempDir(), false, nil),
 	} {
 		if res.MinCriterionScore == nil || *res.MinCriterionScore != 50 {
 			t.Errorf("%s: MinCriterionScore = %v, want 50", label, res.MinCriterionScore)
@@ -272,7 +272,7 @@ func TestEvaluateProgressiveResumeRestampsMinCriterionScore(t *testing.T) {
 
 	var out strings.Builder
 	cases := append([]TestCase{{Name: "done-case", Input: "do it"}}, verdictCases()...)
-	res := evaluateProgressive(floorRubric(floatPtr(50)), cases, "abc", &out, dir, true, nil)
+	res := evalProgressiveOK(t, floorRubric(floatPtr(50)), cases, "abc", &out, dir, true, nil)
 	if res.MinCriterionScore == nil || *res.MinCriterionScore != 50 {
 		t.Errorf("resume: MinCriterionScore = %v, want the current rubric's 50", res.MinCriterionScore)
 	}
@@ -281,7 +281,7 @@ func TestEvaluateProgressiveResumeRestampsMinCriterionScore(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "selftest.json"), data, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	res = evaluateProgressive(floorRubric(nil), cases, "abc", &out, dir, true, nil)
+	res = evalProgressiveOK(t, floorRubric(nil), cases, "abc", &out, dir, true, nil)
 	if res.MinCriterionScore != nil {
 		t.Errorf("resume without floor: MinCriterionScore = %v, want nil", *res.MinCriterionScore)
 	}
