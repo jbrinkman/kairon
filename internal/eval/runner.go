@@ -58,6 +58,7 @@ func RunWithOptions(agent string, testcase string, options RunOptions) error {
 	}
 	// configure resets cfg, so a candidate never leaks between runs.
 	cfg.candidate = candidate
+	cfg.caseFilter = testcase
 
 	// Handle cleanup operation early
 	if options.Cleanup {
@@ -74,6 +75,14 @@ func RunWithOptions(agent string, testcase string, options RunOptions) error {
 		// path (there is no longer a kiro-cli container that cannot see it).
 		if err := pinRun(agent, options, false); err != nil {
 			return err
+		}
+		// Record the identity of each in-scope agent's eval suite so the
+		// results can prove what they covered. Only runs that execute cases
+		// need it; a hashing error stops the run before any case starts.
+		if !options.Perf && !options.Cleanup {
+			if err := pinSuites(agent, options); err != nil {
+				return err
+			}
 		}
 	}
 
@@ -130,6 +139,29 @@ func RunWithOptions(agent string, testcase string, options RunOptions) error {
 
 	// Default to original behavior for backward compatibility
 	return Run(agent, cConfig)
+}
+
+// pinSuites computes suite_sha256 for every in-scope agent and sets
+// cfg.suites. An agent whose rubric or cases cannot be loaded is skipped, so
+// the later, more specific error or warning for it is unchanged. Any other
+// hashing error is returned, before any case starts.
+func pinSuites(agent string, opts RunOptions) error {
+	suites := map[string]string{}
+	for _, name := range agentsInScope(agent, opts) {
+		if rubrics, err := loadRubrics(name); err != nil || len(rubrics) == 0 {
+			continue
+		}
+		if _, err := loadCases(name); err != nil {
+			continue
+		}
+		sum, err := suiteSHA256(name)
+		if err != nil {
+			return fmt.Errorf("❌ cannot hash the eval suite of %s before any case started: %w", name, err)
+		}
+		suites[name] = sum
+	}
+	cfg.suites = suites
+	return nil
 }
 
 // RunCleanup stops and removes all tracked debug containers and cleans artifacts
@@ -473,6 +505,7 @@ func evaluate(rubric Rubric, cases []TestCase, gitHash string, out io.Writer, cC
 
 		result.Cases = append(result.Cases, crs...)
 	}
+	stampCoverage(&result, cases)
 
 	return result
 }
@@ -1727,6 +1760,7 @@ func loadCases(agent string) ([]TestCase, error) {
 		cases        []TestCase
 		rubric       *Rubric // the agent's rubric, loaded lazily for checks and checks_only
 		rubricLoaded bool
+		seenNames    = map[string]string{} // case name -> file that first declared it
 	)
 	for _, e := range entries {
 		if e.IsDir() || !strings.HasSuffix(e.Name(), ".yaml") {
@@ -1752,6 +1786,14 @@ func loadCases(agent string) ([]TestCase, error) {
 		if err := validateCaseFields(tc, e.Name()); err != nil {
 			return nil, err
 		}
+		// Coverage and result files key on the case name, so a duplicate name
+		// across files lets one case's result cover another; reject it. Wrap
+		// errMalformedCase too so the fatal paths in runProgressiveEvaluation
+		// (and pinSuites) reject it rather than silently dropping the agent.
+		if first, dup := seenNames[tc.Name]; dup {
+			return nil, fmt.Errorf("%w: %w: %q declared in both %s and %s", errMalformedCase, errDuplicateCaseName, tc.Name, first, e.Name())
+		}
+		seenNames[tc.Name] = e.Name()
 		if !rubricLoaded {
 			rubricLoaded = true
 			// If the rubric cannot be loaded the criterion cross-check and
@@ -1866,12 +1908,11 @@ func runProgressiveEvaluation(agent, resultsDir string, isResume bool, cConfig *
 		return fmt.Errorf("❌ Fatal: no rubrics found")
 	}
 
-	// Reject an invalid checks_only agent before any agent's first case runs.
-	// Per-agent loading below would otherwise run earlier agents' cases first.
+	// Reject any agent whose cases cannot load (invalid checks block,
+	// malformed case file, or duplicate case name) before any agent's first
+	// case runs. Per-agent loading below would otherwise run earlier agents'
+	// cases first and then silently drop the broken agent.
 	for _, rubric := range rubrics {
-		if !rubric.ChecksOnly {
-			continue
-		}
 		if _, err := loadCases(rubric.Agent); errors.Is(err, errInvalidChecks) || errors.Is(err, errMalformedCase) {
 			return err
 		}
@@ -1923,6 +1964,36 @@ func runProgressiveEvaluation(agent, resultsDir string, isResume bool, cConfig *
 	fmt.Printf("\n🎉 Evaluation complete\n")
 	fmt.Printf("📂 Results: %s\n", resultsDir)
 	return thresholdFailure(failed, evaluated)
+}
+
+// checkResumeSuite refuses to resume into a result file whose recorded eval
+// suite differs from the current one, or that holds cases but records no suite
+// (written before suite hashing existed). Resuming would stamp the current
+// suite hash onto cases that ran under a different suite. Nothing is checked
+// when the run pinned no suite for the agent, and an empty file has no cases
+// to mis-attribute.
+func checkResumeSuite(resultsDir, agent string) error {
+	now, ok := cfg.suites[agent]
+	if !ok {
+		return nil
+	}
+	data, err := os.ReadFile(filepath.Join(resultsDir, agent+".json"))
+	if err != nil {
+		return nil
+	}
+	var existing AgentResult
+	if json.Unmarshal(data, &existing) != nil || len(existing.Cases) == 0 {
+		return nil
+	}
+	if existing.SuiteSHA256 == "" {
+		return fmt.Errorf("❌ cannot resume: %s.json predates eval suite tracking and has %d saved case(s); the suite they ran under cannot be verified (now suite_sha256=%s) — start a fresh run (without --resume)",
+			agent, len(existing.Cases), now)
+	}
+	if existing.SuiteSHA256 != now {
+		return fmt.Errorf("❌ cannot resume: eval suite changed since the interrupted run of %s (recorded suite_sha256=%s; now %s) — resume with the same suite or start a fresh run",
+			agent, existing.SuiteSHA256, now)
+	}
+	return nil
 }
 
 // checkResumeIntegrity refuses to resume into a result file that was written
@@ -2015,6 +2086,10 @@ func checkResumeIntegrity(resultsDir, agent string, sandbox bool) error {
 					other, sandbox)
 			}
 		}
+	}
+
+	if err := checkResumeSuite(resultsDir, agent); err != nil {
+		return err
 	}
 
 	pin, ok := cfg.pins.pinOf(agent)
@@ -2178,6 +2253,7 @@ func evaluateProgressive(rubric Rubric, cases []TestCase, gitHash string, out io
 				// unstamped case from its matching TestCase (its own threshold),
 				// without re-running it.
 				stampResumedCases(&result, cases, rubric)
+				stampCoverage(&result, cases)
 			}
 		}
 	}
@@ -2201,6 +2277,9 @@ func evaluateProgressive(rubric Rubric, cases []TestCase, gitHash string, out io
 		// Add or update the case's results: every earlier result of this case
 		// is replaced by the new runs.
 		result.Cases = replaceCaseResults(result.Cases, tc.Name, crs)
+		// Every save records its own coverage, so an interrupted run is left
+		// with complete:false and only the last save of a finished run is true.
+		stampCoverage(&result, cases)
 
 		// Progressive save after all repeats of the test case, so a saved case
 		// always has every run
@@ -2330,7 +2409,7 @@ func updateIncrementalSummary(summaryFile string, agentResult AgentResult, gitHa
 	if agentResult.JudgeModel != "" {
 		summary.JudgeModel = agentResult.JudgeModel
 	}
-	if agentResult.PromptSHA256 != "" {
+	if agentResult.PromptSHA256 != "" || agentResult.SuiteSHA256 != "" {
 		if summary.Agents == nil {
 			summary.Agents = make(map[string]AgentProvenance)
 		}
@@ -2339,6 +2418,9 @@ func updateIncrementalSummary(summaryFile string, agentResult AgentResult, gitHa
 			PromptSHA256:     agentResult.PromptSHA256,
 			PromptFile:       agentResult.PromptFile,
 			ResourcesPresent: append([]string{}, agentResult.ResourcesPresent...),
+			SuiteSHA256:      agentResult.SuiteSHA256,
+			Complete:         agentResult.Complete,
+			CaseFilter:       agentResult.CaseFilter,
 		}
 	}
 	summary.AgentModel, summary.PromptSHA256, summary.PromptFile, summary.ResourcesPresent = "", "", "", nil
@@ -2543,4 +2625,49 @@ func saveDebugContainerInfo(containerID, imageName, customImageName, platform, a
 
 	fmt.Printf("🔧 Debug: Container info saved to %s\n", infoFile)
 	return nil
+}
+
+// casesCovered reports whether results hold, for every case in cases, a
+// result for every run 1..repeat. A result with Run == 0 (a legacy file
+// written before repeats) counts as run 1. Zero cases is never covered: a
+// suite with nothing in it proves nothing about coverage.
+func casesCovered(results []CaseResult, cases []TestCase, repeat int) bool {
+	if len(cases) == 0 {
+		return false
+	}
+	repeat = max(1, repeat)
+	have := make(map[string]map[int]bool, len(cases))
+	for _, r := range results {
+		run := r.Run
+		if run == 0 {
+			run = 1
+		}
+		if have[r.CaseName] == nil {
+			have[r.CaseName] = make(map[int]bool)
+		}
+		have[r.CaseName][run] = true
+	}
+	for _, tc := range cases {
+		for run := 1; run <= repeat; run++ {
+			if !have[tc.Name][run] {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// stampCoverage records what the run covered on r: the agent's suite hash,
+// whether every case ran for every repeat, and the --case filter. A run with
+// a filter is never complete, even when the agent has only that one case.
+// It is a no-op when the run did not pin a suite for the agent (direct calls
+// that bypass RunWithOptions), so those results keep their previous shape.
+func stampCoverage(r *AgentResult, cases []TestCase) {
+	suite, ok := cfg.suites[r.Agent]
+	if !ok {
+		return
+	}
+	complete := cfg.caseFilter == "" && casesCovered(r.Cases, cases, runRepeat())
+	filter := cfg.caseFilter
+	r.SuiteSHA256, r.Complete, r.CaseFilter = suite, &complete, &filter
 }

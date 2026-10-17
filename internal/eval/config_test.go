@@ -2,6 +2,7 @@ package eval
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -207,6 +208,27 @@ func TestLoadRubricsAndCasesUseEvalsDir(t *testing.T) {
 	cases, err := loadCases("a1")
 	if err != nil || len(cases) != 1 || cases[0].Name != "case-one" {
 		t.Fatalf("loadCases: %v, %+v", err, cases)
+	}
+}
+
+func TestLoadCasesRejectsDuplicateNames(t *testing.T) {
+	dir := chdirTemp(t)
+	// Two distinct case files in the same agent dir declaring the same name.
+	// loadCases must reject this: casesCovered keys coverage by name, so a
+	// duplicate name lets one case's result cover the other and an interrupted
+	// run can be stamped complete.
+	writeCfgFile(t, filepath.Join(dir, ".kairon", "evals", "cases", "a1", "c1.yaml"), "name: dup\nagent: a1\ninput: one\n")
+	writeCfgFile(t, filepath.Join(dir, ".kairon", "evals", "cases", "a1", "c2.yaml"), "name: dup\nagent: a1\ninput: two\n")
+
+	_, err := loadCases("a1")
+	if err == nil {
+		t.Fatal("expected error for duplicate case name, got nil")
+	}
+	if !errors.Is(err, errDuplicateCaseName) {
+		t.Fatalf("error %v does not wrap errDuplicateCaseName", err)
+	}
+	if !strings.Contains(err.Error(), "dup") {
+		t.Errorf("error should name the duplicate case name %q: %v", "dup", err)
 	}
 }
 

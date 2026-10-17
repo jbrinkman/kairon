@@ -79,27 +79,44 @@ func TestVerifyLogValidSet(t *testing.T) {
 
 func TestVerifyLogFailingSets(t *testing.T) {
 	tests := []struct {
-		set  string
-		file string
-		rule string
+		set      string
+		file     string
+		rule     string
+		mentions []string
 	}{
-		{"missing-run", "iteration-01.md", "run-exists"},
-		{"score-mismatch", "iteration-01.md", "score-match"},
-		{"gap", "iteration-02.md", "sequence"},
-		{"broken-chain", "iteration-01.md", "chain"},
-		{"no-prompt-change", "iteration-01.md", "prompt-change"},
+		{"missing-run", "iteration-01.md", "run-exists", nil},
+		{"score-mismatch", "iteration-01.md", "score-match", nil},
+		{"gap", "iteration-02.md", "sequence", nil},
+		{"broken-chain", "iteration-01.md", "chain", nil},
+		{"no-prompt-change", "iteration-01.md", "prompt-change", nil},
+		{"partial-run", "iteration-01.md", "run-complete", nil},
+		{"model-mismatch", "iteration-01.md", "run-config", []string{"agent_model"}},
+		{"sandbox-mismatch", "iteration-01.md", "run-config", []string{"sandbox"}},
+		{"judge-mismatch", "iteration-01.md", "run-config", []string{"judge_model"}},
+		{"suite-changed", "iteration-01.md", "suite-change", nil},
+		{"eval-prompt-changed", "iteration-01.md", "prompt-change", nil},
+		{"eval-nothing-changed", "iteration-01.md", "suite-change", nil},
+		{"legacy-run", "iteration-01.md", "run-data", []string{"suite_sha256", "complete"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.set, func(t *testing.T) {
-			_, err := runVerifyLog(t, tt.set, 2)
-			if err == nil {
-				t.Fatalf("%s: expected verification error", tt.set)
-			}
-			if !strings.Contains(err.Error(), tt.file) {
-				t.Errorf("error %q does not name file %q", err.Error(), tt.file)
-			}
-			if !strings.Contains(err.Error(), tt.rule) {
-				t.Errorf("error %q does not name rule %q", err.Error(), tt.rule)
+			// Fails with and without the default --min-iterations (2).
+			for _, min := range []int{0, 2} {
+				_, err := runVerifyLog(t, tt.set, min)
+				if err == nil {
+					t.Fatalf("%s (min=%d): expected verification error", tt.set, min)
+				}
+				if !strings.Contains(err.Error(), tt.file) {
+					t.Errorf("error %q does not name file %q", err.Error(), tt.file)
+				}
+				if !strings.Contains(err.Error(), tt.rule) {
+					t.Errorf("error %q does not name rule %q", err.Error(), tt.rule)
+				}
+				for _, m := range tt.mentions {
+					if !strings.Contains(err.Error(), m) {
+						t.Errorf("error %q does not mention %q", err.Error(), m)
+					}
+				}
 			}
 		})
 	}

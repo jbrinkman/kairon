@@ -1,9 +1,11 @@
 {
   "git_hash": "ccccccc",
+  "judge_model": "judge-m",
+  "sandbox": "native",
   "agent_verdicts": {
     "selftest": {"score": 90.0, "threshold": 70.0, "passed": true, "cases_total": 1, "cases_failed": 0, "cost": {}}
   },
   "agents": {
-    "selftest": {"prompt_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"}
+    "selftest": {"agent_model": "agent-m", "prompt_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc", "suite_sha256": "1111111111111111111111111111111111111111111111111111111111111111", "complete": true, "case_filter": ""}
   }
 }

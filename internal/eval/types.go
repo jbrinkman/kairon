@@ -394,8 +394,16 @@ type AgentResult struct {
 	ResourcesPresent []string `json:"resources_present"`
 	// Repeat is how many times each case was run (--repeat). Absent (0) in a
 	// result written before repeats existed, which is read as 1.
-	Repeat int          `json:"repeat,omitempty"`
-	Cases  []CaseResult `json:"cases"`
+	Repeat int `json:"repeat,omitempty"`
+	// SuiteSHA256, Complete and CaseFilter record what the run covered (see
+	// stampCoverage). They are present together or absent together; a result
+	// written before coverage tracking has none, which reads as "not
+	// recorded". Complete and CaseFilter are pointers so a recorded false /
+	// "" is still written and is distinguishable from a legacy file (nil).
+	SuiteSHA256 string       `json:"suite_sha256,omitempty"`
+	Complete    *bool        `json:"complete,omitempty"`
+	CaseFilter  *string      `json:"case_filter,omitempty"`
+	Cases       []CaseResult `json:"cases"`
 }
 
 // CriterionTotal is one non-cost criterion pooled over every case and repeat of
@@ -521,6 +529,11 @@ type AgentProvenance struct {
 	PromptSHA256     string   `json:"prompt_sha256"`
 	PromptFile       string   `json:"prompt_file,omitempty"`
 	ResourcesPresent []string `json:"resources_present"`
+	// SuiteSHA256, Complete and CaseFilter mirror the AgentResult fields of
+	// the same name; nil / empty means the run did not record them.
+	SuiteSHA256 string  `json:"suite_sha256,omitempty"`
+	Complete    *bool   `json:"complete,omitempty"`
+	CaseFilter  *string `json:"case_filter,omitempty"`
 }
 
 // ContainerConfig configures containerized execution

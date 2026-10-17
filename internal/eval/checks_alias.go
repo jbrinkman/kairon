@@ -63,6 +63,11 @@ var (
 	// could not decode, e.g. expect_exit: abc or a misspelled key) from a
 	// genuinely absent/empty cases directory (skippable).
 	errMalformedCase = errors.New("malformed case file")
+	// errDuplicateCaseName is wrapped (alongside errMalformedCase) when two
+	// case files in the same agent dir declare the same name. Coverage and
+	// result files key on the case name, so a duplicate lets one case's result
+	// cover another; loadCases rejects it at load time.
+	errDuplicateCaseName = errors.New("duplicate case name")
 )
 
 // EvaluateChecks evaluates c against in; see checks.Evaluate.

@@ -13,6 +13,12 @@ import (
 // can tell an invalid `checks` block (fatal) from other loading errors.
 var ErrInvalid = errors.New("invalid checks")
 
+// errDuplicateCaseName is wrapped when two case files in the same agent dir
+// declare the same name. Coverage (casesCovered) and result files key on the
+// case name, so a duplicate name lets one case's result cover another and an
+// interrupted run can be stamped complete; reject it at load time.
+var errDuplicateCaseName = errors.New("duplicate case name")
+
 // CheckType names one kind of deterministic pass/fail check.
 type CheckType string
 
