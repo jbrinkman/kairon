@@ -68,7 +68,7 @@ func LoadTrend(agent, evalsDir string) ([]TrendRow, error) {
 		row := TrendRow{
 			Run:          name,
 			Score:        rec.score,
-			SuccessRate:  trendSuccessRate(filepath.Join(resultsDir, name), agent),
+			SuccessRate:  rec.successRate,
 			AgentModel:   rec.agentModel,
 			JudgeModel:   rec.judgeModel,
 			PromptSHA256: trendTruncate(rec.promptSHA, trendPromptLen),
@@ -97,23 +97,6 @@ func LoadTrend(agent, evalsDir string) ([]TrendRow, error) {
 		rows[i] = r.row
 	}
 	return rows, nil
-}
-
-// trendSuccessRate returns the attempt success rate (percent) of agent in the
-// run directory dir: the summary verdict's value when it counted attempts,
-// else recomputed from <agent>.json when that holds case results, else nil.
-func trendSuccessRate(dir, agent string) *float64 {
-	if summary, err := loadSummary(filepath.Join(dir, "summary.json")); err == nil {
-		if v, ok := summary.AgentVerdicts[agent]; ok && v.AttemptsTotal > 0 {
-			rate := v.SuccessRate
-			return &rate
-		}
-	}
-	if result, err := loadAgentResult(filepath.Join(dir, agent+".json")); err == nil && len(result.Cases) > 0 {
-		rate := agentVerdict(result).SuccessRate
-		return &rate
-	}
-	return nil
 }
 
 // trendTruncate returns the first n characters of s, or s when it is shorter.
