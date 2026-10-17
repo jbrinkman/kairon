@@ -1,0 +1,8 @@
+{
+  "name": "selftest-step-b",
+  "description": "Minimal sub-agent (build step) used only by the eval self-test fixtures; it has no rubric.",
+  "prompt": "file://./selftest-step-b-prompt.md",
+  "model": "claude-sonnet-5.5",
+  "tools": ["read"],
+  "allowedTools": ["read"]
+}

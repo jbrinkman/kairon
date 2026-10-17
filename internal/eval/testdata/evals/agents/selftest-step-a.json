@@ -1,0 +1,9 @@
+{
+  "name": "selftest-step-a",
+  "description": "Minimal sub-agent (design step) used only by the eval self-test fixtures; it has no rubric.",
+  "prompt": "file://./selftest-step-a-prompt.md",
+  "model": "claude-sonnet-5.5",
+  "resources": ["skill://.kiro/skills/selftest-step-a-conventions/SKILL.md"],
+  "tools": ["read"],
+  "allowedTools": ["read"]
+}

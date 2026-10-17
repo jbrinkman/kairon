@@ -12,15 +12,17 @@ const (
 )
 
 // runVerifyLog runs verify-log for the selftest agent against a fixture set
-// with the given --min-iterations, restoring the package flag vars afterwards.
-func runVerifyLog(t *testing.T, set string, minIterations int) (string, error) {
+// with the given --min-iterations and --require-cycle, restoring the package
+// flag vars afterwards.
+func runVerifyLog(t *testing.T, set string, minIterations int, requireCycle bool) (string, error) {
 	t.Helper()
-	origIters, origMin, origEvals := verifyLogIterationsDir, verifyLogMinIterations, evalEvalsDir
+	origIters, origMin, origCycle, origEvals := verifyLogIterationsDir, verifyLogMinIterations, verifyLogRequireCycle, evalEvalsDir
 	t.Cleanup(func() {
-		verifyLogIterationsDir, verifyLogMinIterations, evalEvalsDir = origIters, origMin, origEvals
+		verifyLogIterationsDir, verifyLogMinIterations, verifyLogRequireCycle, evalEvalsDir = origIters, origMin, origCycle, origEvals
 	})
 	verifyLogIterationsDir = verifyLogFixtures + "/" + set
 	verifyLogMinIterations = minIterations
+	verifyLogRequireCycle = requireCycle
 	evalEvalsDir = verifyLogEvalsDir
 
 	var out bytes.Buffer
@@ -58,6 +60,16 @@ func TestVerifyLogFlagsRegistered(t *testing.T) {
 	if min.DefValue != "2" {
 		t.Errorf("--min-iterations default = %q, want 2", min.DefValue)
 	}
+	cycle := verifyLogCmd.Flags().Lookup("require-cycle")
+	if cycle == nil {
+		t.Fatal("--require-cycle flag not registered")
+	}
+	if cycle.DefValue != "true" {
+		t.Errorf("--require-cycle default = %q, want true", cycle.DefValue)
+	}
+	if !strings.Contains(cycle.Usage, "--require-cycle=false") {
+		t.Errorf("--require-cycle usage = %q, want it to mention --require-cycle=false", cycle.Usage)
+	}
 	// --evals-dir is the persistent flag from eval, not redefined locally.
 	if verifyLogCmd.LocalFlags().Lookup("evals-dir") != nil {
 		t.Error("--evals-dir must be inherited from eval, not redefined")
@@ -68,11 +80,11 @@ func TestVerifyLogFlagsRegistered(t *testing.T) {
 }
 
 func TestVerifyLogValidSet(t *testing.T) {
-	out, err := runVerifyLog(t, "valid", 2)
+	out, err := runVerifyLog(t, "valid", 2, true)
 	if err != nil {
 		t.Fatalf("valid set: unexpected error: %v", err)
 	}
-	if !strings.Contains(out, "OK selftest: 3 iterations verified") {
+	if !strings.Contains(out, "OK selftest: 4 iterations verified") {
 		t.Errorf("output = %q, want OK line", out)
 	}
 }
@@ -97,40 +109,101 @@ func TestVerifyLogFailingSets(t *testing.T) {
 		{"eval-prompt-changed", "iteration-01.md", "prompt-change", nil},
 		{"eval-nothing-changed", "iteration-01.md", "suite-change", nil},
 		{"legacy-run", "iteration-01.md", "run-data", []string{"suite_sha256", "complete"}},
+		{"missing-phase", "iteration-00.md", "phase", nil},
+		{"baseline-not-first", "iteration-01.md", "phase", []string{"baseline"}},
+		{"red-no-new-failure", "iteration-01.md", "red", nil},
+		{"green-no-fix", "iteration-02.md", "green", nil},
+		{"green-score-drop", "iteration-02.md", "green", []string{"score"}},
+		{"refactor-score-drop", "iteration-03.md", "refactor", nil},
 	}
 	for _, tt := range tests {
 		t.Run(tt.set, func(t *testing.T) {
-			// Fails with and without the default --min-iterations (2).
+			// Fails with and without the default --min-iterations (2), and
+			// with --require-cycle on (the default) and off: the defect is
+			// reported either way.
 			for _, min := range []int{0, 2} {
-				_, err := runVerifyLog(t, tt.set, min)
-				if err == nil {
-					t.Fatalf("%s (min=%d): expected verification error", tt.set, min)
-				}
-				if !strings.Contains(err.Error(), tt.file) {
-					t.Errorf("error %q does not name file %q", err.Error(), tt.file)
-				}
-				if !strings.Contains(err.Error(), tt.rule) {
-					t.Errorf("error %q does not name rule %q", err.Error(), tt.rule)
-				}
-				for _, m := range tt.mentions {
-					if !strings.Contains(err.Error(), m) {
-						t.Errorf("error %q does not mention %q", err.Error(), m)
-					}
+				for _, cycle := range []bool{true, false} {
+					assertVerifyLogFailure(t, tt.set, min, cycle, tt.file, tt.rule, tt.mentions)
 				}
 			}
 		})
 	}
 }
 
+func assertVerifyLogFailure(t *testing.T, set string, min int, cycle bool, file, rule string, mentions []string) {
+	t.Helper()
+	_, err := runVerifyLog(t, set, min, cycle)
+	if err == nil {
+		t.Fatalf("%s (min=%d, cycle=%v): expected verification error", set, min, cycle)
+	}
+	if !strings.Contains(err.Error(), file) {
+		t.Errorf("%s (min=%d, cycle=%v): error %q does not name file %q", set, min, cycle, err.Error(), file)
+	}
+	if !strings.Contains(err.Error(), rule) {
+		t.Errorf("%s (min=%d, cycle=%v): error %q does not name rule %q", set, min, cycle, err.Error(), rule)
+	}
+	for _, m := range mentions {
+		if !strings.Contains(err.Error(), m) {
+			t.Errorf("%s (min=%d, cycle=%v): error %q does not mention %q", set, min, cycle, err.Error(), m)
+		}
+	}
+}
+
+func TestVerifyLogNoRefactorFailsByDefault(t *testing.T) {
+	_, err := runVerifyLog(t, "no-refactor", 2, true)
+	if err == nil {
+		t.Fatal("no-refactor with --require-cycle: expected a cycle violation")
+	}
+	if !strings.Contains(err.Error(), "cycle") {
+		t.Errorf("error %q does not name the cycle rule", err.Error())
+	}
+}
+
+func TestVerifyLogNoRefactorPassesWithoutRequireCycle(t *testing.T) {
+	out, err := runVerifyLog(t, "no-refactor", 2, false)
+	if err != nil {
+		t.Fatalf("no-refactor with --require-cycle=false: unexpected error: %v", err)
+	}
+	if !strings.Contains(out, "OK selftest: 3 iterations verified") {
+		t.Errorf("output = %q, want OK line with 3 iterations", out)
+	}
+}
+
+func TestVerifyLogValidSetWithoutRequireCycle(t *testing.T) {
+	if _, err := runVerifyLog(t, "valid", 2, false); err != nil {
+		t.Fatalf("valid with --require-cycle=false: unexpected error: %v", err)
+	}
+}
+
+func TestVerifyLogRequireCycleFlagParsed(t *testing.T) {
+	// The flag must reach the package var: parse it through pflag.
+	flag := verifyLogCmd.Flags().Lookup("require-cycle")
+	if flag == nil {
+		t.Fatal("--require-cycle flag not registered")
+	}
+	orig := verifyLogRequireCycle
+	t.Cleanup(func() {
+		verifyLogRequireCycle = orig
+		_ = flag.Value.Set(flag.DefValue)
+		flag.Changed = false
+	})
+	if err := flag.Value.Set("false"); err != nil {
+		t.Fatalf("setting --require-cycle=false: %v", err)
+	}
+	if verifyLogRequireCycle {
+		t.Error("--require-cycle=false did not update verifyLogRequireCycle")
+	}
+}
+
 func TestVerifyLogMinIterations(t *testing.T) {
-	_, err := runVerifyLog(t, "valid", 5)
+	_, err := runVerifyLog(t, "valid", 5, true)
 	if err == nil || !strings.Contains(err.Error(), "min-iterations") {
 		t.Fatalf("--min-iterations 5 on valid set: err = %v, want min-iterations violation", err)
 	}
 }
 
 func TestVerifyLogNegativeMinIterationsRejected(t *testing.T) {
-	_, err := runVerifyLog(t, "valid", -1)
+	_, err := runVerifyLog(t, "valid", -1, true)
 	if err == nil || !strings.Contains(err.Error(), "negative") {
 		t.Fatalf("negative --min-iterations: err = %v, want a 'negative' error", err)
 	}
@@ -151,7 +224,7 @@ func TestVerifyLogMissingAgentIsUsageError(t *testing.T) {
 func TestVerifyLogSilencesUsageOnVerificationFailure(t *testing.T) {
 	t.Cleanup(func() { verifyLogCmd.SilenceUsage = false })
 	verifyLogCmd.SilenceUsage = false
-	if _, err := runVerifyLog(t, "gap", 2); err == nil {
+	if _, err := runVerifyLog(t, "gap", 2, true); err == nil {
 		t.Fatal("expected verification error")
 	}
 	if !verifyLogCmd.SilenceUsage {

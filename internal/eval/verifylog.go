@@ -52,6 +52,11 @@ const (
 	ruleScoreMatch    = "score-match"
 	rulePromptChange  = "prompt-change"
 	ruleSuiteChange   = "suite-change"
+	rulePhase         = "phase"
+	ruleRed           = "red"
+	ruleGreen         = "green"
+	ruleRefactor      = "refactor"
+	ruleCycle         = "cycle"
 	ruleMinIterations = "min-iterations"
 )
 
@@ -60,13 +65,26 @@ var ruleOrder = map[string]int{
 	ruleNoLogs: 0, ruleFrontMatter: 1, ruleHeadings: 2, ruleSequence: 3,
 	ruleChain: 4, ruleChronology: 5, ruleRunExists: 6, ruleRunData: 7,
 	ruleRunComplete: 8, ruleRunConfig: 9, ruleScoreMatch: 10,
-	rulePromptChange: 11, ruleSuiteChange: 12, ruleMinIterations: 13,
+	rulePromptChange: 11, ruleSuiteChange: 12, rulePhase: 13, ruleRed: 14,
+	ruleGreen: 15, ruleRefactor: 16, ruleCycle: 17, ruleMinIterations: 18,
 }
 
 const (
 	changeTypePrompt = "prompt"
 	changeTypeEval   = "eval"
 )
+
+// Iteration phases (Eval-Driven Development steps). baseline is allowed only
+// in iteration-00.md.
+const (
+	phaseBaseline = "baseline"
+	phaseRed      = "red"
+	phaseGreen    = "green"
+	phaseRefactor = "refactor"
+)
+
+// phaseValues lists the allowed phase values in documentation order.
+var phaseValues = []string{phaseBaseline, phaseRed, phaseGreen, phaseRefactor}
 
 var (
 	iterationFileRe = regexp.MustCompile(`^iteration-(\d{2,})\.md$`)
@@ -88,6 +106,10 @@ type VerifyLogOptions struct {
 	IterationsDir string // "" => DefaultIterationsDir
 	EvalsDir      string // "" => defaultEvalsDir
 	MinIterations int    // used as given (0 disables the minimum); negative is an error
+	// RequireCycle, used as given (zero value false), requires the set to
+	// contain a red iteration followed later by a green iteration and at
+	// least one refactor iteration.
+	RequireCycle bool
 }
 
 // LogViolation is one failed verification rule.
@@ -111,15 +133,18 @@ func (e *VerifyLogError) Error() string {
 
 // logFrontMatter is the raw decoded front-matter. Pointers distinguish a
 // missing key from a zero value. Scores and the date decode as strings so
-// their exact textual format can be enforced.
+// their exact textual format can be enforced. Phase decodes into a yaml.Node
+// (not *string) so a non-scalar value is reported as a bad phase rather than
+// aborting the whole unmarshal; an absent key leaves it a zero node (Kind 0).
 type logFrontMatter struct {
-	Iteration     *string `yaml:"iteration"`
-	Date          *string `yaml:"date"`
-	ChangeType    *string `yaml:"change_type"`
-	BaselineRun   *string `yaml:"baseline_run"`
-	ResultRun     *string `yaml:"result_run"`
-	BaselineScore *string `yaml:"baseline_score"`
-	ResultScore   *string `yaml:"result_score"`
+	Iteration     *string   `yaml:"iteration"`
+	Date          *string   `yaml:"date"`
+	ChangeType    *string   `yaml:"change_type"`
+	BaselineRun   *string   `yaml:"baseline_run"`
+	ResultRun     *string   `yaml:"result_run"`
+	BaselineScore *string   `yaml:"baseline_score"`
+	ResultScore   *string   `yaml:"result_score"`
+	Phase         yaml.Node `yaml:"phase"`
 }
 
 // parsedLog is one iteration file after per-file validation.
@@ -136,6 +161,11 @@ type parsedLog struct {
 	resultRun     string
 	baselineScore float64
 	resultScore   float64
+
+	// phase is the front-matter phase when it is one of phaseValues (and, for
+	// baseline, the file is iteration-00.md); "" otherwise. A bad phase never
+	// clears valid.
+	phase string
 }
 
 // runRecord is what a results run records for the agent being verified.
@@ -158,6 +188,88 @@ type runRecord struct {
 	complete    bool
 	hasComplete bool
 	caseFilter  string
+
+	// checks is the per-check evidence read from <agent>.json.
+	checks checkEvidence
+}
+
+// checkID identifies a check across runs: the case, the criterion and the
+// check's label without its "#<index> " prefix, so inserting a check earlier in
+// a case does not make the later checks look new. Fields the label does not
+// print are not part of the identity.
+type checkID struct {
+	caseName  string
+	criterion string
+	label     string
+}
+
+func (id checkID) String() string {
+	return fmt.Sprintf("%s / %s / %s", id.caseName, id.criterion, id.label)
+}
+
+// checkEvidence is what one run's <agent>.json records about its checks.
+type checkEvidence struct {
+	repeats map[string]int   // case name -> number of recorded repeats (CaseResult entries)
+	present map[checkID]int  // identity -> number of repeats that record it
+	failed  map[checkID]bool // identity -> failed in at least one repeat
+	order   []checkID        // identities in first-seen order, for stable messages
+	seen    map[checkID]bool // membership of order
+}
+
+var checkIndexPrefixRe = regexp.MustCompile(`^#\d+ `)
+
+// loadCheckEvidence groups result.Cases by case name (each CaseResult is one
+// repeat) and records every check under its identity. Skipped criteria
+// contribute nothing.
+func loadCheckEvidence(result AgentResult) checkEvidence {
+	ev := checkEvidence{
+		repeats: map[string]int{},
+		present: map[checkID]int{},
+		failed:  map[checkID]bool{},
+		seen:    map[checkID]bool{},
+	}
+	for _, c := range result.Cases {
+		ev.repeats[c.CaseName]++
+		inRepeat := map[checkID]bool{}
+		for _, sc := range c.Scores {
+			if sc.Skipped {
+				continue
+			}
+			for _, ck := range sc.Checks {
+				id := checkID{c.CaseName, sc.Name, checkIndexPrefixRe.ReplaceAllString(ck.Label, "")}
+				if !ev.seen[id] {
+					ev.seen[id] = true
+					ev.order = append(ev.order, id)
+				}
+				inRepeat[id] = true
+				if !ck.Passed {
+					ev.failed[id] = true
+				}
+			}
+		}
+		for id := range inRepeat {
+			ev.present[id]++
+		}
+	}
+	return ev
+}
+
+// failing lists, in first-seen order, the checks that fail in any repeat.
+func (ev checkEvidence) failing() []checkID {
+	var out []checkID
+	for _, id := range ev.order {
+		if ev.failed[id] {
+			out = append(out, id)
+		}
+	}
+	return out
+}
+
+// passesEverywhere reports whether id is recorded in every repeat of its case
+// and passes in all of them. A check absent from a repeat is not a pass.
+func (ev checkEvidence) passesEverywhere(id checkID) bool {
+	n := ev.repeats[id.caseName]
+	return n > 0 && ev.present[id] == n && !ev.failed[id]
 }
 
 // VerifyLog checks <iterations-dir>/<agent>/iteration-NN.md against
@@ -212,6 +324,10 @@ func VerifyLog(w io.Writer, agent string, opts VerifyLogOptions) error {
 		if l.valid {
 			checkRuns(l, agent, lookup, add)
 		}
+	}
+
+	if opts.RequireCycle && len(logs) > 0 {
+		checkCycle(agentDir, logs, add)
 	}
 
 	if len(logs) > 0 && len(logs) < opts.MinIterations {
@@ -382,6 +498,58 @@ func parseFrontMatter(l *parsedLog, front string, add func(file, rule, format st
 	scoreField("result_score", fm.ResultScore, &l.resultScore)
 
 	l.valid = ok
+	checkPhaseKey(l, &fm.Phase, add)
+}
+
+// checkPhaseKey validates the phase key. A missing or bad phase is its own
+// rule and deliberately does not clear l.valid, so the chain, run and score
+// checks of the same file still run. The field decodes into a yaml.Node so a
+// non-scalar value (a list or map) is reported here as a bad phase rather than
+// aborting front-matter parsing and masking the file's other violations.
+func checkPhaseKey(l *parsedLog, phase *yaml.Node, add func(file, rule, format string, args ...any)) {
+	allowed := strings.Join(phaseValues, ", ")
+	value, scalar := phaseScalar(phase)
+	switch {
+	case phase.Kind == 0:
+		add(l.path, rulePhase, "missing required key %q (allowed values: %s)", "phase", allowed)
+	case !scalar || !isPhaseValue(value):
+		add(l.path, rulePhase, "phase %q must be one of %s", value, allowed)
+	case value == phaseBaseline && l.num != 0:
+		add(l.path, rulePhase, "phase %q is allowed only in iteration-00.md, not %s", phaseBaseline, l.name)
+	default:
+		l.phase = value
+	}
+}
+
+// phaseScalar returns the string value of a scalar phase node and whether the
+// node is a non-null scalar. A list, map or null node is not a usable phase
+// value; its rendered form is returned so the violation message can quote it.
+// A zero node (absent key, Kind 0) is handled by the caller before this.
+func phaseScalar(n *yaml.Node) (value string, scalar bool) {
+	if n.Kind == yaml.ScalarNode && n.Tag != "!!null" {
+		return n.Value, true
+	}
+	return renderPhaseNode(n), false
+}
+
+// renderPhaseNode produces a short single-line rendering of a non-scalar phase
+// node for use in a violation message.
+func renderPhaseNode(n *yaml.Node) string {
+	out, err := yaml.Marshal(n)
+	if err != nil {
+		return ""
+	}
+	return oneLine(string(out))
+}
+
+// isPhaseValue reports whether s is one of the allowed phase values.
+func isPhaseValue(s string) bool {
+	for _, v := range phaseValues {
+		if s == v {
+			return true
+		}
+	}
+	return false
 }
 
 // oneLine flattens a multi-line error so a violation stays on one line.
@@ -631,6 +799,8 @@ func checkRuns(l *parsedLog, agent string, lookup func(string) runRecord, add fu
 		}
 	}
 
+	checkPhase(l, base, res, add)
+
 	havePrompt := base.promptSHA != "" && res.promptSHA != ""
 	haveSuite := base.suiteSHA != "" && res.suiteSHA != ""
 	samePrompt := base.promptSHA == res.promptSHA
@@ -651,6 +821,87 @@ func checkRuns(l *parsedLog, agent string, lookup func(string) runRecord, add fu
 	}
 	if haveSuite && sameSuite && base.judgeModel == res.judgeModel {
 		add(l.path, ruleSuiteChange, "change_type is %q but runs %q and %q record the same suite_sha256 (%s) and the same judge_model (%s); the suite or the judge must change", changeTypeEval, l.baselineRun, l.resultRun, base.suiteSHA, orNotRecorded(base.judgeModel))
+	}
+}
+
+// checkPhase applies the rule of the log's phase to its two existing runs. It
+// does nothing for a log without a valid phase and for baseline, which needs no
+// evidence. Scores are the recorded ones and are compared without tolerance; a
+// run with no recorded score skips the comparison (run-data reports it).
+func checkPhase(l *parsedLog, base, res runRecord, add func(file, rule, format string, args ...any)) {
+	scoreDrop := func(rule string) {
+		if base.hasScore && res.hasScore && res.score < base.score-scoreEpsilon {
+			add(l.path, rule, "result run %q recorded %.2f, lower than baseline run %q which recorded %.2f; a %s iteration must not lower the score", l.resultRun, res.score, l.baselineRun, base.score, l.phase)
+		}
+	}
+	wantChange := func(rule, want string) {
+		if l.changeType != want {
+			add(l.path, rule, "change_type is %q but a %s iteration must be %q", l.changeType, l.phase, want)
+		}
+	}
+
+	switch l.phase {
+	case phaseRed:
+		wantChange(ruleRed, changeTypeEval)
+		inBaseline := map[checkID]bool{}
+		for _, id := range base.checks.failing() {
+			inBaseline[id] = true
+		}
+		resFailing := res.checks.failing()
+		for _, id := range resFailing {
+			if !inBaseline[id] {
+				return
+			}
+		}
+		add(l.path, ruleRed, "result run %q has no failing check that baseline run %q does not also have (it records %d failing check(s), all already failing in the baseline); a red iteration needs a new failing check", l.resultRun, l.baselineRun, len(resFailing))
+
+	case phaseGreen:
+		wantChange(ruleGreen, changeTypePrompt)
+		fixed := false
+		for _, id := range base.checks.failing() {
+			if res.checks.passesEverywhere(id) {
+				fixed = true
+				break
+			}
+		}
+		if !fixed {
+			add(l.path, ruleGreen, "no check that failed in baseline run %q passes in every repeat of result run %q (baseline records %d failing check(s)); a green iteration must fix one", l.baselineRun, l.resultRun, len(base.checks.failing()))
+		}
+		scoreDrop(ruleGreen)
+
+	case phaseRefactor:
+		wantChange(ruleRefactor, changeTypePrompt)
+		scoreDrop(ruleRefactor)
+	}
+}
+
+// checkCycle requires a complete Red -> Green -> Refactor cycle in the set: a
+// red iteration followed later (by iteration number) by a green iteration, and
+// at least one refactor iteration anywhere. Each missing part is its own
+// violation, reported against the agent directory.
+//
+// It is label-based: it reads only the phase values of the logs that have a
+// valid phase, in file-number order, and does not require those logs to pass
+// their own rules (a failing log is already a violation of its own).
+func checkCycle(agentDir string, logs []*parsedLog, add func(file, rule, format string, args ...any)) {
+	seenRed, redThenGreen, refactor := false, false, false
+	for _, l := range logs { // logs are sorted by file number
+		switch l.phase {
+		case phaseRed:
+			seenRed = true
+		case phaseGreen:
+			if seenRed {
+				redThenGreen = true
+			}
+		case phaseRefactor:
+			refactor = true
+		}
+	}
+	if !redThenGreen {
+		add(agentDir, ruleCycle, "no %q iteration followed later by a %q iteration; the set must contain a complete red, green, refactor cycle", phaseRed, phaseGreen)
+	}
+	if !refactor {
+		add(agentDir, ruleCycle, "no %q iteration; the set must contain a complete red, green, refactor cycle", phaseRefactor)
 	}
 }
 
@@ -684,6 +935,8 @@ func loadRunRecord(resultsDir, run, agent string) runRecord {
 			rec.hasScore, rec.score, rec.scoreSource = true, agentVerdict(result).Score, agent+".json"
 		}
 	}
+
+	rec.checks = loadCheckEvidence(result)
 
 	// Every other fact: <agent>.json first, then summary.json, field by field.
 	prov := summary.Agents[agent]

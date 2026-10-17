@@ -1,5 +1,30 @@
 {
   "agent": "selftest",
   "prompt_sha256": "4444444444444444444444444444444444444444444444444444444444444444",
-  "cases": []
+  "cases": [
+    {
+      "case_name": "basic",
+      "actual_output": "",
+      "run": 1,
+      "scores": [
+        {
+          "name": "alpha",
+          "score": 0,
+          "max_score": 0,
+          "deterministic": true,
+          "checks": [
+            {
+              "index": 1,
+              "type": "output_contains",
+              "label": "#1 output_contains pattern=/ready/",
+              "passed": false,
+              "detail": "output does not match /ready/"
+            }
+          ]
+        }
+      ],
+      "agent_cost": {},
+      "judge_cost": {}
+    }
+  ]
 }

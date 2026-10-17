@@ -10,6 +10,7 @@ import (
 var (
 	verifyLogIterationsDir string
 	verifyLogMinIterations int
+	verifyLogRequireCycle  bool
 )
 
 var verifyLogCmd = &cobra.Command{
@@ -17,6 +18,11 @@ var verifyLogCmd = &cobra.Command{
 	Short: "Verify an agent's iteration logs against recorded eval results",
 	Long: `Verify <iterations-dir>/<agent>/iteration-NN.md against the eval results
 committed under <evals-dir>/results.
+
+Every log must declare a phase (baseline, red, green or refactor) and the
+committed results must back that claim. By default the set must also contain a
+complete Red -> Green -> Refactor cycle; pass --require-cycle=false to skip
+that set-level requirement.
 
 Every violation is reported as "<file>: <rule>: <message>". The command exits
 non-zero if any rule fails.`,
@@ -34,6 +40,7 @@ non-zero if any rule fails.`,
 			IterationsDir: verifyLogIterationsDir,
 			EvalsDir:      evalEvalsDir,
 			MinIterations: verifyLogMinIterations,
+			RequireCycle:  verifyLogRequireCycle,
 		})
 	},
 }
@@ -43,6 +50,8 @@ func init() {
 		"Directory holding <agent>/iteration-NN.md logs")
 	verifyLogCmd.Flags().IntVar(&verifyLogMinIterations, "min-iterations", eval.DefaultMinIterations,
 		"Minimum number of iteration logs required (0 disables the minimum)")
+	verifyLogCmd.Flags().BoolVar(&verifyLogRequireCycle, "require-cycle", true,
+		"Require a Red, Green and Refactor iteration in the set (--require-cycle=false disables the requirement)")
 
 	evalCmd.AddCommand(verifyLogCmd)
 }

@@ -1099,8 +1099,8 @@ The agent `score` pools points across every check of every case, so a criterion 
 After an agent finishes, `kairon eval` prints one line, which starts with the verdict word (so `grep '^PASS \|^FAIL '` finds them):
 
 ```
-PASS selftest: 100.0% (threshold 95.0%), 0/25 cases failed, success rate 100.0% (25/25 attempts)
-FAIL selftest-fail: 9.7% (threshold 95.0%), 20/21 cases failed, success rate 4.8% (1/21 attempts)
+PASS selftest: 100.0% (threshold 95.0%), 0/26 cases failed, success rate 100.0% (26/26 attempts)
+FAIL selftest-fail: 8.3% (threshold 95.0%), 21/22 cases failed, success rate 4.5% (1/22 attempts)
 ```
 
 The format is `PASS|FAIL <agent>: <score>% (threshold <threshold>%), <cases_failed>/<cases_total> cases failed, success rate <success_rate>% (<attempts_passed>/<attempts_total> attempts)`, with one decimal for the percentages. The success rate comes right after `cases failed`, in the same position on every line, so `success rate (\d+\.\d)%` matches it whatever follows; an agent with no attempts prints `success rate 0.0% (0/0 attempts)`. See [Agent verdict](#agent-verdict) for what an attempt is. With `--repeat N` (N > 1) `<score>` is the mean and the line ends with the spread, `[repeat N: min X%, max Y%]`; the line still starts with the verdict word and the text before the suffix is unchanged. Each repeat is a separate attempt, so the example below has two attempts for its one case:
@@ -1146,7 +1146,7 @@ See [Unknown cost](#unknown-cost).
 When an agent fails, the results, `summary.json` and the performance report are still written first. Then `kairon eval` exits `1` after printing an error on stderr that names each failing agent:
 
 ```
-Error: eval failed: 1 of 2 agents below their pass threshold: selftest-fail (4.0% < 95.0%)
+Error: eval failed: 1 of 2 agents below their pass threshold: selftest-fail (8.3% < 95.0%)
 ```
 
 An agent that failed only because of the floor is named by its criteria instead, so the error never prints a misleading `97.0% < 95.0%` when the overall score met the threshold:
@@ -1472,6 +1472,8 @@ Each case in `<agent>.json` carries a `calls` array with one record per agent ca
 | `turn` | 1-based user turn of the call. Present only on agent calls of a `turns` or simulated-user case (see [Multi-turn cases](#multi-turn-cases)); omitted for single-turn cases and judge calls. |
 | `criterion` | Rubric criterion being judged (judge calls only). |
 | `purpose` | Why a judge call was made when it is not a criterion check. Currently only `simulated_user`, the routing call of a [simulated-user case](#routing). Omitted otherwise. |
+| `step` | The workflow step an **imported** record belongs to (for example `design`). Present only on records imported from `.eval/calls.jsonl`, where it is required (see [Step records](#step-records-evalcallsjsonl)); omitted on records the harness made. |
+| `source` | Who wrote the record. `workspace` on a record imported from `.eval/calls.jsonl`; omitted on every record the harness itself made (agent and judge calls), so existing call-record JSON is unchanged. The harness sets it, whatever the file said. |
 | `input_tokens` / `output_tokens` | Token counts for the call. |
 | `cost_usd` | Cost of the call: tokens times the configured price of `model` (see [Pricing](#pricing)), the same price used for `agent_cost` / `judge_cost`. `0` when the model has no configured price; see `cost_unknown`. |
 | `cost_unknown` | `true` when `cost_usd` is `0` only because `model` has no configured price (the call used tokens). Omitted when the cost is known. Do not sum such a `cost_usd` as a real price. See [Unknown cost](#unknown-cost). |
@@ -1485,6 +1487,7 @@ Each case in `<agent>.json` carries a `calls` array with one record per agent ca
 Details:
 - `agent_cost` and `judge_cost` are unchanged; `calls` is the per-call breakdown behind them.
 - No agent record is written when prompt assembly failed, because no call was made. A `turns` case writes one agent record per turn that ran (the failed turn included), each with its `turn`.
+- A workflow agent's dispatch tool can add records of its own to `calls[]` by writing `.eval/calls.jsonl`. They carry `step` and `source: "workspace"`, follow the agent call(s) and any simulated-user routing calls, and precede judge calls made while scoring. Their tokens and cost are added to `agent_cost` (see [Step records](#step-records-evalcallsjsonl)).
 - A judge call is recorded even when its output could not be parsed (the tokens were spent). Its cost appears in that call's `calls[]` record but **not** in the case's `judge_cost`, which keeps a zero cost for a failed or unparseable judge call — so for such a case the sum of `calls[].cost_usd` can exceed `judge_cost`. Failed judge calls remain outside `judge_cost` whatever the model's price (see [Unknown cost](#unknown-cost)).
 - A `--sandbox` run builds its agent record exactly like a native one, from the same request and the same completion logic: the cost comes from the backend's reported or estimated usage, `model` is the served model when the backend reports one (the stub) or the pinned model (`kiro-cli`), and `estimated` is `true` unless the usage was `reported`. For the same case the sandboxed and native `output`, `agent_cost`, call record `model` and `prompt_sha256` match. The sandboxed agent record additionally carries `trusted_tools`; the only other differences between a native and a container run are the run-level `sandbox` and `containment` fields (see [Execution mode and containment](#execution-mode-and-containment) and [Parity between native and container runs](#parity-between-native-and-container-runs)).
 
@@ -1531,6 +1534,7 @@ The per-agent result file always carries:
 | `prompt_sha256` | Agent-level (baseline) hash of everything that shapes the agent's prompt, computed over a staged workspace with no fixture overrides (see [How `prompt_sha256` is computed](#how-prompt_sha256-is-computed)). With `--prompt-file`, the prompt part of the hash is computed from the candidate file's bytes. Individual cases carry their own value (see [Per-case fields](#per-case-fields-in-agentjson)). |
 | `prompt_file` | The `--prompt-file` path of a [candidate prompt run](#evaluating-a-candidate-prompt---prompt-file), as given on the command line and normalised with `filepath.Clean` and `filepath.ToSlash` (a relative path stays relative, an absolute path stays absolute). Omitted (the key is absent) for runs without `--prompt-file`. It is the path text only, not a content identity: key on `prompt_sha256` for that. |
 | `resources_present` | The agent-config `resources` entries that existed in that baseline staged workspace when the hash was computed. Always written; an empty list serialises as `[]`. A project `*-conventions` skill is never staged, so it is never listed here. |
+| `sub_agents`, `workflow_sha256` | The provenance of the agents this agent may dispatch and a hash over the whole workflow. Written only for an agent whose config trusts other agents; absent otherwise. See [Workflows](#workflows-sub-agent-provenance-and-step-records). |
 | `sandbox` | Execution mode as a **boolean**: `true` for a `--sandbox` (container) run, `false` for a native run. Written by every run, including single-case (`--testcase`) runs. Absent in files written before mode tracking. Note that `summary.json` spells the same fact as a string (`"native"` / `"container"`); see below. |
 | `containment` | What contained this agent's cases (see [Execution mode and containment](#execution-mode-and-containment)). Present for container runs only; absent for native runs. |
 | `repeat` | Number of times every case was run (`--repeat`; see [Repeat runs](#repeat-runs---repeat)). Written as `1` for a plain run; omitted when `0`, and absent in files written before repeats existed, which count as `1`. Each entry of `cases` then carries `run` (1-based). |
@@ -1565,6 +1569,7 @@ A pinned run (every normal `kairon eval` run, see [The `evals` block](#the-evals
 |-------|-------------|
 | `prompt_sha256` | The hash described in [How `prompt_sha256` is computed](#how-prompt_sha256-is-computed), taken over **the case's staged workspace** after its fixture, the `<evals-dir>/agents/` overlay and any `--prompt-file` candidate were applied. |
 | `resources_present` | The agent-config `resources` entries that existed in that workspace. Written whenever the case's `prompt_sha256` is, even when empty (`[]`). |
+| `sub_agents`, `workflow_sha256` | For a workflow agent, the sub-agents and the workflow hash resolved from that same staged workspace (see [Workflows](#workflows-sub-agent-provenance-and-step-records)). Absent for an agent without trusted agents. |
 
 Relation to the agent-level fields:
 
@@ -1587,7 +1592,7 @@ In the self-test, `stub-conventions-fixture` shows this: its workspace fixture s
 
 #### Run summary (`summary.json`)
 
-`summary.json` always carries `judge_model` and an `agents` map with `agent_model`, `prompt_sha256` and `resources_present` per agent (plus `prompt_file` for a [candidate prompt run](#evaluating-a-candidate-prompt---prompt-file), and the run-coverage fields `suite_sha256`, `complete` and `case_filter`, see [Run coverage](#run-coverage-suite_sha256-complete-and-case_filter)). These are the agent-level baseline values; per-case values live only in `<agent>.json` (see [Per-case fields](#per-case-fields-in-agentjson)). It also records the run's execution mode in `sandbox` and, for container runs, a per-agent `containment` map. The example below is a `--sandbox` (container) run (the `tool_trust` values are illustrative; they follow each agent's trust set, see [Tool trust](#tool-trust)):
+`summary.json` always carries `judge_model` and an `agents` map with `agent_model`, `prompt_sha256` and `resources_present` per agent (plus `prompt_file` for a [candidate prompt run](#evaluating-a-candidate-prompt---prompt-file), and the run-coverage fields `suite_sha256`, `complete` and `case_filter`, see [Run coverage](#run-coverage-suite_sha256-complete-and-case_filter)). These are the agent-level baseline values; per-case values live only in `<agent>.json` (see [Per-case fields](#per-case-fields-in-agentjson)). For a workflow agent, `agents.<agent>` also nests `sub_agents` and `workflow_sha256` (see [Workflows](#workflows-sub-agent-provenance-and-step-records)); sub-agents are never keys of `agents`. It also records the run's execution mode in `sandbox` and, for container runs, a per-agent `containment` map. The example below is a `--sandbox` (container) run (the `tool_trust` values are illustrative; they follow each agent's trust set, see [Tool trust](#tool-trust)):
 
 ```json
 {
@@ -1810,15 +1815,135 @@ Resource handling:
 
 The agent runs in its case workspace, whose `.kiro/` is staged by the harness (see [Case Workspaces](#case-workspaces)), and does not load relative resources from the repository root. The hash is computed over exactly that staged workspace, so it reflects what the agent loads and not what happens to exist in your checkout. This holds whether or not an `<evals-dir>/agents/` overlay is used.
 
+**Sub-agents are not part of an agent's own hash.** `prompt_sha256` covers only the agent's own config, prompt and resources. The agents it may dispatch (`toolsSettings.subagent.trustedAgents`) are hashed separately and recorded as `sub_agents`, and a `workflow_sha256` derived from all the hashes covers the whole workflow, so editing a sub-agent never changes the dispatching agent's `prompt_sha256` (see [Workflows](#workflows-sub-agent-provenance-and-step-records)).
+
+### Workflows: sub-agent provenance and step records
+
+A *workflow agent* is an agent that dispatches other agents inside its own run: its config lists them under `toolsSettings.subagent.trustedAgents`, as the shipped `krew-lead` does for `architect`, `builder`, `validator` and `documenter`. Two things about such a run would otherwise be invisible in a result, and both are recorded:
+
+- **Which prompts could run.** The sub-agents the dispatching agent may call are recorded as `sub_agents` and summarised in one `workflow_sha256` (below), so a result says which version of every step produced it.
+- **What each step cost.** The dispatch tool can report one call record per step in `.eval/calls.jsonl`; the harness imports them into `calls[]` and `agent_cost` (see [Step records](#step-records-evalcallsjsonl)).
+
+Both are optional. An agent with no `trustedAgents` (the case for every agent that is not a workflow) records neither `sub_agents` nor `workflow_sha256`, and a case whose workspace has no `.eval/calls.jsonl` imports nothing, so existing results and summaries keep their exact shape.
+
+#### Sub-agent provenance (`sub_agents`)
+
+The sub-agents of an agent are the **transitive closure** of its `toolsSettings.subagent.trustedAgents`: a trusted agent that itself trusts agents runs in the same process, so those are included too. Each agent is resolved once (a cycle such as `a` trusts `b` trusts `a` terminates), and the dispatching agent is never listed as its own sub-agent. A `trustedAgents` value that is not a list is an error, not silently ignored, because the workflow would otherwise lose its hash.
+
+Per sub-agent the result records:
+
+| Field | Description |
+|-------|-------------|
+| `agent_model` | The `model` from the sub-agent's config (trimmed). A sub-agent runs on its own configured model, so this is what it ran on. It is **recorded, not enforced**: it is not checked against `evals.allowed_models`, and `evals.agent_model` (which overrides the agent under test) does not change it. |
+| `prompt_sha256` | The sub-agent's hash, computed with the same algorithm as the dispatching agent's (see [How `prompt_sha256` is computed](#how-prompt_sha256-is-computed)): its config, its `file://` prompt and its present resources. |
+| `resources_present` | The sub-agent's config `resources` entries that existed in the staged workspace, in config order. Never omitted: `[]` when none existed. |
+
+```json
+{
+  "agent": "selftest-workflow",
+  "prompt_sha256": "9f2c…",
+  "workflow_sha256": "6be1…",
+  "sub_agents": {
+    "selftest-step-a": { "agent_model": "claude-sonnet-5.5", "prompt_sha256": "1d07…", "resources_present": [] },
+    "selftest-step-b": { "agent_model": "claude-sonnet-5.5", "prompt_sha256": "e2a9…", "resources_present": [] }
+  }
+}
+```
+
+**Staged-workspace rule.** A sub-agent is hashed from the same staged workspace as the dispatching agent, by the same function, never from the repository working directory. The sub-agent's config, prompt and resources are therefore read from the staged `.kiro/` (the project's git-tracked files, the `<evals-dir>/agents/` overlay and the case fixture; see [Staged `.kiro` and precedence](#staged-kiro-and-precedence)), so a fixture or overlay that overrides a sub-agent's prompt or supplies one of its skills is reflected, and a file that is not staged (an untracked config, a project `*-conventions` skill) is not. A `--prompt-file` candidate applies to the dispatching agent only; it never changes a sub-agent's hash. As for the dispatching agent, a trusted agent whose config is not in the staged `.kiro/agents/` is an error that names both the sub-agent and the dispatching agent (`pinRun` reports it as an `agent "<name>": …` violation, and a case that hits it is recorded as a failed workspace setup) instead of hashing a workflow with a missing step. A trusted agent name must match `^[A-Za-z0-9][A-Za-z0-9._-]*$`, so it cannot name a path outside `.kiro/agents/`.
+
+**Where it is recorded.** The same `sub_agents` object appears at three levels, always nested under the dispatching agent:
+
+| File | Location | Computed from |
+|------|----------|---------------|
+| `<agent>.json` | each entry of `cases[]` | that case's own staged workspace (a fixture override is reflected) |
+| `<agent>.json` | top level | the agent-level baseline workspace (no fixture files) |
+| `summary.json` | `agents.<agent>.sub_agents` | the baseline, as above |
+
+Sub-agents are deliberately **not** keys of the `agents` map: that would make every consumer treat a step as an agent under test and break the rule that a run of exactly one agent also writes the top-level provenance fields. The top-level `summary.json` fields (`agent_model`, `prompt_sha256`, …) are unchanged and do not carry `sub_agents`. `eval diff` and `verify-log` keep tracking the dispatching agent's `prompt_sha256` and are not extended for `sub_agents` or `workflow_sha256`: a sub-agent-only edit is not a prompt iteration of the agent under test.
+
+The pre-flight also prints one extra line per workflow agent after the `🔒 Models:` line:
+
+```
+🔒 Models: judge=claude-sonnet-5.5, selftest-workflow=claude-sonnet-5.5 (prompt sha256 9f2c1a3b…)
+   selftest-workflow: sub-agents: selftest-step-a=claude-sonnet-5.5 (prompt sha256 1d07aa41…), selftest-step-b=claude-sonnet-5.5 (prompt sha256 e2a9c3d8…) ; workflow sha256 6be1f0d2…
+```
+
+#### `workflow_sha256`
+
+`workflow_sha256` is one lowercase hex SHA-256 (64 characters) over the whole workflow: the dispatching agent and every sub-agent. It is hashed over the agents' **hashes**, not their files:
+
+1. The input is a sequence of length-framed parts, framed exactly like the parts of `prompt_sha256` (`<kind>\x00<decimal length>\x00<bytes>`).
+2. For the dispatching agent first, and then for every sub-agent **sorted by name**, two parts are written: a `workflow-agent` part holding the agent's name, and a `prompt-sha256` part holding that agent's `prompt_sha256` as lowercase hex text.
+3. Names are hashed, so swapping the prompts of two steps changes the hash. Paths are never hashed, so the same contents give the same hash on any machine.
+
+Properties you can rely on:
+
+- **The dispatching agent's own `prompt_sha256` is unaffected.** It is computed first, from the agent's own config, prompt and resources only, and `workflow_sha256` is derived from it afterwards. Editing a sub-agent's prompt, config or resources changes that sub-agent's `prompt_sha256` and `workflow_sha256`, and leaves the dispatching agent's `prompt_sha256` byte-identical; editing the dispatching agent's own files changes both. A sub-agent's `model` is part of its config and therefore of its `prompt_sha256`, so a model change also changes `workflow_sha256`.
+- **Omitted when there is nothing to hash.** An agent that trusts no agents (no `trustedAgents`, or an empty list) has no `sub_agents` and no `workflow_sha256`; the keys are absent, not empty. Its `prompt_sha256` is the same value it has always had.
+- **Same inputs, same hash.** Two runs over identical files give an identical `workflow_sha256`, so comparing it across runs checks that only the intended step changed.
+- **Resume is refused when it differs.** `kairon eval --resume` compares the recorded `workflow_sha256` with the current one, together with `prompt_sha256`, `prompt_file` and the models, and refuses to continue into a result file recorded under a different workflow (see [Resume refusal](#resume-refusal)).
+
+#### Step records (`.eval/calls.jsonl`)
+
+A workflow agent's dispatch tool may report what each step did by appending one JSON object per line to `.eval/calls.jsonl` in the case workspace. After the case has run, the harness imports these step records into the case's `calls[]` and cost. The file is optional.
+
+```json
+{"role":"agent","agent":"selftest-step-a","step":"design","model":"claude-sonnet-5.5","input_tokens":1200,"output_tokens":340,"cost_usd":0.0087,"estimated":false,"duration_ms":4200}
+{"role":"agent","agent":"selftest-step-b","step":"build","model":"claude-sonnet-5.5","input_tokens":2100,"output_tokens":900,"cost_usd":0.0198,"estimated":false,"duration_ms":9100}
+```
+
+Each line is a call record in the shape described under [Per-call records](#per-call-records-calls):
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `step` | **yes** | The workflow step the record belongs to (for example `design`, `build`). Must not be blank. |
+| `agent` | **yes** | The agent that ran the step. Must not be blank. |
+| `role` | no | Empty means `agent`. Any other value, including `judge`, is rejected: imported cost is *agent* cost, and a judge record would be misfiled. |
+| `model` | no | The model that served the step. Copied into the record and into `agent_cost.model` if the case has none yet. |
+| `input_tokens`, `output_tokens` | no | Token counts. Must not be negative. |
+| `cost_usd` | no | Cost of the step, taken as given: the harness does not recompute it. Must not be negative. |
+| `estimated` | no | `true` marks the usage `estimated`; `false` or absent marks it `reported`. |
+| `duration_ms` | no | Duration of the step in milliseconds. Must not be negative. |
+
+The other call-record fields decode as well and are kept as given. Unknown fields are tolerated and dropped (not preserved), so the writer can add fields without breaking the harness. `source` is never taken from the file: the harness sets `source` to `workspace` on every accepted record, whatever the file said, so imported records are always distinguishable from the calls the harness made itself.
+
+**Validation.**
+
+- **An absent file is normal.** A case whose workspace has no `.eval/calls.jsonl` imports nothing and is not an error; most agents never write one.
+- **One record per line.** Each non-blank line must be exactly one JSON object; text after the object is rejected. Blank lines are skipped but still counted in line numbers.
+- `step` and `agent` must be non-blank, `role` must be empty or `agent`, and the numeric fields must not be negative. A workspace must not be able to lower a case's cost.
+- **The file itself is hardened** like the other `.eval/` files the harness reads: it must be a regular file, not a symlink (nor reached through one), at most 10 MiB, and unchanged while it is read. Any other problem is an error naming `.eval/calls.jsonl`.
+- **A malformed file scores 0 and names the line.** Any violation makes the import fail with `.eval/calls.jsonl line N: <reason>`, where `N` is the 1-based physical line number (blank lines counted) of the first bad line, for example `.eval/calls.jsonl line 3: invalid JSON record: …` or `.eval/calls.jsonl line 2: missing step`. The import is **all-or-nothing**: no record is imported, because a half-imported step list would look authoritative. The case fails closed, as when the agent produced nothing: the error is printed (`Error: …`), `actual_output` is set to `""`, and the message is recorded in `error_context.stderr` (appended after a newline when the agent call had already failed, never replacing that error). Every criterion then scores 0, as described under [When the agent failed](#when-the-agent-failed).
+
+**When it is imported.** Once per case, after the last turn (and after a container session has been closed) and before scoring, so the records sit in `calls[]` after the agent call(s) and before any judge call made while scoring. The file is cumulative across the turns of a multi-turn case, so it is read once, not per turn. It is also imported when the agent call or the simulated user failed, so the step records of a failed workflow are available to attribute the failure; the original `error_context` is kept in that case.
+
+**Cost accounting.** Imported records are *additional* agent calls, and each one's `input_tokens`, `output_tokens` and `cost_usd` are added to the case's `agent_cost`, so `agent_cost` is the sum of the harness's own agent calls and the imported steps. The merged `usage_source` follows the usual rule: `reported` only if every contributing part is `reported`, so one record with `estimated: true` makes the total `estimated`. Imported cost is never added to `judge_cost`. In the self-test case `stub-step-records` the stub reports 100 input and 40 output tokens for the outer call and the file holds two steps of 10/5 and 20/10, so `agent_cost` is 130 input and 55 output tokens and `calls[]` lists the agent call followed by the two records, each with its `step` and `source: "workspace"`.
+
+**Double-count caveat.** With a real `kiro-cli` run the dispatching agent's own call record is *estimated* from the outer prompt and response text, and the imported step records are *in addition* to it. A dispatch tool that reports the outer call as well as its steps, or whose step usage is already part of what the outer call is estimated to cost, is therefore counted twice. A dispatch tool should report **steps only**. The harness does not detect or remove such overlap.
+
+**Trust.** `.eval/` is writable by the agent, so the file is evidence reported by the workflow, not tamper-proof: validation stops it from lowering cost or masquerading as a harness record (`source` is forced), not from adding or omitting steps.
+
+#### Verifying with the self-test
+
+The `selftest-workflow` agent trusts `selftest-step-a` and `selftest-step-b` (both are sub-agents only and have no rubric of their own). A run of it records `sub_agents` and `workflow_sha256` in its results, `stub-workflow` is a plain stub response, and `stub-step-records` writes two valid step records from a stub command:
+
+```bash
+go run ./cmd/kairon eval --backend stub --evals-dir internal/eval/testdata/evals selftest-workflow   # PASS: sub_agents, workflow_sha256 and imported steps
+go run ./cmd/kairon eval --backend stub --evals-dir internal/eval/testdata/evals selftest-fail calls-malformed-line   # FAIL: names .eval/calls.jsonl line 3
+```
+
+`selftest-fail/calls-malformed-line` writes a valid line, a blank line and then `not json`, so its error names line 3 and the case scores 0. It is an expected-to-fail case, like the rest of `selftest-fail`.
+
 ### Resume refusal
 
-`kairon eval --resume` refuses to continue into a result file that was written under a different prompt or different models, so one `<agent>.json` never mixes two versions. If the existing file has a `prompt_sha256` and that value, its `prompt_file`, its `agent_model` or its `judge_model` differs from what the resumed run is now pinned to, the run stops with an error:
+`kairon eval --resume` refuses to continue into a result file that was written under a different prompt or different models, so one `<agent>.json` never mixes two versions. If the existing file has a `prompt_sha256` and that value, its `prompt_file`, its `workflow_sha256`, its `agent_model` or its `judge_model` differs from what the resumed run is now pinned to, the run stops with an error:
 
 ```
-❌ cannot resume: prompt or models changed since the interrupted run of architect (recorded agent_model=… judge_model=… prompt_sha256=… prompt_file=…; now agent_model=… judge_model=… prompt_sha256=… prompt_file=…)
+❌ cannot resume: prompt or models changed since the interrupted run of architect (recorded agent_model=… judge_model=… prompt_sha256=… prompt_file=… workflow_sha256=…; now agent_model=… judge_model=… prompt_sha256=… prompt_file=… workflow_sha256=…)
 ```
 
-`prompt_file` is shown as `(none)` when the run used the live prompt. A result file without a `prompt_file` compares equal to "no candidate", so resuming a candidate run without `--prompt-file` (or with a different file, even one that happens to hash identically) is refused, while resuming with the same file works as usual. See [Resume and diff](#resume-and-diff).
+`prompt_file` and `workflow_sha256` are shown as `(none)` when the run used the live prompt and the agent has no sub-agents respectively. A result file without a `prompt_file` compares equal to "no candidate", so resuming a candidate run without `--prompt-file` (or with a different file, even one that happens to hash identically) is refused, while resuming with the same file works as usual. A result file without a `workflow_sha256` compares equal to "no workflow", so a file recorded before the agent gained trusted agents is refused for a workflow agent, and an edit to a sub-agent (which changes `workflow_sha256` but not the agent's own `prompt_sha256`) is refused too, so one `<agent>.json` never mixes two versions of a workflow (see [`workflow_sha256`](#workflow_sha256)). See [Resume and diff](#resume-and-diff).
 
 The comparison uses the agent-level (baseline) values only; per-case `prompt_sha256` values are not compared. Because the baseline is hashed over the staged workspace, a change to something that is not staged (an untracked file, a project `*-conventions` skill) cannot cause this refusal, while a change to a tracked `.kiro` file or to the `<evals-dir>/agents/` overlay can. An interrupted run that was started before the staging change described in the [migration note](#migration-note-staged-kiro-and-provenance) is refused with this message whenever its recorded hash differs from the new one.
 
@@ -1982,16 +2107,17 @@ For a no-op check, evaluate a copy of the live prompt: `prompt_sha256` equals th
 
 An iteration log documents one measured change to an agent: baseline, hypothesis, change, results and reasoning. Logs live at `.kairon/iterations/<agent>/iteration-NN.md` (`NN` zero-padded, starting at `00`) and must reference eval runs committed under `<evals-dir>/results/`. `kairon eval verify-log` checks that every claim in a log set matches the recorded results, so a log cannot assert a score nobody measured.
 
-The log format (front-matter keys `iteration`, `date`, `change_type`, `baseline_run`, `result_run`, `baseline_score`, `result_score`; headings `Baseline`, `Hypothesis`, `Change`, `Results`, `Reasoning`) and a complete example are defined in [`.kairon/iterations/README.md`](../.kairon/iterations/README.md).
+The log format (eight required front-matter keys: `iteration`, `date`, `change_type`, `baseline_run`, `result_run`, `baseline_score`, `result_score`, `phase`; headings `Baseline`, `Hypothesis`, `Change`, `Results`, `Reasoning`) a complete example and a Red/Green/Refactor example are defined in [`.kairon/iterations/README.md`](../.kairon/iterations/README.md).
 
 ```bash
-kairon eval verify-log <agent> [--iterations-dir DIR] [--min-iterations N] [--evals-dir DIR]
+kairon eval verify-log <agent> [--iterations-dir DIR] [--min-iterations N] [--require-cycle[=false]] [--evals-dir DIR]
 ```
 
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--iterations-dir` | `.kairon/iterations` | Directory holding `<agent>/iteration-NN.md`. |
 | `--min-iterations` | `2` | Minimum number of iteration logs. `0` disables the minimum; a negative value is rejected. |
+| `--require-cycle` | `true` | Require a complete Red, Green, Refactor cycle in the set: a `red` iteration followed later by a `green` iteration, and at least one `refactor` iteration (rule `cycle`). `--require-cycle=false` turns that set-level requirement off; the per-iteration `phase`, `red`, `green` and `refactor` rules still apply. |
 | `--evals-dir` | `.kairon/evals` | Evals directory whose `results/` holds the referenced runs. This is the persistent `kairon eval` flag, inherited by `verify-log` (see [Evals Directory](#evals-directory---evals-dir)). |
 
 The command takes exactly one argument, the agent name (a single path element: no `/`, `\` or `..`). It does not call a model, `kiro-cli` or a container, and it reads only the iterations directory and `<evals-dir>/results/`.
@@ -2015,7 +2141,33 @@ The command takes exactly one argument, the agent name (a single path element: n
 | `score-match` | A claimed score differs from the run's recorded score by more than 0.1 percentage points (exactly 0.1 passes). The message names the field, the claimed value, the recorded value and the run. The recorded score is not rounded before the comparison. |
 | `prompt-change` | The prompt relation does not match `change_type`, when both runs record `prompt_sha256` for the agent. `prompt`: the two runs record the same `prompt_sha256`. `eval`: the two runs record different `prompt_sha256` (the prompt must stay the same). |
 | `suite-change` | The suite relation does not match `change_type`, when both runs record `suite_sha256` for the agent. `prompt`: the two runs record different `suite_sha256` (the eval suite must stay the same). `eval`: the two runs record the same `suite_sha256` **and** the same `judge_model` (both recorded identical, or both not recorded), so neither the suite nor the judge changed. |
+| `phase` | `phase` is missing, is not one of `baseline`, `red`, `green`, `refactor`, or is `baseline` in a file other than `iteration-00.md`. The message names the key, the bad value and the allowed values. It does not stop the other checks for the same file. |
+| `red` | A `red` iteration whose `change_type` is not `eval`, or whose result run has no failing check that the baseline run does not also have (see [Phases](#phases-baseline-red-green-refactor)). |
+| `green` | A `green` iteration whose `change_type` is not `prompt`; or where no check that failed in the baseline run passes in every repeat of the result run; or where the result run's recorded score is lower than the baseline run's. Each failed condition is a separate violation. |
+| `refactor` | A `refactor` iteration whose `change_type` is not `prompt`, or whose result run's recorded score is lower than the baseline run's. |
+| `cycle` | `--require-cycle` is on and the set has no `red` iteration followed later (higher iteration number) by a `green` iteration, or has no `refactor` iteration. Reported against the agent directory, one violation per missing part. It reads only the `phase` values of the logs, whether or not those logs pass their own rules. Not reported when there are no logs (`no-logs` covers that). |
 | `min-iterations` | There are fewer iteration logs than `--min-iterations` (default `2`). |
+
+### Phases: baseline, red, green, refactor
+
+Every log declares a `phase`, and `verify-log` checks the claim against the per-check results that each run stores in `<agent>.json` (`cases[].scores[].checks[]`). No runner or result-format change is involved: it compares the baseline run with the result run of each iteration.
+
+| `phase` | What the verifier requires |
+|---------|----------------------------|
+| `baseline` | Allowed only in `iteration-00.md`. Nothing else: `change_type` may be either value and no check evidence is needed, because iteration 00 compares two starting points. |
+| `red` | `change_type` is `eval`, and the result run has at least one failing check that the baseline run does not also have. |
+| `green` | `change_type` is `prompt`; at least one check that failed in the baseline run passes in every repeat of the result run; the result run's recorded score is not lower than the baseline run's. |
+| `refactor` | `change_type` is `prompt`, and the result run's recorded score is not lower than the baseline run's. |
+
+**Check identity.** Two runs are talking about the same check when the triple *(case name, criterion name, label without its leading `#<n> `)* is equal. The label is what the harness records, for example `#2 output_contains pattern=/ready/`, so that check's identity is `basic / alpha / output_contains pattern=/ready/`. Dropping the index means adding a check earlier in a case does not make the later ones look new. Only what the label prints is part of the identity; fields it omits (for example `expect_exit`, `inject`, or a `command` string past 80 characters) are not.
+
+**Failing, and the any-repeat rule.** Each entry in `cases` for one case name is one repeat; entries are counted and the `run` field is not relied on. A check is *failing* when it fails in **any** repeat. A check *passes everywhere* when its case has at least one repeat, the check is recorded in **every** repeat of that case, and every occurrence passes. A check missing from a repeat (the case errored, or the check was deleted) does not count as passing, and two checks in a case with the same identity must all pass. Skipped criteria and criteria without checks contribute nothing.
+
+**`red` and `green`.** `red` holds when the result run's failing checks are not all in the baseline run's failing checks. A baseline that records no checks has no failing checks, so any failing result check is new; a flaky check that happens to fail only in the result run also satisfies it, which the `eval` change-type rules (suite or judge must change, prompt must not) bound. `green` holds when some check in the baseline run's failing set passes everywhere in the result run.
+
+**Recorded-score comparison.** `green` and `refactor` compare the **recorded** scores of the two runs (the same score [`score-match`](#where-the-recorded-score-comes-from) reads), not the scores claimed in the front-matter. The result score must be greater than or equal to the baseline score. There is no 0.1 tolerance: a lower score by any amount fails and an equal score passes. The message prints both recorded scores with two decimals. If either run has no recorded score the comparison is skipped (`run-data` reports it); if either run does not exist the whole phase check is skipped (`run-exists` reports it).
+
+**`--require-cycle`.** The set-level `cycle` rule asks for a `red` iteration followed later by a `green` iteration, and at least one `refactor` iteration. A `refactor` iteration may appear anywhere. The flag defaults to `true` on the command line; the library option `VerifyLogOptions.RequireCycle` defaults to `false`, so existing library callers keep their behaviour.
 
 ### Where the recorded score comes from
 
@@ -2077,7 +2229,11 @@ go run ./cmd/kairon eval verify-log selftest \
   --evals-dir internal/eval/testdata/verifylog/evals
 ```
 
-This exits 0 and prints `OK selftest: 3 iterations verified`. In the `valid` set, iteration 02 is a `change_type: eval` iteration whose runs record the same `prompt_sha256` and different `suite_sha256`. The other sets each violate one rule and exit non-zero, naming the file and the rule. The eight sets for run coverage each hold `iteration-00.md` (a valid `prompt` iteration) and an `iteration-01.md` that is the only one with a violation, so they pass the default `--min-iterations 2`:
+This exits 0 and prints `OK selftest: 4 iterations verified`. The `valid` set is a complete cycle: iteration 00 is a `baseline` (`prompt`), 01 a `red` (`eval`, same `prompt_sha256`, different `suite_sha256`, and a check that fails in one of two repeats), 02 a `green` (`prompt`, that check now passes in both repeats and the score rises) and 03 a `refactor` (`prompt`, equal score). The logs are listed in the [README example](../.kairon/iterations/README.md#red--green--refactor-example). The other sets each violate one rule and exit non-zero, naming the file and the rule.
+
+Every set other than `valid`, `missing-phase` and `refactor-score-drop` lacks a complete Red, Green, Refactor cycle, so with the default `--require-cycle=true` it also reports `cycle` (against the agent directory). The tables below list the rule each set is built to trip; add `--require-cycle=false` to see only that rule. For `missing-phase` and `refactor-score-drop` the cycle is complete, so the listed rule is the only one.
+
+The sets for run coverage each hold `iteration-00.md` (a valid `baseline` iteration) and an `iteration-01.md` that is the only one with a violation, so they pass the default `--min-iterations 2`:
 
 | Set | Rule reported |
 |-----|---------------|
@@ -2094,6 +2250,26 @@ This exits 0 and prints `OK selftest: 3 iterations verified`. In the `valid` set
 | `eval-prompt-changed` | `prompt-change`: `eval` iteration whose runs record different `prompt_sha256` |
 | `eval-nothing-changed` | `suite-change`: `eval` iteration whose runs record the same `prompt_sha256`, `suite_sha256` and `judge_model` |
 | `legacy-run` | `run-data`: the result run records no `suite_sha256` and no `complete`; the message names both |
+
+The sets for phases. All use the same case `basic`, criterion `alpha` and two repeats, with `#2 output_contains pattern=/ready/` as the check under test:
+
+| Set | Logs | Rule reported |
+|-----|------|---------------|
+| `missing-phase` | `valid` with `phase` removed from `iteration-00.md` | `phase` on `iteration-00.md` only (the message names the key and the allowed values) |
+| `baseline-not-first` | `iteration-00.md` is a `baseline`, `iteration-01.md` also claims `phase: baseline` | `phase` on `iteration-01.md` (`baseline` is allowed only in `iteration-00.md`) |
+| `red-no-new-failure` | `baseline`, then a `red` `eval` iteration whose result run passes `#2` in both repeats | `red`: the result run has no failing check the baseline run does not have |
+| `green-no-fix` | `baseline`, `red`, then a `green` whose result run still fails `#2` in repeat 2 | `green`: no baseline-failing check passes in every repeat of the result run |
+| `green-score-drop` | `baseline`, `red`, then a `green` whose result run fixes `#2` but scores 65.0 against 70.0 | `green`: the result run's recorded score is lower than the baseline run's |
+| `refactor-score-drop` | the `valid` set with a `refactor` result run scoring 80.0 against 85.0 | `refactor`: the result run's recorded score is lower than the baseline run's |
+| `no-refactor` | `baseline`, `red`, `green`; no `refactor` | `cycle`: no `refactor` iteration. Exits 0 with `--require-cycle=false` |
+
+For example `green-no-fix` and `green-score-drop` report `green` and, by default, a second violation `cycle` (no `refactor` iteration). Run a single set with its rule only:
+
+```bash
+go run ./cmd/kairon eval verify-log selftest --require-cycle=false \
+  --iterations-dir internal/eval/testdata/verifylog/no-refactor \
+  --evals-dir internal/eval/testdata/verifylog/evals   # exits 0
+```
 
 ```bash
 go run ./cmd/kairon eval verify-log selftest --min-iterations 5 \
@@ -2638,7 +2814,7 @@ internal/eval/testdata/evals/
 
 `selftest.json` declares a `model` so the self-test passes the model-pinning pre-flight, and lists a `skill://.kiro/skills/selftest-conventions/SKILL.md` resource that no project file provides. It exercises the "missing resources are normal" rule: the run succeeds and the agent-level `resources_present` is `[]`, even if you create `.kiro/skills/selftest-conventions/SKILL.md` in the repository, because a project `*-conventions` skill is never staged. Only the `stub-conventions-fixture` case, whose workspace fixture supplies that file, lists it in its own per-case `resources_present` (see [Per-case fields](#per-case-fields-in-agentjson)).
 
-The `selftest` agent has twenty-eight cases and all of them pass (`task eval:selftest`): eight `stub-*` cases — the five original ones (`stub-basic`, `stub-marker`, `stub-quoted-input`, `stub-seeded-workspace`, `stub-usage`), which carry no `checks` and keep their pinned scores, `stub-conventions-fixture`, and the two pricing cases `stub-price-sonnet` and `stub-price-unknown` (see [Pricing](#pricing)); fourteen `check-*` cases that exercise [checks](#checks) (ten per-type cases, `check-command-inject`, and three `judge` cases: `check-judge-yes`, `check-judge-files` and `check-judge-mixed`); three [multi-turn](#multi-turn-cases) cases (`multi-turn-gh-log`, `multi-turn-judge`, `multi-turn-workspace`); and three [simulated-user](#simulated-user-elicitation-cases) cases (`sim-routes`, `sim-stop-when`, `sim-judge`). The `selftest-fail` agent is deliberately separate, so `selftest` keeps meaning "everything passes". It has twenty-one cases. Twenty are **expected to fail** on a plain run: sixteen `check-*` cases (ten per-type cases and five of the six `check-judge-*` cases) plus `check-partial`, all built so that checks fail. The sixth, `check-judge-repeat`, is the exception: its `stub.judge: [yes, no]` answers `yes` on the first run, so a plain run (no `--repeat`) scores it `1/1` and the agent reports `20/21 cases failed, success rate 4.8% (1/21 attempts)`; only under [`--repeat 2`](#repeat-runs---repeat) does it show the `1/1` then `0/1` spread that pools to a failing 50% (see the `judge` paragraph below). The agent still ends below threshold either way. The rest are `stub-timeout`, which records a timeout failure (empty `actual_output`, `error_context.stderr` containing `timeout after 1s`) in about a second; `stub-empty-response`, whose stub returns an empty response, so the case has no output, every criterion scores 0 out of its maximum, and it still counts toward the agent's score; `multi-turn-wrong-turn`; and `sim-fact-not-asked`, both described below. Run it with:
+The `selftest` agent has twenty-eight cases and all of them pass (`task eval:selftest`): eight `stub-*` cases — the five original ones (`stub-basic`, `stub-marker`, `stub-quoted-input`, `stub-seeded-workspace`, `stub-usage`), which carry no `checks` and keep their pinned scores, `stub-conventions-fixture`, and the two pricing cases `stub-price-sonnet` and `stub-price-unknown` (see [Pricing](#pricing)); fourteen `check-*` cases that exercise [checks](#checks) (ten per-type cases, `check-command-inject`, and three `judge` cases: `check-judge-yes`, `check-judge-files` and `check-judge-mixed`); three [multi-turn](#multi-turn-cases) cases (`multi-turn-gh-log`, `multi-turn-judge`, `multi-turn-workspace`); and three [simulated-user](#simulated-user-elicitation-cases) cases (`sim-routes`, `sim-stop-when`, `sim-judge`). The `selftest-fail` agent is deliberately separate, so `selftest` keeps meaning "everything passes". It has twenty-two cases. Twenty-one are **expected to fail** on a plain run: sixteen `check-*` cases (ten per-type cases and five of the six `check-judge-*` cases) plus `check-partial`, all built so that checks fail. The sixth, `check-judge-repeat`, is the exception: its `stub.judge: [yes, no]` answers `yes` on the first run, so a plain run (no `--repeat`) scores it `1/1` and the agent reports `21/22 cases failed, success rate 4.5% (1/22 attempts)`; only under [`--repeat 2`](#repeat-runs---repeat) does it show the `1/1` then `0/1` spread that pools to a failing 50% (see the `judge` paragraph below). The agent still ends below threshold either way. The rest are `stub-timeout`, which records a timeout failure (empty `actual_output`, `error_context.stderr` containing `timeout after 1s`) in about a second; `stub-empty-response`, whose stub returns an empty response, so the case has no output, every criterion scores 0 out of its maximum, and it still counts toward the agent's score; `multi-turn-wrong-turn`; `sim-fact-not-asked`, both described below; and `calls-malformed-line`, a malformed `.eval/calls.jsonl` described under [Workflows](#verifying-with-the-self-test). Run it with:
 
 ```bash
 go run ./cmd/kairon eval --backend stub --no-sandbox --evals-dir internal/eval/testdata/evals selftest-fail

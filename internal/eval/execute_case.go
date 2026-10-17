@@ -114,6 +114,10 @@ func executeCase(rubric Rubric, tc TestCase, cConfig *ContainerConfig, out io.Wr
 		}
 		cr.PromptSHA256 = prov.PromptSHA256
 		cr.ResourcesPresent = prov.ResourcesPresent
+		// Workflow agents also record the sub-agents they may dispatch, hashed
+		// from this same staged workspace (nil/empty for a plain agent).
+		cr.SubAgents = prov.SubAgents
+		cr.WorkflowSHA256 = prov.WorkflowSHA256
 	}
 
 	cr.WorkspaceDir = ws.Dir
@@ -151,6 +155,22 @@ func executeCase(rubric Rubric, tc TestCase, cConfig *ContainerConfig, out io.Wr
 	// score scores the case. A simulated case's log is first rewritten from
 	// memory, and the judge sees the conversation that actually happened.
 	score := func() {
+		// Step records a workflow's dispatch tool wrote to the workspace are
+		// imported first, so they sit in Calls after the agent call(s) and
+		// before any judge call appended while scoring. The file is cumulative
+		// across turns, so this runs once per case, on every terminal path. A
+		// malformed file fails the case closed (nothing imported, no output).
+		if err := importStepRecords(&cr, ws.Dir); err != nil {
+			fmt.Fprintf(out, "      Error: %v\n", err)
+			cr.ActualOutput = ""
+			if cr.ErrorContext == nil {
+				cr.ErrorContext = &ErrorContext{Stderr: err.Error()}
+			} else if cr.ErrorContext.Stderr == "" {
+				cr.ErrorContext.Stderr = err.Error()
+			} else {
+				cr.ErrorContext.Stderr += "\n" + err.Error()
+			}
+		}
 		view := tc
 		if simulated {
 			if err := persist(plan.decisions); err != nil && cr.ErrorContext == nil {

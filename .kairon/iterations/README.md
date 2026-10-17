@@ -27,7 +27,7 @@ A log is a Markdown file with YAML front-matter followed by five fixed headings.
 
 ### Front-matter
 
-The file must start with `---`; the front-matter ends at the next `---` line. All seven keys are required. Unknown extra keys are ignored.
+The file must start with `---`; the front-matter ends at the next `---` line. All eight keys are required. Unknown extra keys are ignored.
 
 | Key | Format | Meaning |
 |-----|--------|---------|
@@ -38,8 +38,43 @@ The file must start with `---`; the front-matter ends at the next `---` line. Al
 | `result_run` | same | The run measured after the change. |
 | `baseline_score` | percent, exactly one decimal, `0.0`-`100.0` (`72.5`, `100.0`, `5.0`) | The agent score of `baseline_run`. Not `85`, not `97.25`, not `101.0`. |
 | `result_score` | same | The agent score of `result_run`. |
+| `phase` | `baseline`, `red`, `green` or `refactor` | Which Eval-Driven Development step this iteration is. `baseline` is allowed only in `iteration-00.md`. The committed results must back the claim; see [Phases](#phases). |
 
 Scores are **percent**, not fractions: write `72.5`, not `0.725`.
+
+A missing or invalid `phase` is reported as its own `phase` violation, not as `front-matter`, and the chain, run and score checks of the same file still run.
+
+## Phases
+
+Each iteration declares one phase. `verify-log` compares the per-check results that every run stores in `<agent>.json` (`cases[].scores[].checks[]`) for `baseline_run` and `result_run`, so a phase claim is checked against committed evidence.
+
+| `phase` | Meaning | What the verifier requires |
+|---------|---------|----------------------------|
+| `baseline` | Starting point. Allowed only in `iteration-00.md`. | Nothing beyond its position. `change_type` may be either value and no check evidence is required, because iteration 00 compares two starting points (for example the legacy prompt against a minimal skeleton). |
+| `red` | Add or change the eval so it exposes a gap. | `change_type` is `eval`, and `result_run` has at least one failing check that `baseline_run` does not also have. |
+| `green` | Change the prompt so the failing check passes. | `change_type` is `prompt`; at least one check that failed in `baseline_run` passes in every repeat of `result_run`; and the recorded score of `result_run` is not lower than that of `baseline_run`. Each failed condition is its own violation. |
+| `refactor` | Tidy the prompt without losing ground. | `change_type` is `prompt`, and the recorded score of `result_run` is not lower than that of `baseline_run`. |
+
+A set that is meant to show Eval-Driven Development also needs a complete cycle: a `red` iteration followed later by a `green` iteration, and at least one `refactor` iteration. `--require-cycle` (on by default) enforces this; see [Verifying a log set](#verifying-a-log-set).
+
+### Check identity and "failing"
+
+The verifier needs to know whether two runs mean the same check. A check's identity is the triple **(case name, criterion name, check label without its leading `#<n> `)**. The label is what the harness records, for example `#2 output_contains pattern=/ready/`, so the identity of that check is `basic / alpha / output_contains pattern=/ready/`. Dropping the `#<n>` index means inserting a check earlier in a case does not make every later check look new.
+
+Limitation: only what the label prints is part of the identity. Fields it omits (for example `expect_exit`, `inject`, or a `command` string past 80 characters) are not. Changing only those leaves the identity unchanged.
+
+Per run:
+
+- Each entry in `cases` for one case name is one repeat (`--repeat`). The entries are counted; the `run` number is not relied on.
+- A check is **failing** when it fails in **any** repeat (the any-repeat rule). A check that passes in repeat 1 and fails in repeat 2 is failing.
+- A check **passes everywhere** when its case has at least one repeat, the check is recorded in **every** repeat of that case, and every occurrence passes. A check that is absent from a repeat (the case errored, the check was deleted) does not count as passing. If two checks in a case share one identity, all of them must pass.
+- Skipped criteria, and criteria with no recorded checks, contribute nothing.
+
+### Rules per phase
+
+- **`red`** is satisfied when the set of failing checks of `result_run` is not a subset of the failing checks of `baseline_run`. That is the literal reading of "at least one failing check that its baseline run doesn't have". A baseline that records no checks has no failing checks, so any failing check in the result run is new. A flaky check that happens to fail only in the result run also satisfies it; the `eval` change-type rules (the suite or the judge must change, the prompt must not) bound that.
+- **`green`** is satisfied when some check that failed in `baseline_run` passes everywhere in `result_run`.
+- **Score comparison (`green` and `refactor`).** The verifier compares the **recorded** scores of the two runs (the same score `score-match` reads), not the scores written in the front-matter. The result run's score must be greater than or equal to the baseline run's. There is no 0.1 tolerance here: a lower score by any amount fails, and an equal score passes. The message prints both recorded scores with two decimals. If either run has no recorded score, the comparison is skipped (`run-data` already reports that). If either run does not exist, the whole phase check is skipped (`run-exists` already reports that).
 
 ### Body headings
 
@@ -55,7 +90,7 @@ Five level-2 headings, each exactly once and in this order. Each needs non-blank
 
 ## Complete example
 
-This is `.kairon/iterations/selftest/iteration-00.md`. It is consistent with the `valid` fixture used by the verifier tests.
+This is `.kairon/iterations/selftest/iteration-00.md`. Its front-matter is that of the `baseline` iteration of the `valid` fixture used by the verifier tests; the fixture's body text is shorter.
 
 ````markdown
 ---
@@ -66,6 +101,7 @@ baseline_run: 260701-100000-aaaaaaa
 result_run: 260702-100000-bbbbbbb
 baseline_score: 60.0
 result_score: 72.5
+phase: baseline
 ---
 
 ## Baseline
@@ -96,6 +132,65 @@ attributable to the new prompt. The next iteration builds on run
 
 Iteration `01` then sets `baseline_run` to `260702-100000-bbbbbbb` (the previous `result_run`) and a `date` on or after `2026-07-01`.
 
+## Red / Green / Refactor example
+
+The `valid` fixture (`internal/eval/testdata/verifylog/valid/`) is a four-iteration set: the `baseline` above followed by one Red, one Green and one Refactor iteration. `verify-log selftest` prints `OK selftest: 4 iterations verified` for it.
+
+Case `basic` has criterion `alpha` and two repeats. Its two checks are `#1 file_exists path=out.txt` (always passes) and `#2 output_contains pattern=/ready/` (the check under test). The runs record these facts:
+
+| Run | Prompt | Suite | Score | `#2 output_contains pattern=/ready/` |
+|-----|--------|-------|-------|--------------------------------------|
+| `260702-100000-bbbbbbb` | B | S1 | 72.5 | not recorded (no checks) |
+| `260706-100000-aaaaa11` | B | S2 | 70.0 | passes in repeat 1, **fails in repeat 2** |
+| `260707-100000-bbbbb11` | C | S2 | 85.0 | passes in both repeats |
+| `260708-100000-ccccc11` | D | S2 | 85.0 | passes in both repeats |
+
+The front-matter of iterations `01` to `03` (only the front-matter is shown; each log also needs the five body headings with content):
+
+```yaml
+# iteration-01.md  (red: add a check that fails on the current prompt)
+iteration: 1
+date: 2026-07-02
+change_type: eval
+baseline_run: 260702-100000-bbbbbbb
+result_run: 260706-100000-aaaaa11
+baseline_score: 72.5
+result_score: 70.0
+phase: red
+```
+
+```yaml
+# iteration-02.md  (green: change the prompt so that check passes)
+iteration: 2
+date: 2026-07-03
+change_type: prompt
+baseline_run: 260706-100000-aaaaa11
+result_run: 260707-100000-bbbbb11
+baseline_score: 70.0
+result_score: 85.0
+phase: green
+```
+
+```yaml
+# iteration-03.md  (refactor: tidy the prompt, score does not drop)
+iteration: 3
+date: 2026-07-04
+change_type: prompt
+baseline_run: 260707-100000-bbbbb11
+result_run: 260708-100000-ccccc11
+baseline_score: 85.0
+result_score: 85.0
+phase: refactor
+```
+
+What proves each phase:
+
+- **Red (`01`).** `change_type: eval`: the prompt hash is the same (B) and the suite hash differs (S1 to S2). `#2` fails in repeat 2 of the result run, and the baseline run records no failing check, so there is a new failing check. The any-repeat rule makes it failing even though it passed in repeat 1. The score may drop (72.5 to 70.0); `red` has no score rule.
+- **Green (`02`).** `change_type: prompt`: the prompt hash changed (B to C) and the suite hash is the same (S2). `#2` failed in the baseline run and passes in both repeats of the result run, and the score rose (70.0 to 85.0).
+- **Refactor (`03`).** `change_type: prompt`: the prompt changed (C to D), the suite is the same, and the recorded score stayed at 85.0. An equal score passes.
+
+Each of these checks is also exercised by a failing fixture set; see "Verifying the verifier" in [docs/evaluation.md](../../docs/evaluation.md#verifying-the-verifier).
+
 ## Where runs and scores come from
 
 Runs are produced by `kairon eval` and stored, one directory per run, under `.kairon/evals/results/<yymmdd-hhmmss>-<git-hash>/` (older runs may be named by hash only). Each holds `summary.json` and one `<agent>.json` per agent.
@@ -120,13 +215,14 @@ Candidate prompts for `kairon eval <agent> --prompt-file` conventionally live ne
 ## Verifying a log set
 
 ```bash
-kairon eval verify-log <agent> [--iterations-dir DIR] [--min-iterations N] [--evals-dir DIR]
+kairon eval verify-log <agent> [--iterations-dir DIR] [--min-iterations N] [--require-cycle[=false]] [--evals-dir DIR]
 ```
 
 | Flag | Default | Meaning |
 |------|---------|---------|
 | `--iterations-dir` | `.kairon/iterations` | Directory containing `<agent>/iteration-NN.md`. |
 | `--min-iterations` | `2` | Minimum number of iteration logs required. `0` disables the minimum. |
+| `--require-cycle` | `true` | Require a complete Red, Green, Refactor cycle in the set: a `red` iteration followed later by a `green` iteration, and at least one `refactor` iteration. Pass `--require-cycle=false` to turn the requirement off (the per-iteration `phase`, `red`, `green` and `refactor` rules still apply). |
 | `--evals-dir` | `.kairon/evals` | Evals directory whose `results/` holds the referenced runs. |
 
 On success it prints `OK <agent>: N iterations verified` and exits 0. Otherwise it reports **all** violations, one per line as `<file>: <rule>: <message>`, and exits non-zero.
@@ -148,7 +244,14 @@ On success it prints `OK <agent>: N iterations verified` and exits 0. Otherwise 
 | `score-match` | A claimed score differs from the run's recorded score by more than 0.1 percentage points. A difference of exactly 0.1 passes; the tolerance only covers the one-decimal rounding of claimed scores. |
 | `prompt-change` | The prompt relation does not match `change_type`, when both runs record `prompt_sha256`. `prompt`: the two runs record the same `prompt_sha256`. `eval`: the two runs record different `prompt_sha256`. |
 | `suite-change` | The suite relation does not match `change_type`, when both runs record `suite_sha256`. `prompt`: the two runs record different `suite_sha256`. `eval`: the two runs record the same `suite_sha256` and the same `judge_model` (neither the suite nor the judge changed). |
+| `phase` | `phase` is missing, is not one of `baseline`, `red`, `green`, `refactor`, or is `baseline` in a file other than `iteration-00.md`. The message names the key, the bad value and the allowed values. Does not stop the other checks for the same file. |
+| `red` | A `red` iteration whose `change_type` is not `eval`, or whose result run has no failing check that the baseline run does not also have (check identity and the any-repeat rule are in [Phases](#phases)). |
+| `green` | A `green` iteration whose `change_type` is not `prompt`; or where no check that failed in the baseline run passes in every repeat of the result run; or where the result run's recorded score is lower than the baseline run's. Each failed condition is a separate violation. |
+| `refactor` | A `refactor` iteration whose `change_type` is not `prompt`, or whose result run's recorded score is lower than the baseline run's. |
+| `cycle` | `--require-cycle` is on and the set has no `red` iteration followed later (higher iteration number) by a `green` iteration, or has no `refactor` iteration. Reported against the agent directory, one violation per missing part. Label-based: it reads the `phase` values of the logs, whether or not those logs pass their own rules. Not reported when there are no logs (`no-logs` covers that). |
 | `min-iterations` | Fewer iteration logs exist than `--min-iterations` (default `2`). |
+
+The `red`, `green` and `refactor` rules run only for a log with a valid `phase` and valid other front-matter, and only when both of its runs exist. `refactor` has no check-evidence requirement beyond the score. `baseline` has no rule beyond its position.
 
 Because `verify-log` reports every violation, one run shows everything to fix.
 

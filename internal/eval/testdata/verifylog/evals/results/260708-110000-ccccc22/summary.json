@@ -1,0 +1,24 @@
+{
+  "git_hash": "ccccc22",
+  "judge_model": "judge-m",
+  "sandbox": "native",
+  "agent_verdicts": {
+    "selftest": {
+      "score": 80.0,
+      "threshold": 70.0,
+      "passed": true,
+      "cases_total": 1,
+      "cases_failed": 0,
+      "cost": {}
+    }
+  },
+  "agents": {
+    "selftest": {
+      "agent_model": "agent-m",
+      "prompt_sha256": "d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1",
+      "suite_sha256": "2222222222222222222222222222222222222222222222222222222222222222",
+      "complete": true,
+      "case_filter": ""
+    }
+  }
+}

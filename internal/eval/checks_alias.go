@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/jbrinkman/kairon/internal/checks"
+	"github.com/jbrinkman/kairon/internal/inference"
 )
 
 // The check engine lives in internal/checks so it can be reused without the
@@ -47,6 +48,13 @@ const (
 	judgeEnd   = checks.JudgeEnd
 	// judgeCheckTimeout bounds one judge call (judge checks and the simulated user).
 	judgeCheckTimeout = checks.JudgeTimeout
+
+	// stepRecordsRel is the workspace-relative path of a workflow agent's
+	// dispatched step records; reading lives in internal/checks.
+	stepRecordsRel = checks.StepRecordsRel
+	// maxCheckFileBytes caps workspace files the harness reads; defined in
+	// internal/checks and aliased here for the eval code and its tests.
+	maxCheckFileBytes = checks.MaxCheckFileBytes
 )
 
 var (
@@ -104,6 +112,12 @@ func checkCriterion(name string, rubric *Rubric) error {
 
 // readSimLog reads the simulated-user decision log; see checks.ReadSimLog.
 func readSimLog(dir string) ([]SimDecision, error) { return checks.ReadSimLog(dir) }
+
+// readStepRecords reads a workflow agent's dispatched step records; see
+// checks.ReadStepRecords.
+func readStepRecords(dir string) ([]inference.CallRecord, error) {
+	return checks.ReadStepRecords(dir)
+}
 
 func shorten(s string, n int) string { return checks.Shorten(s, n) }
 
