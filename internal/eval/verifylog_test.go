@@ -90,6 +90,78 @@ type vlRunSpec struct {
 	Sandbox    string // "native" or "container"
 	Complete   *bool  // recorded together with CaseFilter
 	CaseFilter string
+	// Checks are the per-check results recorded in <agent>.json. Empty means
+	// the run records no checks (cases is []).
+	Checks []vlCheck
+}
+
+// vlCheck is one check of one criterion of one case. Passed holds one result
+// per repeat (index 0 is repeat 1). A check with fewer entries than the case
+// has repeats is absent from the later repeats.
+type vlCheck struct {
+	Case      string
+	Criterion string
+	Label     string
+	Passed    []bool
+}
+
+// vlChk builds a check of case "basic", criterion "alpha".
+func vlChk(label string, passed ...bool) vlCheck {
+	return vlCheck{Case: "basic", Criterion: "alpha", Label: label, Passed: passed}
+}
+
+const (
+	vlLblFile  = "file_exists path=out.txt"
+	vlLblReady = "output_contains pattern=/ready/"
+)
+
+// vlFailingStd is the single failing check the std eval-result runs record.
+func vlFailingStd() []vlCheck {
+	return []vlCheck{vlChk("#1 "+vlLblFile, true, true), vlChk("#2 "+vlLblReady, true, false)}
+}
+
+// casesJSON renders Checks as cases[] entries, one per (case, repeat).
+func (r vlRunSpec) casesJSON() []any {
+	repeats := map[string]int{}
+	var order []string
+	for _, c := range r.Checks {
+		if _, ok := repeats[c.Case]; !ok {
+			order = append(order, c.Case)
+		}
+		if len(c.Passed) > repeats[c.Case] {
+			repeats[c.Case] = len(c.Passed)
+		}
+	}
+	out := []any{}
+	for _, name := range order {
+		for rep := 0; rep < repeats[name]; rep++ {
+			var crits []string
+			byCrit := map[string][]any{}
+			for _, c := range r.Checks {
+				if c.Case != name || rep >= len(c.Passed) {
+					continue
+				}
+				if _, ok := byCrit[c.Criterion]; !ok {
+					crits = append(crits, c.Criterion)
+				}
+				idx := 0
+				if _, err := fmt.Sscanf(c.Label, "#%d ", &idx); err != nil {
+					idx = len(byCrit[c.Criterion]) + 1
+				}
+				byCrit[c.Criterion] = append(byCrit[c.Criterion], map[string]any{
+					"index": idx, "type": "x", "label": c.Label, "passed": c.Passed[rep],
+				})
+			}
+			scores := []any{}
+			for _, cr := range crits {
+				scores = append(scores, map[string]any{
+					"name": cr, "score": 0, "max_score": 0, "deterministic": true, "checks": byCrit[cr],
+				})
+			}
+			out = append(out, map[string]any{"case_name": name, "run": rep + 1, "scores": scores})
+		}
+	}
+	return out
 }
 
 func vlBool(b bool) *bool { return &b }
@@ -144,7 +216,7 @@ func (r vlRunSpec) summaryJSON() string {
 
 // agentJSON renders the spec as an <agent>.json (sandbox is a bool there).
 func (r vlRunSpec) agentJSON() string {
-	a := map[string]any{"agent": vlAgent, "cases": []any{}}
+	a := map[string]any{"agent": vlAgent, "cases": r.casesJSON()}
 	if r.Prompt != "" {
 		a["prompt_sha256"] = r.Prompt
 	}
@@ -223,7 +295,9 @@ func vlCompleteRun(t *testing.T, evalsDir, name, prompt, suite string) {
 // vlStdRuns writes the standard runs: r0 60.0/A, r1 72.5/B, r2 90.0/C,
 // r2b 91.0/C (same prompt as r2), r1dup 73.0/B (same prompt as r1), plus
 // r0s 60.0/A and r2s 91.0/C, which have the same prompt as r0 and r2 but a
-// changed suite (S2), so they form valid eval iterations with them.
+// changed suite (S2), so they form valid eval iterations with them. The runs
+// used as eval results (r0, r0s, r2b, r2s) each record a failing check so the
+// red phase holds for them.
 func vlStdRuns(t *testing.T, evalsDir string) {
 	t.Helper()
 	for _, r := range []struct {
@@ -238,14 +312,46 @@ func vlStdRuns(t *testing.T, evalsDir string) {
 	} {
 		spec := vlStdSpec(r.score, r.sha)
 		spec.Suite = r.suite
+		switch r.name {
+		case "r0s", "r2s", "r2b": // used as eval results, so each fails a check
+			spec.Checks = vlFailingStd()
+		case "r0":
+			// r0 is also an eval result (r0s -> r0 in the sequence tests). It fails
+			// a check r0s does not, so both directions of r0 <-> r0s have a new failure.
+			spec.Checks = []vlCheck{vlChk("#1 output_contains pattern=/other/", false, false)}
+		}
 		vlWriteSpecRun(t, evalsDir, r.name, spec)
 	}
 }
 
-// vlFM renders front-matter lines (no delimiters).
+// vlDefaultPhase is the phase vlFM gives a log: baseline for iteration 0, red
+// for later eval iterations and refactor for later prompt iterations.
+func vlDefaultPhase(iter int, ctype string) string {
+	switch {
+	case iter == 0:
+		return "baseline"
+	case ctype == "eval":
+		return "red"
+	default:
+		return "refactor"
+	}
+}
+
+// vlFM renders front-matter lines (no delimiters) with the default phase for
+// the iteration number and change type.
 func vlFM(iter int, date, ctype, base, res, bs, rs string) string {
-	return fmt.Sprintf("iteration: %d\ndate: %s\nchange_type: %s\nbaseline_run: %s\nresult_run: %s\nbaseline_score: %s\nresult_score: %s\n",
+	return vlFMPhase(vlDefaultPhase(iter, ctype), iter, date, ctype, base, res, bs, rs)
+}
+
+// vlFMPhase renders front-matter lines (no delimiters) with an explicit
+// phase. An empty phase leaves the key out.
+func vlFMPhase(phase string, iter int, date, ctype, base, res, bs, rs string) string {
+	fm := fmt.Sprintf("iteration: %d\ndate: %s\nchange_type: %s\nbaseline_run: %s\nresult_run: %s\nbaseline_score: %s\nresult_score: %s\n",
 		iter, date, ctype, base, res, bs, rs)
+	if phase != "" {
+		fm += "phase: " + phase + "\n"
+	}
+	return fm
 }
 
 func vlDoc(fm, body string) string { return "---\n" + fm + "---\n\n" + body }
@@ -351,6 +457,12 @@ func TestVerifyLogFixtureSets(t *testing.T) {
 		{set: "eval-prompt-changed", min: 2, wantRule: "prompt-change", wantSuffix: "iteration-01.md"},
 		{set: "eval-nothing-changed", min: 2, wantRule: "suite-change", wantSuffix: "iteration-01.md"},
 		{set: "legacy-run", min: 2, wantRule: "run-data", wantSuffix: "iteration-01.md", wantMentions: []string{"260705-170000-8888888", "suite_sha256", "complete"}},
+		{set: "missing-phase", min: 0, wantRule: "phase", wantSuffix: "iteration-00.md", wantMentions: []string{"phase", "baseline", "red", "green", "refactor"}},
+		{set: "baseline-not-first", min: 0, wantRule: "phase", wantSuffix: "iteration-01.md", wantMentions: []string{"baseline", "iteration-00.md"}},
+		{set: "red-no-new-failure", min: 0, wantRule: "red", wantSuffix: "iteration-01.md", wantMentions: []string{"260706-110000-aaaaa00", "failing"}},
+		{set: "green-no-fix", min: 0, wantRule: "green", wantSuffix: "iteration-02.md", wantMentions: []string{"260707-110000-bbbbb22", "passes"}},
+		{set: "green-score-drop", min: 0, wantRule: "green", wantSuffix: "iteration-02.md", wantMentions: []string{"260707-120000-bbbbb33", "70.00", "65.00"}},
+		{set: "refactor-score-drop", min: 0, wantRule: "refactor", wantSuffix: "iteration-03.md", wantMentions: []string{"260708-110000-ccccc22", "85.00", "80.00"}},
 		{set: "valid", min: 5, wantRule: "min-iterations", wantSuffix: filepath.Join("valid", vlAgent)},
 	}
 	for _, tt := range tests {
@@ -360,7 +472,7 @@ func TestVerifyLogFixtureSets(t *testing.T) {
 				if err != nil {
 					t.Fatalf("unexpected error: %v", err)
 				}
-				if want := "OK selftest: 3 iterations verified\n"; out != want {
+				if want := "OK selftest: 4 iterations verified\n"; out != want {
 					t.Fatalf("output = %q, want %q", out, want)
 				}
 				return
@@ -455,7 +567,7 @@ func TestVerifyLogFixtureRunsRecordCoverage(t *testing.T) {
 }
 
 // TestVerifyLogFixtureValidEvalIteration pins the shape of the valid set's
-// eval iteration (c -> d): same prompt hash, different suite hash.
+// red (eval) iteration, b -> R1: same prompt hash, different suite hash.
 func TestVerifyLogFixtureValidEvalIteration(t *testing.T) {
 	read := func(run string) (prompt, suite string) {
 		data, err := os.ReadFile(filepath.Join(vlFixtureRoot, "evals", "results", run, "summary.json"))
@@ -474,20 +586,39 @@ func TestVerifyLogFixtureValidEvalIteration(t *testing.T) {
 		a := sum.Agents[vlAgent]
 		return a.PromptSHA256, a.SuiteSHA256
 	}
-	pc, sc := read("260703-100000-ccccccc")
-	pd, sd := read("260704-100000-ddddddd")
-	if pc == "" || pc != pd {
-		t.Errorf("eval iteration prompt hashes: %q vs %q, want equal and non-empty", pc, pd)
+	pb, sb := read("260702-100000-bbbbbbb")
+	pr, sr := read("260706-100000-aaaaa11")
+	if pb == "" || pb != pr {
+		t.Errorf("eval iteration prompt hashes: %q vs %q, want equal and non-empty", pb, pr)
 	}
-	if sc == "" || sd == "" || sc == sd {
-		t.Errorf("eval iteration suite hashes: %q vs %q, want both set and different", sc, sd)
+	if sb == "" || sr == "" || sb == sr {
+		t.Errorf("eval iteration suite hashes: %q vs %q, want both set and different", sb, sr)
 	}
-	doc, err := os.ReadFile(filepath.Join(vlFixtureRoot, "valid", vlAgent, "iteration-02.md"))
+	doc, err := os.ReadFile(filepath.Join(vlFixtureRoot, "valid", vlAgent, "iteration-01.md"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(doc), "change_type: eval") {
-		t.Error("valid iteration-02 should be an eval iteration")
+	for _, want := range []string{"change_type: eval", "phase: red"} {
+		if !strings.Contains(string(doc), want) {
+			t.Errorf("valid iteration-01 should contain %q", want)
+		}
+	}
+}
+
+// TestVerifyLogFixtureValidPhases pins the valid set's four iterations:
+// baseline, red, green, refactor, in that order.
+func TestVerifyLogFixtureValidPhases(t *testing.T) {
+	for i, want := range []string{"baseline", "red", "green", "refactor"} {
+		doc, err := os.ReadFile(filepath.Join(vlFixtureRoot, "valid", vlAgent, fmt.Sprintf("iteration-%02d.md", i)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(doc), "\nphase: "+want+"\n") {
+			t.Errorf("valid iteration-%02d should have phase %q", i, want)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(vlFixtureRoot, "valid", vlAgent, "iteration-04.md")); err == nil {
+		t.Error("valid set must have exactly four iterations")
 	}
 }
 
@@ -1702,4 +1833,671 @@ func TestVerifyLogTestHelpersProduceValidJSON(t *testing.T) {
 			t.Fatalf("%s: %v", s, err)
 		}
 	}
+}
+
+// ---------- phase ----------
+
+// vlPhaseViolations verifies a set of logs and returns the violations (nil on
+// success).
+func vlPhaseViolations(t *testing.T, logs map[string]string) []LogViolation {
+	t.Helper()
+	_, err := vlRunVerify(t, vlSetup(t, logs))
+	if err == nil {
+		return nil
+	}
+	return vlViolations(t, err)
+}
+
+func TestVerifyLogPhaseMissing(t *testing.T) {
+	fm := vlFMPhase("", 0, "2026-07-01", "prompt", "r0", "r1", "60.0", "72.5")
+	_, err := vlRunVerify(t, vlSetup(t, map[string]string{"iteration-00.md": vlDoc(fm, vlBody)}))
+	v := vlExpectOnly(t, err, "phase", "iteration-00.md")
+	vlMustMention(t, v.Message, "phase", "baseline", "red", "green", "refactor")
+}
+
+func TestVerifyLogPhaseUnknownValue(t *testing.T) {
+	for _, bad := range []string{"tweak", "Red", "3", `""`} {
+		t.Run(bad, func(t *testing.T) {
+			fm := vlFMPhase(bad, 0, "2026-07-01", "prompt", "r0", "r1", "60.0", "72.5")
+			_, err := vlRunVerify(t, vlSetup(t, map[string]string{"iteration-00.md": vlDoc(fm, vlBody)}))
+			v := vlExpectOnly(t, err, "phase", "iteration-00.md")
+			vlMustMention(t, v.Message, "phase", "baseline", "red", "green", "refactor")
+		})
+	}
+}
+
+func TestVerifyLogPhaseAllowedValues(t *testing.T) {
+	// baseline in 00, then each of red/green/refactor in a later file.
+	for _, ph := range []string{"red", "green", "refactor"} {
+		t.Run(ph, func(t *testing.T) {
+			opts := vlSetup(t, map[string]string{
+				"iteration-00.md": vlDoc(vlFM(0, "2026-07-01", "prompt", "r0", "r1", "60.0", "72.5"), vlBody),
+				"iteration-01.md": vlDoc(vlFMPhase(ph, 1, "2026-07-02", "prompt", "r1", "r2", "72.5", "90.0"), vlBody),
+			})
+			// Whether the phase's evidence holds is not this test's concern: only
+			// the phase key itself must be accepted.
+			_, err := vlRunVerify(t, opts)
+			var ve *VerifyLogError
+			if errors.As(err, &ve) {
+				for _, v := range ve.Violations {
+					if v.Rule == "phase" {
+						t.Fatalf("phase %q rejected: %v", ph, v)
+					}
+				}
+			}
+		})
+	}
+}
+
+func TestVerifyLogPhaseBaselineOnlyInIterationZero(t *testing.T) {
+	// baseline is fine in iteration-00.md ...
+	fm0 := vlFMPhase("baseline", 0, "2026-07-01", "prompt", "r0", "r1", "60.0", "72.5")
+	if _, err := vlRunVerify(t, vlSetup(t, map[string]string{"iteration-00.md": vlDoc(fm0, vlBody)})); err != nil {
+		t.Fatalf("baseline in iteration-00.md rejected: %v", err)
+	}
+	// ... but not in a later file, and the violation names that file.
+	opts := vlSetup(t, map[string]string{
+		"iteration-00.md": vlDoc(fm0, vlBody),
+		"iteration-01.md": vlDoc(vlFMPhase("baseline", 1, "2026-07-02", "prompt", "r1", "r2", "72.5", "90.0"), vlBody),
+	})
+	_, err := vlRunVerify(t, opts)
+	v := vlExpectOnly(t, err, "phase", "iteration-01.md")
+	vlMustMention(t, v.Message, "baseline", "iteration-00.md")
+}
+
+// A bad phase must not stop the chain, run or score checks of the same file,
+// and must not set the front-matter rule.
+func TestVerifyLogPhaseViolationDoesNotSuppressOtherChecks(t *testing.T) {
+	opts := vlSetup(t, map[string]string{
+		"iteration-00.md": vlDoc(vlFM(0, "2026-07-01", "prompt", "r0", "r1", "60.0", "72.5"), vlBody),
+		// no phase; broken chain (baseline r0 != r1); wrong claimed score; run r2b
+		// has the same prompt as r2 so prompt-change fires too.
+		"iteration-01.md": vlDoc(vlFMPhase("", 1, "2026-07-02", "prompt", "r2", "r2b", "90.0", "50.0"), vlBody),
+	})
+	_, err := vlRunVerify(t, opts)
+	var got []string
+	for _, v := range vlViolations(t, err) {
+		if !strings.HasSuffix(v.File, "iteration-01.md") {
+			t.Errorf("unexpected violation on another file: %+v", v)
+			continue
+		}
+		got = append(got, v.Rule)
+	}
+	want := []string{"chain", "score-match", "prompt-change", "phase"}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Fatalf("rules on iteration-01.md = %v, want %v", got, want)
+	}
+}
+
+func TestVerifyLogPhaseDoesNotMaskFrontMatterViolations(t *testing.T) {
+	// A log with another bad key and no phase reports both rules.
+	fm := vlWithout(vlFMPhase("", 0, "2026-07-01", "prompt", "r0", "r1", "60.0", "72.5"), "date")
+	vs := vlPhaseViolations(t, map[string]string{"iteration-00.md": vlDoc(fm, vlBody)})
+	if got := vlRules(vs); fmt.Sprint(got) != fmt.Sprint([]string{"front-matter", "phase"}) {
+		t.Fatalf("rules = %v, want [front-matter phase]", got)
+	}
+}
+
+func TestVerifyLogPhaseRuleIDsAreRegisteredInOrder(t *testing.T) {
+	ids := []string{"phase", "red", "green", "refactor", "cycle"}
+	prev := ruleOrder["suite-change"]
+	for _, id := range ids {
+		rank, ok := ruleOrder[id]
+		if !ok {
+			t.Errorf("rule %q is not registered in ruleOrder", id)
+			continue
+		}
+		if rank <= prev {
+			t.Errorf("rule %q has rank %d, want greater than the previous rule's %d", id, rank, prev)
+		}
+		prev = rank
+	}
+	if min := ruleOrder["min-iterations"]; prev >= min {
+		t.Errorf("min-iterations rank %d must come after cycle rank %d", min, prev)
+	}
+}
+
+// ---------- red / green / refactor evidence ----------
+
+// vlPhaseOpts writes runs "base" and "res" and one iteration-00 log with the
+// given phase and change type (claimed scores equal the recorded ones).
+func vlPhaseOpts(t *testing.T, phase, changeType string, base, res vlRunSpec) VerifyLogOptions {
+	t.Helper()
+	root := t.TempDir()
+	evalsDir := filepath.Join(root, "evals")
+	vlWriteSpecRun(t, evalsDir, "base", base)
+	vlWriteSpecRun(t, evalsDir, "res", res)
+	fm := vlFMPhase(phase, 0, "2026-07-01", changeType, "base", "res", fmt.Sprintf("%.1f", base.Score), fmt.Sprintf("%.1f", res.Score))
+	vlWriteFile(t, filepath.Join(root, "iterations", vlAgent, "iteration-00.md"), vlDoc(fm, vlBody))
+	return VerifyLogOptions{IterationsDir: filepath.Join(root, "iterations"), EvalsDir: evalsDir}
+}
+
+// vlEvalPair is an eval iteration pair: same prompt, suite S1 -> S2.
+func vlEvalPair(baseChecks, resChecks []vlCheck) (vlRunSpec, vlRunSpec) {
+	base := vlStdSpec(70.0, vlShaB)
+	res := vlStdSpec(70.0, vlShaB)
+	res.Suite = vlSuiteS2
+	base.Checks, res.Checks = baseChecks, resChecks
+	return base, res
+}
+
+// vlPromptPair is a prompt iteration pair: prompt B -> C, same suite.
+func vlPromptPair(baseScore, resScore float64, baseChecks, resChecks []vlCheck) (vlRunSpec, vlRunSpec) {
+	base := vlStdSpec(baseScore, vlShaB)
+	res := vlStdSpec(resScore, vlShaC)
+	base.Checks, res.Checks = baseChecks, resChecks
+	return base, res
+}
+
+func vlPhaseOK(t *testing.T, opts VerifyLogOptions) {
+	t.Helper()
+	if out, err := vlRunVerify(t, opts); err != nil {
+		t.Fatalf("expected success, got: %v (out %q)", err, out)
+	}
+}
+
+func TestVerifyLogRed(t *testing.T) {
+	ready1 := func(passed ...bool) vlCheck { return vlChk("#1 "+vlLblReady, passed...) }
+	t.Run("new failing check passes", func(t *testing.T) {
+		base, res := vlEvalPair(nil, []vlCheck{ready1(false, false)})
+		vlPhaseOK(t, vlPhaseOpts(t, "red", "eval", base, res))
+	})
+	t.Run("a check failing in one repeat only counts as failing", func(t *testing.T) {
+		base, res := vlEvalPair(nil, []vlCheck{ready1(true, false)})
+		vlPhaseOK(t, vlPhaseOpts(t, "red", "eval", base, res))
+	})
+	t.Run("a check failing in the first repeat only counts as failing", func(t *testing.T) {
+		base, res := vlEvalPair(nil, []vlCheck{ready1(false, true)})
+		vlPhaseOK(t, vlPhaseOpts(t, "red", "eval", base, res))
+	})
+	t.Run("no failing check in the result fails", func(t *testing.T) {
+		base, res := vlEvalPair(nil, []vlCheck{ready1(true, true)})
+		_, err := vlRunVerify(t, vlPhaseOpts(t, "red", "eval", base, res))
+		v := vlExpectOnly(t, err, "red", "iteration-00.md")
+		vlMustMention(t, v.Message, "base", "res")
+	})
+	t.Run("no checks recorded at all fails", func(t *testing.T) {
+		base, res := vlEvalPair(nil, nil)
+		_, err := vlRunVerify(t, vlPhaseOpts(t, "red", "eval", base, res))
+		vlExpectOnly(t, err, "red", "iteration-00.md")
+	})
+	t.Run("failing check already failing in the baseline fails", func(t *testing.T) {
+		base, res := vlEvalPair([]vlCheck{ready1(false, false)}, []vlCheck{ready1(false, false)})
+		_, err := vlRunVerify(t, vlPhaseOpts(t, "red", "eval", base, res))
+		vlExpectOnly(t, err, "red", "iteration-00.md")
+	})
+	t.Run("baseline fails one check, result fails it and another: passes", func(t *testing.T) {
+		base, res := vlEvalPair(
+			[]vlCheck{ready1(false, false), vlChk("#2 "+vlLblFile, true, true)},
+			[]vlCheck{ready1(false, false), vlChk("#2 "+vlLblFile, false, false)})
+		vlPhaseOK(t, vlPhaseOpts(t, "red", "eval", base, res))
+	})
+	t.Run("change_type prompt fails", func(t *testing.T) {
+		base, res := vlPromptPair(70, 70, nil, []vlCheck{ready1(false, false)})
+		_, err := vlRunVerify(t, vlPhaseOpts(t, "red", "prompt", base, res))
+		v := vlExpectOnly(t, err, "red", "iteration-00.md")
+		vlMustMention(t, v.Message, "eval", "prompt")
+	})
+	t.Run("a lower score does not matter", func(t *testing.T) {
+		base, res := vlEvalPair(nil, []vlCheck{ready1(false, false)})
+		res.Score = 10
+		vlPhaseOK(t, vlPhaseOpts(t, "red", "eval", base, res))
+	})
+}
+
+func TestVerifyLogCheckIdentity(t *testing.T) {
+	t.Run("an index shift does not make an existing check new", func(t *testing.T) {
+		// The baseline fails "#1 output_contains ..."; a check inserted before it
+		// moves it to #2 in the result. It is the same check, so nothing is new.
+		base, res := vlEvalPair(
+			[]vlCheck{vlChk("#1 "+vlLblReady, false, false)},
+			[]vlCheck{vlChk("#1 "+vlLblFile, true, true), vlChk("#2 "+vlLblReady, false, false)})
+		_, err := vlRunVerify(t, vlPhaseOpts(t, "red", "eval", base, res))
+		vlExpectOnly(t, err, "red", "iteration-00.md")
+	})
+	t.Run("a different label is a different check", func(t *testing.T) {
+		base, res := vlEvalPair(
+			[]vlCheck{vlChk("#1 "+vlLblReady, false, false)},
+			[]vlCheck{vlChk("#1 output_contains pattern=/done/", false, false)})
+		vlPhaseOK(t, vlPhaseOpts(t, "red", "eval", base, res))
+	})
+	t.Run("a different criterion is a different check", func(t *testing.T) {
+		other := vlChk("#1 "+vlLblReady, false, false)
+		other.Criterion = "beta"
+		base, res := vlEvalPair([]vlCheck{vlChk("#1 "+vlLblReady, false, false)}, []vlCheck{other})
+		vlPhaseOK(t, vlPhaseOpts(t, "red", "eval", base, res))
+	})
+	t.Run("a different case is a different check", func(t *testing.T) {
+		other := vlChk("#1 "+vlLblReady, false, false)
+		other.Case = "second"
+		base, res := vlEvalPair([]vlCheck{vlChk("#1 "+vlLblReady, false, false)}, []vlCheck{other})
+		vlPhaseOK(t, vlPhaseOpts(t, "red", "eval", base, res))
+	})
+	t.Run("a skipped criterion contributes nothing", func(t *testing.T) {
+		// A failing check under a skipped criterion is not evidence.
+		base, res := vlEvalPair(nil, []vlCheck{vlChk("#1 "+vlLblReady, false, false)})
+		opts := vlPhaseOpts(t, "red", "eval", base, res)
+		path := filepath.Join(opts.EvalsDir, "results", "res", vlAgent+".json")
+		data, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		patched := strings.ReplaceAll(string(data), `"deterministic":true`, `"deterministic":true,"skipped":true`)
+		if patched == string(data) {
+			t.Fatal("test setup: skipped flag not injected")
+		}
+		vlWriteFile(t, path, patched)
+		_, err = vlRunVerify(t, opts)
+		vlExpectOnly(t, err, "red", "iteration-00.md")
+	})
+}
+
+func TestVerifyLogGreen(t *testing.T) {
+	failing := func() []vlCheck { return []vlCheck{vlChk("#1 "+vlLblReady, false, false)} }
+	t.Run("fix and no score drop passes", func(t *testing.T) {
+		base, res := vlPromptPair(70, 85, failing(), []vlCheck{vlChk("#1 "+vlLblReady, true, true)})
+		vlPhaseOK(t, vlPhaseOpts(t, "green", "prompt", base, res))
+	})
+	t.Run("equal score passes", func(t *testing.T) {
+		base, res := vlPromptPair(70, 70, failing(), []vlCheck{vlChk("#1 "+vlLblReady, true, true)})
+		vlPhaseOK(t, vlPhaseOpts(t, "green", "prompt", base, res))
+	})
+	t.Run("an index shift still finds the fixed check", func(t *testing.T) {
+		base, res := vlPromptPair(70, 85, failing(),
+			[]vlCheck{vlChk("#1 "+vlLblFile, true, true), vlChk("#2 "+vlLblReady, true, true)})
+		vlPhaseOK(t, vlPhaseOpts(t, "green", "prompt", base, res))
+	})
+	t.Run("one fixed check among several is enough", func(t *testing.T) {
+		base, res := vlPromptPair(70, 85,
+			[]vlCheck{vlChk("#1 "+vlLblReady, false, false), vlChk("#2 "+vlLblFile, false, false)},
+			[]vlCheck{vlChk("#1 "+vlLblReady, false, true), vlChk("#2 "+vlLblFile, true, true)})
+		vlPhaseOK(t, vlPhaseOpts(t, "green", "prompt", base, res))
+	})
+	t.Run("still failing in one repeat is not fixed", func(t *testing.T) {
+		base, res := vlPromptPair(70, 85, failing(), []vlCheck{vlChk("#1 "+vlLblReady, true, false)})
+		_, err := vlRunVerify(t, vlPhaseOpts(t, "green", "prompt", base, res))
+		v := vlExpectOnly(t, err, "green", "iteration-00.md")
+		vlMustMention(t, v.Message, "base", "res")
+	})
+	t.Run("a check missing from a repeat is not a pass", func(t *testing.T) {
+		// The check is recorded in repeat 1 only; the case has two repeats
+		// because another check is recorded twice.
+		base, res := vlPromptPair(70, 85, failing(),
+			[]vlCheck{vlChk("#1 "+vlLblReady, true), vlChk("#2 "+vlLblFile, true, true)})
+		_, err := vlRunVerify(t, vlPhaseOpts(t, "green", "prompt", base, res))
+		vlExpectOnly(t, err, "green", "iteration-00.md")
+	})
+	t.Run("a check absent from the result is not a pass", func(t *testing.T) {
+		base, res := vlPromptPair(70, 85, failing(), []vlCheck{vlChk("#1 "+vlLblFile, true, true)})
+		_, err := vlRunVerify(t, vlPhaseOpts(t, "green", "prompt", base, res))
+		vlExpectOnly(t, err, "green", "iteration-00.md")
+	})
+	t.Run("a baseline with no failing check has nothing to fix", func(t *testing.T) {
+		base, res := vlPromptPair(70, 85, []vlCheck{vlChk("#1 "+vlLblReady, true, true)}, []vlCheck{vlChk("#1 "+vlLblReady, true, true)})
+		_, err := vlRunVerify(t, vlPhaseOpts(t, "green", "prompt", base, res))
+		vlExpectOnly(t, err, "green", "iteration-00.md")
+	})
+	t.Run("score drop fails", func(t *testing.T) {
+		base, res := vlPromptPair(70, 65, failing(), []vlCheck{vlChk("#1 "+vlLblReady, true, true)})
+		_, err := vlRunVerify(t, vlPhaseOpts(t, "green", "prompt", base, res))
+		v := vlExpectOnly(t, err, "green", "iteration-00.md")
+		vlMustMention(t, v.Message, "base", "res", "70.00", "65.00")
+	})
+	t.Run("change_type eval fails", func(t *testing.T) {
+		base, res := vlEvalPair(failing(), []vlCheck{vlChk("#1 "+vlLblReady, true, true)})
+		_, err := vlRunVerify(t, vlPhaseOpts(t, "green", "eval", base, res))
+		v := vlExpectOnly(t, err, "green", "iteration-00.md")
+		vlMustMention(t, v.Message, "prompt", "eval")
+	})
+	t.Run("each failing condition is its own violation", func(t *testing.T) {
+		base, res := vlEvalPair(failing(), failing())
+		res.Score = 60
+		_, err := vlRunVerify(t, vlPhaseOpts(t, "green", "eval", base, res))
+		vs := vlViolations(t, err)
+		if got := vlRules(vs); fmt.Sprint(got) != fmt.Sprint([]string{"green", "green", "green"}) {
+			t.Fatalf("rules = %v, want three green", got)
+		}
+	})
+}
+
+func TestVerifyLogRefactor(t *testing.T) {
+	t.Run("higher score passes", func(t *testing.T) {
+		base, res := vlPromptPair(70, 80, nil, nil)
+		vlPhaseOK(t, vlPhaseOpts(t, "refactor", "prompt", base, res))
+	})
+	t.Run("equal score passes", func(t *testing.T) {
+		base, res := vlPromptPair(70, 70, nil, nil)
+		vlPhaseOK(t, vlPhaseOpts(t, "refactor", "prompt", base, res))
+	})
+	t.Run("a tiny drop fails", func(t *testing.T) {
+		// Claimed scores round to the same value; the recorded ones differ by 0.01.
+		base, res := vlPromptPair(70, 69.99, nil, nil)
+		_, err := vlRunVerify(t, vlPhaseOpts(t, "refactor", "prompt", base, res))
+		v := vlExpectOnly(t, err, "refactor", "iteration-00.md")
+		vlMustMention(t, v.Message, "base", "res", "70.00", "69.99")
+	})
+	t.Run("a drop beyond the claimed-score tolerance fails", func(t *testing.T) {
+		base, res := vlPromptPair(70, 60, nil, nil)
+		_, err := vlRunVerify(t, vlPhaseOpts(t, "refactor", "prompt", base, res))
+		vlExpectOnly(t, err, "refactor", "iteration-00.md")
+	})
+	t.Run("change_type eval fails", func(t *testing.T) {
+		base, res := vlEvalPair(nil, nil)
+		_, err := vlRunVerify(t, vlPhaseOpts(t, "refactor", "eval", base, res))
+		v := vlExpectOnly(t, err, "refactor", "iteration-00.md")
+		vlMustMention(t, v.Message, "prompt", "eval")
+	})
+	t.Run("check results are not required", func(t *testing.T) {
+		base, res := vlPromptPair(70, 75, []vlCheck{vlChk("#1 "+vlLblReady, false, false)}, []vlCheck{vlChk("#1 "+vlLblReady, false, false)})
+		vlPhaseOK(t, vlPhaseOpts(t, "refactor", "prompt", base, res))
+	})
+}
+
+func TestVerifyLogBaselinePhaseHasNoEvidenceRule(t *testing.T) {
+	for _, ct := range []string{"prompt", "eval"} {
+		t.Run(ct, func(t *testing.T) {
+			var base, res vlRunSpec
+			if ct == "eval" {
+				base, res = vlEvalPair(nil, nil)
+			} else {
+				base, res = vlPromptPair(70, 40, nil, nil)
+			}
+			vlPhaseOK(t, vlPhaseOpts(t, "baseline", ct, base, res))
+		})
+	}
+}
+
+func TestVerifyLogEvidenceRulesDoNotCascade(t *testing.T) {
+	failing := []vlCheck{vlChk("#1 "+vlLblReady, false, false)}
+	fixed := []vlCheck{vlChk("#1 "+vlLblReady, true, true)}
+	dropVerdict := func(t *testing.T, opts VerifyLogOptions, run string) {
+		t.Helper()
+		vlWriteFile(t, filepath.Join(opts.EvalsDir, "results", run, "summary.json"),
+			`{"git_hash":"x","judge_model":"judge-m","sandbox":"native","agents":{"selftest":{"agent_model":"agent-m","prompt_sha256":"`+vlShaC+`","suite_sha256":"`+vlSuiteS1+`","complete":true,"case_filter":""}}}`)
+	}
+	t.Run("missing result run: only run-exists", func(t *testing.T) {
+		for _, ph := range []string{"red", "green", "refactor"} {
+			ct := "prompt"
+			if ph == "red" {
+				ct = "eval"
+			}
+			base, res := vlPromptPair(70, 60, failing, fixed)
+			opts := vlPhaseOpts(t, ph, ct, base, res)
+			if err := os.RemoveAll(filepath.Join(opts.EvalsDir, "results", "res")); err != nil {
+				t.Fatal(err)
+			}
+			_, err := vlRunVerify(t, opts)
+			if v := vlExpectOnly(t, err, "run-exists", "iteration-00.md"); v.Rule != "run-exists" {
+				t.Fatalf("%s: %+v", ph, v)
+			}
+		}
+	})
+	t.Run("missing score: green and refactor report only run-data", func(t *testing.T) {
+		for _, ph := range []string{"green", "refactor"} {
+			base, res := vlPromptPair(70, 60, failing, fixed)
+			opts := vlPhaseOpts(t, ph, "prompt", base, res)
+			dropVerdict(t, opts, "res")
+			_, err := vlRunVerify(t, opts)
+			vlExpectOnly(t, err, "run-data", "iteration-00.md")
+		}
+	})
+	t.Run("missing baseline score: refactor reports only run-data", func(t *testing.T) {
+		base, res := vlPromptPair(70, 80, nil, nil)
+		opts := vlPhaseOpts(t, "refactor", "prompt", base, res)
+		vlWriteFile(t, filepath.Join(opts.EvalsDir, "results", "base", "summary.json"),
+			`{"git_hash":"x","judge_model":"judge-m","sandbox":"native","agents":{"selftest":{"agent_model":"agent-m","prompt_sha256":"`+vlShaB+`","suite_sha256":"`+vlSuiteS1+`","complete":true,"case_filter":""}}}`)
+		_, err := vlRunVerify(t, opts)
+		vlExpectOnly(t, err, "run-data", "iteration-00.md")
+	})
+	t.Run("an invalid front-matter log gets no phase rules", func(t *testing.T) {
+		base, res := vlPromptPair(70, 60, failing, failing)
+		opts := vlPhaseOpts(t, "green", "prompt", base, res)
+		path := filepath.Join(opts.IterationsDir, vlAgent, "iteration-00.md")
+		data, _ := os.ReadFile(path)
+		vlWriteFile(t, path, strings.Replace(string(data), "date: 2026-07-01", "date: nope", 1))
+		_, err := vlRunVerify(t, opts)
+		vlExpectOnly(t, err, "front-matter", "iteration-00.md")
+	})
+	t.Run("an invalid phase gets no evidence rules", func(t *testing.T) {
+		base, res := vlPromptPair(70, 60, failing, failing)
+		_, err := vlRunVerify(t, vlPhaseOpts(t, "tweak", "prompt", base, res))
+		vlExpectOnly(t, err, "phase", "iteration-00.md")
+	})
+}
+
+// vlFixtureCheckStates reads a committed run's <agent>.json and returns, per
+// repeat, whether the check labelled "#2 ..." passed.
+func vlFixtureCheckStates(t *testing.T, run string) []bool {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(vlFixtureRoot, "evals", "results", run, vlAgent+".json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ar AgentResult
+	if err := json.Unmarshal(data, &ar); err != nil {
+		t.Fatal(err)
+	}
+	var out []bool
+	for _, c := range ar.Cases {
+		for _, sc := range c.Scores {
+			if sc.Name != "alpha" || c.CaseName != "basic" {
+				continue
+			}
+			for _, ck := range sc.Checks {
+				if strings.HasPrefix(ck.Label, "#2 output_contains") {
+					out = append(out, ck.Passed)
+				}
+			}
+		}
+	}
+	return out
+}
+
+// TestVerifyLogFixtureEvidenceRuns pins the committed runs that carry checks.
+func TestVerifyLogFixtureEvidenceRuns(t *testing.T) {
+	runs := map[string][]bool{
+		"260706-100000-aaaaa11": {true, false}, // R1: fails in repeat 2 only
+		"260706-110000-aaaaa00": {true, true},  // R0
+		"260707-100000-bbbbb11": {true, true},  // G1
+		"260707-110000-bbbbb22": {true, false}, // Gx
+		"260707-120000-bbbbb33": {true, true},  // Gd
+		"260708-100000-ccccc11": {true, true},  // F1
+		"260708-110000-ccccc22": {true, true},  // Fd
+	}
+	for run, want := range runs {
+		if got := vlFixtureCheckStates(t, run); fmt.Sprint(got) != fmt.Sprint(want) {
+			t.Errorf("run %s: check #2 per repeat = %v, want %v", run, got, want)
+		}
+	}
+	score := func(run string) float64 {
+		return loadRunRecord(filepath.Join(vlFixtureRoot, "evals", "results"), run, vlAgent).score
+	}
+	for run, want := range map[string]float64{
+		"260706-100000-aaaaa11": 70, "260706-110000-aaaaa00": 70, "260707-100000-bbbbb11": 85,
+		"260707-110000-bbbbb22": 85, "260707-120000-bbbbb33": 65, "260708-100000-ccccc11": 85, "260708-110000-ccccc22": 80,
+	} {
+		if got := score(run); got != want {
+			t.Errorf("run %s: score = %v, want %v", run, got, want)
+		}
+	}
+}
+
+// ---------- cycle rule and RequireCycle ----------
+
+// vlCycleVerify writes one log per phase (iteration-00, -01, ...; an empty
+// phase leaves the key out) over the standard runs and verifies the set with
+// RequireCycle as given. The logs need not satisfy their own phase rules: the
+// cycle rule only looks at the phase labels. It returns every violation (nil on
+// success).
+func vlCycleVerify(t *testing.T, requireCycle bool, phases ...string) []LogViolation {
+	t.Helper()
+	logs := map[string]string{}
+	for i, p := range phases {
+		fm := vlFMPhase(p, i, "2026-07-01", "prompt", "r0", "r1", "60.0", "72.5")
+		logs[fmt.Sprintf("iteration-%02d.md", i)] = vlDoc(fm, vlBody)
+	}
+	opts := vlSetup(t, logs)
+	opts.RequireCycle = requireCycle
+	_, err := vlRunVerify(t, opts)
+	if err == nil {
+		return nil
+	}
+	return vlViolations(t, err)
+}
+
+// vlCycleOnly returns the cycle violations of vs.
+func vlCycleOnly(vs []LogViolation) []LogViolation {
+	var out []LogViolation
+	for _, v := range vs {
+		if v.Rule == "cycle" {
+			out = append(out, v)
+		}
+	}
+	return out
+}
+
+func TestVerifyLogCycleRequired(t *testing.T) {
+	tests := []struct {
+		name   string
+		phases []string
+		// wantMentions has one entry per expected cycle violation: substrings
+		// that violation's message must contain.
+		wantMentions [][]string
+	}{
+		{name: "red green refactor", phases: []string{"baseline", "red", "green", "refactor"}},
+		{name: "refactor may come first", phases: []string{"baseline", "refactor", "red", "green"}},
+		{name: "repeated cycle", phases: []string{"baseline", "red", "green", "refactor", "red", "green"}},
+		{name: "red not directly before green", phases: []string{"baseline", "red", "refactor", "green"}},
+		{name: "no green", phases: []string{"baseline", "red", "refactor"}, wantMentions: [][]string{{"red", "green"}}},
+		{name: "no red", phases: []string{"baseline", "green", "refactor"}, wantMentions: [][]string{{"red", "green"}}},
+		{name: "green before red", phases: []string{"baseline", "green", "red", "refactor"}, wantMentions: [][]string{{"red", "green"}}},
+		{name: "no refactor", phases: []string{"baseline", "red", "green"}, wantMentions: [][]string{{"refactor"}}},
+		{name: "neither cycle nor refactor", phases: []string{"baseline"}, wantMentions: [][]string{{"red", "green"}, {"refactor"}}},
+		{name: "green before red and no refactor", phases: []string{"baseline", "green", "red"}, wantMentions: [][]string{{"red", "green"}, {"refactor"}}},
+		{name: "log without a phase does not count", phases: []string{"baseline", "red", "", "refactor"}, wantMentions: [][]string{{"red", "green"}}},
+		{name: "log with an unknown phase does not count", phases: []string{"baseline", "red", "tweak", "refactor"}, wantMentions: [][]string{{"red", "green"}}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			vs := vlCycleOnly(vlCycleVerify(t, true, tt.phases...))
+			if len(vs) != len(tt.wantMentions) {
+				t.Fatalf("got %d cycle violation(s), want %d: %v", len(vs), len(tt.wantMentions), vs)
+			}
+			for i, v := range vs {
+				if !strings.HasSuffix(v.File, vlAgent) {
+					t.Errorf("cycle violation File = %q, want the agent directory (suffix %q)", v.File, vlAgent)
+				}
+				vlMustMention(t, v.Message, tt.wantMentions[i]...)
+			}
+		})
+	}
+}
+
+// TestVerifyLogCycleOffByDefault pins that the zero value of RequireCycle is
+// false: the same sets that fail the cycle with it on report no cycle violation
+// with it off.
+func TestVerifyLogCycleOffByDefault(t *testing.T) {
+	for _, phases := range [][]string{
+		{"baseline"},
+		{"baseline", "red", "green"},
+		{"baseline", "red", "refactor"},
+		{"baseline", "green", "red"},
+	} {
+		t.Run(strings.Join(phases, ","), func(t *testing.T) {
+			if vs := vlCycleOnly(vlCycleVerify(t, false, phases...)); len(vs) != 0 {
+				t.Fatalf("RequireCycle=false must not report cycle violations, got %v", vs)
+			}
+		})
+	}
+	if (VerifyLogOptions{}).RequireCycle {
+		t.Error("the zero value of RequireCycle must be false")
+	}
+}
+
+// TestVerifyLogCycleIsSetLevel pins that the cycle rule reports once against
+// the agent directory and does not suppress or duplicate per-file violations.
+func TestVerifyLogCycleIsSetLevel(t *testing.T) {
+	vs := vlCycleVerify(t, true, "baseline")
+	cycle := vlCycleOnly(vs)
+	if len(cycle) != 2 {
+		t.Fatalf("want 2 cycle violations, got %v", vs)
+	}
+	for _, v := range cycle {
+		if strings.Contains(v.File, "iteration-") {
+			t.Errorf("cycle violation must not name a log file, got File %q", v.File)
+		}
+	}
+	// The set also has per-log violations (its runs are the std ones, with the
+	// min-iterations default off): they are unaffected by RequireCycle.
+	withoutCycle := vlCycleVerify(t, false, "baseline")
+	if len(vs)-len(cycle) != len(withoutCycle) {
+		t.Errorf("RequireCycle changed non-cycle violations: with=%v without=%v", vs, withoutCycle)
+	}
+}
+
+func TestVerifyLogCycleNoLogsReportsOnlyNoLogs(t *testing.T) {
+	t.Run("missing directory", func(t *testing.T) {
+		opts := vlSetup(t, nil)
+		opts.IterationsDir = filepath.Join(t.TempDir(), "absent")
+		opts.RequireCycle = true
+		_, err := vlRunVerify(t, opts)
+		vlExpectOnly(t, err, "no-logs", "")
+	})
+	t.Run("empty directory", func(t *testing.T) {
+		opts := vlSetup(t, nil)
+		opts.RequireCycle = true
+		_, err := vlRunVerify(t, opts)
+		vlExpectOnly(t, err, "no-logs", vlAgent)
+	})
+	t.Run("only non-log files", func(t *testing.T) {
+		opts := vlSetup(t, map[string]string{"notes.txt": "n"})
+		opts.RequireCycle = true
+		_, err := vlRunVerify(t, opts)
+		vlExpectOnly(t, err, "no-logs", vlAgent)
+	})
+}
+
+func TestVerifyLogCycleFixtureSets(t *testing.T) {
+	cycleOpts := func(set string, require bool) VerifyLogOptions {
+		o := vlFixtureOpts(set, 0)
+		o.RequireCycle = require
+		return o
+	}
+	t.Run("valid passes with RequireCycle", func(t *testing.T) {
+		out, err := vlRunVerify(t, cycleOpts("valid", true))
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if want := "OK selftest: 4 iterations verified\n"; out != want {
+			t.Fatalf("output = %q, want %q", out, want)
+		}
+	})
+	t.Run("no-refactor fails on cycle", func(t *testing.T) {
+		out, err := vlRunVerify(t, cycleOpts("no-refactor", true))
+		v := vlExpectOnly(t, err, "cycle", filepath.Join("no-refactor", vlAgent))
+		vlMustMention(t, v.Message, "refactor")
+		if out != "" {
+			t.Fatalf("nothing should be printed on failure, got %q", out)
+		}
+	})
+	t.Run("no-refactor passes with RequireCycle false", func(t *testing.T) {
+		out, err := vlRunVerify(t, cycleOpts("no-refactor", false))
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if want := "OK selftest: 3 iterations verified\n"; out != want {
+			t.Fatalf("output = %q, want %q", out, want)
+		}
+	})
+	t.Run("no-refactor has red then green and no refactor", func(t *testing.T) {
+		for i, want := range []string{"baseline", "red", "green"} {
+			doc, err := os.ReadFile(filepath.Join(vlFixtureRoot, "no-refactor", vlAgent, fmt.Sprintf("iteration-%02d.md", i)))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(string(doc), "\nphase: "+want+"\n") {
+				t.Errorf("no-refactor iteration-%02d should have phase %q", i, want)
+			}
+		}
+	})
 }

@@ -6,6 +6,7 @@ baseline_run: 260702-100000-bbbbbbb
 result_run: 260799-999999-0000000
 baseline_score: 72.5
 result_score: 90.0
+phase: red
 ---
 
 ## Baseline

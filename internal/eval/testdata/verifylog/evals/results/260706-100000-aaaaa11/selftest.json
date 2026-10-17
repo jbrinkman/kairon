@@ -1,0 +1,65 @@
+{
+  "agent": "selftest",
+  "prompt_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "cases": [
+    {
+      "case_name": "basic",
+      "actual_output": "",
+      "run": 1,
+      "scores": [
+        {
+          "name": "alpha",
+          "score": 2,
+          "max_score": 2,
+          "deterministic": true,
+          "checks": [
+            {
+              "index": 1,
+              "type": "file_exists",
+              "label": "#1 file_exists path=out.txt",
+              "passed": true
+            },
+            {
+              "index": 2,
+              "type": "output_contains",
+              "label": "#2 output_contains pattern=/ready/",
+              "passed": true
+            }
+          ]
+        }
+      ],
+      "agent_cost": {},
+      "judge_cost": {}
+    },
+    {
+      "case_name": "basic",
+      "actual_output": "",
+      "run": 2,
+      "scores": [
+        {
+          "name": "alpha",
+          "score": 1,
+          "max_score": 2,
+          "deterministic": true,
+          "checks": [
+            {
+              "index": 1,
+              "type": "file_exists",
+              "label": "#1 file_exists path=out.txt",
+              "passed": true
+            },
+            {
+              "index": 2,
+              "type": "output_contains",
+              "label": "#2 output_contains pattern=/ready/",
+              "passed": false,
+              "detail": "output does not match /ready/"
+            }
+          ]
+        }
+      ],
+      "agent_cost": {},
+      "judge_cost": {}
+    }
+  ]
+}
