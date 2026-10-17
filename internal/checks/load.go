@@ -50,5 +50,15 @@ func LoadFile(path string) ([]Check, error) {
 	if len(list) == 0 {
 		return nil, fmt.Errorf("no checks in %s", path)
 	}
+	// The whole file is validated before any check runs, so a trailing YAML
+	// document must not be silently ignored. Only a single document (the next
+	// Decode returns io.EOF) is accepted.
+	var trailing any
+	if err := dec.Decode(&trailing); !errors.Is(err, io.EOF) {
+		if err == nil {
+			return nil, fmt.Errorf("checks file %s: multiple YAML documents", path)
+		}
+		return nil, fmt.Errorf("checks file %s: %w", path, err)
+	}
 	return list, nil
 }

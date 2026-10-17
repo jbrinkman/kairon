@@ -119,6 +119,42 @@ func TestLoadFile_Rejections(t *testing.T) {
 	}
 }
 
+func TestLoadFile_RejectsTrailingDocuments(t *testing.T) {
+	// A valid first document followed by a second (even one that would fail
+	// validation) must be an error: the contract is that the whole file is
+	// validated, so a silently-ignored trailing document can never happen.
+	for _, tc := range []struct {
+		name string
+		body string
+		want string
+	}{
+		{
+			name: "second list",
+			body: "- type: file_exists\n  path: a\n---\n- type: file_exists\n  path: b\n",
+			want: "multiple YAML documents",
+		},
+		{
+			name: "invalid second document",
+			body: "- type: file_exists\n  path: a\n---\nnot: a list\n",
+			want: "",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := writeTemp(t, "multi.yaml", tc.body)
+			list, err := LoadFile(path)
+			if err == nil {
+				t.Fatalf("LoadFile accepted a multi-document file (%d checks)", len(list))
+			}
+			if !strings.Contains(err.Error(), path) {
+				t.Errorf("error %q does not name the file %q", err, path)
+			}
+			if tc.want != "" && !strings.Contains(err.Error(), tc.want) {
+				t.Errorf("error %q does not mention %q", err, tc.want)
+			}
+		})
+	}
+}
+
 func TestLoadFile_FollowsSymlinkToRegularFile(t *testing.T) {
 	dir := t.TempDir()
 	target := writeTemp(t, "real.yaml", "- type: file_exists\n  path: a\n")
