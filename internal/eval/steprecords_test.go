@@ -91,6 +91,9 @@ func TestReadStepRecordsMalformedNamesLine(t *testing.T) {
 		{"trailing garbage", recA + ` x` + "\n", "line 1", ""},
 		{"trailing bracket", recA + `]` + "\n", "line 1", ""},
 		{"trailing brace", recA + `}` + "\n", "line 1", ""},
+		{"cost total overflows to inf", `{"agent":"a","step":"s","cost_usd":1e308}` + "\n" + `{"agent":"a","step":"s","cost_usd":1e308}` + "\n", "line 2", "overflow"},
+		{"input token total overflows", `{"agent":"a","step":"s","input_tokens":9223372036854775807}` + "\n" + `{"agent":"a","step":"s","input_tokens":1}` + "\n", "line 2", "overflow"},
+		{"output token total overflows", `{"agent":"a","step":"s","output_tokens":9223372036854775807}` + "\n" + `{"agent":"a","step":"s","output_tokens":1}` + "\n", "line 2", "overflow"},
 		{"CRLF line numbers", recA + "\r\n" + "{bad\r\n", "line 2", ""},
 	}
 	for _, tt := range tests {

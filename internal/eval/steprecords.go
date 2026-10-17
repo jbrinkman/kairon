@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"strings"
 
@@ -57,6 +58,8 @@ func readStepRecords(dir string) ([]inference.CallRecord, error) {
 	}
 
 	var recs []inference.CallRecord
+	var totalIn, totalOut int
+	var totalCost float64
 	for i, line := range bytes.Split(data, []byte("\n")) {
 		if len(bytes.TrimSpace(line)) == 0 {
 			continue
@@ -65,6 +68,20 @@ func readStepRecords(dir string) ([]inference.CallRecord, error) {
 		if err != nil {
 			return nil, fmt.Errorf("%s line %d: %w", stepRecordsRel, i+1, err)
 		}
+		// Per-record values are already validated non-negative. Guard the
+		// running totals too: the sums are what land in cr.AgentCost, and an
+		// unrepresentable total (an int that wraps past the sign, or a
+		// non-finite cost that json.Marshal cannot encode) must fail the whole
+		// import, not silently corrupt the run's result file.
+		if totalIn+rec.InputTokens < totalIn || totalOut+rec.OutputTokens < totalOut {
+			return nil, fmt.Errorf("%s line %d: token total overflows", stepRecordsRel, i+1)
+		}
+		totalCost += rec.CostUSD
+		if math.IsInf(totalCost, 0) || math.IsNaN(totalCost) {
+			return nil, fmt.Errorf("%s line %d: cost total overflows", stepRecordsRel, i+1)
+		}
+		totalIn += rec.InputTokens
+		totalOut += rec.OutputTokens
 		recs = append(recs, rec)
 	}
 	return recs, nil
