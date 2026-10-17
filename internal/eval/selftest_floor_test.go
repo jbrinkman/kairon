@@ -94,7 +94,7 @@ func TestSelfTestFloorControlWithoutFloorPasses(t *testing.T) {
 		t.Fatalf("control run err = %v, want nil\n%s", err, out)
 	}
 	lines := verdictLines(out)
-	if len(lines) != 1 || lines[0] != "PASS selftest-floor: 66.7% (threshold 60.0%), 0/1 cases failed" {
+	if len(lines) != 1 || lines[0] != "PASS selftest-floor: 66.7% (threshold 60.0%), 0/1 cases failed, success rate 100.0% (1/1 attempts)" {
 		t.Fatalf("verdict lines = %q\n%s", lines, out)
 	}
 	var s Summary

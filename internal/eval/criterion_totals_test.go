@@ -141,6 +141,7 @@ func TestAgentVerdictCriteriaEmptyIsJSONArray(t *testing.T) {
 func TestPrintAgentVerdictCriteria(t *testing.T) {
 	v := AgentVerdict{
 		Score: 66.7, Threshold: 60, Passed: true, CasesTotal: 2,
+		AttemptsTotal: 2, AttemptsPassed: 2, SuccessRate: 100,
 		Criteria: []CriterionTotal{
 			{Name: "file_written", Score: 2, MaxScore: 2, Percent: 100},
 			{Name: "report_marker", Score: 0, MaxScore: 1, Percent: 0},
@@ -148,7 +149,7 @@ func TestPrintAgentVerdictCriteria(t *testing.T) {
 	}
 	var buf bytes.Buffer
 	printAgentVerdict(&buf, "selftest-checks", v)
-	want := "PASS selftest-checks: 66.7% (threshold 60.0%), 0/2 cases failed\n" +
+	want := "PASS selftest-checks: 66.7% (threshold 60.0%), 0/2 cases failed, success rate 100.0% (2/2 attempts)\n" +
 		"  file_written: 2/2 (100.0%)\n" +
 		"  report_marker: 0/1 (0.0%)\n"
 	if buf.String() != want {
@@ -159,7 +160,7 @@ func TestPrintAgentVerdictCriteria(t *testing.T) {
 	v.Criteria = nil
 	buf.Reset()
 	printAgentVerdict(&buf, "selftest-checks", v)
-	if want := "PASS selftest-checks: 66.7% (threshold 60.0%), 0/2 cases failed\n"; buf.String() != want {
+	if want := "PASS selftest-checks: 66.7% (threshold 60.0%), 0/2 cases failed, success rate 100.0% (2/2 attempts)\n"; buf.String() != want {
 		t.Errorf("no criteria: got %q, want %q", buf.String(), want)
 	}
 }

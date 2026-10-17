@@ -270,14 +270,14 @@ func TestPrintAgentVerdictRepeatSuffix(t *testing.T) {
 		v    AgentVerdict
 		want string
 	}{
-		{"repeat 0 unchanged", AgentVerdict{Score: 100, Threshold: 95, Passed: true, CasesTotal: 4, ScoreMin: 100, ScoreMax: 100},
-			"PASS selftest: 100.0% (threshold 95.0%), 0/4 cases failed\n"},
-		{"repeat 1 unchanged", AgentVerdict{Repeat: 1, Score: 100, Threshold: 95, Passed: true, CasesTotal: 4, ScoreMin: 100, ScoreMax: 100},
-			"PASS selftest: 100.0% (threshold 95.0%), 0/4 cases failed\n"},
-		{"repeat 2 fail", AgentVerdict{Repeat: 2, Score: 50, Threshold: 95, CasesTotal: 1, CasesFailed: 1, ScoreMin: 0, ScoreMax: 100},
-			"FAIL selftest: 50.0% (threshold 95.0%), 1/1 cases failed [repeat 2: min 0.0%, max 100.0%]\n"},
-		{"repeat 3 pass", AgentVerdict{Repeat: 3, Score: 96.7, Threshold: 95, Passed: true, CasesTotal: 5, ScoreMin: 95, ScoreMax: 100},
-			"PASS selftest: 96.7% (threshold 95.0%), 0/5 cases failed [repeat 3: min 95.0%, max 100.0%]\n"},
+		{"repeat 0 unchanged", AgentVerdict{Score: 100, Threshold: 95, Passed: true, CasesTotal: 4, ScoreMin: 100, ScoreMax: 100, AttemptsTotal: 4, AttemptsPassed: 4, SuccessRate: 100},
+			"PASS selftest: 100.0% (threshold 95.0%), 0/4 cases failed, success rate 100.0% (4/4 attempts)\n"},
+		{"repeat 1 unchanged", AgentVerdict{Repeat: 1, Score: 100, Threshold: 95, Passed: true, CasesTotal: 4, ScoreMin: 100, ScoreMax: 100, AttemptsTotal: 4, AttemptsPassed: 4, SuccessRate: 100},
+			"PASS selftest: 100.0% (threshold 95.0%), 0/4 cases failed, success rate 100.0% (4/4 attempts)\n"},
+		{"repeat 2 fail", AgentVerdict{Repeat: 2, Score: 50, Threshold: 95, CasesTotal: 1, CasesFailed: 1, ScoreMin: 0, ScoreMax: 100, AttemptsTotal: 2, AttemptsPassed: 1, SuccessRate: 50},
+			"FAIL selftest: 50.0% (threshold 95.0%), 1/1 cases failed, success rate 50.0% (1/2 attempts) [repeat 2: min 0.0%, max 100.0%]\n"},
+		{"repeat 3 pass", AgentVerdict{Repeat: 3, Score: 96.7, Threshold: 95, Passed: true, CasesTotal: 5, ScoreMin: 95, ScoreMax: 100, AttemptsTotal: 15, AttemptsPassed: 14, SuccessRate: 100.0 * 14 / 15},
+			"PASS selftest: 96.7% (threshold 95.0%), 0/5 cases failed, success rate 93.3% (14/15 attempts) [repeat 3: min 95.0%, max 100.0%]\n"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
