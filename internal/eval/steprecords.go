@@ -82,6 +82,12 @@ func parseStepRecord(line []byte) (inference.CallRecord, error) {
 	if dec.More() {
 		return rec, fmt.Errorf("invalid JSON record: unexpected data after the record")
 	}
+	// dec.More() reports false at a lone trailing ']' or '}' too, so it alone
+	// would accept a line like `{...}]`. Require the stream to be exhausted:
+	// any further token is trailing garbage.
+	if _, err := dec.Token(); err != io.EOF {
+		return rec, fmt.Errorf("invalid JSON record: unexpected data after the record")
+	}
 	if strings.TrimSpace(rec.Step) == "" {
 		return rec, fmt.Errorf("missing step")
 	}

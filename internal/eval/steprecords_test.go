@@ -89,6 +89,8 @@ func TestReadStepRecordsMalformedNamesLine(t *testing.T) {
 		{"negative duration", `{"agent":"a","step":"s","duration_ms":-5}` + "\n", "line 1", "negative"},
 		{"wrong type", `{"agent":"a","step":"s","input_tokens":"ten"}` + "\n", "line 1", ""},
 		{"trailing garbage", recA + ` x` + "\n", "line 1", ""},
+		{"trailing bracket", recA + `]` + "\n", "line 1", ""},
+		{"trailing brace", recA + `}` + "\n", "line 1", ""},
 		{"CRLF line numbers", recA + "\r\n" + "{bad\r\n", "line 2", ""},
 	}
 	for _, tt := range tests {
