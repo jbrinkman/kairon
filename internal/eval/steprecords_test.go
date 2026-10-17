@@ -258,7 +258,6 @@ func TestImportStepRecordsCostUnknownMarksIncomplete(t *testing.T) {
 	}
 }
 
-
 func stepCase(name string, lines ...string) TestCase {
 	var cmds []string
 	for _, l := range lines {
