@@ -18,6 +18,9 @@ var checkCommandTimeout = 5 * time.Minute
 const (
 	// maxCheckFileBytes caps what file_contains / file_not_contains read.
 	maxCheckFileBytes = 10 << 20
+	// MaxCheckFileBytes is the exported form of maxCheckFileBytes, for callers
+	// in other packages (the eval harness's step-record reader and its tests).
+	MaxCheckFileBytes = maxCheckFileBytes
 	// maxCheckDetail caps Result.Detail.
 	maxCheckDetail = 2048
 )

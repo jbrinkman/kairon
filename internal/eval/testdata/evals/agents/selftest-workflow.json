@@ -1,0 +1,13 @@
+{
+  "name": "selftest-workflow",
+  "description": "Minimal dispatching agent used only by the eval self-test fixtures; it trusts selftest-step-a and selftest-step-b.",
+  "prompt": "file://./selftest-workflow-prompt.md",
+  "model": "claude-sonnet-5.5",
+  "tools": ["read"],
+  "allowedTools": ["read"],
+  "toolsSettings": {
+    "subagent": {
+      "trustedAgents": ["selftest-step-a", "selftest-step-b"]
+    }
+  }
+}

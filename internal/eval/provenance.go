@@ -8,7 +8,9 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"path"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -34,6 +36,13 @@ type agentProvenance struct {
 	// ResourcesPresent lists existing resource entries exactly as written in
 	// the config, in config order. Never nil.
 	ResourcesPresent []string
+	// SubAgents holds the provenance of every agent the dispatching agent
+	// trusts, transitively (the dispatcher itself excluded), keyed by name.
+	// Nil when the agent trusts no agents.
+	SubAgents map[string]SubAgentProvenance
+	// WorkflowSHA256 is the lowercase hex SHA-256 over the dispatching agent
+	// and its sub-agents (see workflowSHA256). Empty when SubAgents is nil.
+	WorkflowSHA256 string
 }
 
 // agentConfigFile is the subset of a kiro agent config read for provenance.
@@ -44,6 +53,13 @@ type agentConfigFile struct {
 	// AllowedTools is the agent's own tool allowlist; it is the default
 	// tool-trust set for container runs (see resolveTrustSet).
 	AllowedTools []string `json:"allowedTools"`
+	// ToolsSettings.Subagent.TrustedAgents lists the agents this agent may
+	// dispatch. A non-list value fails to decode (an error, not ignored).
+	ToolsSettings struct {
+		Subagent struct {
+			TrustedAgents []string `json:"trustedAgents"`
+		} `json:"subagent"`
+	} `json:"toolsSettings"`
 }
 
 // locateAgentConfig returns the path of the agent config: <evals-dir>/agents/
@@ -123,7 +139,146 @@ func resolveAgentProvenanceWith(agent string, ignoreOverlay bool, cand *candidat
 //
 // ConfigPath is the staged config path; callers that know the source path
 // override it.
+//
+// The agents the config trusts (toolsSettings.subagent.trustedAgents,
+// transitively) are resolved from the same root and recorded in SubAgents,
+// and WorkflowSHA256 is computed over the whole workflow. The dispatching
+// agent's own PromptSHA256 is computed first from its own files only, so a
+// sub-agent edit never changes it. A candidate applies to the dispatching
+// agent only.
 func resolveProvenanceInRoot(root, agent string, cand *candidatePrompt) (agentProvenance, error) {
+	prov, conf, err := resolveSingleProvenanceInRoot(root, agent, cand)
+	if err != nil {
+		return agentProvenance{}, err
+	}
+	subs, err := collectSubAgents(root, agent, conf.ToolsSettings.Subagent.TrustedAgents)
+	if err != nil {
+		return agentProvenance{}, err
+	}
+	if len(subs) > 0 {
+		prov.SubAgents = subs
+		prov.WorkflowSHA256 = workflowSHA256(agent, prov.PromptSHA256, subs)
+	}
+	return prov, nil
+}
+
+// subAgentNameRE is the shape of a trusted agent name: it becomes a file name
+// under <root>/.kiro/agents, so it may not contain a path separator or start
+// with a dot.
+var subAgentNameRE = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
+
+// collectSubAgents resolves the transitive closure of trusted (the names the
+// dispatching agent trusts) from root. Each agent is resolved once (cycle
+// safe) and the dispatching agent is never listed. A trusted agent without a
+// staged config, or with an unsafe name, is an error: a workflow hash over a
+// missing step would be misleading. Returns nil when there are none.
+func collectSubAgents(root, dispatcher string, trusted []string) (map[string]SubAgentProvenance, error) {
+	var subs map[string]SubAgentProvenance
+	visited := map[string]bool{dispatcher: true}
+	queue := append([]string(nil), trusted...)
+	for len(queue) > 0 {
+		name := queue[0]
+		queue = queue[1:]
+		// Kiro allows glob patterns in trustedAgents. Expand a pattern against
+		// the staged .kiro/agents dir: matching agents are queued, and a
+		// pattern that matches nothing is ignored (not an error). Literal names
+		// keep their strict validation below.
+		if strings.ContainsAny(name, "*?[") {
+			matches, err := matchStagedAgents(root, name)
+			if err != nil {
+				return nil, fmt.Errorf("agent %q: trustedAgents pattern %q: %w", dispatcher, name, err)
+			}
+			queue = append(queue, matches...)
+			continue
+		}
+		if !subAgentNameRE.MatchString(name) {
+			return nil, fmt.Errorf("agent %q: unsafe trusted agent name %q in toolsSettings.subagent.trustedAgents (allowed: letters, digits, '.', '_', '-', not starting with a symbol)", dispatcher, name)
+		}
+		if visited[name] {
+			continue
+		}
+		visited[name] = true
+
+		p, conf, err := resolveSingleProvenanceInRoot(root, name, nil)
+		if err != nil {
+			return nil, fmt.Errorf("sub-agent %q trusted by agent %q: %w", name, dispatcher, err)
+		}
+		if subs == nil {
+			subs = map[string]SubAgentProvenance{}
+		}
+		subs[name] = SubAgentProvenance{
+			AgentModel:       p.Model,
+			PromptSHA256:     p.PromptSHA256,
+			ResourcesPresent: p.ResourcesPresent,
+		}
+		queue = append(queue, conf.ToolsSettings.Subagent.TrustedAgents...)
+	}
+	return subs, nil
+}
+
+// matchStagedAgents returns the sorted names of staged agents under
+// <root>/.kiro/agents whose <name>.json matches pattern. Only safe literal
+// names (subAgentNameRE) are considered, so an expanded match can never be an
+// unsafe name. A pattern containing a path separator is rejected; a dir that
+// does not exist yields no matches (not an error).
+func matchStagedAgents(root, pattern string) ([]string, error) {
+	if strings.ContainsAny(pattern, `/\`) {
+		return nil, fmt.Errorf("pattern may not contain a path separator")
+	}
+	entries, err := os.ReadDir(filepath.Join(root, kiroDirName, "agents"))
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	var matches []string
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		name, ok := strings.CutSuffix(entry.Name(), ".json")
+		if !ok || !subAgentNameRE.MatchString(name) {
+			continue
+		}
+		matched, err := path.Match(pattern, name)
+		if err != nil {
+			return nil, err
+		}
+		if matched {
+			matches = append(matches, name)
+		}
+	}
+	sort.Strings(matches)
+	return matches, nil
+}
+
+// workflowSHA256 is the lowercase hex SHA-256 over length-framed parts: for the
+// dispatching agent first and then every sub-agent sorted by name, a
+// "workflow-agent" part (the agent name) and a "prompt-sha256" part (that
+// agent's prompt_sha256 hex). Names are hashed so swapping prompts between
+// steps changes the hash; paths are never hashed.
+func workflowSHA256(dispatcher, dispatcherSHA string, subs map[string]SubAgentProvenance) string {
+	names := make([]string, 0, len(subs))
+	for n := range subs {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+
+	h := sha256.New()
+	writeHashPart(h, "workflow-agent", []byte(dispatcher))
+	writeHashPart(h, "prompt-sha256", []byte(dispatcherSHA))
+	for _, n := range names {
+		writeHashPart(h, "workflow-agent", []byte(n))
+		writeHashPart(h, "prompt-sha256", []byte(subs[n].PromptSHA256))
+	}
+	return hex.EncodeToString(h.Sum(nil))
+}
+
+// resolveSingleProvenanceInRoot computes the provenance of one agent from its
+// own config, prompt and resources only (no sub-agents), and returns the
+// parsed config so callers can read the agents it trusts.
+func resolveSingleProvenanceInRoot(root, agent string, cand *candidatePrompt) (agentProvenance, agentConfigFile, error) {
 	if cand != nil && cand.Agent != agent {
 		cand = nil
 	}
@@ -132,13 +287,13 @@ func resolveProvenanceInRoot(root, agent string, cand *candidatePrompt) (agentPr
 	configBytes, err := os.ReadFile(path)
 	if err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
-			return agentProvenance{}, fmt.Errorf("agent config for %q not found in the staged %s (%s); a project config must be tracked by git (git add -N)", agent, kiroDirName, path)
+			return agentProvenance{}, agentConfigFile{}, fmt.Errorf("agent config for %q not found in the staged %s (%s); a project config must be tracked by git (git add -N)", agent, kiroDirName, path)
 		}
-		return agentProvenance{}, fmt.Errorf("reading agent config %s: %w", path, err)
+		return agentProvenance{}, agentConfigFile{}, fmt.Errorf("reading agent config %s: %w", path, err)
 	}
 	var conf agentConfigFile
 	if err := json.Unmarshal(configBytes, &conf); err != nil {
-		return agentProvenance{}, fmt.Errorf("parsing agent config %s: %w", path, err)
+		return agentProvenance{}, agentConfigFile{}, fmt.Errorf("parsing agent config %s: %w", path, err)
 	}
 
 	h := sha256.New()
@@ -148,7 +303,7 @@ func resolveProvenanceInRoot(root, agent string, cand *candidatePrompt) (agentPr
 	// already covered by the config bytes.
 	if cand != nil {
 		if _, err := candidatePromptDest(path, conf.Prompt); err != nil {
-			return agentProvenance{}, err
+			return agentProvenance{}, agentConfigFile{}, err
 		}
 	}
 	if ref, ok := strings.CutPrefix(conf.Prompt, "file://"); ok {
@@ -158,7 +313,7 @@ func resolveProvenanceInRoot(root, agent string, cand *candidatePrompt) (agentPr
 		}
 		promptBytes, err := os.ReadFile(promptPath)
 		if err != nil {
-			return agentProvenance{}, fmt.Errorf("reading prompt file %s referenced by %s: %w", promptPath, path, err)
+			return agentProvenance{}, agentConfigFile{}, fmt.Errorf("reading prompt file %s referenced by %s: %w", promptPath, path, err)
 		}
 		writeHashPart(h, "prompt", promptBytes)
 	}
@@ -171,7 +326,7 @@ func resolveProvenanceInRoot(root, agent string, cand *candidatePrompt) (agentPr
 		}
 		files, err := resolveResourceFilesIn(root, entry)
 		if err != nil {
-			return agentProvenance{}, fmt.Errorf("resource %q in %s: %w", entry, path, err)
+			return agentProvenance{}, agentConfigFile{}, fmt.Errorf("resource %q in %s: %w", entry, path, err)
 		}
 		if len(files) == 0 {
 			continue // missing resources are normal (e.g. *-conventions overrides)
@@ -179,7 +334,7 @@ func resolveProvenanceInRoot(root, agent string, cand *candidatePrompt) (agentPr
 		for _, f := range files {
 			b, err := os.ReadFile(f)
 			if err != nil {
-				return agentProvenance{}, fmt.Errorf("resource %q in %s: %w", entry, path, err)
+				return agentProvenance{}, agentConfigFile{}, fmt.Errorf("resource %q in %s: %w", entry, path, err)
 			}
 			writeHashPart(h, "resource", b)
 		}
@@ -195,7 +350,7 @@ func resolveProvenanceInRoot(root, agent string, cand *candidatePrompt) (agentPr
 	if cand != nil {
 		prov.PromptFile = cand.Path
 	}
-	return prov, nil
+	return prov, conf, nil
 }
 
 // hashWriter is the subset of hash.Hash used for framing.
@@ -386,6 +541,50 @@ func (p *runPins) applyTo(r *AgentResult) {
 	r.PromptSHA256 = pin.Provenance.PromptSHA256
 	r.PromptFile = pin.Provenance.PromptFile
 	r.ResourcesPresent = append([]string{}, pin.Provenance.ResourcesPresent...)
+	r.SubAgents = copySubAgents(pin.Provenance.SubAgents)
+	r.WorkflowSHA256 = pin.Provenance.WorkflowSHA256
+}
+
+// copySubAgents deep-copies m (nil for an empty map, so a plain agent's JSON
+// omits sub_agents).
+func copySubAgents(m map[string]SubAgentProvenance) map[string]SubAgentProvenance {
+	if len(m) == 0 {
+		return nil
+	}
+	out := make(map[string]SubAgentProvenance, len(m))
+	for n, sa := range m {
+		sa.ResourcesPresent = append([]string{}, sa.ResourcesPresent...)
+		out[n] = sa
+	}
+	return out
+}
+
+// subAgentsLine renders the pin-line detail for a workflow agent: each
+// sub-agent's model and short prompt hash (sorted by name) and the workflow
+// hash. Empty for an agent without sub-agents.
+func subAgentsLine(prov agentProvenance) string {
+	if len(prov.SubAgents) == 0 {
+		return ""
+	}
+	names := make([]string, 0, len(prov.SubAgents))
+	for n := range prov.SubAgents {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	parts := make([]string, 0, len(names))
+	for _, n := range names {
+		sa := prov.SubAgents[n]
+		parts = append(parts, fmt.Sprintf("%s=%s (prompt sha256 %s…)", n, sa.AgentModel, shortHash(sa.PromptSHA256)))
+	}
+	return fmt.Sprintf("sub-agents: %s ; workflow sha256 %s…", strings.Join(parts, ", "), shortHash(prov.WorkflowSHA256))
+}
+
+// shortHash is the first 8 characters of a hex hash (all of it if shorter).
+func shortHash(h string) string {
+	if len(h) > 8 {
+		return h[:8]
+	}
+	return h
 }
 
 // agentsInScope lists the agents a run covers. An explicit agent wins; a
@@ -475,5 +674,10 @@ func pinRun(agent string, opts RunOptions, ignoreOverlay bool) error {
 		parts = append(parts, fmt.Sprintf("%s=%s (prompt sha256 %s…)", n, pins.Agents[n].Model, sha[:8]))
 	}
 	fmt.Printf("🔒 Models: %s\n", strings.Join(parts, ", "))
+	for _, n := range names {
+		if line := subAgentsLine(pins.Agents[n].Provenance); line != "" {
+			fmt.Printf("   %s: %s\n", n, line)
+		}
+	}
 	return nil
 }

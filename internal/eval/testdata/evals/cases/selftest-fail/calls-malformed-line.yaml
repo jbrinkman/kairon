@@ -1,0 +1,27 @@
+name: calls-malformed-line
+description: "Self-test (fail): a malformed line in .eval/calls.jsonl fails the case closed, so every criterion scores 0 and the error names the line"
+agent: selftest-fail
+input: |
+  This case is expected to fail because its step records are malformed.
+context:
+  - "This case runs against the deterministic stub backend"
+  - "Expected to FAIL: line 3 of .eval/calls.jsonl is not valid JSON (line 2 is blank), so nothing is imported and the case scores 0"
+expected_output: |
+  A short report with a top-level section and at least one subsection.
+stub:
+  turns:
+    - response: |
+        ## Report
+
+        The agent answered, but its step records are malformed.
+
+        ### Details
+
+        This output is discarded because .eval/calls.jsonl is malformed.
+      commands:
+        - |
+          printf '%s\n' '{"role":"agent","agent":"selftest-step-a","step":"design","input_tokens":1,"output_tokens":1}' >> .eval/calls.jsonl
+        - |
+          printf '\n' >> .eval/calls.jsonl
+        - |
+          printf '%s\n' 'not json' >> .eval/calls.jsonl

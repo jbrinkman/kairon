@@ -1,0 +1,135 @@
+package checks
+
+import (
+	"bytes"
+	"encoding/json"
+	"fmt"
+	"io"
+	"math"
+	"os"
+	"strings"
+
+	"github.com/jbrinkman/kairon/internal/inference"
+)
+
+// StepRecordsRel is the workspace-relative path of the step records a
+// workflow agent's dispatch tool writes: one JSON CallRecord per line.
+const StepRecordsRel = ".eval/calls.jsonl"
+
+// ReadStepRecords reads <dir>/.eval/calls.jsonl: an optional, regular,
+// non-symlink file of at most maxCheckFileBytes with one JSON CallRecord per
+// line (blank lines are skipped but counted in line numbers).
+//
+// An absent file is normal and yields no records. Every other problem — a
+// symlink, a non-regular or oversized file, an unreadable file, or a bad
+// line — is an error naming .eval/calls.jsonl (and, for a bad line, its
+// 1-based line number). The import is all-or-nothing: on error no records are
+// returned. The harness, not the file, decides Source: every accepted record
+// is marked inference.SourceWorkspace.
+func ReadStepRecords(dir string) ([]inference.CallRecord, error) {
+	abs, info, err := resolveInDir(dir, StepRecordsRel)
+	switch {
+	case err != nil:
+		return nil, fmt.Errorf("%s unreadable: %w", StepRecordsRel, err)
+	case info == nil:
+		return nil, nil
+	case info.Mode()&os.ModeSymlink != 0:
+		return nil, fmt.Errorf("%s is a symlink; refusing to follow it", StepRecordsRel)
+	case !info.Mode().IsRegular():
+		return nil, fmt.Errorf("%s is not a regular file", StepRecordsRel)
+	case info.Size() > maxCheckFileBytes:
+		return nil, fmt.Errorf("%s is larger than the 10 MiB limit (%d bytes)", StepRecordsRel, info.Size())
+	}
+	f, err := os.Open(abs)
+	if err != nil {
+		return nil, fmt.Errorf("%s cannot be opened: %w", StepRecordsRel, err)
+	}
+	defer f.Close()
+	// The file must still be the one we inspected (not swapped for a link).
+	if fi, err := f.Stat(); err != nil || !os.SameFile(info, fi) {
+		return nil, fmt.Errorf("%s changed while being read; refusing", StepRecordsRel)
+	}
+	data, err := io.ReadAll(io.LimitReader(f, maxCheckFileBytes+1))
+	if err != nil {
+		return nil, fmt.Errorf("%s cannot be read: %w", StepRecordsRel, err)
+	}
+	if len(data) > maxCheckFileBytes {
+		return nil, fmt.Errorf("%s is larger than the 10 MiB limit", StepRecordsRel)
+	}
+
+	var recs []inference.CallRecord
+	var totalIn, totalOut int
+	var totalCost float64
+	for i, line := range bytes.Split(data, []byte("\n")) {
+		if len(bytes.TrimSpace(line)) == 0 {
+			continue
+		}
+		rec, err := parseStepRecord(line)
+		if err != nil {
+			return nil, fmt.Errorf("%s line %d: %w", StepRecordsRel, i+1, err)
+		}
+		// Per-record values are already validated non-negative. Guard the
+		// running totals too: the sums are what land in cr.AgentCost, and an
+		// unrepresentable total (an int that wraps past the sign, or a
+		// non-finite cost that json.Marshal cannot encode) must fail the whole
+		// import, not silently corrupt the run's result file.
+		if totalIn+rec.InputTokens < totalIn || totalOut+rec.OutputTokens < totalOut {
+			return nil, fmt.Errorf("%s line %d: token total overflows", StepRecordsRel, i+1)
+		}
+		totalCost += rec.CostUSD
+		if math.IsInf(totalCost, 0) || math.IsNaN(totalCost) {
+			return nil, fmt.Errorf("%s line %d: cost total overflows", StepRecordsRel, i+1)
+		}
+		totalIn += rec.InputTokens
+		totalOut += rec.OutputTokens
+		recs = append(recs, rec)
+	}
+	return recs, nil
+}
+
+// parseStepRecord decodes and validates one step-record line. Unknown fields
+// are tolerated (and dropped) so the writer can add fields without breaking
+// the harness.
+func parseStepRecord(line []byte) (inference.CallRecord, error) {
+	var rec inference.CallRecord
+	dec := json.NewDecoder(bytes.NewReader(line))
+	if err := dec.Decode(&rec); err != nil {
+		return rec, fmt.Errorf("invalid JSON record: %v", err)
+	}
+	if dec.More() {
+		return rec, fmt.Errorf("invalid JSON record: unexpected data after the record")
+	}
+	// dec.More() reports false at a lone trailing ']' or '}' too, so it alone
+	// would accept a line like `{...}]`. Require the stream to be exhausted:
+	// any further token is trailing garbage.
+	if _, err := dec.Token(); err != io.EOF {
+		return rec, fmt.Errorf("invalid JSON record: unexpected data after the record")
+	}
+	if strings.TrimSpace(rec.Step) == "" {
+		return rec, fmt.Errorf("missing step")
+	}
+	if strings.TrimSpace(rec.Agent) == "" {
+		return rec, fmt.Errorf("missing agent")
+	}
+	// Imported cost is agent cost; a judge record would be misfiled.
+	switch rec.Role {
+	case "":
+		rec.Role = "agent"
+	case "agent":
+	default:
+		return rec, fmt.Errorf("role must be \"agent\", got %q", rec.Role)
+	}
+	// A workspace must not be able to lower the case's cost.
+	switch {
+	case rec.InputTokens < 0:
+		return rec, fmt.Errorf("negative input_tokens (%d)", rec.InputTokens)
+	case rec.OutputTokens < 0:
+		return rec, fmt.Errorf("negative output_tokens (%d)", rec.OutputTokens)
+	case rec.CostUSD < 0:
+		return rec, fmt.Errorf("negative cost_usd (%v)", rec.CostUSD)
+	case rec.DurationMS < 0:
+		return rec, fmt.Errorf("negative duration_ms (%d)", rec.DurationMS)
+	}
+	rec.Source = inference.SourceWorkspace
+	return rec, nil
+}

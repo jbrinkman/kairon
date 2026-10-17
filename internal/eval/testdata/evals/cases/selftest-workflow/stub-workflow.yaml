@@ -1,0 +1,23 @@
+name: stub-workflow
+description: "Self-test: a workflow agent that trusts two sub-agents; the stub backend returns a canned structured response"
+agent: selftest-workflow
+input: |
+  Summarize the attached self-test input document.
+setup:
+  - type: file
+    label: "Self-test Input"
+    path: ".kairon/evals/fixtures/selftest-input.md"
+context:
+  - "This case runs against the deterministic stub backend"
+expected_output: |
+  A short summary with a top-level section and at least one subsection.
+stub:
+  turns:
+    - response: |
+        ## Summary
+
+        The workflow agent dispatched its design and build steps.
+
+        ### Details
+
+        This response carries the headings the report format expects.
