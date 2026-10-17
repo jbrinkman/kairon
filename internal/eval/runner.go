@@ -326,7 +326,7 @@ func runSingleTestCase(agent string, testcase string, cConfig *ContainerConfig) 
 	}
 
 	if !verdict.Passed {
-		return thresholdFailure([]AgentFailure{{Agent: agent, Score: verdict.Score, Threshold: verdict.Threshold}}, 1)
+		return thresholdFailure([]AgentFailure{failureOf(agent, verdict)}, 1)
 	}
 	return nil
 }
@@ -449,10 +449,11 @@ func Run(agent string, cConfig *ContainerConfig) error {
 
 func evaluate(rubric Rubric, cases []TestCase, gitHash string, out io.Writer, cConfig *ContainerConfig) AgentResult {
 	result := AgentResult{
-		Agent:     rubric.Agent,
-		GitHash:   gitHash,
-		Threshold: rubric.Threshold(),
-		Repeat:    runRepeat(),
+		Agent:             rubric.Agent,
+		GitHash:           gitHash,
+		Threshold:         rubric.Threshold(),
+		MinCriterionScore: rubric.MinCriterionScore,
+		Repeat:            runRepeat(),
 	}
 	applyRunContext(&result, cConfig)
 
@@ -1718,6 +1719,9 @@ func loadRubrics(agentFilter string) ([]Rubric, error) {
 		if r.PassThreshold != nil && !(*r.PassThreshold > 0 && *r.PassThreshold <= 100) {
 			return nil, fmt.Errorf("invalid rubric %s: pass_threshold must be a percent in (0, 100], got %v", e.Name(), *r.PassThreshold)
 		}
+		if r.MinCriterionScore != nil && !(*r.MinCriterionScore > 0 && *r.MinCriterionScore <= 100) {
+			return nil, fmt.Errorf("invalid rubric %s: min_criterion_score must be a percent in (0, 100], got %v", e.Name(), *r.MinCriterionScore)
+		}
 
 		if agentFilter == "" || r.Agent == agentFilter {
 			rubrics = append(rubrics, r)
@@ -1927,7 +1931,7 @@ func runProgressiveEvaluation(agent, resultsDir string, isResume bool, cConfig *
 		printAgentVerdict(os.Stdout, rubric.Agent, verdict)
 		evaluated++
 		if !verdict.Passed {
-			failed = append(failed, AgentFailure{Agent: rubric.Agent, Score: verdict.Score, Threshold: verdict.Threshold})
+			failed = append(failed, failureOf(rubric.Agent, verdict))
 		}
 	}
 
@@ -2159,10 +2163,11 @@ func stampResumedCases(result *AgentResult, cases []TestCase, rubric Rubric) {
 // evaluateProgressive runs evaluation with progressive result saving after each test case.
 func evaluateProgressive(rubric Rubric, cases []TestCase, gitHash string, out io.Writer, resultsDir string, isResume bool, cConfig *ContainerConfig) AgentResult {
 	result := AgentResult{
-		Agent:     rubric.Agent,
-		GitHash:   gitHash,
-		Threshold: rubric.Threshold(),
-		Repeat:    runRepeat(),
+		Agent:             rubric.Agent,
+		GitHash:           gitHash,
+		Threshold:         rubric.Threshold(),
+		MinCriterionScore: rubric.MinCriterionScore,
+		Repeat:            runRepeat(),
 	}
 	applyRunContext(&result, cConfig)
 
@@ -2180,6 +2185,7 @@ func evaluateProgressive(rubric Rubric, cases []TestCase, gitHash string, out io
 				// A resumed result may predate verdicts; the threshold is the
 				// current rubric's, like the provenance above.
 				result.Threshold = rubric.Threshold()
+				result.MinCriterionScore = rubric.MinCriterionScore
 				// checkResumeIntegrity verified the saved repeat equals the
 				// current one (a legacy file's absent repeat is 1).
 				result.Repeat = runRepeat()
