@@ -148,7 +148,7 @@ func TestStub_CancelledContext(t *testing.T) {
 	}
 }
 
-func TestStub_IgnoresRequestModel(t *testing.T) {
+func TestStub_AgentIgnoresRequestModel(t *testing.T) {
 	b := newTestStub(t)
 
 	agent, err := b.Invoke(context.Background(), Request{
@@ -171,13 +171,5 @@ func TestStub_IgnoresRequestModel(t *testing.T) {
 	}
 	if agentNoScriptModel.Model != "" {
 		t.Errorf("agent Model = %q, want empty (Request.Model must be ignored)", agentNoScriptModel.Model)
-	}
-
-	judge, err := b.Invoke(context.Background(), Request{Role: RoleJudge, Prompt: "p", Model: "claude-sonnet-5.5"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if judge.Model != "stub" {
-		t.Errorf("judge Model = %q, want %q", judge.Model, "stub")
 	}
 }

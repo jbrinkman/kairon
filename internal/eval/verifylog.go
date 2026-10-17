@@ -47,8 +47,11 @@ const (
 	ruleChronology    = "chronology"
 	ruleRunExists     = "run-exists"
 	ruleRunData       = "run-data"
+	ruleRunComplete   = "run-complete"
+	ruleRunConfig     = "run-config"
 	ruleScoreMatch    = "score-match"
 	rulePromptChange  = "prompt-change"
+	ruleSuiteChange   = "suite-change"
 	ruleMinIterations = "min-iterations"
 )
 
@@ -56,7 +59,8 @@ const (
 var ruleOrder = map[string]int{
 	ruleNoLogs: 0, ruleFrontMatter: 1, ruleHeadings: 2, ruleSequence: 3,
 	ruleChain: 4, ruleChronology: 5, ruleRunExists: 6, ruleRunData: 7,
-	ruleScoreMatch: 8, rulePromptChange: 9, ruleMinIterations: 10,
+	ruleRunComplete: 8, ruleRunConfig: 9, ruleScoreMatch: 10,
+	rulePromptChange: 11, ruleSuiteChange: 12, ruleMinIterations: 13,
 }
 
 const (
@@ -135,12 +139,24 @@ type parsedLog struct {
 }
 
 // runRecord is what a results run records for the agent being verified.
+//
+// Every fact other than the score is "" (or !hasComplete) when the run does not
+// record it. For comparison "not recorded" is a distinct value: it differs
+// from any recorded value and equals another "not recorded".
 type runRecord struct {
 	exists      bool
 	hasScore    bool
 	score       float64 // percent
 	promptSHA   string
 	scoreSource string
+
+	agentModel  string
+	judgeModel  string
+	sandbox     string // "native", "container" or ""
+	suiteSHA    string
+	complete    bool
+	hasComplete bool
+	caseFilter  string
 }
 
 // VerifyLog checks <iterations-dir>/<agent>/iteration-NN.md against
@@ -528,8 +544,21 @@ func checkChainAndChronology(logs []*parsedLog, add func(file, rule, format stri
 	}
 }
 
+// orNotRecorded renders an empty fact for a message.
+func orNotRecorded(v string) string {
+	if v == "" {
+		return notRecorded
+	}
+	return v
+}
+
 // checkRuns verifies the runs one valid log references: existence, recorded
-// data, score agreement and (for prompt changes) a differing prompt hash.
+// data, completeness, score agreement, and that the two runs differ the way
+// the change type claims (prompt hash, suite hash, judge) and agree on
+// everything else (models, sandbox).
+//
+// Each pairwise check runs whenever both runs record the facts it needs; a
+// missing fact is reported once by run-data and does not cascade.
 func checkRuns(l *parsedLog, agent string, lookup func(string) runRecord, add func(file, rule, format string, args ...any)) {
 	type ref struct {
 		field   string
@@ -540,14 +569,13 @@ func checkRuns(l *parsedLog, agent string, lookup func(string) runRecord, add fu
 		{"baseline_score", l.baselineRun, l.baselineScore},
 		{"result_score", l.resultRun, l.resultScore},
 	}
-	needHash := l.changeType == changeTypePrompt
 
 	reported := map[string]bool{} // run name -> already reported run-exists
-	usable := true                // both runs exist and have the data needed for prompt-change
+	bothExist := true
 	for _, r := range refs {
 		rec := lookup(r.run)
 		if !rec.exists {
-			usable = false
+			bothExist = false
 			if !reported[r.run] {
 				reported[r.run] = true
 				add(l.path, ruleRunExists, "run %q is not a directory under the evals results directory", r.run)
@@ -555,22 +583,73 @@ func checkRuns(l *parsedLog, agent string, lookup func(string) runRecord, add fu
 			continue
 		}
 		if !rec.hasScore {
-			usable = false
 			add(l.path, ruleRunData, "run %q records no score for agent %q (no agent_verdicts, agent_scores or scoreable cases)", r.run, agent)
 		} else if math.Abs(r.claimed-rec.score) > scoreTolerance+scoreEpsilon {
 			add(l.path, ruleScoreMatch, "%s %.1f does not match run %q, which recorded %.1f (from %s; tolerance %.1f)", r.field, r.claimed, r.run, rec.score, rec.scoreSource, scoreTolerance)
 		}
-		if needHash && rec.promptSHA == "" {
-			usable = false
-			add(l.path, ruleRunData, "run %q records no prompt_sha256 for agent %q, so the prompt change cannot be verified", r.run, agent)
+
+		var missing []string
+		if rec.promptSHA == "" {
+			missing = append(missing, "prompt_sha256")
+		}
+		if rec.suiteSHA == "" {
+			missing = append(missing, "suite_sha256")
+		}
+		if !rec.hasComplete {
+			missing = append(missing, "complete")
+		}
+		if len(missing) > 0 {
+			add(l.path, ruleRunData, "run %q records no %s for agent %q, so the iteration cannot be verified", r.run, strings.Join(missing, ", "), agent)
+		}
+		if rec.hasComplete && !rec.complete {
+			add(l.path, ruleRunComplete, "run %q is not a complete run of agent %q (complete=false, case_filter=%q); only full runs can be compared", r.run, agent, rec.caseFilter)
+		}
+	}
+	if !bothExist {
+		return
+	}
+
+	base, res := lookup(l.baselineRun), lookup(l.resultRun)
+	isPrompt := l.changeType == changeTypePrompt
+
+	// run-config: what must not vary between the two runs.
+	for _, f := range []struct {
+		name     string
+		b, r     string
+		inPrompt bool // compared only for prompt iterations
+	}{
+		{"agent_model", base.agentModel, res.agentModel, false},
+		{"sandbox", base.sandbox, res.sandbox, false},
+		{"judge_model", base.judgeModel, res.judgeModel, true},
+	} {
+		if f.inPrompt && !isPrompt {
+			continue
+		}
+		if f.b != f.r {
+			add(l.path, ruleRunConfig, "%s differs between the runs: %q recorded %s, %q recorded %s", f.name, l.baselineRun, orNotRecorded(f.b), l.resultRun, orNotRecorded(f.r))
 		}
 	}
 
-	if needHash && usable {
-		base, res := lookup(l.baselineRun), lookup(l.resultRun)
-		if base.promptSHA == res.promptSHA {
+	havePrompt := base.promptSHA != "" && res.promptSHA != ""
+	haveSuite := base.suiteSHA != "" && res.suiteSHA != ""
+	samePrompt := base.promptSHA == res.promptSHA
+	sameSuite := base.suiteSHA == res.suiteSHA
+
+	if isPrompt {
+		if havePrompt && samePrompt {
 			add(l.path, rulePromptChange, "change_type is %q but runs %q and %q record the same prompt_sha256 (%s)", changeTypePrompt, l.baselineRun, l.resultRun, base.promptSHA)
 		}
+		if haveSuite && !sameSuite {
+			add(l.path, ruleSuiteChange, "change_type is %q but runs %q and %q record different suite_sha256 (%s vs %s); the eval suite must stay the same", changeTypePrompt, l.baselineRun, l.resultRun, base.suiteSHA, res.suiteSHA)
+		}
+		return
+	}
+
+	if havePrompt && !samePrompt {
+		add(l.path, rulePromptChange, "change_type is %q but runs %q and %q record different prompt_sha256 (%s vs %s); the prompt must stay the same", changeTypeEval, l.baselineRun, l.resultRun, base.promptSHA, res.promptSHA)
+	}
+	if haveSuite && sameSuite && base.judgeModel == res.judgeModel {
+		add(l.path, ruleSuiteChange, "change_type is %q but runs %q and %q record the same suite_sha256 (%s) and the same judge_model (%s); the suite or the judge must change", changeTypeEval, l.baselineRun, l.resultRun, base.suiteSHA, orNotRecorded(base.judgeModel))
 	}
 }
 
@@ -605,11 +684,43 @@ func loadRunRecord(resultsDir, run, agent string) runRecord {
 		}
 	}
 
-	rec.promptSHA = result.PromptSHA256
-	if rec.promptSHA == "" {
-		rec.promptSHA = summary.Agents[agent].PromptSHA256
+	// Every other fact: <agent>.json first, then summary.json, field by field.
+	prov := summary.Agents[agent]
+	rec.promptSHA = firstNonEmpty(result.PromptSHA256, prov.PromptSHA256)
+	rec.agentModel = firstNonEmpty(result.AgentModel, prov.AgentModel)
+	rec.judgeModel = firstNonEmpty(result.JudgeModel, summary.JudgeModel)
+	rec.suiteSHA = firstNonEmpty(result.SuiteSHA256, prov.SuiteSHA256)
+	switch {
+	case result.Sandbox != nil && *result.Sandbox:
+		rec.sandbox = "container"
+	case result.Sandbox != nil:
+		rec.sandbox = "native"
+	default:
+		rec.sandbox = summary.Sandbox
+	}
+	switch {
+	case result.Complete != nil:
+		rec.complete, rec.hasComplete = *result.Complete, true
+	case prov.Complete != nil:
+		rec.complete, rec.hasComplete = *prov.Complete, true
+	}
+	switch {
+	case result.CaseFilter != nil:
+		rec.caseFilter = *result.CaseFilter
+	case prov.CaseFilter != nil:
+		rec.caseFilter = *prov.CaseFilter
 	}
 	return rec
+}
+
+// firstNonEmpty returns the first argument that is not "".
+func firstNonEmpty(vs ...string) string {
+	for _, v := range vs {
+		if v != "" {
+			return v
+		}
+	}
+	return ""
 }
 
 // hasVerdict reports whether the summary records a *measured* verdict for

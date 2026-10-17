@@ -26,10 +26,14 @@ type CallRecord struct {
 	InputTokens  int     `json:"input_tokens"`
 	OutputTokens int     `json:"output_tokens"`
 	CostUSD      float64 `json:"cost_usd"`
-	Estimated    bool    `json:"estimated"` // true unless the usage source is "reported"
-	DurationMS   int64   `json:"duration_ms"`
-	PromptSHA256 string  `json:"prompt_sha256,omitempty"` // agent calls only
-	Error        string  `json:"error,omitempty"`         // call failed; the record is still written
+	// CostUnknown is true when CostUSD is 0 only because the model has no
+	// configured price. Such a CostUSD must not be summed as a real price.
+	// Omitted when false, so records written before this field read as known.
+	CostUnknown  bool   `json:"cost_unknown,omitempty"`
+	Estimated    bool   `json:"estimated"` // true unless the usage source is "reported"
+	DurationMS   int64  `json:"duration_ms"`
+	PromptSHA256 string `json:"prompt_sha256,omitempty"` // agent calls only
+	Error        string `json:"error,omitempty"`         // call failed; the record is still written
 	// TrustedTools is the whole-tool trust set the call ran with. A pointer so
 	// a restricted-to-nothing set ([]) is distinct from unrestricted (absent).
 	TrustedTools *[]string `json:"trusted_tools,omitempty"`

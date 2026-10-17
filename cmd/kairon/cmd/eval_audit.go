@@ -33,6 +33,14 @@ check on the row's Criterion. Repeated instructions fail the audit: a line whose
 text repeats an earlier instruction in the prompt or its audited skills is a
 "duplicate" violation.
 
+The agent's rubric (<evals-dir>/rubrics/<agent>.yaml) must define
+at least three non-cost criteria (type: cost criteria are not counted), or the
+audit reports a "rubric" violation. A criterion with
+no check in any case is an "unchecked" violation. No two criteria may carry
+identical checks: criteria whose checks (same type and fields, ignoring the
+criterion name) are the same in every case are an "identical" violation naming
+both. The report lists each non-cost criterion with its check and case counts.
+
 Engine skills listed in the agent's resources are audited together with the
 prompt; *-conventions skills are override hooks and are excluded. The audit is
 deterministic and makes no model calls.

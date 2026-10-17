@@ -222,19 +222,65 @@ func checksReasoning(results []CheckResult) string {
 	return reasoning
 }
 
+// scoredPoints returns the points a criterion contributes to a numerator: 0
+// for a skipped, errored or no-output criterion, else its Score. Its MaxScore
+// always counts toward the denominator, so a failure can never raise a score.
+// This is the single place the skipped-score rule lives; caseTotals and
+// agentCriterionTotals both use it.
+func scoredPoints(s CriterionScore) int {
+	if s.Skipped {
+		return 0
+	}
+	return s.Score
+}
+
 // caseTotals returns the summed score and maximum score of a case's criteria.
 // A skipped, errored or no-output criterion contributes 0 to the numerator and
-// its MaxScore to the denominator, so a failure can never raise a score. The
-// Skipped flag is kept in the result only as the reason it scored 0.
+// its MaxScore to the denominator (see scoredPoints). The Skipped flag is kept
+// in the result only as the reason it scored 0.
 // This is the single place the per-case score arithmetic lives.
 func caseTotals(cr CaseResult) (score, max int) {
 	for _, s := range cr.Scores {
-		if !s.Skipped {
-			score += s.Score
-		}
+		score += scoredPoints(s)
 		max += s.MaxScore
 	}
 	return score, max
+}
+
+// agentCriterionTotals pools each non-cost criterion's score and maximum over
+// every case and repeat of an agent (ar.Cases holds every run of every case),
+// in first-seen order. A skipped criterion counts 0 with its maximum kept
+// (scoredPoints). Criteria with a zero maximum are dropped so a percent is
+// never computed over a zero denominator. Cost criteria are never scored by
+// scoreCase, so they never appear. The sum of the returned scores and maxima
+// equals agentScoreTotals.
+func agentCriterionTotals(ar AgentResult) []CriterionTotal {
+	var out []CriterionTotal
+	index := map[string]int{}
+	for _, c := range ar.Cases {
+		for _, s := range c.Scores {
+			i, ok := index[s.Name]
+			if !ok {
+				i = len(out)
+				index[s.Name] = i
+				out = append(out, CriterionTotal{Name: s.Name})
+			}
+			out[i].Score += scoredPoints(s)
+			out[i].MaxScore += s.MaxScore
+		}
+	}
+	kept := out[:0]
+	for _, ct := range out {
+		if ct.MaxScore <= 0 {
+			continue
+		}
+		ct.Percent = float64(ct.Score) * 100 / float64(ct.MaxScore)
+		kept = append(kept, ct)
+	}
+	if len(kept) == 0 {
+		return nil
+	}
+	return kept
 }
 
 // agentScoreTotals returns the summed score and maximum score across every

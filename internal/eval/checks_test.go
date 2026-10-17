@@ -81,44 +81,11 @@ checks:
 	}
 }
 
-func TestChecksYAMLAllowEmptyVersusMissing(t *testing.T) {
-	var empty, missing Check
-	if err := yaml.Unmarshal([]byte("type: changed_files\nallow: []\n"), &empty); err != nil {
-		t.Fatal(err)
-	}
-	if err := yaml.Unmarshal([]byte("type: changed_files\n"), &missing); err != nil {
-		t.Fatal(err)
-	}
-	if empty.Allow == nil {
-		t.Error("allow: [] decoded to nil; want non-nil empty slice")
-	}
-	if missing.Allow != nil {
-		t.Error("missing allow decoded to non-nil")
-	}
-}
-
-func TestChecksCheckTypeSet(t *testing.T) {
-	want := []CheckType{
-		"command", "file_exists", "file_absent", "file_contains", "file_not_contains",
-		"changed_files", "output_contains", "output_not_contains",
-		"gh_log_contains", "gh_log_not_contains", "judge",
-	}
-	got := []CheckType{
-		CheckCommand, CheckFileExists, CheckFileAbsent, CheckFileContains, CheckFileNotContains,
-		CheckChangedFiles, CheckOutputContains, CheckOutputNotContains,
-		CheckGHLogContains, CheckGHLogNotContains, CheckJudge,
-	}
-	for i := range want {
-		if got[i] != want[i] {
-			t.Errorf("constant %d = %q, want %q", i, got[i], want[i])
-		}
-	}
-}
-
-// TestChecksValidateTable drives ValidateChecks through every rule. Each
-// invalid case must wrap errInvalidChecks and name the case file, the 1-based
-// check index and the check type.
-func TestChecksValidateTable(t *testing.T) {
+// TestChecksValidateRubricCrossCheck drives ValidateChecks' rubric cross-check:
+// the engine's own rules live in internal/checks; here a check's criterion must
+// be a non-cost criterion of the rubric, and errors wrap errInvalidChecks and
+// name the case file, the check index and the type.
+func TestChecksValidateRubricCrossCheck(t *testing.T) {
 	checksEnv(t)
 	rubric := &Rubric{Agent: "chk", Criteria: []Criterion{
 		{Name: "completeness", Scoring: "1-5"},
@@ -127,107 +94,19 @@ func TestChecksValidateTable(t *testing.T) {
 	}}
 	hidden := evalsPath("fixtures", "hidden")
 
-	// An absolute symlink target and a symlinked file/dir inside hidden/.
-	outside := filepath.Join(t.TempDir(), "secret.txt")
-	if err := os.WriteFile(outside, []byte("s"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Symlink(outside, filepath.Join(hidden, "link.txt")); err != nil {
-		t.Skipf("symlinks unavailable: %v", err)
-	}
-	if err := os.Symlink(filepath.Join(hidden, "sub"), filepath.Join(hidden, "linkdir")); err != nil {
-		t.Fatal(err)
-	}
-
-	zero, three, big, neg := 0, 3, 256, -1
 	tests := []struct {
 		name    string
 		check   Check
 		wantErr string // substring besides file/index/type; "" = valid
 	}{
-		// valid forms
-		{"command ok", Check{Criterion: "completeness", Type: CheckCommand, Run: "true"}, ""},
-		{"command expect_exit 0", Check{Criterion: "completeness", Type: CheckCommand, Run: "true", ExpectExit: &zero}, ""},
-		{"command expect_exit 255", Check{Criterion: "completeness", Type: CheckCommand, Run: "true", ExpectExit: func() *int { v := 255; return &v }()}, ""},
-		{"command with inject", Check{Criterion: "completeness", Type: CheckCommand, Run: "true", Inject: []string{"hidden_test.go"}}, ""},
-		{"command nested inject", Check{Criterion: "completeness", Type: CheckCommand, Run: "true", Inject: []string{"sub/dir/x.txt"}}, ""},
-		{"file_exists ok", Check{Criterion: "clarity", Type: CheckFileExists, Path: "a/b.txt"}, ""},
-		{"file_absent ok", Check{Criterion: "clarity", Type: CheckFileAbsent, Path: "a"}, ""},
-		{"file_contains ok", Check{Criterion: "clarity", Type: CheckFileContains, Path: "a", Pattern: `(?m)^x+$`}, ""},
-		{"file_not_contains ok", Check{Criterion: "clarity", Type: CheckFileNotContains, Path: "a", Pattern: "x"}, ""},
-		{"changed_files ok", Check{Criterion: "clarity", Type: CheckChangedFiles, Allow: []string{"README.md", "docs/**", "**/*.go"}}, ""},
-		{"changed_files empty allow", Check{Criterion: "clarity", Type: CheckChangedFiles, Allow: []string{}}, ""},
-		{"output_contains ok", Check{Criterion: "clarity", Type: CheckOutputContains, Pattern: "## "}, ""},
-		{"output_not_contains ok", Check{Criterion: "clarity", Type: CheckOutputNotContains, Pattern: "x"}, ""},
-		{"gh_log_contains ok", Check{Criterion: "clarity", Type: CheckGHLogContains, Pattern: "gh issue"}, ""},
-		{"gh_log_not_contains ok", Check{Criterion: "clarity", Type: CheckGHLogNotContains, Pattern: "pr merge"}, ""},
-
-		// type / criterion / required fields
-		{"unknown type", Check{Criterion: "clarity", Type: "bogus", Path: "a"}, "unknown type"},
-		{"missing type", Check{Criterion: "clarity", Path: "a"}, "type is required"},
+		{"scored criterion", Check{Criterion: "completeness", Type: CheckCommand, Run: "true", Inject: []string{"hidden_test.go"}}, ""},
+		{"scored criterion clarity", Check{Criterion: "clarity", Type: CheckFileExists, Path: "a/b.txt"}, ""},
 		{"missing criterion", Check{Type: CheckFileExists, Path: "a"}, "criterion is required"},
-		{"command missing run", Check{Criterion: "clarity", Type: CheckCommand}, "run is required"},
-		{"command blank run", Check{Criterion: "clarity", Type: CheckCommand, Run: "  "}, "run is required"},
-		{"file_exists missing path", Check{Criterion: "clarity", Type: CheckFileExists}, "path is required"},
-		{"file_absent missing path", Check{Criterion: "clarity", Type: CheckFileAbsent}, "path is required"},
-		{"file_contains missing path", Check{Criterion: "clarity", Type: CheckFileContains, Pattern: "x"}, "path is required"},
-		{"file_contains missing pattern", Check{Criterion: "clarity", Type: CheckFileContains, Path: "a"}, "pattern is required"},
-		{"file_not_contains missing pattern", Check{Criterion: "clarity", Type: CheckFileNotContains, Path: "a"}, "pattern is required"},
-		{"output_contains missing pattern", Check{Criterion: "clarity", Type: CheckOutputContains}, "pattern is required"},
-		{"output_not_contains missing pattern", Check{Criterion: "clarity", Type: CheckOutputNotContains}, "pattern is required"},
-		{"gh_log_contains missing pattern", Check{Criterion: "clarity", Type: CheckGHLogContains}, "pattern is required"},
-		{"gh_log_not_contains missing pattern", Check{Criterion: "clarity", Type: CheckGHLogNotContains}, "pattern is required"},
-		{"changed_files missing allow", Check{Criterion: "clarity", Type: CheckChangedFiles}, "allow is required"},
-
-		// fields that do not belong to the type
-		{"command with path", Check{Criterion: "clarity", Type: CheckCommand, Run: "true", Path: "a"}, "path is not valid"},
-		{"command with pattern", Check{Criterion: "clarity", Type: CheckCommand, Run: "true", Pattern: "a"}, "pattern is not valid"},
-		{"command with allow", Check{Criterion: "clarity", Type: CheckCommand, Run: "true", Allow: []string{"a"}}, "allow is not valid"},
-		{"file_exists with run", Check{Criterion: "clarity", Type: CheckFileExists, Path: "a", Run: "true"}, "run is not valid"},
-		{"file_exists with pattern", Check{Criterion: "clarity", Type: CheckFileExists, Path: "a", Pattern: "x"}, "pattern is not valid"},
-		{"file_exists with expect_exit", Check{Criterion: "clarity", Type: CheckFileExists, Path: "a", ExpectExit: &zero}, "expect_exit is not valid"},
-		{"file_absent with pattern", Check{Criterion: "clarity", Type: CheckFileAbsent, Path: "a", Pattern: "x"}, "pattern is not valid"},
-		{"file_contains with allow", Check{Criterion: "clarity", Type: CheckFileContains, Path: "a", Pattern: "x", Allow: []string{}}, "allow is not valid"},
-		{"changed_files with path", Check{Criterion: "clarity", Type: CheckChangedFiles, Allow: []string{}, Path: "a"}, "path is not valid"},
-		{"changed_files with pattern", Check{Criterion: "clarity", Type: CheckChangedFiles, Allow: []string{}, Pattern: "a"}, "pattern is not valid"},
-		{"output_contains with path", Check{Criterion: "clarity", Type: CheckOutputContains, Pattern: "x", Path: "a"}, "path is not valid"},
-		{"gh_log_contains with run", Check{Criterion: "clarity", Type: CheckGHLogContains, Pattern: "x", Run: "true"}, "run is not valid"},
-
-		// regex / glob / path
-		{"bad regex file_contains", Check{Criterion: "clarity", Type: CheckFileContains, Path: "a", Pattern: "(unclosed"}, "pattern"},
-		{"bad regex output", Check{Criterion: "clarity", Type: CheckOutputContains, Pattern: "[a-"}, "pattern"},
-		{"bad regex gh_log", Check{Criterion: "clarity", Type: CheckGHLogNotContains, Pattern: "*x"}, "pattern"},
-		{"bad glob", Check{Criterion: "clarity", Type: CheckChangedFiles, Allow: []string{"ok", "docs/[a-"}}, "invalid glob"},
-		{"empty glob", Check{Criterion: "clarity", Type: CheckChangedFiles, Allow: []string{""}}, "invalid glob"},
-		{"absolute path", Check{Criterion: "clarity", Type: CheckFileExists, Path: "/etc/passwd"}, "path"},
-		{"dotdot path", Check{Criterion: "clarity", Type: CheckFileExists, Path: "../x"}, "path"},
-		{"embedded dotdot path", Check{Criterion: "clarity", Type: CheckFileContains, Path: "a/../../x", Pattern: "x"}, "path"},
-		{"dotdot only path", Check{Criterion: "clarity", Type: CheckFileAbsent, Path: ".."}, "path"},
-
-		// expect_exit range
-		{"expect_exit negative", Check{Criterion: "clarity", Type: CheckCommand, Run: "true", ExpectExit: &neg}, "expect_exit"},
-		{"expect_exit too big", Check{Criterion: "clarity", Type: CheckCommand, Run: "true", ExpectExit: &big}, "expect_exit"},
-		{"expect_exit 3 ok", Check{Criterion: "clarity", Type: CheckCommand, Run: "true", ExpectExit: &three}, ""},
-
-		// inject
-		{"inject on file_exists", Check{Criterion: "clarity", Type: CheckFileExists, Path: "a", Inject: []string{"hidden_test.go"}}, "inject is not valid"},
-		{"inject on output_contains", Check{Criterion: "clarity", Type: CheckOutputContains, Pattern: "x", Inject: []string{"hidden_test.go"}}, "inject is not valid"},
+		{"missing path", Check{Criterion: "clarity", Type: CheckFileExists}, "path is required"},
 		{"inject missing source", Check{Criterion: "clarity", Type: CheckCommand, Run: "true", Inject: []string{"nope.go"}}, "inject"},
-		{"inject absolute", Check{Criterion: "clarity", Type: CheckCommand, Run: "true", Inject: []string{"/etc/passwd"}}, "inject"},
-		{"inject dotdot", Check{Criterion: "clarity", Type: CheckCommand, Run: "true", Inject: []string{"../rubrics/chk.yaml"}}, "inject"},
-		{"inject empty entry", Check{Criterion: "clarity", Type: CheckCommand, Run: "true", Inject: []string{""}}, "inject"},
-		{"inject directory", Check{Criterion: "clarity", Type: CheckCommand, Run: "true", Inject: []string{"sub"}}, "regular file"},
-		{"inject symlink file", Check{Criterion: "clarity", Type: CheckCommand, Run: "true", Inject: []string{"link.txt"}}, "symlink"},
-		{"inject via symlink dir", Check{Criterion: "clarity", Type: CheckCommand, Run: "true", Inject: []string{"linkdir/dir/x.txt"}}, "symlink"},
-		{"inject dest .git", Check{Criterion: "clarity", Type: CheckCommand, Run: "true", Inject: []string{".git/config"}}, "inject"},
-		{"inject dest .eval", Check{Criterion: "clarity", Type: CheckCommand, Run: "true", Inject: []string{".eval/gh.log"}}, "inject"},
-		{"inject dest .kiro", Check{Criterion: "clarity", Type: CheckCommand, Run: "true", Inject: []string{".kiro/agents/x.json"}}, "inject"},
-
-		// rubric cross-check
 		{"unknown criterion", Check{Criterion: "nonexistent", Type: CheckFileExists, Path: "a"}, "nonexistent"},
 		{"cost criterion", Check{Criterion: "cost_efficiency", Type: CheckFileExists, Path: "a"}, "cost"},
 	}
-
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			// Two checks: a valid one first so the reported index is 2.
@@ -262,58 +141,11 @@ func TestChecksValidateTable(t *testing.T) {
 	}
 }
 
-func TestChecksValidateDefaultsExpectExitToZero(t *testing.T) {
-	checksEnv(t)
-	checks := []Check{{Criterion: "clarity", Type: CheckCommand, Run: "true"}}
-	if err := ValidateChecks("f.yaml", checks, evalsPath("fixtures", "hidden"), nil); err != nil {
-		t.Fatal(err)
-	}
-	if checks[0].ExpectExit == nil || *checks[0].ExpectExit != 0 {
-		t.Fatalf("ExpectExit = %v, want pointer to 0", checks[0].ExpectExit)
-	}
-	if got := checks[0].expectedExit(); got != 0 {
-		t.Fatalf("expectedExit() = %d, want 0", got)
-	}
-	var hand Check
-	if got := hand.expectedExit(); got != 0 {
-		t.Fatalf("zero-value expectedExit() = %d, want 0", got)
-	}
-}
-
-func TestChecksValidateCompilesAndResolves(t *testing.T) {
-	checksEnv(t)
-	checks := []Check{
-		{Criterion: "clarity", Type: CheckFileContains, Path: "a", Pattern: "x+"},
-		{Criterion: "clarity", Type: CheckChangedFiles, Allow: []string{"a", "b/**"}},
-		{Criterion: "clarity", Type: CheckCommand, Run: "true", Inject: []string{"hidden_test.go"}},
-	}
-	hidden := evalsPath("fixtures", "hidden")
-	if err := ValidateChecks("f.yaml", checks, hidden, nil); err != nil {
-		t.Fatal(err)
-	}
-	if checks[0].re == nil || !checks[0].re.MatchString("xx") {
-		t.Error("pattern not compiled onto the check")
-	}
-	if len(checks[1].globs) != 2 || !checks[1].globs[1].match("b/c/d") {
-		t.Error("allow globs not compiled onto the check")
-	}
-	abs, _ := filepath.Abs(hidden)
-	if checks[2].injectDir != abs {
-		t.Errorf("injectDir = %q, want %q", checks[2].injectDir, abs)
-	}
-}
-
 func TestChecksValidateNilRubricSkipsCrossCheck(t *testing.T) {
 	checksEnv(t)
 	checks := []Check{{Criterion: "anything", Type: CheckFileExists, Path: "a"}}
 	if err := ValidateChecks("f.yaml", checks, evalsPath("fixtures", "hidden"), nil); err != nil {
 		t.Fatalf("nil rubric must skip the criterion cross-check: %v", err)
-	}
-}
-
-func TestChecksValidateEmptyList(t *testing.T) {
-	if err := ValidateChecks("f.yaml", nil, "", nil); err != nil {
-		t.Fatal(err)
 	}
 }
 
@@ -341,8 +173,13 @@ checks:
 	if c.ExpectExit == nil || *c.ExpectExit != 0 {
 		t.Errorf("expect_exit default not applied: %v", c.ExpectExit)
 	}
-	if c.injectDir == "" {
-		t.Error("inject source dir not resolved at load")
+	// The inject source dir is resolved at load (it is unexported now that the
+	// engine lives in internal/checks), so a loaded check can still inject
+	// hidden_test.go into a workspace; an unresolved one would fail to evaluate.
+	probe := c
+	probe.Run = "test -f hidden_test.go"
+	if r := EvaluateChecks([]Check{probe}, CheckInput{Dir: t.TempDir()})[0]; !r.Passed {
+		t.Errorf("inject source dir not resolved at load: %s", r.Detail)
 	}
 	if got[0].Checks[1].Allow == nil {
 		t.Error("allow: [] must stay non-nil")
@@ -477,6 +314,51 @@ func TestChecksRunProgressiveEvaluationInvalidChecksIsFatal(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "bad.yaml") {
 		t.Errorf("error does not name the case file: %v", err)
+	}
+}
+
+// writeAgentRubric writes a minimal non-checks_only rubric for agent under
+// evals/rubrics/<file>.
+func writeAgentRubric(t *testing.T, file, agent string) {
+	t.Helper()
+	writeCfgFile(t, filepath.Join("evals", "rubrics", file), "agent: "+agent+"\ncriteria:\n  - name: clarity\n    description: d\n    scoring: 1-5\n")
+}
+
+// TestChecksRunProgressiveEvaluationDuplicateNameIsFatal: a duplicate case name
+// is a malformed suite and must fail the whole run, not silently drop the
+// agent and exit 0. The duplicate lives in a LATER agent so the test also
+// proves the rejection happens before any earlier agent's case runs.
+func TestChecksRunProgressiveEvaluationDuplicateNameIsFatal(t *testing.T) {
+	checksEnv(t)
+	initGitRepoHere(t)
+	// Two agents; a-first is valid, b-dup has two case files sharing a name.
+	// loadRubrics reads rubrics/*.yaml sorted by filename, so a-first is
+	// processed before b-dup.
+	writeAgentRubric(t, "a-first.yaml", "a-first")
+	writeAgentRubric(t, "b-dup.yaml", "b-dup")
+	writeChecksCase(t, "a-first", "ok.yaml", "name: a-ok\ninput: x\n")
+	writeChecksCase(t, "b-dup", "one.yaml", "name: dup\ninput: one\n")
+	writeChecksCase(t, "b-dup", "two.yaml", "name: dup\ninput: two\n")
+
+	resultsDir := filepath.Join("evals", "results", "rdup")
+	if err := os.MkdirAll(resultsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	err := runProgressiveEvaluation("", resultsDir, false, nil)
+	if err == nil {
+		t.Fatal("a duplicate case name must fail the run, got nil")
+	}
+	if !errors.Is(err, errMalformedCase) {
+		t.Fatalf("error does not wrap errMalformedCase: %v", err)
+	}
+	if !errors.Is(err, errDuplicateCaseName) {
+		t.Fatalf("error does not wrap errDuplicateCaseName: %v", err)
+	}
+	// The run must fail before any agent's cases run, so a-first produces no
+	// result file.
+	if _, statErr := os.Stat(filepath.Join(resultsDir, "a-first.json")); !os.IsNotExist(statErr) {
+		t.Errorf("a-first.json exists (stat err %v): a case ran before the duplicate-name agent was rejected", statErr)
 	}
 }
 

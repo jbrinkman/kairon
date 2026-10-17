@@ -285,11 +285,15 @@ func TestRunWithResumeUsesEvalsDir(t *testing.T) {
 }
 
 func TestCostInfoAdd(t *testing.T) {
+	pricedPins(t, inference.PriceTable{
+		"m":   {InputUSDPerMTok: 3, OutputUSDPerMTok: 15},
+		"mdl": {InputUSDPerMTok: 3, OutputUSDPerMTok: 15},
+	})
 	rep := func(in, out int, model string) CostInfo {
 		return costFromUsage(model, inference.Usage{InputTokens: in, OutputTokens: out, Source: inference.UsageReported})
 	}
 	est := func(in, out int) CostInfo {
-		return costFromUsage("", inference.Usage{InputTokens: in, OutputTokens: out, Source: inference.UsageEstimated})
+		return costFromUsage("mdl", inference.Usage{InputTokens: in, OutputTokens: out, Source: inference.UsageEstimated})
 	}
 
 	t.Run("all reported stays reported", func(t *testing.T) {
@@ -341,6 +345,7 @@ func TestCostInfoAdd(t *testing.T) {
 }
 
 func TestCostFromUsage(t *testing.T) {
+	pricedPins(t, inference.PriceTable{"mdl": {InputUSDPerMTok: 3, OutputUSDPerMTok: 15}})
 	c := costFromUsage("mdl", inference.Usage{InputTokens: 1_000_000, OutputTokens: 1_000_000, Source: inference.UsageReported})
 	if c.TokensIn != 1_000_000 || c.TokensOut != 1_000_000 || c.Model != "mdl" || c.UsageSource != "reported" {
 		t.Errorf("got %+v", c)

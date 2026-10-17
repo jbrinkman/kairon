@@ -115,6 +115,36 @@ func TestAuditFlatFixtureEvidenceAndDuplicates(t *testing.T) {
 			},
 			wantOut: []string{"duplicates=1", "total=5", "mapped=5"},
 		},
+		{
+			// Two non-cost criteria plus a type: cost entry: the rubric is
+			// named as the violation's file and the cost entry is not counted.
+			fixture: "two-criteria",
+			wantErr: []string{
+				"rubrics/selftest.yaml: rubric:",
+				"2 distinct non-cost criteria",
+				"need at least 3",
+			},
+			wantOut: []string{"Criteria: non-cost=2 (need at least 3)", "alpha: checks=1 cases=1"},
+		},
+		{
+			fixture: "unchecked-criterion",
+			wantErr: []string{
+				"rubrics/selftest.yaml: unchecked:",
+				`"gamma"`,
+				"no check in any case",
+			},
+			wantOut: []string{"gamma: checks=0 cases=0"},
+		},
+		{
+			fixture: "identical-criteria",
+			wantErr: []string{
+				"rubrics/selftest.yaml: identical:",
+				`"beta"`,
+				`"gamma"`,
+				"same checks",
+			},
+			wantOut: []string{"Criteria: non-cost=3", "beta: checks=1 cases=1", "gamma: checks=1 cases=1"},
+		},
 	}
 
 	for _, tt := range tests {
@@ -140,6 +170,41 @@ func TestAuditFlatFixtureEvidenceAndDuplicates(t *testing.T) {
 func TestAuditHelpDescribesEvidenceAndDuplicates(t *testing.T) {
 	long := auditCmd.Long
 	for _, want := range []string{"case:<case-name>", "Evidence", "Repeated instructions fail"} {
+		if !strings.Contains(long, want) {
+			t.Errorf("audit help missing %q:\n%s", want, long)
+		}
+	}
+}
+
+func TestAuditThreeCriteriaOKFixturePasses(t *testing.T) {
+	out, err := runAuditFlatFixture(t, "three-criteria-ok")
+	if err != nil {
+		t.Fatalf("three-criteria-ok: unexpected error: %v\noutput:\n%s", err, out)
+	}
+	for _, want := range []string{
+		"Criteria: non-cost=3 (need at least 3)",
+		"alpha: checks=3 cases=2",
+		"beta: checks=1 cases=1",
+		"gamma: checks=1 cases=1",
+		"OK selftest",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("stdout missing %q:\n%s", want, out)
+		}
+	}
+	// The type: cost criterion is never listed.
+	if strings.Contains(out, "cost:") {
+		t.Errorf("cost criterion must not be listed:\n%s", out)
+	}
+}
+
+func TestAuditHelpDescribesRubricRules(t *testing.T) {
+	long := auditCmd.Long
+	for _, want := range []string{
+		"at least three non-cost criteria",
+		"no check in any case",
+		"identical checks",
+	} {
 		if !strings.Contains(long, want) {
 			t.Errorf("audit help missing %q:\n%s", want, long)
 		}

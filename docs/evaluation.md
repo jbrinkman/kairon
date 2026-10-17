@@ -77,9 +77,26 @@ criteria:
     type: cost
 ```
 
+A rubric can also require that no single criterion is neglected, even when the agent's overall score is high, by setting `min_criterion_score`:
+
+```yaml
+agent: builder
+checks_only: true
+pass_threshold: 60
+min_criterion_score: 50    # Optional: every scored criterion must reach 50% on its own (default: unset)
+criteria:
+  - name: file_written
+    description: "The expected file exists in the workspace"
+    scoring: 1-5
+  - name: report_marker
+    description: "The agent's report carries the expected marker"
+    scoring: 1-5
+```
+
 Fields:
 - `agent` — which agent this rubric evaluates
 - `pass_threshold` — (optional) the percent a case, and the agent as a whole, must reach to pass. It must be greater than 0 and at most 100 (`(0, 100]`); the default is `95`. A value of `0` or below, above `100`, or NaN makes loading the rubric fail with an error that names the rubric file. A case can override it with `min_score` (see [Test Case Format](#test-case-format) and [Pass/Fail Verdict and Exit Status](#passfail-verdict-and-exit-status)).
+- `min_criterion_score` — (optional) a per-criterion floor, in percent. When set, the agent fails if any non-cost criterion's pooled percent is below it, even when the agent's overall `score` meets `pass_threshold` (see [Agent verdict](#agent-verdict)). It is unset by default and must be greater than 0 and at most 100 (`(0, 100]`). A value of `0` or below, above `100`, or NaN makes loading the rubric fail with an error that names the rubric file and the field (`invalid rubric <file>: min_criterion_score must be a percent in (0, 100], got <value>`); `0` is rejected rather than read as "off", so leave the field out to turn the floor off. The comparison is `>=`: a criterion exactly at the floor passes. A rubric without the field is judged exactly as before.
 - `checks_only` — (optional, boolean, default `false`) when `true`, every case of the agent is scored from its [checks](#checks) alone. A non-cost criterion that a case has no checks for is **not scored** in that case: it gets no entry in the case's scores and adds nothing to the case or agent score or maximum. Neither the legacy LLM judge nor the keyword heuristic runs for it, so no legacy judge call is made. [`judge` checks](#the-judge-check) are still checks and remain allowed. Every case of the agent must have at least one check; a case without any is rejected when the cases are loaded, before any case runs, with an error that names the case file (see [`checks_only` rubrics](#checks_only-rubrics)). Omitting the field leaves scoring unchanged.
 - `criteria[].name` — unique identifier for the criterion
 - `criteria[].description` — what is being measured
@@ -298,7 +315,7 @@ checks:
 - **Why workspace checks cannot take it.** The workspace is inspected once, at the end of the case, so a `file_*`, `changed_files` or `command` check cannot honestly be pinned to an earlier turn. A `turn: 1` on such a check would silently test the final workspace, so it is rejected loudly instead.
 - **1-based.** `turn` counts from 1, the same numbering as the position in `turns`. `turn: 0` (or a negative value) is a load error.
 - **Default: the last turn.** A check without `turn` reads the last turn's output and the final gh log (a `judge` check judges the last turn's reply and sees the whole conversation, see [The `judge` check](#the-judge-check)), which is exactly what a single-turn case has always done.
-- **Range.** `turn` must not exceed the number of turns of the case. A single-turn case has one turn, so `turn: 1` is legal there. An out-of-range `turn` is a load error naming the case, the 1-based check number and the type. A hand-built check passed to `EvaluateChecks` with an out-of-range turn yields a failed result with a detail (`turn 4 is out of range: the case has 3 turn(s)`), never a panic or a silent pass.
+- **Range.** `turn` must not exceed the number of turns of the case. A single-turn case has one turn, so `turn: 1` is legal there. An out-of-range `turn` is a load error naming the case, the 1-based check number and the type. A hand-built check passed to `checks.Evaluate` with an out-of-range turn yields a failed result with a detail (`turn 4 is out of range: the case has 3 turn(s)`), never a panic or a silent pass.
 - **gh log per turn.** `.eval/gh.log` is one append-only file, so per-turn visibility is a **snapshot taken after each turn returns and before the next turn starts**. A `gh_log_*` check with `turn: N` reads the snapshot of turn N: the log up to the end of that turn, **cumulative** (calls from earlier turns are in it too). Snapshotting the content, rather than remembering an offset into the final file, means a later turn that rewrites or truncates the log cannot change what an earlier turn saw. The last turn's snapshot equals the final log. Each snapshot is capped at 10 MiB like the final log; an oversized snapshot fails the `gh_log_*` check that reads it.
 - **Labels.** A check with `turn` set shows it in its label (`#3 gh_log_contains pattern=/issue create/ turn=3`), so `reasoning`, `checks[].label` and the printed `✗` lines show which turn failed.
 
@@ -445,10 +462,10 @@ A check that names a criterion missing from the scored rubric (only possible for
 
 ### Using the evaluator elsewhere
 
-The evaluator is a plain function in `internal/eval` with no knowledge of the harness, so it can score any directory:
+The check engine lives in its own package, `internal/checks` (import `github.com/jbrinkman/kairon/internal/checks`). It has no knowledge of the eval harness: it imports only the standard library, `gopkg.in/yaml.v3` and `internal/inference`, and never `internal/eval` or `internal/eval/sandbox` (a test enforces this). Other packages, such as the workflow engine, can therefore use it without linking the harness, and it can score any directory. `internal/eval` is a client of it and keeps thin aliases and wrappers for its own code and tests; new code should use `internal/checks` directly. To run a checks file from the command line, see [Running checks on any directory](#running-checks-on-any-directory-kairon-check).
 
 ```go
-results := eval.EvaluateChecks(checks, eval.CheckInput{
+results := checks.Evaluate(list, checks.Input{
     Dir:       workspaceDir, // directory the file_*, changed_files and command checks look at
     Output:    agentOutput,  // text for output_contains / output_not_contains
     GHLog:     ghLogText,    // text for gh_log_contains / gh_log_not_contains
@@ -456,15 +473,15 @@ results := eval.EvaluateChecks(checks, eval.CheckInput{
     Turns:     nil,          // optional per-turn evidence: Turns[i] is turn i+1 (see below)
     UserTurns: nil,          // optional: UserTurns[i] is the user message that produced Turns[i].Output
     Input:     caseInput,    // optional: the case input shown to judge checks
-    Judge:     judgeFn,      // optional: eval.JudgeFunc that answers judge checks
+    Judge:     judgeFn,      // optional: checks.JudgeFunc that answers judge checks
 })
 ```
 
-`Input`, `UserTurns` and `Judge` are only used by `judge` checks. `Judge` is a `JudgeFunc`, `func(JudgeQuery) (JudgeVerdict, error)`: it receives the criterion, question, input, output, the loaded `Files` (`Path`, `Content`, `Truncated`, `Size`) and, for a multi-turn case, the `Turn` being judged and the `Transcript`, and returns `JudgeVerdict{Yes, Reasoning}`. Return an error for a failed call; it fails the check as `judge call failed: <error>`. (Inside the package an error wrapping `errJudgeParse` is reported as `judge parse error` instead.) A `judge` check evaluated with `Judge == nil` **fails** with `no judge configured`; it is never skipped and never passes silently, so callers that use no `judge` checks are unaffected. In a normal run, `scoreCase` builds the `JudgeFunc`: it calls the configured backend on the pinned judge model and records the call and its cost.
+`Input`, `UserTurns` and `Judge` are only used by `judge` checks. `Judge` is a `checks.JudgeFunc`, `func(JudgeQuery) (JudgeVerdict, error)`: it receives the criterion, question, input, output, the loaded `Files` (`Path`, `Content`, `Truncated`, `Size`) and, for a multi-turn case, the `Turn` being judged and the `Transcript`, and returns `JudgeVerdict{Yes, Reasoning}`. Return an error for a failed call; it fails the check as `judge call failed: <error>`. (An error wrapping `checks.ErrJudgeParse` is reported as `judge parse error` instead.) A `judge` check evaluated with `Judge == nil` **fails** with `no judge configured`; it is never skipped and never passes silently, so callers that use no `judge` checks are unaffected. In a normal eval run, `scoreCase` builds the `JudgeFunc`: it calls the configured backend on the pinned judge model and records the call and its cost. Callers outside the harness can build one with `checks.InferenceJudge{Backend, Model, Stub, Debug, OnCall}.Func()`, which sends the yes/no prompt (`checks.BuildYesNoPrompt`) to an `inference.Backend` with a 2-minute timeout and parses the reply (`checks.ParseYesNo`); `kairon check` does exactly that.
 
-`EvaluateChecks` never reads the config, the case or the rubric, and returns one `CheckResult` per check in list order. A hand-built check is validated lazily: an invalid one yields a failed result with an explanation, never a panic and never a silent pass. `eval.ValidateChecks` validates and compiles checks loaded from a case file. In a normal run `Base` is the fixture commit of the case workspace, so a change the agent committed is still detected.
+`checks.Evaluate` never reads the config, the case or the rubric, and returns one `checks.Result` per check in list order. A hand-built check is validated lazily: an invalid one yields a failed result with an explanation, never a panic and never a silent pass. `checks.Validate(file, list, checks.ValidateOptions{HiddenDir, Criterion, OptionalCriterion})` validates and compiles checks loaded from a file: `HiddenDir` is where `inject` sources are resolved (empty means `inject` is not allowed), `Criterion` is an optional callback that rejects a criterion (the eval harness passes its rubric cross-check) and `OptionalCriterion` lets a check omit `criterion`. Its errors wrap `checks.ErrInvalid` and read `invalid checks: <file>: check #<n> (<type>): <reason>`. `checks.LoadFile(path)` reads a standalone checks file (see [Checks file format](#checks-file-format)). In a normal eval run `Base` is the fixture commit of the case workspace, so a change the agent committed is still detected; when `Base` is empty `changed_files` diffs against `HEAD`.
 
-`Turns` is a `[]eval.TurnEvidence{Output, GHLog, GHLogOversized}`, one entry per turn, and is what `turn` checks read. When `Turns` is empty (a single-turn case) every `output_*` / `gh_log_*` check reads `Output` / `GHLog` exactly as above. When it is set, a check that names a `turn` reads `Turns[turn-1]` and a check without `turn` reads the last entry; the harness fills `Turns` for `turns` cases only.
+`Turns` is a `[]checks.TurnEvidence{Output, GHLog, GHLogOversized}`, one entry per turn, and is what `turn` checks read. When `Turns` is empty (a single-turn case) every `output_*` / `gh_log_*` check reads `Output` / `GHLog` exactly as above. When it is set, a check that names a `turn` reads `Turns[turn-1]` and a check without `turn` reads the last entry; the harness fills `Turns` for `turns` cases only.
 
 `UserTurns` pairs the user messages with `Turns`: `UserTurns[i]` is the message that produced `Turns[i].Output`. For a simulated-user case the harness passes the messages actually sent. A `judge` check reads both to build its conversation. A message missing from `UserTurns` is rendered empty rather than failing the check.
 
@@ -480,6 +497,126 @@ type JudgeTurn struct {
 - `Turn` is the 1-based turn being judged and `Transcript` holds turns 1 to `Turn` in order (`Transcript[i]` is turn i+1). In that form `Output` is the reply of `Turn`, not the case's final output.
 - When `len(Turns) >= 2`, `Turn` is the check's `turn` (default: `len(Turns)`). A `turn` outside `1..len(Turns)` fails the check with `turn N is out of range: the case has M turn(s)` before `Judge` is called and before any file is read.
 - When `Turns` has fewer than two entries (a classic case, a one-element `turns` list, or a hand-built input with no per-turn evidence) `Turn` is 0 and `Transcript` is empty; `Input` and `Output` are filled as before, and the single-turn prompt is unchanged. The case then counts as one turn: `turn: 1` is accepted and `turn: 2` fails with `the case has 1 turn(s)`.
+
+### Running checks on any directory (`kairon check`)
+
+`kairon check` runs a checks file against a real directory with no eval case, rubric, workspace or agent involved. Use it as a guardrail in a script or a workflow step: "did this directory end up the way I expect?".
+
+```bash
+kairon check --checks <file> --dir <dir> [--output <file>] [--gh-log <file>] [--hidden-dir <dir>] [--backend <name>]
+```
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--checks` | *required* | YAML file holding the list of checks to run (see [Checks file format](#checks-file-format)). |
+| `--dir` | *required* | Directory the `file_*`, `changed_files`, `command`, `judge` (`files`) and `fact_*` checks look at. It must be an existing directory. |
+| `--output` | none | File whose text `output_contains` / `output_not_contains` (and the text a `judge` check is shown as the output) read. Omitted means empty text. |
+| `--gh-log` | none | File whose text `gh_log_contains` / `gh_log_not_contains` read. Capped at 10 MiB: a larger file sets the same oversized flag as in eval, so `gh_log_*` checks fail explicitly. Omitted means empty text. |
+| `--hidden-dir` | none | Directory that `inject` entries are resolved against and copied from. Without it, a check that uses `inject` is invalid. |
+| `--backend` | `kiro-cli` | Inference backend that answers `judge` checks. Valid values are the same as for `kairon eval --backend`: `kiro-cli`, `stub`. An unknown value fails before any check runs. |
+
+`--checks` and `--dir` are required (omitting one is a usage error), and the command takes no positional arguments.
+
+#### Checks file format
+
+A checks file is a **top-level YAML list** of the check mappings documented in [Checks](#checks): the same entries as the value of a case's `checks:` key, without the `checks:` key itself. The fields and the per-type rules are the same as in a case, with two differences: `criterion` is optional (there is no rubric to name), and `turn` has nothing to refer to (a checks file is evaluated as a single-turn case, so `turn: 1` is accepted and a higher value fails the check with `the case has 1 turn(s)`; leave it out). A misspelled key is rejected, as in case files, and a file with no checks is an error (`no checks in <file>`), so a guardrail that checks nothing can never pass. The file must be a regular file of at most 10 MiB.
+
+```yaml
+- type: file_exists
+  path: hello.txt
+- type: file_contains
+  path: hello.txt
+  pattern: 'hello'
+- type: file_absent
+  path: missing.txt
+- type: command
+  run: "grep -q hello hello.txt"
+```
+
+The command ships fixtures in `internal/eval/testdata/check-cli/` (`dir/` is the directory under test) that the examples below use.
+
+#### Output and exit status
+
+The whole file is validated before any check runs. Then the checks are evaluated against `--dir` as described in [Evaluation order](#evaluation-order) (non-`command` checks first, then `command` checks), and one line per check is printed to stdout **in the order they are written**, with whitespace collapsed to a single line:
+
+```
+PASS #1 file_exists path=hello.txt
+FAIL #2 file_exists path=missing.txt: file does not exist
+```
+
+- `PASS <label>` or `FAIL <label>: <detail>`. The label is the same `#<n> <type> <key fields>` string used in eval results, so a failing check is named by its 1-based position, type and key field. A passing `judge` check appends the judge's reasoning as its detail.
+- When every check passes, exactly one `PASS` line per check is printed and nothing else.
+- When a check fails, the `FAIL` lines are followed by `Error: <n> of <m> checks failed` on stderr. Usage text is not printed.
+
+| Exit status | Meaning |
+|-------------|---------|
+| `0` | every check passed |
+| `1` | at least one check failed, **or** any other error: a missing required flag, an invalid checks file (before any check runs), an unreadable or empty checks file, an unknown `--backend`, a `--dir` that is not an existing directory, an unreadable `--output`, `--gh-log` or `--hidden-dir`, or a refused judge model |
+
+An invalid file is reported with the same text as an invalid eval case, naming the file, the 1-based check number and the type, and **no check runs**. This matters for `command` checks: an earlier, valid `command` check is not executed when a later check in the file is invalid.
+
+```bash
+# All four checks pass: four PASS lines, exit 0
+kairon check --checks internal/eval/testdata/check-cli/pass.yaml --dir internal/eval/testdata/check-cli/dir
+
+# Check #2 fails: prints "FAIL #2 file_exists path=missing.txt: …", then "Error: 1 of 2 checks failed", exit 1
+kairon check --checks internal/eval/testdata/check-cli/fail.yaml --dir internal/eval/testdata/check-cli/dir
+
+# Check #2 is invalid: "invalid checks: …/invalid.yaml: check #2 (file_contains): pattern is required", exit 1, no check ran
+kairon check --checks internal/eval/testdata/check-cli/invalid.yaml --dir internal/eval/testdata/check-cli/dir
+```
+
+#### Evidence flags: `--output`, `--gh-log`, `--hidden-dir`
+
+`--output`, `--gh-log` and `--hidden-dir` supply the evidence that, in an eval run, the harness would collect itself. The text of the files is used verbatim.
+
+```bash
+# output_contains reads output.txt, gh_log_contains reads gh.log, and the command check injects hidden/injected.txt
+kairon check --checks internal/eval/testdata/check-cli/evidence.yaml \
+  --dir internal/eval/testdata/check-cli/dir \
+  --output internal/eval/testdata/check-cli/output.txt \
+  --gh-log internal/eval/testdata/check-cli/gh.log \
+  --hidden-dir internal/eval/testdata/check-cli/hidden
+```
+
+- Without `--hidden-dir`, `evidence.yaml` is invalid because its `command` check uses `inject`.
+- Without `--output`, an `output_contains` check fails (the output is empty text), and likewise `gh_log_contains` without `--gh-log`. `output_not_contains` and `gh_log_not_contains` pass vacuously on empty text, exactly as in a native eval run.
+- `inject` works as in eval (see [Hidden files and `inject`](#hidden-files-and-inject)): each entry is copied from `--hidden-dir` into `--dir` immediately before the `command` runs and the directory is restored right after.
+
+#### `changed_files` base
+
+`changed_files` diffs `--dir` against the `HEAD` of the git repository at `--dir`, because `kairon check` leaves `Base` empty. `--dir` must therefore be the repository root, and a change that is already committed to `HEAD` is not seen. There is no eval fixture commit here. Added, modified, deleted and untracked paths all count, and paths that git ignores are invisible, as described in [How `changed_files` sees changes](#how-changed_files-sees-changes). If `--dir` is not a git repository the check fails with the git error.
+
+#### Judge checks, `--backend` and model pinning
+
+A `judge` check asks the judge model a yes/no question (see [The `judge` check](#the-judge-check)). In `kairon check` it behaves like the check in an eval run, with these specifics:
+
+- **Model pinning.** The judge model is pinned exactly as in `kairon eval`: `evals.judge_model` from `./.kairon/config.yaml` (the built-in default when the file or the key is missing), validated against `evals.allowed_models` (see [Model Pinning and Run Provenance](#model-pinning-and-run-provenance)). It is passed to the backend as the request's model, and the call runs on the host with the 2-minute judge timeout. A model that is empty, `auto` or not in the allowlist **refuses the run before any check starts**, with a message such as:
+
+  ```
+  ❌ eval model pinning refused the run before any check started:
+    - evals.judge_model: <reason>
+  Edit the evals block in .kairon/config.yaml (judge_model, allowed_models)
+  ```
+
+- **Only when needed.** The config is read, the model is checked and the backend is used only if the file contains a `judge` check. A file without one never reads `.kairon/config.yaml`, so a broken config does not matter, and it does not need the `kiro-cli` binary even though `--backend` defaults to `kiro-cli`.
+- **Fail closed.** A `judge` check is never skipped and never passes by default. With a real backend, a failed call (`judge call failed: …`) or an unparseable answer (`judge parse error: …`) fails the check, as in eval.
+- **`--backend stub` is a test double.** The stub backend makes **no model call**: `kairon check` supplies it with a built-in script that answers `yes` to every `judge` check, so each one passes with the reasoning `stub judge: yes`. It exists to exercise the command (and scripts around it) without a model, like `task eval:selftest`; it says nothing about the directory, so do not use it as a guardrail. It is selected only by `--backend stub`; `kiro-cli` always asks the real model. Unlike an eval case, you cannot script other answers: there is no case to carry a `stub.judge` list.
+
+```bash
+# No model call: the stub answers "yes", so this prints a PASS line and exits 0
+kairon check --backend stub --checks internal/eval/testdata/check-cli/judge.yaml --dir internal/eval/testdata/check-cli/dir
+
+# Real judge: asks the model pinned by evals.judge_model (requires an authenticated kiro-cli)
+kairon check --checks internal/eval/testdata/check-cli/judge.yaml --dir internal/eval/testdata/check-cli/dir
+```
+
+#### Safety
+
+> **Warning: `command` checks run on the host, in `--dir`.**
+> `kairon check` runs each `command` check with `sh -c` in `--dir` and your privileges, as described in [Command checks run on the host](#command-checks-run-on-the-host): stdin closed, GitHub credential variables (`GH_TOKEN`, `GITHUB_TOKEN`, `GH_ENTERPRISE_TOKEN`, `GITHUB_ENTERPRISE_TOKEN`, `GH_HOST`) removed from the environment, its own process group killed after 5 minutes. None of this is a sandbox, and there is no `--sandbox` for this command. Treat a checks file like a script: only run files you trust, against directories you are prepared to run code from. File-based checks (`file_*`, `changed_files`) and the `output_*` / `gh_log_*` checks only read.
+
+`kairon check` opens no network listener and has no authentication surface of its own. Its only network use is the judge call, made by the selected `--backend` and only when the file has a `judge` check. The `judge` prompt includes the contents of the files listed in `files` and the `--output` text, so do not point a real backend at secrets you would not send to the model.
 
 ## Multi-turn cases
 
@@ -871,6 +1008,7 @@ A rubric with `checks_only: true` scores every case from its checks alone:
 
 - **Unchecked criteria are not scored.** A non-cost criterion that a case has no checks for gets no entry in that case's scores (it is absent from `scores`, not recorded as `0` or skipped). It adds nothing to the case score, the case maximum, the agent score or the agent maximum, so it can neither raise nor lower a result.
 - **No legacy scoring runs.** The legacy 1–5 LLM judge is never called and the keyword heuristic never runs for such a criterion, whether or not it is marked `deterministic`. The rubric's `scoring` and `deterministic` fields are ignored; a checked criterion's maximum is its number of checks, as before.
+- **A criterion adds nothing to its maximum in a case it is not scored in.** Because an unchecked criterion has no entry in a case's scores, it contributes neither points nor maximum for that case. The criterion's pooled maximum in the [verdict's `criteria`](#agent-verdict) is therefore its number of checks across the cases that checked it, not a fixed figure per case. For example, with `file_written` checked twice in one case and once in another, and `report_marker` checked only in the second, `file_written` has a maximum of 3 and `report_marker` a maximum of 1.
 - **`judge` checks remain allowed.** A [`judge` check](#the-judge-check) is a check, so it is scored `passed`/`total` like the others and still makes its one yes/no judge call. `checks_only` removes the legacy judge, not the `judge` check type.
 - **A case without checks is rejected.** Every case of an agent whose rubric sets `checks_only` must have at least one check. A check-less case would have nothing to score, so it is a fatal load error that names the case file and wraps the same invalid-checks error as a malformed `checks` block, for example `…: no-checks.yaml: rubric for agent selftest-checks sets checks_only but the case has no checks`. A `kairon eval` run over several agents checks every `checks_only` agent up front, so the rejection happens **before any case runs**, including cases of agents that come earlier in the run. A single-case run and `--list` hit the same error when the cases load.
 - **No output still scores zero.** A checked criterion is not rescued when the agent produced no output: it records `0/N` (not skipped) with the reasoning `agent produced no output; checks not run`, exactly as described in [When the agent failed](#when-the-agent-failed), and the run fails its threshold.
@@ -925,7 +1063,7 @@ A case passes when it produced output and `case score / case max * 100 >= thresh
 
 ### Agent verdict
 
-An agent passes when its aggregate score is at least its threshold:
+An agent passes when its aggregate score is at least its threshold (and, if the rubric sets [`min_criterion_score`](#per-criterion-scores-and-the-floor), no criterion is below that floor):
 
 ```
 score = sum of case scores / sum of case maxima * 100   (all non-cost criteria of all cases)
@@ -936,6 +1074,24 @@ passed = score >= threshold
 - **With `--repeat`, `score` is the mean over the repeats.** The sums run over every run of every case; each repeat has the same cases and the same maxima, so this equals the arithmetic mean of the per-repeat scores. `passed` is decided on that mean: a single repeat above the threshold does not rescue a mean below it. The spread is reported next to it in `score_min`, `score_max` and `repeat_scores`, and the number of repeats in `repeat` (see [Repeat runs](#repeat-runs---repeat)). Without `--repeat` the run is one repeat and `score_min == score == score_max`.
 - `cases_total` is the number of distinct cases and `cases_failed` the number that did not pass their own threshold. A case with several runs counts as failed when its score pooled over its runs is below its threshold. `cases_failed` is informational: it does not fail the agent by itself, the aggregate score does.
 - **Fail closed.** If nothing was scored (the denominator is 0, for example a rubric with only cost criteria), the agent gets `score`, `score_min` and `score_max` of 0, `passed: false`, and no `agent_scores` entry.
+
+#### Per-criterion scores and the floor
+
+The agent `score` pools points across every check of every case, so a criterion with few checks counts for little: one criterion at 0 out of 1 beside 19 passing checks still gives an agent 95%. To make that visible, every verdict carries a `criteria` array with one entry per criterion, and a rubric can turn it into a gate with [`min_criterion_score`](#rubric-format).
+
+- **Per-criterion totals.** For each non-cost criterion the verdict pools `score` and `max_score` (points, not percent) over **every case and every repeat** of the agent, and reports `percent = score * 100 / max_score`. The criteria that are listed are summed to the same totals as the agent `score` (a skipped criterion counts `0` and keeps its maximum), so the sum of the listed `score`s and of the listed `max_score`s equals the numerator and denominator of `score`. `criteria` is always present and is `[]` when nothing was scored. Entries are in first-seen order, which for a normal rubric is rubric order. Cost criteria are never listed.
+- **Unscored criteria are not listed.** A criterion that no case scored has nothing measured (a maximum of 0), so it has no entry and is never judged against the floor. This happens for a [`checks_only`](#checks_only-rubrics) criterion that none of the cases has checks for. A criterion scored in only some cases is listed, and its maximum counts only those cases (see [How Scoring Works](#how-scoring-works)).
+- **The floor rule.** When the rubric sets `min_criterion_score`, the agent **fails if any listed criterion's pooled percent is below it**, even when the overall `score` meets the threshold:
+
+  ```
+  criteria_below_floor = criteria whose percent < min_criterion_score
+  passed = score >= threshold && criteria_below_floor is empty
+  ```
+
+  The comparison is exact, with the same boundary behaviour as `pass_threshold`: a criterion exactly at the floor passes, and 49 out of 100 fails a floor of 50. `score`, `threshold`, `cases_total` and `cases_failed` are computed exactly as before; the floor only decides `passed`. A floor failure does not make any case fail by itself, so `cases_failed` can be `0` for a failing agent.
+- **Repeats.** With `--repeat N` the floor is judged on the **pooled** percent, which is the mean over the repeats (the maximum is N times the single-run maximum and the percent equals the mean of the per-repeat percents). A criterion that is low in one repeat but high in the others is judged on its mean, not on its worst repeat.
+- **Single-case runs.** `kairon eval <agent> <case>` (and `--case`) computes the verdict from the one case that ran, so the floor applies to that case's criteria. A criterion the case did not score is not listed and not judged.
+- **No floor, no change.** Without `min_criterion_score` nothing is judged against a floor: `passed` is `score >= threshold` as before, and `criteria` is informational. With a floor set and nothing scored, the agent already fails closed and no criterion is named.
 
 ### Output and exit status
 
@@ -954,6 +1110,33 @@ FAIL selftest-fail: 50.0% (threshold 95.0%), 1/1 cases failed [repeat 2: min 0.0
 
 With no `--repeat` (or `--repeat 1`) there is no suffix and the line is exactly as above.
 
+When the verdict has `criteria`, one indented line per criterion follows the verdict line, in `criteria` order: `  <criterion>: <score>/<max_score> (<percent>%)`, with one decimal for the percent. The lines start with spaces, not `PASS ` or `FAIL `, so `grep '^PASS \|^FAIL '` still finds only the verdict lines:
+
+```
+PASS selftest: 100.0% (threshold 95.0%), 0/25 cases failed
+  structural_completeness: 66/66 (100.0%)
+  clarity: 125/125 (100.0%)
+```
+
+When the rubric sets `min_criterion_score` and criteria are below it, the `FAIL` line gains a suffix naming each one with its percent and `score/max_score`, after the existing text and **before** any `[repeat …]` suffix. One criterion reads `; criterion below floor <floor>%: <name> <percent>% (<score>/<max_score>)`; several use `criteria below floor` and are joined with `, ` in `criteria` order:
+
+```
+FAIL selftest-floor: 66.7% (threshold 60.0%), 0/1 cases failed; criterion below floor 50.0%: report_marker 0.0% (0/1)
+  file_written: 2/2 (100.0%)
+  report_marker: 0/1 (0.0%)
+FAIL demo: 80.4% (threshold 60.0%), 0/2 cases failed; criteria below floor 50.0%: a 10.0% (2/20), b 0.0% (0/2) [repeat 2: min 80.4%, max 80.4%]
+```
+
+The overall score on those first lines met its threshold; the floor alone failed the agent. Without a floor failure the first line is unchanged. In the second example `--repeat 2` doubled the pooled score and maximum (`2/20` rather than `1/10`) while the percent is the mean over the repeats.
+
+When the agent's cost is incomplete (a call used a model with no configured price), the line also ends with ` [cost incomplete: no price for <models>]`, listing the unpriced model ids, after any repeat suffix. The line still starts with the verdict word:
+
+```
+PASS selftest: 100.0% (threshold 95.0%), 0/25 cases failed [cost incomplete: no price for claude-haiku-4.5]
+```
+
+See [Unknown cost](#unknown-cost).
+
 | Exit status | Meaning |
 |-------------|---------|
 | `0` | every evaluated agent passed |
@@ -964,6 +1147,14 @@ When an agent fails, the results, `summary.json` and the performance report are 
 ```
 Error: eval failed: 1 of 2 agents below their pass threshold: selftest-fail (8.3% < 95.0%)
 ```
+
+An agent that failed only because of the floor is named by its criteria instead, so the error never prints a misleading `97.0% < 95.0%` when the overall score met the threshold:
+
+```
+Error: eval failed: 1 of 2 agents below their pass threshold: selftest-floor (criterion report_marker 0.0% < floor 50.0%)
+```
+
+A threshold-only failure is printed exactly as before. The exit status is `1` in both cases.
 
 Usage text is not printed for this error. The same lines and exit status apply to a single-case run (`kairon eval <agent> <case>` / `--case`) and to `--resume`.
 
@@ -978,6 +1169,9 @@ The verdict uses **percent**, `agent_scores` in `summary.json` uses a **0–1 fr
 | `agent_verdicts.<agent>.score_min`, `.score_max` | percent (0–100) | `92`, `100` |
 | `agent_verdicts.<agent>.repeat_scores` | list of percent (0–100) | `[92, 96, 100]` |
 | `agent_verdicts.<agent>.threshold` | percent (0–100) | `95` |
+| `agent_verdicts.<agent>.min_criterion_score` | percent (0–100) | `50` |
+| `agent_verdicts.<agent>.criteria[].percent` | percent (0–100) | `66.7` |
+| `agent_verdicts.<agent>.criteria[].score`, `.max_score` | **points** (integers), not percent | `2`, `3` |
 
 `agent_scores` keeps its earlier meaning so that `kairon eval diff` reads old and new runs alike. Because it pools every result of the agent, with `--repeat` it is also the mean (as a fraction). See [Run summary](#run-summary-summaryjson) for the full JSON.
 
@@ -1011,7 +1205,7 @@ kairon eval architect --case decompose-feature --repeat 3   # repeats that one c
 
 All four new fields are always written, including a legitimate `score_min` of `0`. A plain run writes `repeat: 1`, `score_min == score_max == score` and `repeat_scores: [score]`. Nothing scored fails closed with all of them `0`. `cases_total` counts distinct case names; see [Agent verdict](#agent-verdict) for `cases_failed`. These fields are the stable contract that promotion tooling can read from `summary.json`.
 
-**Cost** is the cost of all repeats: `cost` and `total_cost` sum every run, so `--repeat 3` costs about three times a single run.
+**Cost** is the cost of all repeats: `cost` and `total_cost` sum every run, so `--repeat 3` costs about three times a single run. If any repeat had an unknown cost the sum is marked `cost_incomplete` (see [Unknown cost](#unknown-cost)).
 
 **Output.** A plain run prints exactly what it always did. With `--repeat N` (N > 1) each case line is followed by one `run k/N` line per run with its usual status, and the agent line ends with the `[repeat N: min X%, max Y%]` suffix described in [Output and exit status](#output-and-exit-status).
 
@@ -1069,7 +1263,7 @@ stub:
 | Field | Required | Description |
 |-------|----------|-------------|
 | `stub.turns[].response` | yes | Text returned as the agent output. |
-| `stub.turns[].model` | no | Model name recorded in `agent_cost.model`. |
+| `stub.turns[].model` | no | Model name recorded in `agent_cost.model` and on the agent call record. It is also the model the call is **priced** under (see [Pricing](#pricing)): a model with no configured price (such as `stub-model`) gives an unknown cost. When omitted, the recorded model is empty, but the call is **priced under the run's pinned agent model** (the served model falls back to the pinned `evals.agent_model`, usually a Sonnet id with a known price) — so omitting the model does *not* by itself make the cost unknown. Set an unpriced model id such as `stub-model` to exercise the unknown-cost path. |
 | `stub.turns[].usage.input_tokens` / `output_tokens` | no | If present, these counts are used verbatim and marked `reported`. If absent, usage is estimated from text length. |
 | `stub.turns[].commands` | no | Shell commands, each run with `sh -c` in the case workspace (the request's `WorkDir`), in order, before the response is returned. This lets a stub case simulate an agent that edits files. In a multi-turn case the workspace is shared, so a later turn's commands see the files of earlier turns. They are scripted environment actions, **not** tool calls, so the trust gate never applies to them. |
 | `stub.turns[].tool_calls[]` | no | Scripted tool calls, each `{tool, command}`. They run after `commands`, in order. Each runs `sh -c <command>` in the workspace only if the tool is in the request's trust set; otherwise the command is skipped and a denial is recorded (see [Tool trust](#tool-trust)). With no trust set (every native run) every tool call runs. |
@@ -1105,9 +1299,10 @@ Each `agent_cost` and `judge_cost` in a result file carries `model` (when known)
 | `estimated` | Token counts were estimated as roughly 4 characters per token (`len/4`) of the prompt and the output. |
 
 - `kiro-cli` exposes neither the served model nor token counts, so its usage is always `estimated`. The `model` it records is the model the process was *launched with* (the value passed as `--model`, i.e. the pinned model), not a model confirmed by the service. It is empty (omitted from JSON) only for unpinned calls, such as code paths that do not go through `kairon eval`.
-- `estimated_usd` is always computed from the token counts at a fixed $3 / $15 per million input / output tokens, whether the counts were reported or estimated.
-- When several judge calls are accumulated into `judge_cost`, the merged `usage_source` is `reported` only if every contributing call was `reported`; otherwise it is `estimated`. The stub judge always produces estimated usage with model `stub`.
-- `summary.json` totals only `tokens_in`, `tokens_out` and `estimated_usd` (plus the provenance, execution-mode and containment fields described below).
+- `estimated_usd` is computed from the token counts at the **configured price of the model that served the call** (see [Pricing](#pricing)), whether the counts were reported or estimated. There is no single fixed rate: a call on `claude-haiku-4.5` is never priced as Sonnet.
+- **A model with no configured price has an unknown cost.** Its call contributes `0` to `estimated_usd`, which is *not* a real zero, and the cost is flagged `cost_incomplete` with the model named in `unpriced_models` (see [Unknown cost](#unknown-cost)). A call that spent no tokens at all costs a known `0`: nothing was spent, so nothing is unknown.
+- When several judge calls are accumulated into `judge_cost`, the merged `usage_source` is `reported` only if every contributing call was `reported`; otherwise it is `estimated`. The stub judge always produces estimated usage; its model is the pinned judge model when the request is pinned (as in every `kairon eval` run, so it is priced like the real judge) and `stub` otherwise.
+- `summary.json` totals `tokens_in`, `tokens_out` and `estimated_usd`, plus `cost_incomplete` and `unpriced_models` when a contributing cost was unknown (and the provenance, execution-mode and containment fields described below).
 - The individual calls behind `agent_cost` and `judge_cost` are listed in each case's `calls` array (see [Per-call records](#per-call-records-calls)).
 
 Example from the self-test `stub-usage` case:
@@ -1116,11 +1311,71 @@ Example from the self-test `stub-usage` case:
 "agent_cost": {
   "tokens_in": 123,
   "tokens_out": 45,
-  "estimated_usd": 0.001044,
+  "estimated_usd": 0,
   "model": "stub-model",
-  "usage_source": "reported"
+  "usage_source": "reported",
+  "cost_incomplete": true,
+  "unpriced_models": ["stub-model"]
 }
 ```
+
+`stub-model` has no configured price, so the tokens are recorded but the cost is unknown. The self-test case `stub-price-sonnet` (model `claude-sonnet-5.5`, 1000 input / 500 output tokens) is priced: `1000 * 3 / 1e6 + 500 * 15 / 1e6` = `0.0105`, with no `cost_incomplete`. `stub-price-unknown` (model `claude-haiku-4.5`, same tokens) has an unknown cost.
+
+### Pricing
+
+Cost is `tokens x price` for the model that served each call. Prices come from a top-level `pricing:` block in `.kairon/config.yaml` (not under `evals:`, so production code that shares the `inference.CallRecord` format can use the same block). The arithmetic lives in `internal/inference` (`PriceTable.Cost`); `internal/eval` only looks prices up and holds no price constants.
+
+```yaml
+pricing:
+  claude-sonnet-5.5:
+    input_usd_per_mtok: 3
+    output_usd_per_mtok: 15
+  claude-sonnet-5:
+    input_usd_per_mtok: 3
+    output_usd_per_mtok: 15
+  # ... claude-sonnet-4.6, claude-sonnet-4.5, claude-sonnet-4 at the same 3 / 15
+```
+
+| Rule | Behaviour |
+|------|-----------|
+| Keys | **Exact** model ids, matched as written: no trimming and no case folding (`Claude-Sonnet-5.5` does not match `claude-sonnet-5.5`). An empty key or one with leading or trailing whitespace is rejected when the config is loaded. |
+| Unit | USD **per million tokens**, `input_usd_per_mtok` and `output_usd_per_mtok`. Both are required for an entry; negative, `NaN` and infinite values are rejected. The error names the model id. |
+| Formula | `input_tokens * input_usd_per_mtok / 1e6 + output_tokens * output_usd_per_mtok / 1e6`. |
+| Unpriced model | No entry means an **unknown** cost (see [Unknown cost](#unknown-cost)). The harness never falls back to another model's price. |
+| Defaults | When the `pricing` key is **absent** (or the config file is missing) the built-in defaults apply: the five Sonnet ids in `evals.allowed_models` (`claude-sonnet-5.5`, `claude-sonnet-5`, `claude-sonnet-4.6`, `claude-sonnet-4.5`, `claude-sonnet-4`) at 3 / 15. `kairon init` writes the same block, active, into new projects, and `.kairon/config.yaml` carries it too. |
+| Replace, not merge | When the `pricing` key is **present** it replaces the defaults entirely. Remove an entry and that model's cost becomes unknown; an empty mapping (`pricing: {}`) prices nothing. |
+| Haiku | `claude-haiku-4.5` is allowed to run (it is in `evals.allowed_models`) but is **intentionally unpriced**: add an entry to price it. |
+
+`kairon eval` reads the block once, in the pre-flight, and pins it for the run. A config that cannot be read or parsed, or a `pricing` entry that is invalid, refuses the run with `cannot load pricing: ...` before any case starts and before any model call, like an invalid `evals` block.
+
+#### Unknown cost
+
+When a call used tokens on a model with no price, its cost cannot be computed. The harness records that fact instead of a plausible-looking number:
+
+- **Call record** (`calls[]`): `cost_usd` is `0` and `cost_unknown` is `true`. A reader must **not** sum a `cost_usd` of `0` with `cost_unknown: true` as a real price. `cost_unknown` is omitted when the cost is known, so records written before this field existed read as known, which is what they were.
+- **Cost objects** (`agent_cost`, `judge_cost`, `agent_verdicts.<agent>.cost`, `summary.total_cost`): `estimated_usd` holds the sum of the *known* costs, `cost_incomplete` is `true`, and `unpriced_models` lists the model ids that had no price (sorted, de-duplicated; empty ids are left out). Both fields are omitted when every contributing cost was known. The flags propagate upward: one unpriced call makes its case's cost, its agent's verdict cost and the run's `total_cost` incomplete, so `total_cost.estimated_usd` is then a **lower bound**, not a total.
+- **Call record model and priced model are the same value.** The model of a call is the model the backend reports, else the model the request was pinned to; the price lookup and the `model` in the record both use it, so a record cannot say "model X" while its cost was priced under another id.
+
+```json
+"calls": [
+  { "role": "agent", "model": "claude-haiku-4.5", "input_tokens": 1000, "output_tokens": 500,
+    "cost_usd": 0, "cost_unknown": true, "estimated": false }
+],
+"agent_cost": {
+  "tokens_in": 1000, "tokens_out": 500, "estimated_usd": 0,
+  "model": "claude-haiku-4.5", "usage_source": "reported",
+  "cost_incomplete": true, "unpriced_models": ["claude-haiku-4.5"]
+}
+```
+
+Where the incompleteness is shown to a human:
+
+- **Verdict line.** The `PASS`/`FAIL` line of an agent whose cost is incomplete ends with `[cost incomplete: no price for <models>]`, for example `PASS selftest: 100.0% (threshold 95.0%), 0/25 cases failed [cost incomplete: no price for claude-haiku-4.5]`. The line still starts with `PASS ` or `FAIL `, so `grep '^PASS \|^FAIL '` keeps working (see [Output and exit status](#output-and-exit-status)).
+- **`eval diff`.** If either run's `total_cost` is incomplete, the `Cost:` delta line is suffixed ` (incomplete: <side(s)>)` naming which run(s) are incomplete, and the quality-per-dollar lines are suffixed ` (cost incomplete)`, because a ratio over a lower bound overstates quality per dollar (see [Comparing Runs](#comparing-runs)).
+
+**Failed calls stay outside `judge_cost`.** This is unchanged by pricing. A judge call that failed, or whose reply could not be parsed, still has its `calls[]` record (with its tokens, and its `cost_usd` / `cost_unknown`), but adds nothing to the case's `judge_cost`, so `judge_cost` can be lower than the sum of the `calls[]` costs. Likewise a failed agent call is in `calls[]` only. Pricing does not change which calls are counted, only how each counted call is priced.
+
+**Out of scope.** `kiro-cli` reports neither tokens nor the served model, so its usage stays *estimated* (about 4 characters per token) and its model is the one it was launched with. Pricing makes the cost correct for whatever usage a backend reports and visible when it is unknown; it does not make a `kiro-cli` token count exact.
 
 ## Model Pinning and Run Provenance
 
@@ -1153,6 +1408,7 @@ evals:
 | `evals.trust_tools` | none | Map of agent name to the tool names that agent is trusted to use in a `--sandbox` run. It **overrides** the agent config's `allowedTools` for that agent; an empty list (`builder: []`) trusts nothing. `*` and empty entries are rejected. Has no effect on native runs. See [Tool trust](#tool-trust). |
 
 Notes:
+- Prices are configured separately, in the top-level `pricing` block (see [Pricing](#pricing)), not under `evals`.
 - A user-supplied `allowed_models` list **replaces** the default list; it is not appended to it. Omit the key to keep the defaults.
 - All values are whitespace-trimmed, and empty `allowed_models` entries are dropped. For `trust_tools`, agent and tool names are trimmed and entries with an empty agent name are dropped.
 - Use `agent_model` to run on a model that is available on your machine without editing agent configs (for example `agent_model: claude-sonnet-4.5` when `claude-sonnet-5.5` is not available). The override must itself be in `allowed_models`.
@@ -1208,7 +1464,7 @@ Each case in `<agent>.json` carries a `calls` array with one record per agent ca
 | Field | Description |
 |-------|-------------|
 | `role` | `agent` or `judge`. |
-| `model` | The model that served the call when the backend reports one, otherwise the pinned (requested) model. `kiro-cli` cannot report the served model, so its records carry the pinned model; the stub records `stub` / `stub-model`. |
+| `model` | The model that served the call when the backend reports one, otherwise the pinned (requested) model. `kiro-cli` cannot report the served model, so its records carry the pinned model. The stub agent records the scripted `stub.turns[].model` (e.g. `stub-model`, possibly empty); the stub judge records the pinned judge model, else `stub`. The price lookup uses this same value. |
 | `agent` | Agent name (agent calls only). |
 | `turn` | 1-based user turn of the call. Present only on agent calls of a `turns` or simulated-user case (see [Multi-turn cases](#multi-turn-cases)); omitted for single-turn cases and judge calls. |
 | `criterion` | Rubric criterion being judged (judge calls only). |
@@ -1216,7 +1472,8 @@ Each case in `<agent>.json` carries a `calls` array with one record per agent ca
 | `step` | The workflow step an **imported** record belongs to (for example `design`). Present only on records imported from `.eval/calls.jsonl`, where it is required (see [Step records](#step-records-evalcallsjsonl)); omitted on records the harness made. |
 | `source` | Who wrote the record. `workspace` on a record imported from `.eval/calls.jsonl`; omitted on every record the harness itself made (agent and judge calls), so existing call-record JSON is unchanged. The harness sets it, whatever the file said. |
 | `input_tokens` / `output_tokens` | Token counts for the call. |
-| `cost_usd` | Cost of the call, using the same fixed $3 / $15 per million tokens estimate as `agent_cost` / `judge_cost`. For an imported record it is the value in the file, taken as given. |
+| `cost_usd` | Cost of the call: tokens times the configured price of `model` (see [Pricing](#pricing)), the same price used for `agent_cost` / `judge_cost`. `0` when the model has no configured price; see `cost_unknown`. |
+| `cost_unknown` | `true` when `cost_usd` is `0` only because `model` has no configured price (the call used tokens). Omitted when the cost is known. Do not sum such a `cost_usd` as a real price. See [Unknown cost](#unknown-cost). |
 | `estimated` | `true` unless the usage was `reported` by the backend. |
 | `duration_ms` | Call duration in milliseconds: the backend's measurement, or wall-clock time when the backend reports none (the stub). |
 | `prompt_sha256` | Hash of the agent's prompt inputs (agent calls only). It is the **case's own** `prompt_sha256` (see [Per-case fields](#per-case-fields-in-agentjson)), computed from that case's staged workspace. It equals the file-level `prompt_sha256` unless the case's fixture overrides `.kiro` content. |
@@ -1228,7 +1485,7 @@ Details:
 - `agent_cost` and `judge_cost` are unchanged; `calls` is the per-call breakdown behind them.
 - No agent record is written when prompt assembly failed, because no call was made. A `turns` case writes one agent record per turn that ran (the failed turn included), each with its `turn`.
 - A workflow agent's dispatch tool can add records of its own to `calls[]` by writing `.eval/calls.jsonl`. They carry `step` and `source: "workspace"`, follow the agent call(s) and any simulated-user routing calls, and precede judge calls made while scoring. Their tokens and cost are added to `agent_cost` (see [Step records](#step-records-evalcallsjsonl)).
-- A judge call is recorded even when its output could not be parsed (the tokens were spent). Its cost appears in that call's `calls[]` record but **not** in the case's `judge_cost`, which keeps a zero cost for a failed or unparseable judge call — so for such a case the sum of `calls[].cost_usd` can exceed `judge_cost`.
+- A judge call is recorded even when its output could not be parsed (the tokens were spent). Its cost appears in that call's `calls[]` record but **not** in the case's `judge_cost`, which keeps a zero cost for a failed or unparseable judge call — so for such a case the sum of `calls[].cost_usd` can exceed `judge_cost`. Failed judge calls remain outside `judge_cost` whatever the model's price (see [Unknown cost](#unknown-cost)).
 - A `--sandbox` run builds its agent record exactly like a native one, from the same request and the same completion logic: the cost comes from the backend's reported or estimated usage, `model` is the served model when the backend reports one (the stub) or the pinned model (`kiro-cli`), and `estimated` is `true` unless the usage was `reported`. For the same case the sandboxed and native `output`, `agent_cost`, call record `model` and `prompt_sha256` match. The sandboxed agent record additionally carries `trusted_tools`; the only other differences between a native and a container run are the run-level `sandbox` and `containment` fields (see [Execution mode and containment](#execution-mode-and-containment) and [Parity between native and container runs](#parity-between-native-and-container-runs)).
 
 The per-call records (field values below are illustrative):
@@ -1243,14 +1500,15 @@ The per-call records (field values below are illustrative):
       "agent": "selftest",
       "input_tokens": 123,
       "output_tokens": 45,
-      "cost_usd": 0.001044,
+      "cost_usd": 0,
+      "cost_unknown": true,
       "estimated": false,
       "duration_ms": 0,
       "prompt_sha256": "9f2c…"
     },
     {
       "role": "judge",
-      "model": "stub",
+      "model": "claude-sonnet-5.5",
       "criterion": "clarity",
       "input_tokens": 210,
       "output_tokens": 18,
@@ -1277,6 +1535,9 @@ The per-agent result file always carries:
 | `sandbox` | Execution mode as a **boolean**: `true` for a `--sandbox` (container) run, `false` for a native run. Written by every run, including single-case (`--testcase`) runs. Absent in files written before mode tracking. Note that `summary.json` spells the same fact as a string (`"native"` / `"container"`); see below. |
 | `containment` | What contained this agent's cases (see [Execution mode and containment](#execution-mode-and-containment)). Present for container runs only; absent for native runs. |
 | `repeat` | Number of times every case was run (`--repeat`; see [Repeat runs](#repeat-runs---repeat)). Written as `1` for a plain run; omitted when `0`, and absent in files written before repeats existed, which count as `1`. Each entry of `cases` then carries `run` (1-based). |
+| `suite_sha256` | Identity of the agent's eval suite: a 64-character lowercase hex SHA-256 over its rubric, case files and the fixtures those cases reference (see [Run coverage](#run-coverage-suite_sha256-complete-and-case_filter)). Absent in files written before coverage tracking. |
+| `complete` | `true` only when every case of the agent has a result for every repeat **and** `case_filter` is empty. `false` is written explicitly. Absent in files written before coverage tracking. |
+| `case_filter` | The `--case` value (`kairon eval <agent> <case>`), `""` for a full run. `""` is written explicitly. Absent in files written before coverage tracking. |
 
 ```json
 {
@@ -1288,6 +1549,9 @@ The per-agent result file always carries:
   "sandbox": false,
   "resources_present": [],
   "repeat": 1,
+  "suite_sha256": "5c0e…",
+  "complete": true,
+  "case_filter": "",
   "cases": [ … ]
 }
 ```
@@ -1325,21 +1589,23 @@ In the self-test, `stub-conventions-fixture` shows this: its workspace fixture s
 
 #### Run summary (`summary.json`)
 
-`summary.json` always carries `judge_model` and an `agents` map with `agent_model`, `prompt_sha256` and `resources_present` per agent (plus `prompt_file` for a [candidate prompt run](#evaluating-a-candidate-prompt---prompt-file)). These are the agent-level baseline values; per-case values live only in `<agent>.json` (see [Per-case fields](#per-case-fields-in-agentjson)). For a workflow agent, `agents.<agent>` also nests `sub_agents` and `workflow_sha256` (see [Workflows](#workflows-sub-agent-provenance-and-step-records)); sub-agents are never keys of `agents`. It also records the run's execution mode in `sandbox` and, for container runs, a per-agent `containment` map. The example below is a `--sandbox` (container) run (the `tool_trust` values are illustrative; they follow each agent's trust set, see [Tool trust](#tool-trust)):
+`summary.json` always carries `judge_model` and an `agents` map with `agent_model`, `prompt_sha256` and `resources_present` per agent (plus `prompt_file` for a [candidate prompt run](#evaluating-a-candidate-prompt---prompt-file), and the run-coverage fields `suite_sha256`, `complete` and `case_filter`, see [Run coverage](#run-coverage-suite_sha256-complete-and-case_filter)). These are the agent-level baseline values; per-case values live only in `<agent>.json` (see [Per-case fields](#per-case-fields-in-agentjson)). For a workflow agent, `agents.<agent>` also nests `sub_agents` and `workflow_sha256` (see [Workflows](#workflows-sub-agent-provenance-and-step-records)); sub-agents are never keys of `agents`. It also records the run's execution mode in `sandbox` and, for container runs, a per-agent `containment` map. The example below is a `--sandbox` (container) run (the `tool_trust` values are illustrative; they follow each agent's trust set, see [Tool trust](#tool-trust)):
 
 ```json
 {
   "git_hash": "a1b2c3d",
-  "total_cost": { "tokens_in": 4210, "tokens_out": 980, "estimated_usd": 0.0273 },
+  "total_cost": { "tokens_in": 4210, "tokens_out": 980, "estimated_usd": 0.0273, "cost_incomplete": true, "unpriced_models": ["claude-haiku-4.5"] },
   "agent_scores": { "architect": 0.85, "builder": 0.8 },
   "agent_verdicts": {
-    "architect": { "score": 85, "threshold": 95, "passed": false, "cases_total": 4, "cases_failed": 1, "cost": { "tokens_in": 2100, "tokens_out": 500, "estimated_usd": 0.0138 }, "repeat": 1, "score_min": 85, "score_max": 85, "repeat_scores": [85] },
-    "builder":   { "score": 80, "threshold": 95, "passed": false, "cases_total": 3, "cases_failed": 1, "cost": { "tokens_in": 2110, "tokens_out": 480, "estimated_usd": 0.0135 }, "repeat": 1, "score_min": 80, "score_max": 80, "repeat_scores": [80] }
+    "architect": { "score": 85, "threshold": 95, "passed": false, "cases_total": 4, "cases_failed": 1, "cost": { "tokens_in": 2100, "tokens_out": 500, "estimated_usd": 0.0138 }, "repeat": 1, "score_min": 85, "score_max": 85, "repeat_scores": [85],
+                    "criteria": [ { "name": "task_decomposition", "score": 40, "max_score": 50, "percent": 80 }, { "name": "completeness", "score": 45, "max_score": 50, "percent": 90 } ] },
+    "builder":   { "score": 80, "threshold": 95, "passed": false, "cases_total": 3, "cases_failed": 1, "cost": { "tokens_in": 2110, "tokens_out": 480, "estimated_usd": 0.0135 }, "repeat": 1, "score_min": 80, "score_max": 80, "repeat_scores": [80],
+                    "criteria": [ { "name": "code_correctness", "score": 40, "max_score": 50, "percent": 80 }, { "name": "spec_adherence", "score": 40, "max_score": 50, "percent": 80 } ] }
   },
   "judge_model": "claude-sonnet-5.5",
   "agents": {
-    "architect": { "agent_model": "claude-sonnet-5.5", "prompt_sha256": "…", "resources_present": [] },
-    "builder":   { "agent_model": "claude-sonnet-5.5", "prompt_sha256": "…", "resources_present": [] }
+    "architect": { "agent_model": "claude-sonnet-5.5", "prompt_sha256": "…", "resources_present": [], "suite_sha256": "…", "complete": true, "case_filter": "" },
+    "builder":   { "agent_model": "claude-sonnet-5.5", "prompt_sha256": "…", "resources_present": [], "suite_sha256": "…", "complete": true, "case_filter": "" }
   },
   "sandbox": "container",
   "containment": {
@@ -1352,7 +1618,7 @@ In the self-test, `stub-conventions-fixture` shows this: its workspace fixture s
 | Field | Description |
 |-------|-------------|
 | `git_hash`, `total_cost`, `agent_scores` | Run totals. `agent_scores` is score / maximum per agent as a **0–1 fraction**; skipped criteria count as 0 and stay in the maximum (see [Skipped Criteria](#skipped-criteria)). An agent with a zero denominator has no entry. |
-| `total_cost` | Sum of the `cost` of every entry in `agent_verdicts` (`tokens_in`, `tokens_out`, `estimated_usd`; `model` and `usage_source` are not aggregated). It accumulates across agents and is recomputed from the verdicts on every save, so repeated progressive saves of the same agent and `--resume` do not double count it. |
+| `total_cost` | Sum of the `cost` of every entry in `agent_verdicts` (`tokens_in`, `tokens_out`, `estimated_usd`; `model` and `usage_source` are not aggregated). It accumulates across agents and is recomputed from the verdicts on every save, so repeated progressive saves of the same agent and `--resume` do not double count it. When any contributing call had an unknown cost it also carries `cost_incomplete: true` and the union of `unpriced_models`, and `estimated_usd` is then a lower bound (see [Unknown cost](#unknown-cost)); both keys are omitted otherwise. |
 | `agent_verdicts` | Map of agent name to its pass/fail verdict (fields below). One entry per evaluated agent. Absent in a `summary.json` written before verdicts existed. |
 | `judge_model`, `agents` | Run-level provenance, as described above. |
 | `prompt_file` | The `--prompt-file` path of a candidate prompt run, normalised as in `<agent>.json`. Written at the top level only under the single-agent rule below (a `--prompt-file` run always names one agent, so it is always present for such a run), and per agent as `agents.<agent>.prompt_file`. Omitted entirely when no `--prompt-file` was used. |
@@ -1365,14 +1631,21 @@ In the self-test, `stub-conventions-fixture` shows this: its workspace fixture s
 |-------|------|-------------|
 | `score` | number, **percent** (0–100) | The agent's aggregate score. With `--repeat` it is the **mean** over the repeats. `0` when nothing was scored. |
 | `threshold` | number, **percent** (0–100) | The agent's pass threshold (its rubric's `pass_threshold`, default 95). |
-| `passed` | boolean | `score >= threshold`, on the mean. `false` when nothing was scored. |
+| `passed` | boolean | The agent passes when `score >= threshold` on the mean **and**, if `min_criterion_score` is set, no criterion's pooled percent is below that floor. `false` when nothing was scored. |
 | `cases_total` | integer | Number of distinct cases evaluated (a case run N times counts once). |
 | `cases_failed` | integer | Number of cases that did not pass their own threshold; for a case with several runs, its score pooled over the runs is compared to its threshold. Informational. |
-| `cost` | object | The agent's cost (agent and judge calls of every run of every case): `tokens_in`, `tokens_out`, `estimated_usd`. |
+| `cost` | object | The agent's cost (agent and judge calls of every run of every case): `tokens_in`, `tokens_out`, `estimated_usd`, plus `cost_incomplete` and `unpriced_models` when a contributing call had an unknown cost (omitted otherwise; see [Unknown cost](#unknown-cost)). |
 | `repeat` | integer | Number of repeats (`--repeat`; `1` for a plain run). Always written. |
 | `score_min` | number, **percent** (0–100) | The lowest repeat score. Always written, including `0`; equals `score` for a plain run. |
 | `score_max` | number, **percent** (0–100) | The highest repeat score. Always written; equals `score` for a plain run. |
 | `repeat_scores` | array of **percent** numbers | The repeat scores in run order, one per completed repeat (`[score]` for a plain run). Always written. |
+| `criteria` | array of objects | The agent's non-cost criteria pooled over every case and every repeat, in first-seen order (see [Per-criterion scores and the floor](#per-criterion-scores-and-the-floor)). Always written; `[]` when nothing was scored. Fields below. |
+| `criteria[].name` | string | The criterion's name in the rubric. |
+| `criteria[].score` | integer, **points** (not percent) | Points the criterion earned, summed over all cases and repeats. A skipped criterion counts `0`. |
+| `criteria[].max_score` | integer, **points** (not percent) | The criterion's maximum, summed over the same cases and repeats. With `--repeat N` it is N times the single-run maximum. A criterion a `checks_only` rubric did not score in a case adds nothing to it. Never `0`: such entries are not listed. |
+| `criteria[].percent` | number, **percent** (0–100) | `score * 100 / max_score`. With `--repeat` it is the mean over the repeats. This is what `min_criterion_score` is compared with. |
+| `min_criterion_score` | number, **percent** (0–100) | The rubric's floor, echoed from the result. Omitted when the rubric sets none. |
+| `criteria_below_floor` | array of strings | Names of the criteria whose `percent` is below `min_criterion_score`, in `criteria` order. Omitted when there are none (and always when no floor is set). Any entry makes `passed` `false`. |
 
 `score`, `score_min`, `score_max`, `repeat_scores` and `threshold` are percent, while `agent_scores` is a 0–1 fraction (an `agent_scores` of `0.85` is an `agent_verdicts` score of `85`). See [Pass/Fail Verdict and Exit Status](#passfail-verdict-and-exit-status).
 
@@ -1385,7 +1658,21 @@ A `--repeat 3` run of one agent records, for example (the three repeats scored 9
 }
 ```
 
-**New fields in `<agent>.json`.** The agent result carries `threshold` (the agent's pass threshold, percent) and `repeat` (see above). Each case carries `threshold` (the case's resolved threshold, percent), `passed` (whether it was met) and `run` (1-based run number; with `--repeat 3` a case name appears three times, with `run` 1, 2 and 3):
+A verdict that failed on the floor alone (overall `66.7` against a threshold of `60`, but `report_marker` at `0%` under a floor of `50`) records:
+
+```json
+"agent_verdicts": {
+  "selftest-floor": { "score": 66.7, "threshold": 60, "passed": false, "cases_total": 1, "cases_failed": 0, "cost": { … },
+                      "repeat": 1, "score_min": 66.7, "score_max": 66.7, "repeat_scores": [66.7],
+                      "criteria": [ { "name": "file_written", "score": 2, "max_score": 2, "percent": 100 },
+                                    { "name": "report_marker", "score": 0, "max_score": 1, "percent": 0 } ],
+                      "min_criterion_score": 50, "criteria_below_floor": ["report_marker"] }
+}
+```
+
+`score`, `max_score` and `percent` in `criteria` are the pooled totals over every case and repeat, so the verdict `score` stays a percent while a criterion's `score` is points (the listed `score`s and `max_score`s add up to the numerator and denominator of the verdict `score`). `agent_scores` is unchanged.
+
+**New fields in `<agent>.json`.** The agent result carries `threshold` (the agent's pass threshold, percent), `min_criterion_score` (the rubric's per-criterion floor in percent, at the top level; omitted when the rubric sets none, which a result file written before the floor existed also lacks, meaning no floor) and `repeat` (see above). Each case carries `threshold` (the case's resolved threshold, percent), `passed` (whether it was met) and `run` (1-based run number; with `--repeat 3` a case name appears three times, with `run` 1, 2 and 3):
 
 ```json
 {
@@ -1437,6 +1724,52 @@ A native run and a `--sandbox` run of the same case are meant to be directly com
 The daemon-gated test `TestProvenanceParitySandbox` (run by `task eval:selftest:sandbox`) checks this by running `selftest` and `selftest-fail` natively and with `--sandbox` on the stub backend. It compares the provenance fields in `<agent>.json`, `summary.json` and every call record, checks `native` without containment against `container` with it, compares the **whole** `Summary` after normalising only `sandbox` and `containment`, compares per-case score totals and the threshold outcome, and requires `eval diff` between the two runs to succeed and report the mode difference. Like the other gated tests it skips, without passing, when the gate is unset or no daemon is reachable (see [Self-Test in the Container Sandbox](#self-test-in-the-container-sandbox)).
 
 **The per-agent threshold verdict is part of that parity.** The per-agent pass/fail verdict, the `PASS`/`FAIL` line and the non-zero exit status are computed from the same shared score and denominator code as the printed case result and `agent_scores` (see [Pass/Fail Verdict and Exit Status](#passfail-verdict-and-exit-status)). Because the parity test compares the whole `Summary`, `agent_verdicts` and the accumulated `total_cost` are compared on both paths, and the threshold outcome of each agent is the same natively and under `--sandbox`.
+
+#### Run coverage: `suite_sha256`, `complete` and `case_filter`
+
+`prompt_sha256` says which prompt produced a score. Three more per-agent facts say **what the run measured**, so that [`verify-log`](#iteration-logs-and-verify-log) can prove that the only thing that changed between two runs is the thing an iteration claims to have changed.
+
+| Field | Type | Meaning |
+|-------|------|---------|
+| `suite_sha256` | string, 64 lowercase hex | Identity of the agent's eval suite (below). |
+| `complete` | boolean | `true` only when every case of the agent has a result for every repeat **and** `case_filter` is empty. |
+| `case_filter` | string | The `--case` value (`kairon eval <agent> <case>` or `--case`); `""` for a full run. |
+
+They are written to `<agent>.json` and to `summary.json` under `agents.<agent>`, always together. The top-level single-agent mirror fields of `summary.json` (`prompt_sha256`, `agent_model`, ...) are **not** extended: the coverage fields live only in `agents.<agent>` and `<agent>.json`. `complete: false` and `case_filter: ""` are written explicitly, so a recorded `false` or `""` is distinguishable from a result that never recorded the fields (a run made before this tracking existed, or a direct library call that bypasses `kairon eval`), which has none of the three. `verify-log` reads that second case as "not recorded".
+
+**What `complete` and `case_filter` mean.**
+
+- A case counts as covered when it has a saved result for every run `1..repeat` (a result with no `run` counts as run 1). An agent with no cases is never complete.
+- **A `--case` run is never complete**, even if the agent has exactly one case: "full run" means "no filter and every case covered". It records `case_filter: <case name>` and `complete: false`.
+- Every progressive save records its own coverage. A run interrupted after the first of several cases is left with `complete: false`; the final save of a finished run records `complete: true`. A resumed run recomputes `complete` over the saved and the new results together.
+- `verify-log` does not look at the `.progress` marker. `complete` is per agent and is the single signal, so an agent that finished in a multi-agent run whose other agent was interrupted is still usable.
+
+**How `suite_sha256` is computed.** It is a lowercase hex SHA-256 of the agent's eval suite, computed from the active evals directory (so it honours [`--evals-dir`](#evals-directory---evals-dir)) before any case starts. Only the bytes of these inputs are hashed:
+
+1. **The rubric.** Every `rubrics/*.yaml` whose parsed `agent` equals the agent (the same selection the rubric loader makes).
+2. **The case files.** Every `cases/<agent>/*.yaml` (non-recursive, `.yaml` only). This covers the whole agent suite whatever `--case` selects, so a filtered run and a full run of the same suite hash alike.
+3. **What those cases reference:**
+   - `workspace: <name>`: every regular file under `fixtures/workspaces/<name>/`. Symlinks and other non-regular entries are skipped, as when the workspace is built, and a file's execute bit is part of its identity because the workspace builder preserves it.
+   - `checks[].inject` entries: `fixtures/hidden/<entry>`.
+   - `mocks[].script`: `<evals-dir>/<script>`.
+   - `setup[]` entries of `type: file`: the `path`, rebased onto `--evals-dir` like the prompt assembly does (so the default `.kairon/evals/fixtures/selftest-input.md` follows the chosen evals directory).
+
+How the hash is built:
+
+- Each input is one length-framed part (the same framing as [`prompt_sha256`](#how-prompt_sha256-is-computed)), after a leading domain part (`suite` / `v1`) that separates this hash from `prompt_sha256`. The part's kind carries the logical name: `rubric <rel>`, `case <rel>`, `file <rel>`, `file+x <rel>` or `missing <rel>`.
+- `<rel>` is slash-separated and relative to the evals directory, so the hash does not depend on where that directory lives. A `setup` file outside the evals directory uses its cleaned path as written.
+- Inputs are de-duplicated (a fixture shared by several cases counts once) and sorted by kind and name, so discovery order does not matter.
+- Contents are hashed as raw bytes, with no line-ending normalisation.
+- A referenced file that does not exist is hashed as `missing <rel>` and is **not** an error: the case reports the problem when it runs, and the suite identity stays stable. Any other read error stops the run before any case starts. An agent whose rubric or cases cannot be loaded is skipped here (it records no coverage), so the existing, more specific error or warning for it is unchanged.
+
+Deliberately **not** part of the suite:
+
+- The agent config, its prompt and its `resources`: that is `prompt_sha256`.
+- The models (`agent_model`, `judge_model`) and the sandbox mode, which `verify-log` compares separately.
+- The rubrics and cases of other agents.
+- Workspace fixtures that no case references, and files in `fixtures/hidden/` that no check injects.
+
+So editing a case, the rubric or a fixture a case uses changes `suite_sha256` and leaves `prompt_sha256` unchanged, and editing the prompt does the reverse.
 
 #### How `prompt_sha256` is computed
 
@@ -1610,6 +1943,20 @@ The comparison uses the agent-level (baseline) values only; per-case `prompt_sha
 
 Start a fresh run (without `--resume`) after changing a prompt, a resource or `evals`. A result file written before provenance existed (no `prompt_sha256`) is **refused when it already holds saved cases** — resuming would attribute those scores to the current prompt and models, which were unknown when they were produced; an empty legacy file is allowed. An unchanged resume continues as before.
 
+**Eval suite.** Resume also refuses to continue into a result file that holds saved cases recorded under a different eval suite, because the resumed run would stamp the current `suite_sha256` onto cases that ran under the old one (see [Run coverage](#run-coverage-suite_sha256-complete-and-case_filter)). The comparison is against the `suite_sha256` in the existing `<agent>.json`:
+
+```
+❌ cannot resume: eval suite changed since the interrupted run of architect (recorded suite_sha256=…; now …) — resume with the same suite or start a fresh run
+```
+
+A file that holds cases but records no `suite_sha256` (written before suite tracking existed) is refused too, since the suite it ran under cannot be verified:
+
+```
+❌ cannot resume: architect.json predates eval suite tracking and has 3 saved case(s); the suite they ran under cannot be verified (now suite_sha256=…) — start a fresh run (without --resume)
+```
+
+An empty result file is never refused, and nothing is checked for an agent that has no pinned suite (its rubric or cases could not be loaded). Edit a case, the rubric or a fixture, or add a case, and the interrupted run can no longer be resumed: start a fresh one.
+
 **Execution mode.** Resume also refuses to switch between native and `--sandbox`, because scoring `requires_sandbox` cases under the other mode would mark them completed under the wrong execution model. The check is made at two levels:
 
 - per agent, against the `sandbox` boolean in the existing `<agent>.json` (a file that holds saved cases but predates mode tracking is refused, since its mode cannot be verified);
@@ -1781,9 +2128,12 @@ The command takes exactly one argument, the agent name (a single path element: n
 | `chain` | For iteration `k > 0`, `baseline_run` is not iteration `k-1`'s `result_run`. |
 | `chronology` | Iteration `k`'s `date` is earlier than iteration `k-1`'s. |
 | `run-exists` | `baseline_run` or `result_run` is not a directory under `<evals-dir>/results/`. Runs are matched by exact directory name; unlike `eval diff`, a hash-only name is not resolved. |
-| `run-data` | A referenced run records no score for the agent or, for `change_type: prompt`, no `prompt_sha256` for the agent. Fails closed: an unverifiable change is a violation. |
+| `run-data` | A referenced run records no score for the agent, or does not record `prompt_sha256`, `suite_sha256` or `complete` for the agent; one violation per run lists every missing field, for both change types. Fails closed: an unverifiable change is a violation. A run recorded before run coverage existed lacks `suite_sha256` and `complete` and fails here (see the [migration note](#migration-note-run-coverage-and-verify-log)). |
+| `run-complete` | A referenced run records `complete: false` for the agent: it is a `--case` run or an interrupted run, and only full runs can be compared. The message names the run, `complete=false` and the recorded `case_filter`. Reported for each such run. A run that records no `complete` at all is `run-data`, not this rule. |
+| `run-config` | Both runs exist and differ in `agent_model` or `sandbox` (`native` or `container`), or, for `change_type: prompt` only, in `judge_model`. The message names the field and both values. A fact recorded by one run and not by the other counts as a difference; a fact recorded by neither is equal. A `change_type: eval` iteration may change the judge, so its `judge_model` is not compared here. |
 | `score-match` | A claimed score differs from the run's recorded score by more than 0.1 percentage points (exactly 0.1 passes). The message names the field, the claimed value, the recorded value and the run. The recorded score is not rounded before the comparison. |
-| `prompt-change` | For `change_type: prompt`, `baseline_run` and `result_run` record the same `prompt_sha256` for the agent. A `change_type: eval` iteration may keep the same hash. |
+| `prompt-change` | The prompt relation does not match `change_type`, when both runs record `prompt_sha256` for the agent. `prompt`: the two runs record the same `prompt_sha256`. `eval`: the two runs record different `prompt_sha256` (the prompt must stay the same). |
+| `suite-change` | The suite relation does not match `change_type`, when both runs record `suite_sha256` for the agent. `prompt`: the two runs record different `suite_sha256` (the eval suite must stay the same). `eval`: the two runs record the same `suite_sha256` **and** the same `judge_model` (both recorded identical, or both not recorded), so neither the suite nor the judge changed. |
 | `min-iterations` | There are fewer iteration logs than `--min-iterations` (default `2`). |
 
 ### Where the recorded score comes from
@@ -1798,6 +2148,26 @@ If none of them is available the run has no recorded score for the agent, which 
 
 `prompt_sha256` is read from `<agent>.json` and, if absent there, from `summary.json` → `agents.<agent>.prompt_sha256` (see [How `prompt_sha256` is computed](#how-prompt_sha256-is-computed)). A `--prompt-file` run hashes the candidate's bytes, so evaluating a changed candidate yields a different hash than the baseline.
 
+The other facts `verify-log` compares are read the same way, field by field: `<agent>.json` first, then `summary.json`. A fact that neither file records is "not recorded".
+
+| Fact | `<agent>.json` | `summary.json` |
+|------|----------------|----------------|
+| `agent_model` | `agent_model` | `agents.<agent>.agent_model` |
+| `judge_model` | `judge_model` | `judge_model` |
+| `sandbox` | `sandbox` (boolean: `true` is `container`, `false` is `native`) | `sandbox` (string: `native` or `container`) |
+| `suite_sha256`, `complete`, `case_filter` | the same names | `agents.<agent>.<name>` |
+
+### What `change_type` requires
+
+`verify-log` enforces the meaning of `change_type` against the two runs of each iteration. Every iteration needs both runs to be complete full runs (`run-complete`) with the same `agent_model` and `sandbox` (`run-config`). Beyond that:
+
+| `change_type` | `prompt_sha256` | `suite_sha256` | `judge_model` |
+|---------------|-----------------|----------------|---------------|
+| `prompt` | must differ (`prompt-change`) | must be the same (`suite-change`) | must be the same (`run-config`) |
+| `eval` | must be the same (`prompt-change`) | the suite **or** the judge must change: the same `suite_sha256` with the same `judge_model` fails (`suite-change`) | may change; it is how an `eval` iteration changes the judge |
+
+So a `prompt` iteration proves the prompt changed while the suite, the judge, the models and the sandbox mode did not, and an `eval` iteration proves the prompt did not change while the suite or the judge did. A pairwise rule runs whenever both runs record the facts it needs; a missing fact is reported once by `run-data` instead of cascading into the other rules.
+
 ### Exit status
 
 | Exit status | Meaning |
@@ -1807,9 +2177,18 @@ If none of them is available the run has no recorded score for the agent, which 
 
 Usage text is not printed for a verification failure.
 
+### Migration note: run coverage and `verify-log`
+
+Runs now record `suite_sha256`, `complete` and `case_filter` (see [Run coverage](#run-coverage-suite_sha256-complete-and-case_filter)), and `verify-log` requires them. Consequences for runs and logs that already exist:
+
+- **A run recorded before this change fails `run-data`.** It has no `suite_sha256` and no `complete`, so `verify-log` cannot prove that its suite was full and unchanged. This is deliberate: an unverifiable run is a violation, not a pass. Re-record it by running `kairon eval <agent>` again on the commit you want to measure, commit the new run under `<evals-dir>/results/`, and point `baseline_run` / `result_run` (and the claimed scores) of the iteration logs at the re-recorded runs. Because each iteration's `baseline_run` must equal the previous iteration's `result_run`, re-recording a run that sits in the middle of a chain means updating both logs that reference it.
+- **An `eval` iteration now needs `prompt_sha256` on both runs.** It has to prove that the prompt did not change, so a run without a prompt hash fails `run-data` for either `change_type`. Before this change only `change_type: prompt` required it.
+- **A `--case` run or an interrupted run cannot be used.** It records `complete: false` and fails `run-complete`. Use a full run.
+- **A resume of a result file written before this change is refused** when it holds saved cases (see [Resume refusal](#resume-refusal)). Start a fresh run.
+
 ### Verifying the verifier
 
-The verifier ships with fixtures under `internal/eval/testdata/verifylog/`: shared result runs in `evals/results/` and one log set per rule. Run the passing set with:
+The verifier ships with fixtures under `internal/eval/testdata/verifylog/`: shared result runs in `evals/results/` and one log set per rule. Every run records the coverage fields except two that are legacy-shaped on purpose: `260630-100000-fffffff` (no coverage fields and no models) and `260705-170000-8888888` (a prompt hash but no `suite_sha256` and no `complete`). Run the passing set with:
 
 ```bash
 go run ./cmd/kairon eval verify-log selftest \
@@ -1817,7 +2196,7 @@ go run ./cmd/kairon eval verify-log selftest \
   --evals-dir internal/eval/testdata/verifylog/evals
 ```
 
-This exits 0 and prints `OK selftest: 3 iterations verified`. The other sets each violate one rule and exit non-zero, naming the file and the rule:
+This exits 0 and prints `OK selftest: 3 iterations verified`. In the `valid` set, iteration 02 is a `change_type: eval` iteration whose runs record the same `prompt_sha256` and different `suite_sha256`. The other sets each violate one rule and exit non-zero, naming the file and the rule. The eight sets for run coverage each hold `iteration-00.md` (a valid `prompt` iteration) and an `iteration-01.md` that is the only one with a violation, so they pass the default `--min-iterations 2`:
 
 | Set | Rule reported |
 |-----|---------------|
@@ -1826,6 +2205,14 @@ This exits 0 and prints `OK selftest: 3 iterations verified`. The other sets eac
 | `gap` | `sequence` |
 | `broken-chain` | `chain` |
 | `no-prompt-change` | `prompt-change` |
+| `partial-run` | `run-complete`: `prompt` iteration whose result run records `complete: false` and `case_filter: stub-basic` |
+| `model-mismatch` | `run-config`: the result run's `agent_model` differs; the message names `agent_model` |
+| `sandbox-mismatch` | `run-config`: the result run was `container`, the baseline `native`; the message names `sandbox` |
+| `judge-mismatch` | `run-config`: `prompt` iteration whose runs record different `judge_model`; the message names `judge_model` |
+| `suite-changed` | `suite-change`: `prompt` iteration whose runs record different `suite_sha256` |
+| `eval-prompt-changed` | `prompt-change`: `eval` iteration whose runs record different `prompt_sha256` |
+| `eval-nothing-changed` | `suite-change`: `eval` iteration whose runs record the same `prompt_sha256`, `suite_sha256` and `judge_model` |
+| `legacy-run` | `run-data`: the result run records no `suite_sha256` and no `complete`; the message names both |
 
 ```bash
 go run ./cmd/kairon eval verify-log selftest --min-iterations 5 \
@@ -1837,11 +2224,12 @@ The unit tests are `go test ./internal/eval/ -run VerifyLog` and `go test ./cmd/
 
 ## Prompt Audit (`kairon eval audit`)
 
-`kairon eval audit` is a static check of an agent's prompt, for the maturity-model Stage 3 requirement that prompts are structured and that most of their instructions earn their place. It checks three things:
+`kairon eval audit` is a static check of an agent's prompt, for the maturity-model Stage 3 requirement that prompts are structured and that most of their instructions earn their place. It checks four things:
 
 1. **RTCC structure.** The prompt has the level-2 headings `## Role`, `## Task`, `## Context` and `## Constraints`, in that order.
 2. **Load-bearing coverage.** At least **90%** of the prompt's instructions are *load-bearing*: each is mapped, in a hand-written table, to a criterion of the agent's rubric. The Evidence column of that table must name, as `case:<case-name>`, a case of the agent that has a check on the row's criterion, and the audit verifies it. The table format is defined in [`.kairon/iterations/README.md`](../.kairon/iterations/README.md#load-bearing-table).
 3. **No duplicates.** An instruction that repeats an earlier one is dead weight and fails the audit, whatever the coverage.
+4. **Distinct criteria.** The agent's rubric has at least **3** non-cost criteria, each is backed by at least one check in the agent's cases, and no two of them carry identical checks (see [Distinct criteria](#distinct-criteria)).
 
 The audit is deterministic. It makes no model call, starts no `kiro-cli` and no container, and reads only the agent config, the prompt, the rubric, the agent's cases and the table. It does not edit anything.
 
@@ -1863,7 +2251,8 @@ The command takes exactly one argument, the agent name (a single path element: n
 - **Engine skills.** Every `skill://.kiro/skills/<name>/SKILL.md` entry in the config's `resources` whose name does **not** end in `-conventions` is an engine skill, such as `sentinel-protocol`. Its lines are audited together with the prompt and count toward the 90%. The skill is read from the copy shipped inside the `kairon` binary (`cmd/kairon/templates/kiro/skills/`), so the audit scores what users actually receive. A skill that is not shipped there cannot be audited and fails with the `resource` rule.
 - **Override hooks.** A resource whose skill name ends in `-conventions` (for example `builder-conventions`) is a per-project override hook. It is listed in the report, never read and never scored.
 - Resources that are not `skill://` strings are listed as ignored and not scored. A skill that appears twice is processed once.
-- **The agent's cases.** `<evals-dir>/cases/<agent>/*.yaml` (non-recursive, `.yaml` only) are read to verify the Evidence column. A case is identified by its `name:` field and counts as a check on a criterion when one of its `checks:` entries has that `criterion`. The audit reads only these two fields, ignores every other field, runs nothing and does not use the eval runner's case loader. A missing `cases/<agent>/` directory means the agent has no cases. A case file that is not valid YAML or has no `name:` is a plain error, like a bad rubric.
+- **The rubric.** `<evals-dir>/rubrics/<agent>.yaml` is read for each criterion's `name` and `type`. The `type` is what tells a cost criterion (`type: cost`) from a non-cost one, which the [Distinct criteria](#distinct-criteria) rules need. Only the audit reads it this way: the eval runner's own rubric loading is unchanged, so a rubric with fewer than three criteria still runs under `kairon eval`.
+- **The agent's cases.** `<evals-dir>/cases/<agent>/*.yaml` (non-recursive, `.yaml` only) are read to verify the Evidence column and the Distinct criteria rules. A case is identified by its `name:` field and counts as a check on a criterion when one of its `checks:` entries has that `criterion`. Besides `name:` and each check's `criterion`, the audit also reads the rest of every check (its `type` and all its other fields) so it can compare checks for equality. It ignores every other field of the case, runs nothing and does not use the eval runner's case loader. A missing `cases/<agent>/` directory means the agent has no cases. A case file that is not valid YAML or has no `name:` is a plain error, like a bad rubric.
 
 ### The RTCC rule
 
@@ -1888,6 +2277,31 @@ The token must start the cell or follow a character that is not a letter, digit 
 
 An instruction whose trimmed text equals an earlier instruction is dead weight (Stage 3 requires no dead weight). "Earlier" means earlier in the prompt, then in the audited engine skills in the order they appear in the report. Each repeat is a `duplicate` violation at the repeat's `file:line` that names the **first** occurrence, so three copies give two violations that both name the first. The check is on the exact trimmed text and works across files (prompt against skill, skill against skill). It also flags short repeated lines such as `---` outside front-matter; reword or drop them. Duplicates are always reported, even at 100% coverage. Counting is unchanged (`total` and `mapped` include every occurrence); the number of duplicate violations is printed as `duplicates=` in the report.
 
+### Distinct criteria
+
+Maturity-model Stage 3 asks for at least three distinct evaluation criteria, each backed by a substantive check. The audit enforces that on the agent's rubric and cases with three rules. Like `duplicate`, they are always reported, whatever the coverage, and they do not change `total`, `mapped` or the coverage percentage.
+
+**Non-cost criteria.** A criterion is *non-cost* when its `type` is not `cost`. Only non-cost criteria count: a `type: cost` criterion is not counted toward the minimum and is never reported as `unchecked` or `identical`. Criteria are de-duplicated by `name` (the first occurrence wins) and a criterion with an empty name is ignored. A check on a criterion that is not in the rubric, or on a `type: cost` criterion, satisfies none of these rules.
+
+**A check on a criterion.** An entry in a case's `checks:` list whose `criterion` equals the criterion's name. The audit counts the checks, and the distinct cases that carry at least one, per criterion (the `checks=` and `cases=` values of the [report](#report-format)).
+
+The rules:
+
+- **`rubric`: at least 3 non-cost criteria.** A rubric with fewer than three distinct non-cost criteria fails. The violation is attributed to the rubric file (`<evals-dir>/rubrics/<agent>.yaml`, no line number) and states how many were found and which. Two non-cost criteria plus a `type: cost` criterion is still a violation.
+- **`unchecked`: every non-cost criterion has a check.** A non-cost criterion with no check in any of the agent's cases fails, once per criterion. The violation names the criterion and the cases directory that was searched. An agent with no cases directory therefore has every non-cost criterion `unchecked`. A criterion scored only by the LLM judge, with no entry under `checks:`, counts as unchecked.
+- **`identical`: no two criteria carry the same checks.** Two non-cost criteria fail when, in **every** case of the agent, they have the same checks. Both must have at least one check: two criteria with no checks are `unchecked`, not `identical`. A group of more than two criteria gives one violation per criterion after the first, each naming itself and the first criterion of the group (as `duplicate` names the first occurrence), so a pair gives exactly one violation that names both.
+
+**What "the same checks" means.** For criteria A and B, and for every case of the agent (cases are keyed by `name:`; two files with the same name are merged), the multiset of A's checks equals the multiset of B's checks. A check is compared by its full contents **except the `criterion` field**: the same `type` and the same other fields with the same values. Consequences:
+
+- The order of the YAML fields in a check does not matter, and neither does the order of the checks inside a case. `allow: [README.md]` and `allow: ["README.md"]` are equal.
+- A check listed twice for one criterion and once for the other differs (multiset, not set).
+- Criteria checked in a different set of cases are not identical, even if every check body is equal. A criterion that has checks in a case where the other has none is also not identical.
+- No defaults are applied. `expect_exit: 0` written explicitly and `expect_exit` omitted are different checks.
+
+**No semantic judging.** "Distinct" is structural. The audit compares the text of the checks, never their meaning: two criteria whose check bodies differ in any field pass, even if they test the same thing in practice. Whether a check is substantive is for the author and reviewer to judge.
+
+**Plain error versus violation.** A rubric with **no** criteria at all still stops the audit with a plain error (`rubric <path> has no criteria`), as before. A rubric with one or two non-cost criteria is not an error: it is reported as a `rubric` violation together with the other violations of the run.
+
 ### Rule IDs
 
 Every violation is printed as `<file>[:<line>]: <rule>: <message>`. The audit collects all of them instead of stopping at the first.
@@ -1901,10 +2315,13 @@ Every violation is printed as `<file>[:<line>]: <rule>: <message>`. The audit co
 | `unmapped` | An instruction (reported at `<file>:<line>`) is not in the table. |
 | `unknown-criterion` | An instruction's row names a criterion that is not in the rubric. The instruction does not count as mapped. |
 | `coverage` | Fewer than 90% of the instructions are mapped, or there are no instructions to audit. |
+| `rubric` | The rubric has fewer than 3 distinct non-cost criteria (`rubric <path> has <N> distinct non-cost criteria (<names>); need at least 3`). A `type: cost` criterion is not counted. Reported at the rubric file, with no line. |
+| `unchecked` | A non-cost criterion has no check in any of the agent's cases (`criterion "<name>" has no check in any case (looked in <cases-dir>)`). Reported at the rubric file, once per criterion; cost criteria are never reported. |
+| `identical` | Two non-cost criteria have the same checks, ignoring the `criterion` field, in every case of the agent (`criterion "<name>" has the same checks as criterion "<first>" in every case (looked in <cases-dir>)`). Reported at the rubric file; each criterion after the first of a group gets one violation naming the first. See [Distinct criteria](#distinct-criteria). |
 
-`unmapped` and `unknown-criterion` are the per-line detail of a coverage failure, so they are reported only when coverage is below 90%. A prompt at or above the threshold passes even if some of its lines are unmapped. The `structure`, `resource`, `table` (including the Evidence problems) and `duplicate` violations are always reported.
+`unmapped` and `unknown-criterion` are the per-line detail of a coverage failure, so they are reported only when coverage is below 90%. A prompt at or above the threshold passes even if some of its lines are unmapped. The `structure`, `resource`, `table` (including the Evidence problems), `duplicate`, `rubric`, `unchecked` and `identical` violations are always reported.
 
-Problems that stop the audit from running at all are plain errors, not rule violations: an invalid agent name, a missing agent config, an unreadable or empty `--prompt-file`, a rubric that is missing, invalid or has no criteria, or a case file in `cases/<agent>/` that is not valid YAML or has no `name:`.
+Problems that stop the audit from running at all are plain errors, not rule violations: an invalid agent name, a missing agent config, an unreadable or empty `--prompt-file`, a rubric that is missing, invalid or has no criteria at all, or a case file in `cases/<agent>/` that is not valid YAML or has no `name:`. A rubric with only one or two non-cost criteria is **not** a plain error: it is a `rubric` violation.
 
 ### Report format
 
@@ -1920,15 +2337,21 @@ Override hooks (excluded from score):
 Ignored resources:
   <resource>
 Instructions: total=<T> mapped=<M> duplicates=<D> coverage=<P>% (threshold 90%)
+Criteria: non-cost=<N> (need at least 3)
+  <criterion>: checks=<C> cases=<K>
 ```
 
-The `Audited resources:`, `Override hooks (excluded from score):` and `Ignored resources:` blocks appear only when they have entries. `duplicates=<D>` is the number of `duplicate` violations, that is, the occurrences after the first of each repeated instruction; it is `0` for a clean prompt. On success one more line follows:
+The `Audited resources:`, `Override hooks (excluded from score):` and `Ignored resources:` blocks appear only when they have entries. `duplicates=<D>` is the number of `duplicate` violations, that is, the occurrences after the first of each repeated instruction; it is `0` for a clean prompt.
+
+The `Criteria:` block follows the `Instructions:` line and is printed whether the audit passes or fails. `non-cost=<N>` is the number of distinct non-cost criteria of the rubric, and there is one indented line per such criterion, in rubric order, with `checks=<C>` (the number of checks on it across all of the agent's cases) and `cases=<K>` (the number of distinct cases with at least one check on it). `checks` and `cases` differ when a case carries several checks on one criterion. Cost criteria are not listed. On success one more line follows:
 
 ```
 OK <agent>: <T> instructions, <P>% load-bearing, RTCC structure present
 ```
 
-On failure the violations are returned as the error, so they are printed on stderr after `Error:`, one per line, ordered by file (prompt, then skills, then the table), then by line, then by rule. Usage text is not printed.
+On failure the violations are returned as the error, so they are printed on stderr after `Error:`, one per line, ordered by file (prompt, then skills, then the table, then the rubric, then the agent config), then by line, then by rule. Usage text is not printed.
+
+The `Error:` block is printed **twice** on stderr, one copy after the other. This is not specific to the audit: the command framework prints a returned error and `main` prints it again. Run through `go run`, as in the examples below, `go run` then adds its own `exit status 1` line, so the last stderr line of a failing run is `exit status 1`. That line comes from `go run`, not from `kairon`; the built `kairon` binary does not print it. The examples below show the captured output as it is, stdout first and then stderr.
 
 ### Exit status
 
@@ -1939,7 +2362,7 @@ On failure the violations are returned as the error, so they are printed on stde
 
 ### Running it on the real agents
 
-Prompts are not edited by the audit feature and no `load-bearing.md` ships yet, so the real agents are expected to **fail** until their tables are written. For example `kairon eval audit builder` lists the engine skill and the hook, and then fails on the missing table:
+Prompts are not edited by the audit feature and no `load-bearing.md` ships yet, so the real agents are expected to **fail** until their tables are written. The shipped rubrics and cases are not changed by the Distinct criteria rules either, so a real agent can also fail those: the shipped `builder` cases carry no `checks:` at all. For example `kairon eval audit builder` lists the engine skill and the hook, reports every non-cost criterion with `checks=0 cases=0`, and then fails:
 
 ```
 Audit: builder
@@ -1949,13 +2372,18 @@ Audited resources:
 Override hooks (excluded from score):
   skill builder-conventions
 Instructions: total=63 mapped=0 duplicates=0 coverage=0.0% (threshold 90%)
+Criteria: non-cost=4 (need at least 3)
+  code_correctness: checks=0 cases=0
+  spec_adherence: checks=0 cases=0
+  code_quality: checks=0 cases=0
+  test_coverage: checks=0 cases=0
 ```
 
-followed on stderr by `.kairon/iterations/builder/load-bearing.md: table: load-bearing table not found` among the other violations. The planner prompt has none of the RTCC headings, so `kairon eval audit planner` exits `1` and names `## Role`, `## Task`, `## Context` and `## Constraints` as missing.
+followed on stderr (the `Error:` block, printed twice, then `go run`'s `exit status 1`) by 4 `structure` violations (`## Role`, `## Task`, `## Context`, `## Constraints` missing), 27 `unmapped` violations for the prompt, 36 for the engine skill, `.kairon/iterations/builder/load-bearing.md: table: load-bearing table not found`, `.kairon/iterations/builder/load-bearing.md: coverage: 0.0% of instructions are load-bearing; need at least 90%` and one `.kairon/evals/rubrics/builder.yaml: unchecked: criterion "<name>" has no check in any case (looked in .kairon/evals/cases/builder)` line per criterion above. The planner prompt has none of the RTCC headings, so `kairon eval audit planner` exits `1` and names `## Role`, `## Task`, `## Context` and `## Constraints` as missing.
 
 ### Verifying the audit
 
-The audit ships with fixtures under `internal/eval/testdata/audit/`. Most case directories hold an agent `demo` (config and prompt in `evals/agents/`, rubric in `evals/rubrics/demo.yaml` with the criteria `alpha` and `beta`, the case `basic` in `evals/cases/demo/basic.yaml` with a check on each criterion) and its table in `iterations/demo/load-bearing.md`, whose Evidence cells are all `case:basic`. The fixture prompts have no engine skills, so the commands do not depend on the shipped templates.
+The audit ships with fixtures under `internal/eval/testdata/audit/`. Most case directories hold an agent `demo` (config and prompt in `evals/agents/`, rubric in `evals/rubrics/demo.yaml` with the criteria `alpha`, `beta` and `gamma`, the case `basic` in `evals/cases/demo/basic.yaml` with one check on each criterion, each with a different `allow` list so the criteria are distinct) and its table in `iterations/demo/load-bearing.md`, whose Evidence cells are all `case:basic`. The table maps instructions to `alpha` and `beta` only; `gamma` is there for the Distinct criteria rules. The fixture prompts have no engine skills, so the commands do not depend on the shipped templates.
 
 **Exactly 90% passes.** The `coverage-90` prompt has 10 instructions and the table maps 9 of them:
 
@@ -1969,6 +2397,10 @@ go run ./cmd/kairon eval audit demo \
 Audit: demo
 Prompt: internal/eval/testdata/audit/coverage-90/evals/agents/demo-prompt.md
 Instructions: total=10 mapped=9 duplicates=0 coverage=90.0% (threshold 90%)
+Criteria: non-cost=3 (need at least 3)
+  alpha: checks=1 cases=1
+  beta: checks=1 cases=1
+  gamma: checks=1 cases=1
 OK demo: 10 instructions, 90.0% load-bearing, RTCC structure present
 exit=0
 ```
@@ -1985,17 +2417,27 @@ go run ./cmd/kairon eval audit demo \
 Audit: demo
 Prompt: internal/eval/testdata/audit/coverage-89/evals/agents/demo-prompt.md
 Instructions: total=100 mapped=89 duplicates=0 coverage=89.0% (threshold 90%)
+Criteria: non-cost=3 (need at least 3)
+  alpha: checks=1 cases=1
+  beta: checks=1 cases=1
+  gamma: checks=1 cases=1
 Error: internal/eval/testdata/audit/coverage-89/evals/agents/demo-prompt.md:94: unmapped: instruction not in load-bearing table: "Instruction 090."
 internal/eval/testdata/audit/coverage-89/evals/agents/demo-prompt.md:95: unmapped: instruction not in load-bearing table: "Instruction 091."
 …
 internal/eval/testdata/audit/coverage-89/evals/agents/demo-prompt.md:104: unmapped: instruction not in load-bearing table: "Instruction 100."
 internal/eval/testdata/audit/coverage-89/iterations/demo/load-bearing.md: coverage: 89.0% of instructions are load-bearing; need at least 90%
+Error: internal/eval/testdata/audit/coverage-89/evals/agents/demo-prompt.md:94: unmapped: instruction not in load-bearing table: "Instruction 090."
+internal/eval/testdata/audit/coverage-89/evals/agents/demo-prompt.md:95: unmapped: instruction not in load-bearing table: "Instruction 091."
+…
+internal/eval/testdata/audit/coverage-89/evals/agents/demo-prompt.md:104: unmapped: instruction not in load-bearing table: "Instruction 100."
+internal/eval/testdata/audit/coverage-89/iterations/demo/load-bearing.md: coverage: 89.0% of instructions are load-bearing; need at least 90%
+exit status 1
 exit=1
 ```
 
-(The `…` stands for the lines for `Instruction 092.` to `Instruction 099.`, which follow the same form. The `Error:` block goes to stderr and the report to stdout.)
+(The `…` stands for the lines for `Instruction 092.` to `Instruction 099.`, which follow the same form, in each copy of the `Error:` block. The `Error:` blocks go to stderr and the report to stdout. See the note under [Report format](#report-format) for why the block appears twice and where `exit status 1` comes from.)
 
-**Evidence and duplicate fixtures.** Four more fixtures use a **flat** layout, so one directory is both the evals directory and the iterations directory. Each holds the agent `selftest` (`agents/selftest.json` and `agents/selftest-prompt.md`), its rubric (`rubrics/selftest.yaml`, criteria `alpha` and `beta`), its cases (`cases/selftest/`) and its table (`selftest/load-bearing.md`). Each must fail, and each is run the same way:
+**Evidence and duplicate fixtures.** Four more fixtures use a **flat** layout, so one directory is both the evals directory and the iterations directory. Each holds the agent `selftest` (`agents/selftest.json` and `agents/selftest-prompt.md`), its rubric (`rubrics/selftest.yaml`, criteria `alpha`, `beta` and `gamma`), its cases (`cases/selftest/`) and its table (`selftest/load-bearing.md`). Each must fail, and each is run the same way:
 
 ```bash
 go run ./cmd/kairon eval audit selftest \
@@ -2016,11 +2458,17 @@ For example `duplicate-line` prints the report on stdout and the violation on st
 Audit: selftest
 Prompt: internal/eval/testdata/audit/duplicate-line/agents/selftest-prompt.md
 Instructions: total=5 mapped=5 duplicates=1 coverage=100.0% (threshold 90%)
+Criteria: non-cost=3 (need at least 3)
+  alpha: checks=1 cases=1
+  beta: checks=1 cases=1
+  gamma: checks=1 cases=1
 Error: internal/eval/testdata/audit/duplicate-line/agents/selftest-prompt.md:9: duplicate: duplicate of internal/eval/testdata/audit/duplicate-line/agents/selftest-prompt.md:8: "Never skip validation."
+Error: internal/eval/testdata/audit/duplicate-line/agents/selftest-prompt.md:9: duplicate: duplicate of internal/eval/testdata/audit/duplicate-line/agents/selftest-prompt.md:8: "Never skip validation."
+exit status 1
 exit=1
 ```
 
-The Evidence fixtures also reach 100% coverage (`total=4 mapped=4 duplicates=0 coverage=100.0%`), so they fail only because of the `table` violations, which are always reported. The `fence-and-table` fixture is the passing counterpart of the README example and exits `0`:
+The Evidence fixtures also reach 100% coverage (`total=4 mapped=4 duplicates=0 coverage=100.0%`), so they fail only because of the `table` violations, which are always reported. `evidence-unchecked-criterion` has a second case, `alpha-only`, so its `Criteria:` block reports `alpha: checks=2 cases=2`. The `fence-and-table` fixture is the passing counterpart of the README example and exits `0`:
 
 ```bash
 go run ./cmd/kairon eval audit demo \
@@ -2032,8 +2480,104 @@ go run ./cmd/kairon eval audit demo \
 Audit: demo
 Prompt: internal/eval/testdata/audit/fence-and-table/evals/agents/demo-prompt.md
 Instructions: total=5 mapped=5 duplicates=0 coverage=100.0% (threshold 90%)
+Criteria: non-cost=3 (need at least 3)
+  alpha: checks=1 cases=1
+  beta: checks=1 cases=1
+  gamma: checks=1 cases=1
 OK demo: 5 instructions, 100.0% load-bearing, RTCC structure present
 exit=0
+```
+
+**Distinct-criteria fixtures.** Four more flat-layout fixtures (agent `selftest`, same layout as above) exercise the [Distinct criteria](#distinct-criteria) rules. Each prompt has four instructions and its table maps all four, so coverage is 100% (`total=4 mapped=4 duplicates=0`) and the only failure is the rule under test. Each is run the same way:
+
+```bash
+go run ./cmd/kairon eval audit selftest \
+  --iterations-dir internal/eval/testdata/audit/<fixture> \
+  --evals-dir internal/eval/testdata/audit/<fixture>; echo $?
+```
+
+| Fixture | What it holds | Result |
+|---------|---------------|--------|
+| `two-criteria` | Rubric `alpha`, `beta` and a `type: cost` criterion `cost`; case `basic` checks `alpha` and `beta` | exit `1`; `…/two-criteria/rubrics/selftest.yaml: rubric: rubric …/two-criteria/rubrics/selftest.yaml has 2 distinct non-cost criteria (alpha, beta); need at least 3` |
+| `unchecked-criterion` | Rubric `alpha`, `beta`, `gamma`; case `basic` checks `alpha` and `beta` only | exit `1`; `…/unchecked-criterion/rubrics/selftest.yaml: unchecked: criterion "gamma" has no check in any case (looked in …/unchecked-criterion/cases/selftest)` |
+| `identical-criteria` | Rubric `alpha`, `beta`, `gamma`; case `basic` gives `beta` and `gamma` the same check (`type: changed_files`, `allow: [shared.md]`) and `alpha` a different one | exit `1`; `…/identical-criteria/rubrics/selftest.yaml: identical: criterion "gamma" has the same checks as criterion "beta" in every case (looked in …/identical-criteria/cases/selftest)` |
+| `three-criteria-ok` | Rubric `alpha`, `beta`, `gamma` and a `type: cost` criterion `cost`; case `basic` has two checks on `alpha` and one each on `beta` and `gamma`; case `second` has one more check on `alpha` | exit `0`; the `Criteria:` block lists `alpha: checks=3 cases=2`, `beta: checks=1 cases=1`, `gamma: checks=1 cases=1` and no line for `cost` |
+
+**Fewer than three non-cost criteria** (`two-criteria`). The `cost` criterion is not counted, so the rubric has two. The cost criterion has no checks and is not reported as `unchecked`:
+
+```bash
+go run ./cmd/kairon eval audit selftest --iterations-dir internal/eval/testdata/audit/two-criteria --evals-dir internal/eval/testdata/audit/two-criteria; echo $?
+```
+
+```
+Audit: selftest
+Prompt: internal/eval/testdata/audit/two-criteria/agents/selftest-prompt.md
+Instructions: total=4 mapped=4 duplicates=0 coverage=100.0% (threshold 90%)
+Criteria: non-cost=2 (need at least 3)
+  alpha: checks=1 cases=1
+  beta: checks=1 cases=1
+Error: internal/eval/testdata/audit/two-criteria/rubrics/selftest.yaml: rubric: rubric internal/eval/testdata/audit/two-criteria/rubrics/selftest.yaml has 2 distinct non-cost criteria (alpha, beta); need at least 3
+Error: internal/eval/testdata/audit/two-criteria/rubrics/selftest.yaml: rubric: rubric internal/eval/testdata/audit/two-criteria/rubrics/selftest.yaml has 2 distinct non-cost criteria (alpha, beta); need at least 3
+exit status 1
+1
+```
+
+**A criterion without a check** (`unchecked-criterion`):
+
+```bash
+go run ./cmd/kairon eval audit selftest --iterations-dir internal/eval/testdata/audit/unchecked-criterion --evals-dir internal/eval/testdata/audit/unchecked-criterion; echo $?
+```
+
+```
+Audit: selftest
+Prompt: internal/eval/testdata/audit/unchecked-criterion/agents/selftest-prompt.md
+Instructions: total=4 mapped=4 duplicates=0 coverage=100.0% (threshold 90%)
+Criteria: non-cost=3 (need at least 3)
+  alpha: checks=1 cases=1
+  beta: checks=1 cases=1
+  gamma: checks=0 cases=0
+Error: internal/eval/testdata/audit/unchecked-criterion/rubrics/selftest.yaml: unchecked: criterion "gamma" has no check in any case (looked in internal/eval/testdata/audit/unchecked-criterion/cases/selftest)
+Error: internal/eval/testdata/audit/unchecked-criterion/rubrics/selftest.yaml: unchecked: criterion "gamma" has no check in any case (looked in internal/eval/testdata/audit/unchecked-criterion/cases/selftest)
+exit status 1
+1
+```
+
+**Two criteria with identical checks** (`identical-criteria`). The violation is reported on the later criterion and names the first one of the pair:
+
+```bash
+go run ./cmd/kairon eval audit selftest --iterations-dir internal/eval/testdata/audit/identical-criteria --evals-dir internal/eval/testdata/audit/identical-criteria; echo $?
+```
+
+```
+Audit: selftest
+Prompt: internal/eval/testdata/audit/identical-criteria/agents/selftest-prompt.md
+Instructions: total=4 mapped=4 duplicates=0 coverage=100.0% (threshold 90%)
+Criteria: non-cost=3 (need at least 3)
+  alpha: checks=1 cases=1
+  beta: checks=1 cases=1
+  gamma: checks=1 cases=1
+Error: internal/eval/testdata/audit/identical-criteria/rubrics/selftest.yaml: identical: criterion "gamma" has the same checks as criterion "beta" in every case (looked in internal/eval/testdata/audit/identical-criteria/cases/selftest)
+Error: internal/eval/testdata/audit/identical-criteria/rubrics/selftest.yaml: identical: criterion "gamma" has the same checks as criterion "beta" in every case (looked in internal/eval/testdata/audit/identical-criteria/cases/selftest)
+exit status 1
+1
+```
+
+**Three distinct, checked criteria** (`three-criteria-ok`). `alpha` has three checks spread over two cases, which shows that `checks` and `cases` count different things. The `cost` criterion is not listed:
+
+```bash
+go run ./cmd/kairon eval audit selftest --iterations-dir internal/eval/testdata/audit/three-criteria-ok --evals-dir internal/eval/testdata/audit/three-criteria-ok; echo $?
+```
+
+```
+Audit: selftest
+Prompt: internal/eval/testdata/audit/three-criteria-ok/agents/selftest-prompt.md
+Instructions: total=4 mapped=4 duplicates=0 coverage=100.0% (threshold 90%)
+Criteria: non-cost=3 (need at least 3)
+  alpha: checks=3 cases=2
+  beta: checks=1 cases=1
+  gamma: checks=1 cases=1
+OK selftest: 4 instructions, 100.0% load-bearing, RTCC structure present
+0
 ```
 
 The other fixture directories each isolate one rule: `no-rtcc`, `partial` and `wrong-order` (the `structure` rule), `unmapped` (both `unmapped` and `unknown-criterion`), `ok-hooks` (an engine skill audited and a hook excluded, library tests only, because it needs its own skills directory), `candidate` (`--prompt-file`) and `fence-and-table` (extraction and escaped pipes). The unit tests are `go test ./internal/eval/ -run Audit` and `go test ./cmd/kairon/cmd/ -run Audit`.
@@ -2158,7 +2702,9 @@ internal/eval/testdata/evals/
   rubrics/selftest.yaml             # structural_completeness (deterministic), clarity (LLM-judged), cost_efficiency (cost)
   rubrics/selftest-fail.yaml        # structural_completeness (deterministic), cost_efficiency (cost)
   cases/selftest/stub-basic.yaml    # no stub usage -> estimated; setup file exercises path rebasing
-  cases/selftest/stub-usage.yaml    # stub model + usage 123/45 -> reported
+  cases/selftest/stub-usage.yaml    # stub model + usage 123/45 -> reported; stub-model has no price, so the cost is unknown
+  cases/selftest/stub-price-sonnet.yaml   # model claude-sonnet-5.5, usage 1000/500 -> priced, cost 0.0105
+  cases/selftest/stub-price-unknown.yaml  # model claude-haiku-4.5, usage 1000/500 -> unpriced, cost unknown (cost_unknown, cost_incomplete)
   cases/selftest/stub-quoted-input.yaml  # input with quotes, newlines, $(...) and backticks; must reach the backend verbatim
   cases/selftest/stub-marker.yaml   # stub turn command 'echo hi > marker.txt' leaves marker.txt in the case workspace
   cases/selftest/stub-seeded-workspace.yaml  # workspace: seeded; the stub appends to README.md -> ' M README.md'
@@ -2192,11 +2738,15 @@ internal/eval/testdata/evals/
   agents/selftest-checks-prompt.md
   agents/selftest-checks-fail.json  # checks_only agent whose case is expected to FAIL
   agents/selftest-checks-fail-prompt.md
+  agents/selftest-floor.json        # checks_only agent with a min_criterion_score floor; expected to FAIL (see below)
+  agents/selftest-floor-prompt.md
   rubrics/selftest-checks.yaml      # checks_only: true; file_written, report_marker (both 1-5, neither deterministic), cost_efficiency (cost)
   rubrics/selftest-checks-fail.yaml # checks_only: true; same criteria
+  rubrics/selftest-floor.yaml       # checks_only: true; pass_threshold 60, min_criterion_score 50; file_written, report_marker (1-5), cost_efficiency (cost)
   cases/selftest-checks/check-one-criterion.yaml   # checks on file_written only: report_marker is not scored
   cases/selftest-checks/check-both-criteria.yaml   # checks on both criteria, all passing
   cases/selftest-checks-fail/stub-empty-response.yaml  # empty stub response: each checked criterion scores 0/N (expected to FAIL)
+  cases/selftest-floor/floor-one-criterion-zero.yaml   # file_written 2/2, report_marker 0/1: 66.7% overall passes 60%, but report_marker is below the 50% floor (expected to FAIL)
   fixtures/selftest-input.md        # referenced as .kairon/evals/fixtures/selftest-input.md
   fixtures/mock-cli.sh              # byte-identical copy of .kairon/evals/fixtures/mock-cli.sh (this evals dir resolves case scripts here)
   fixtures/hidden/hidden_test.go    # file injected by the check-command-inject case (see Checks); the agent never sees it
@@ -2207,7 +2757,7 @@ internal/eval/testdata/evals/
 
 `selftest.json` declares a `model` so the self-test passes the model-pinning pre-flight, and lists a `skill://.kiro/skills/selftest-conventions/SKILL.md` resource that no project file provides. It exercises the "missing resources are normal" rule: the run succeeds and the agent-level `resources_present` is `[]`, even if you create `.kiro/skills/selftest-conventions/SKILL.md` in the repository, because a project `*-conventions` skill is never staged. Only the `stub-conventions-fixture` case, whose workspace fixture supplies that file, lists it in its own per-case `resources_present` (see [Per-case fields](#per-case-fields-in-agentjson)).
 
-The `selftest` agent has twenty-six cases and all of them pass (`task eval:selftest`): the six `stub-*` cases (five original ones, which carry no `checks` and keep their pinned scores, plus `stub-conventions-fixture`), fourteen `check-*` cases that exercise [checks](#checks) (ten per-type cases, `check-command-inject`, and three `judge` cases: `check-judge-yes`, `check-judge-files` and `check-judge-mixed`), three [multi-turn](#multi-turn-cases) cases (`multi-turn-gh-log`, `multi-turn-judge`, `multi-turn-workspace`) and three [simulated-user](#simulated-user-elicitation-cases) cases (`sim-routes`, `sim-stop-when`, `sim-judge`). The `selftest-fail` agent is deliberately separate, so `selftest` keeps meaning "everything passes". It has twenty-two cases. Twenty-one are **expected to fail** on a plain run: sixteen `check-*` cases (ten per-type cases and five of the six `check-judge-*` cases) plus `check-partial`, all built so that checks fail. The sixth, `check-judge-repeat`, is the exception: its `stub.judge: [yes, no]` answers `yes` on the first run, so a plain run (no `--repeat`) scores it `1/1` and the agent reports `21/22 cases failed`; only under [`--repeat 2`](#repeat-runs---repeat) does it show the `1/1` then `0/1` spread that pools to a failing 50% (see the `judge` paragraph below). The agent still ends below threshold either way. The rest are `stub-timeout`, which records a timeout failure (empty `actual_output`, `error_context.stderr` containing `timeout after 1s`) in about a second; `stub-empty-response`, whose stub returns an empty response, so the case has no output, every criterion scores 0 out of its maximum, and it still counts toward the agent's score; `multi-turn-wrong-turn`; `sim-fact-not-asked`, both described below; and `calls-malformed-line`, a malformed `.eval/calls.jsonl` described under [Workflows](#verifying-with-the-self-test). Run it with:
+The `selftest` agent has twenty-eight cases and all of them pass (`task eval:selftest`): eight `stub-*` cases — the five original ones (`stub-basic`, `stub-marker`, `stub-quoted-input`, `stub-seeded-workspace`, `stub-usage`), which carry no `checks` and keep their pinned scores, `stub-conventions-fixture`, and the two pricing cases `stub-price-sonnet` and `stub-price-unknown` (see [Pricing](#pricing)); fourteen `check-*` cases that exercise [checks](#checks) (ten per-type cases, `check-command-inject`, and three `judge` cases: `check-judge-yes`, `check-judge-files` and `check-judge-mixed`); three [multi-turn](#multi-turn-cases) cases (`multi-turn-gh-log`, `multi-turn-judge`, `multi-turn-workspace`); and three [simulated-user](#simulated-user-elicitation-cases) cases (`sim-routes`, `sim-stop-when`, `sim-judge`). The `selftest-fail` agent is deliberately separate, so `selftest` keeps meaning "everything passes". It has twenty-two cases. Twenty-one are **expected to fail** on a plain run: sixteen `check-*` cases (ten per-type cases and five of the six `check-judge-*` cases) plus `check-partial`, all built so that checks fail. The sixth, `check-judge-repeat`, is the exception: its `stub.judge: [yes, no]` answers `yes` on the first run, so a plain run (no `--repeat`) scores it `1/1` and the agent reports `21/22 cases failed`; only under [`--repeat 2`](#repeat-runs---repeat) does it show the `1/1` then `0/1` spread that pools to a failing 50% (see the `judge` paragraph below). The agent still ends below threshold either way. The rest are `stub-timeout`, which records a timeout failure (empty `actual_output`, `error_context.stderr` containing `timeout after 1s`) in about a second; `stub-empty-response`, whose stub returns an empty response, so the case has no output, every criterion scores 0 out of its maximum, and it still counts toward the agent's score; `multi-turn-wrong-turn`; `sim-fact-not-asked`, both described below; and `calls-malformed-line`, a malformed `.eval/calls.jsonl` described under [Workflows](#verifying-with-the-self-test). Run it with:
 
 ```bash
 go run ./cmd/kairon eval --backend stub --no-sandbox --evals-dir internal/eval/testdata/evals selftest-fail
@@ -2301,9 +2851,17 @@ go run ./cmd/kairon eval --backend stub --evals-dir internal/eval/testdata/evals
 go run ./cmd/kairon eval --backend stub --evals-dir internal/eval/testdata/checks-only-invalid selftest-checks   # error naming no-checks.yaml, exit 1
 ```
 
-Like `selftest-fail`, `selftest-checks-fail` is an expected-to-fail agent, and `checks-only-invalid` is an expected-to-be-rejected fixture; neither is a regression when it fails.
+The `selftest-floor` agent exercises [`min_criterion_score`](#per-criterion-scores-and-the-floor). Its rubric (`rubrics/selftest-floor.yaml`) is `checks_only` with `pass_threshold: 60` and `min_criterion_score: 50`, and its one case, `cases/selftest-floor/floor-one-criterion-zero.yaml`, runs `echo hi > marker.txt` and responds with text that does not contain `output marker alpha`. `file_written` has two passing checks (`file_exists marker.txt` and `file_contains marker.txt`), so it scores `2/2` (100%); `report_marker` has one `output_contains "output marker alpha"` check, which fails, so it scores `0/1` (0%). The overall score is 2/3 = 66.7%, **above** the 60% threshold, and the case itself passes (`cases_failed` is `0`), but `report_marker` is below the 50% floor. `selftest-floor` is therefore **expected to FAIL** (exit `1`): the failure is the proof that the floor, not the overall score, decides the verdict.
 
-The self-test runs with the stub backend, so its per-call `model` values are `stub` / `stub-model` (what the stub reports) rather than the pinned names. The pinned models still appear in the run-level `agent_model` and `judge_model` fields.
+```bash
+go run ./cmd/kairon eval --backend stub --evals-dir internal/eval/testdata/evals selftest-floor   # FAIL, exit 1
+```
+
+It prints `FAIL selftest-floor: 66.7% (threshold 60.0%), 0/1 cases failed; criterion below floor 50.0%: report_marker 0.0% (0/1)` followed by the two criterion lines, and the saved `summary.json` verdict has `passed: false`, `min_criterion_score: 50` and `criteria_below_floor: ["report_marker"]`. Removing the `min_criterion_score` line from a copy of the rubric makes the same run pass with the same score.
+
+`selftest-fail`, `selftest-checks-fail` and `selftest-floor` are expected-to-fail agents, and `checks-only-invalid` is an expected-to-be-rejected fixture; none of them is a regression when it fails.
+
+The self-test runs with the stub backend. Its agent calls record the scripted `stub.turns[].model` (for example `stub-model`) rather than the pinned name, and its judge calls record the pinned judge model (so they are priced like the real judge). The pinned models also appear in the run-level `agent_model` and `judge_model` fields. Because `stub-model` has no configured price, the `stub-usage` case has an unknown cost, so a full `selftest` run reports `cost_incomplete`; the single-case runs `selftest stub-price-sonnet` (priced, `0.0105`) and `selftest stub-price-unknown` (unpriced `claude-haiku-4.5`) show the two outcomes without that noise (see [Pricing](#pricing)).
 
 To list the self-test cases: `kairon eval --evals-dir internal/eval/testdata/evals --list selftest`.
 
@@ -2694,12 +3252,13 @@ Every container is created with `ReadonlyRootfs: true`. It is always on; there i
 | `<workspace_dir>/.eval` | bind mount, read-write | Outputs, `gh.log` and `gh-body-<n>.md`. |
 | `/tmp` | tmpfs, `rw,nosuid,nodev,mode=1777,size=256m` | Scratch. |
 | `/var/tmp` | tmpfs, `rw,nosuid,nodev,mode=1777,size=64m` | Scratch. |
-| `/home/sandbox` | tmpfs, `rw,nosuid,nodev,uid=1000,gid=1000,mode=0755,size=256m` | `$HOME`. `kiro-cli` keeps state here, so it must be writable. Ephemeral: it is gone when the container is. |
+| `/home/sandbox` | tmpfs, `rw,nosuid,nodev,mode=0777,size=256m` | `$HOME`. `kiro-cli` keeps state here, so it must be writable. Ephemeral: it is gone when the container is. No `uid=`/`gid=` option (see the notes below). |
 
 Everything else is read-only, including `<workspace_dir>/.kiro`, `/opt/kairon/bin`, `/usr/local/bin/kairon` and the rest of the image. A write outside the writable paths fails with `Read-only file system` (EROFS), which is distinguishable from the `Permission denied` the unprivileged `sandbox` user already got for places like `/etc`.
 
 Notes:
 - `/home/sandbox` is a deliberate hole in "read-only". It is ephemeral and size-capped, and is the reason a real `kiro-cli` run works at all.
+- The `/home/sandbox` tmpfs deliberately has **no `uid=` or `gid=` option**. Docker accepts them, but Podman's Docker-compatible API rejects them at container create (`unknown mount option "uid=1000": invalid mount option`), which would make every sandbox container fail on Podman hosts. The mount uses `mode=0777` instead, so it is writable by the unprivileged `sandbox` user (uid 1000) through the "other" permission bits even though the runtime owns the directory as `root:root`. World-writable is acceptable here because the tmpfs is private to one container, ephemeral, size-capped and used by a single unprivileged user. The same options work on Docker and Podman.
 - `noexec` is not set on the tmpfs mounts: `kiro-cli` and tools may execute from temporary locations.
 - tmpfs memory counts against the container memory limit (see [Resource Limits](#resource-limits)).
 - Not added, and possible further hardening: dropping Linux capabilities, `no-new-privileges` and a pids limit.
@@ -3066,6 +3625,8 @@ The `eval diff` command shows, in this order:
 - Per-criterion score deltas per agent
 - Token and cost deltas
 - Quality-per-dollar assessment
+
+**Incomplete costs.** If either run's `total_cost` is `cost_incomplete` (a call used a model with no configured price, see [Unknown cost](#unknown-cost)), the diff says so instead of comparing two lower bounds as if they were totals: the `Cost:` delta line is suffixed ` (incomplete: <side(s)>)`, naming which run(s) are incomplete, and each quality-per-dollar line is suffixed ` (cost incomplete)`. Runs written before cost marking existed have no `cost_incomplete` and are read as complete, so they diff exactly as before.
 
 Runs made with [`--repeat`](#repeat-runs---repeat) diff like any other. The per-criterion averages and the cost cover every result of the run (so they are means and totals over the repeats), and the case output comparison uses run 1 of each case, so it does not depend on how many repeats either run used. The spread (`score_min`, `score_max`, `repeat_scores`) is not shown by `eval diff`; read it from `summary.json`.
 

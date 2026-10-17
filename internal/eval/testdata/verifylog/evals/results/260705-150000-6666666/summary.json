@@ -1,0 +1,11 @@
+{
+  "git_hash": "6666666",
+  "judge_model": "judge-m",
+  "sandbox": "native",
+  "agent_verdicts": {
+    "selftest": {"score": 80.0, "threshold": 70.0, "passed": true, "cases_total": 1, "cases_failed": 0, "cost": {}}
+  },
+  "agents": {
+    "selftest": {"agent_model": "agent-m", "prompt_sha256": "4444444444444444444444444444444444444444444444444444444444444444", "suite_sha256": "4444444444444444444444444444444444444444444444444444444444444444", "complete": true, "case_filter": ""}
+  }
+}
