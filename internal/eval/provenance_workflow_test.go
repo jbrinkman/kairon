@@ -301,6 +301,56 @@ func mustJSONString(t *testing.T, s string) string {
 	return string(b)
 }
 
+// TestProvenanceSubAgentsGlobTrustedAgents covers glob patterns in
+// toolsSettings.subagent.trustedAgents (Kiro supports them). A pattern is
+// expanded against the staged .kiro/agents dir: matching agents become
+// sub-agents, non-matching staged agents are excluded, and a pattern that
+// matches nothing is ignored (not an error). Genuinely unsafe patterns (a
+// path separator) still error.
+func TestProvenanceSubAgentsGlobTrustedAgents(t *testing.T) {
+	t.Run("star pattern expands to matching staged agents", func(t *testing.T) {
+		root := t.TempDir()
+		writeWFAgent(t, root, "lead", "model-lead", "lead prompt", `["step-*"]`, `[]`)
+		writeWFAgent(t, root, "step-a", "model-a", "step a prompt", "", `[]`)
+		writeWFAgent(t, root, "step-b", "model-b", "step b prompt", "", `[]`)
+		writeWFAgent(t, root, "other", "model-o", "other prompt", "", `[]`)
+
+		p := mustProvInRoot(t, root, "lead")
+		if len(p.SubAgents) != 2 {
+			t.Fatalf("SubAgents = %v, want step-a and step-b only", p.SubAgents)
+		}
+		if _, ok := p.SubAgents["step-a"]; !ok {
+			t.Error("step-a not resolved from glob step-*")
+		}
+		if _, ok := p.SubAgents["step-b"]; !ok {
+			t.Error("step-b not resolved from glob step-*")
+		}
+		if _, ok := p.SubAgents["other"]; ok {
+			t.Error("other must not match glob step-*")
+		}
+	})
+
+	t.Run("glob matching nothing is ignored, not an error", func(t *testing.T) {
+		root := t.TempDir()
+		writeWFAgent(t, root, "lead", "m", "lead", `["nope-*"]`, `[]`)
+		p, err := resolveProvenanceInRoot(root, "lead", nil)
+		if err != nil {
+			t.Fatalf("a no-match glob should be ignored, got error: %v", err)
+		}
+		if len(p.SubAgents) != 0 {
+			t.Errorf("SubAgents = %v, want none", p.SubAgents)
+		}
+	})
+
+	t.Run("glob with a path separator still errors", func(t *testing.T) {
+		root := t.TempDir()
+		writeWFAgent(t, root, "lead", "m", "lead", `["../*"]`, `[]`)
+		if _, err := resolveProvenanceInRoot(root, "lead", nil); err == nil {
+			t.Fatal("expected an error for a glob containing a path separator")
+		}
+	})
+}
+
 func TestProvenanceCandidateAffectsOnlyDispatchingAgent(t *testing.T) {
 	root := wfRoot(t)
 	base := mustProvInRoot(t, root, "lead")

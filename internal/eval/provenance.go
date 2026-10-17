@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"path"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -178,6 +179,18 @@ func collectSubAgents(root, dispatcher string, trusted []string) (map[string]Sub
 	for len(queue) > 0 {
 		name := queue[0]
 		queue = queue[1:]
+		// Kiro allows glob patterns in trustedAgents. Expand a pattern against
+		// the staged .kiro/agents dir: matching agents are queued, and a
+		// pattern that matches nothing is ignored (not an error). Literal names
+		// keep their strict validation below.
+		if strings.ContainsAny(name, "*?[") {
+			matches, err := matchStagedAgents(root, name)
+			if err != nil {
+				return nil, fmt.Errorf("agent %q: trustedAgents pattern %q: %w", dispatcher, name, err)
+			}
+			queue = append(queue, matches...)
+			continue
+		}
 		if !subAgentNameRE.MatchString(name) {
 			return nil, fmt.Errorf("agent %q: unsafe trusted agent name %q in toolsSettings.subagent.trustedAgents (allowed: letters, digits, '.', '_', '-', not starting with a symbol)", dispatcher, name)
 		}
@@ -201,6 +214,43 @@ func collectSubAgents(root, dispatcher string, trusted []string) (map[string]Sub
 		queue = append(queue, conf.ToolsSettings.Subagent.TrustedAgents...)
 	}
 	return subs, nil
+}
+
+// matchStagedAgents returns the sorted names of staged agents under
+// <root>/.kiro/agents whose <name>.json matches pattern. Only safe literal
+// names (subAgentNameRE) are considered, so an expanded match can never be an
+// unsafe name. A pattern containing a path separator is rejected; a dir that
+// does not exist yields no matches (not an error).
+func matchStagedAgents(root, pattern string) ([]string, error) {
+	if strings.ContainsAny(pattern, `/\`) {
+		return nil, fmt.Errorf("pattern may not contain a path separator")
+	}
+	entries, err := os.ReadDir(filepath.Join(root, kiroDirName, "agents"))
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	var matches []string
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		name, ok := strings.CutSuffix(entry.Name(), ".json")
+		if !ok || !subAgentNameRE.MatchString(name) {
+			continue
+		}
+		matched, err := path.Match(pattern, name)
+		if err != nil {
+			return nil, err
+		}
+		if matched {
+			matches = append(matches, name)
+		}
+	}
+	sort.Strings(matches)
+	return matches, nil
 }
 
 // workflowSHA256 is the lowercase hex SHA-256 over length-framed parts: for the
