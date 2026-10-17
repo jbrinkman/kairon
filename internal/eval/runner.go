@@ -1739,6 +1739,7 @@ func loadCases(agent string) ([]TestCase, error) {
 		cases        []TestCase
 		rubric       *Rubric // the agent's rubric, loaded lazily for checks and checks_only
 		rubricLoaded bool
+		seenNames    = map[string]string{} // case name -> file that first declared it
 	)
 	for _, e := range entries {
 		if e.IsDir() || !strings.HasSuffix(e.Name(), ".yaml") {
@@ -1764,6 +1765,12 @@ func loadCases(agent string) ([]TestCase, error) {
 		if err := validateCaseFields(tc, e.Name()); err != nil {
 			return nil, err
 		}
+		// Coverage and result files key on the case name, so a duplicate name
+		// across files lets one case's result cover another; reject it.
+		if first, dup := seenNames[tc.Name]; dup {
+			return nil, fmt.Errorf("%w: %q declared in both %s and %s", errDuplicateCaseName, tc.Name, first, e.Name())
+		}
+		seenNames[tc.Name] = e.Name()
 		if !rubricLoaded {
 			rubricLoaded = true
 			// If the rubric cannot be loaded the criterion cross-check and
