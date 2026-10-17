@@ -291,3 +291,40 @@ func TestRunSingleTestCaseMidRunEditFails(t *testing.T) {
 		t.Errorf("result files written despite the drift: %v", written)
 	}
 }
+
+// On a resumed run where every case is already completed, the per-case loop
+// skips every iteration, so the per-case checkSuiteUnchanged never runs. The
+// suite must still be re-verified before evaluateProgressive returns success,
+// otherwise the caller's final save records the pinned (stale) hash for a
+// suite that was edited after the pin.
+func TestEvaluateProgressiveAllSkippedResumeRefusesDrift(t *testing.T) {
+	dir, pinned, _ := driftSuite(t)
+	rubricPath := filepath.Join(dir, "rubrics", "drift.yaml")
+	// Harmless cases: the first (clean) pass must not itself edit the suite.
+	cases := []TestCase{covCase("c1"), covCase("c2")}
+	resultsDir := t.TempDir()
+
+	// First pass: a clean run that completes both cases and saves drift.json
+	// under the pinned hash.
+	if _, err := evaluateProgressive(driftRubric(), cases, "abc", &strings.Builder{}, resultsDir, false, nil); err != nil {
+		t.Fatalf("clean first pass: %v", err)
+	}
+	for _, tc := range cases {
+		if !isTestCaseCompleted(resultsDir, "drift", tc.Name) {
+			t.Fatalf("test setup: %s not marked completed after the clean pass", tc.Name)
+		}
+	}
+
+	// Edit the suite after the pin, the way a concurrent agent's case would.
+	appendToFile(t, rubricPath, "# edited after the pin\n")
+
+	// Resume: every case is already completed, so the loop skips them all and
+	// no per-case checkSuiteUnchanged runs.
+	_, err := evaluateProgressive(driftRubric(), cases, "abc", &strings.Builder{}, resultsDir, true, nil)
+
+	now, hashErr := suiteSHA256("drift")
+	if hashErr != nil {
+		t.Fatal(hashErr)
+	}
+	assertDriftError(t, err, pinned, now)
+}

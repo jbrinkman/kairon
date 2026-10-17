@@ -2335,6 +2335,16 @@ func evaluateProgressive(rubric Rubric, cases []TestCase, gitHash string, out io
 		printCaseResult(out, tc, rubric, crs[len(crs)-1])
 	}
 
+	// On a resumed run where every case was already completed, the loop above
+	// skipped every iteration, so the per-case checkSuiteUnchanged never ran.
+	// Re-verify the suite before returning success: otherwise the caller's
+	// final save would record the pinned hash for a suite edited after the pin
+	// (e.g. by a concurrent agent in a multi-agent run). This is a no-op for
+	// unpinned runs and harmless when the loop already checked.
+	if err := checkSuiteUnchanged(rubric.Agent); err != nil {
+		return result, err
+	}
+
 	return result, nil
 }
 
