@@ -2,6 +2,7 @@ package eval
 
 import (
 	"encoding/json"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -275,11 +276,43 @@ func covCase(name string, commands ...string) TestCase {
 	}
 }
 
+// evalProgressiveOK runs evaluateProgressive and fails the test on error.
+func evalProgressiveOK(t *testing.T, rubric Rubric, cases []TestCase, gitHash string, out io.Writer, resultsDir string, isResume bool, cConfig *ContainerConfig) AgentResult {
+	t.Helper()
+	res, err := evaluateProgressive(rubric, cases, gitHash, out, resultsDir, isResume, cConfig)
+	if err != nil {
+		t.Fatalf("evaluateProgressive: %v", err)
+	}
+	return res
+}
+
+// pinRealSuite writes a small real eval suite for agent "selftest" to a temp
+// evals directory, makes it the active one on the stub backend, pins it the
+// way RunWithOptions does, and returns the pinned suite_sha256. evaluateProgressive
+// re-hashes the suite before every save, so a made-up pin would be refused.
+func pinRealSuite(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	writeEvalFile(t, dir, "rubrics/selftest.yaml", "agent: selftest\ncriteria:\n  - name: structural_completeness\n    description: d\n    scoring: 1-5\n    deterministic: true\n")
+	writeEvalFile(t, dir, "cases/selftest/c1.yaml", "name: c1\ndescription: d\nagent: selftest\ninput: do it\n")
+	opts := RunOptions{Backend: inference.NameStub, EvalsDir: dir}
+	if err := configure(opts); err != nil {
+		t.Fatal(err)
+	}
+	if err := pinSuites("selftest", opts); err != nil {
+		t.Fatal(err)
+	}
+	pinned, ok := cfg.suites["selftest"]
+	if !ok {
+		t.Fatal("pinSuites pinned no suite for selftest")
+	}
+	return pinned
+}
+
 func TestCoverageEvaluateProgressiveStampsEverySave(t *testing.T) {
 	chdirTemp(t)
 	installFakeKiroCLI(t, "")
-	useStubBackend(t)
-	cfg.suites = map[string]string{"selftest": testSuiteHash}
+	pinned := pinRealSuite(t)
 
 	dir := t.TempDir()
 	// Cases 2 and 3 snapshot the agent file as it stood when they started,
@@ -290,13 +323,13 @@ func TestCoverageEvaluateProgressiveStampsEverySave(t *testing.T) {
 	cases := []TestCase{covCase("c1"), covCase("c2", snap("after1.json")), covCase("c3", snap("after2.json"))}
 
 	var out strings.Builder
-	res := evaluateProgressive(verdictRubric(), cases, "abc", &out, dir, false, nil)
+	res := evalProgressiveOK(t, verdictRubric(), cases, "abc", &out, dir, false, nil)
 
 	for _, name := range []string{"after1.json", "after2.json"} {
 		var part AgentResult
 		readJSON(t, filepath.Join(dir, name), &part)
-		if part.SuiteSHA256 != testSuiteHash {
-			t.Errorf("%s suite_sha256 = %q, want %q", name, part.SuiteSHA256, testSuiteHash)
+		if part.SuiteSHA256 != pinned {
+			t.Errorf("%s suite_sha256 = %q, want %q", name, part.SuiteSHA256, pinned)
 		}
 		if boolOf(t, name+" complete", part.Complete) {
 			t.Errorf("%s (%d of 3 cases) complete = true, want false", name, len(part.Cases))
@@ -313,7 +346,7 @@ func TestCoverageEvaluateProgressiveStampsEverySave(t *testing.T) {
 	}
 	var sum Summary
 	readJSON(t, filepath.Join(dir, "summary.json"), &sum)
-	if p := sum.Agents["selftest"]; p.SuiteSHA256 != testSuiteHash || p.Complete == nil || !*p.Complete || p.CaseFilter == nil || *p.CaseFilter != "" {
+	if p := sum.Agents["selftest"]; p.SuiteSHA256 != pinned || p.Complete == nil || !*p.Complete || p.CaseFilter == nil || *p.CaseFilter != "" {
 		t.Errorf("summary agents.selftest = %+v", p)
 	}
 }
@@ -321,11 +354,10 @@ func TestCoverageEvaluateProgressiveStampsEverySave(t *testing.T) {
 func TestCoverageEvaluateProgressiveRepeat(t *testing.T) {
 	chdirTemp(t)
 	installFakeKiroCLI(t, "")
-	useStubBackend(t)
-	cfg.suites = map[string]string{"selftest": testSuiteHash}
+	pinned := pinRealSuite(t)
 	cfg.repeat = 2
 
-	res := evaluateProgressive(verdictRubric(), []TestCase{covCase("c1")}, "abc", &strings.Builder{}, t.TempDir(), false, nil)
+	res := evalProgressiveOK(t, verdictRubric(), []TestCase{covCase("c1")}, "abc", &strings.Builder{}, t.TempDir(), false, nil)
 
 	if len(res.Cases) != 2 {
 		t.Fatalf("got %d results, want 2 (one per repeat)", len(res.Cases))
@@ -333,22 +365,27 @@ func TestCoverageEvaluateProgressiveRepeat(t *testing.T) {
 	if !boolOf(t, "Complete", res.Complete) {
 		t.Error("Complete = false with both repeats present, want true")
 	}
+	if res.SuiteSHA256 != pinned {
+		t.Errorf("SuiteSHA256 = %q, want the pinned %q", res.SuiteSHA256, pinned)
+	}
 }
 
 func TestCoverageEvaluateProgressiveCaseFilterIncomplete(t *testing.T) {
 	chdirTemp(t)
 	installFakeKiroCLI(t, "")
-	useStubBackend(t)
-	cfg.suites = map[string]string{"selftest": testSuiteHash}
+	pinned := pinRealSuite(t)
 	cfg.caseFilter = "c1"
 
-	res := evaluateProgressive(verdictRubric(), []TestCase{covCase("c1")}, "abc", &strings.Builder{}, t.TempDir(), false, nil)
+	res := evalProgressiveOK(t, verdictRubric(), []TestCase{covCase("c1")}, "abc", &strings.Builder{}, t.TempDir(), false, nil)
 
 	if boolOf(t, "Complete", res.Complete) {
 		t.Error("Complete = true for a filtered run, want false")
 	}
 	if res.CaseFilter == nil || *res.CaseFilter != "c1" {
 		t.Errorf("CaseFilter = %v, want c1", res.CaseFilter)
+	}
+	if res.SuiteSHA256 != pinned {
+		t.Errorf("SuiteSHA256 = %q, want the pinned %q", res.SuiteSHA256, pinned)
 	}
 }
 
@@ -379,7 +416,7 @@ func TestCoverageEvaluateUnpinnedLeavesFieldsUnset(t *testing.T) {
 
 	for name, res := range map[string]AgentResult{
 		"evaluate":            evaluate(verdictRubric(), []TestCase{covCase("c1")}, "abc", &strings.Builder{}, nil),
-		"evaluateProgressive": evaluateProgressive(verdictRubric(), []TestCase{covCase("c1")}, "abc", &strings.Builder{}, t.TempDir(), false, nil),
+		"evaluateProgressive": evalProgressiveOK(t, verdictRubric(), []TestCase{covCase("c1")}, "abc", &strings.Builder{}, t.TempDir(), false, nil),
 	} {
 		if res.SuiteSHA256 != "" || res.Complete != nil || res.CaseFilter != nil {
 			t.Errorf("%s: unpinned result carries coverage: %+v", name, res)

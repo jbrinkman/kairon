@@ -222,7 +222,7 @@ func TestEvaluateProgressiveUsesWorkspace(t *testing.T) {
 	execEnv(t, true)
 	resultsDir := t.TempDir()
 	var out bytes.Buffer
-	res := evaluateProgressive(execRubric(), []TestCase{stubCase("prog", "", "", "ok", "echo hi > marker.txt")},
+	res := evalProgressiveOK(t, execRubric(), []TestCase{stubCase("prog", "", "", "ok", "echo hi > marker.txt")},
 		"abc", &out, resultsDir, false, nil)
 	if len(res.Cases) != 1 || res.Cases[0].WorkspaceDir == "" {
 		t.Fatalf("result = %+v", res.Cases)
