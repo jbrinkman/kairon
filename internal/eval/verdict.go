@@ -16,16 +16,25 @@ import (
 // on it; ScoreMin, ScoreMax and RepeatScores show the spread. They are not
 // omitempty: a legitimate score_min of 0 must be written.
 type AgentVerdict struct {
-	Score        float64   `json:"score"`
-	Threshold    float64   `json:"threshold"`
-	Passed       bool      `json:"passed"`
-	CasesTotal   int       `json:"cases_total"`
-	CasesFailed  int       `json:"cases_failed"`
-	Cost         CostInfo  `json:"cost"`
-	Repeat       int       `json:"repeat"`
-	ScoreMin     float64   `json:"score_min"`
-	ScoreMax     float64   `json:"score_max"`
-	RepeatScores []float64 `json:"repeat_scores"`
+	Score       float64 `json:"score"`
+	Threshold   float64 `json:"threshold"`
+	Passed      bool    `json:"passed"`
+	CasesTotal  int     `json:"cases_total"`
+	CasesFailed int     `json:"cases_failed"`
+	// AttemptsTotal is the number of case results (every case, every repeat);
+	// AttemptsPassed how many of them passed their own threshold; SuccessRate
+	// is AttemptsPassed as a percent (0-100) of AttemptsTotal, 0 with no
+	// attempts. Unlike cases_total / cases_failed, repeats are separate
+	// attempts and are not pooled. Independent of the pass threshold and the
+	// criterion floor. Not omitempty: 0 is a real value.
+	AttemptsTotal  int       `json:"attempts_total"`
+	AttemptsPassed int       `json:"attempts_passed"`
+	SuccessRate    float64   `json:"success_rate"`
+	Cost           CostInfo  `json:"cost"`
+	Repeat         int       `json:"repeat"`
+	ScoreMin       float64   `json:"score_min"`
+	ScoreMax       float64   `json:"score_max"`
+	RepeatScores   []float64 `json:"repeat_scores"`
 	// Criteria is every non-cost criterion scored in any case, pooled over
 	// every case and repeat, in first-seen order. Always written ([] when
 	// nothing is scored).
@@ -114,6 +123,10 @@ func agentVerdict(ar AgentResult) AgentVerdict {
 		}
 	}
 	v.CasesTotal, v.CasesFailed = caseAccounting(ar, threshold)
+	v.AttemptsTotal, v.AttemptsPassed = attemptAccounting(ar, threshold)
+	if v.AttemptsTotal > 0 {
+		v.SuccessRate = float64(v.AttemptsPassed) * 100 / float64(v.AttemptsTotal)
+	}
 
 	score, maxScore := agentScoreTotals(ar)
 	if maxScore > 0 {
@@ -194,6 +207,22 @@ func caseAccounting(ar AgentResult, agentThreshold float64) (total, failed int) 
 		}
 	}
 	return len(order), failed
+}
+
+// attemptAccounting returns the number of case results (attempts) of the agent
+// and how many of them passed their own threshold.
+//
+// Every CaseResult counts, so the repeats of a case are separate attempts
+// (unlike caseAccounting, which pools them). casePassed honours a stamped
+// Passed (a result with no output is stamped false) and recomputes a legacy
+// result against the agent threshold.
+func attemptAccounting(ar AgentResult, agentThreshold float64) (total, passed int) {
+	for _, c := range ar.Cases {
+		if casePassed(c, agentThreshold) {
+			passed++
+		}
+	}
+	return len(ar.Cases), passed
 }
 
 // agentCostTotals returns the agent's cost: the agent and judge calls of every
@@ -306,8 +335,8 @@ func (e *ThresholdError) Unwrap() error { return ErrThresholdFailed }
 
 // printAgentVerdict writes the single PASS/FAIL line for an agent. The line
 // starts with the verdict word so it can be matched with grep '^PASS \|^FAIL '.
-// When criteria are below the floor, they are named after the existing text;
-// with repeats (Repeat > 1) the spread is appended next, followed by a
+// The success rate (passed/total attempts) follows "cases failed". When
+// criteria are below the floor, they are named after it; with repeats (Repeat > 1) the spread is appended next, followed by a
 // cost-incomplete marker when a call's model had no price.
 func printAgentVerdict(w io.Writer, agent string, v AgentVerdict) {
 	word := "FAIL"
@@ -334,8 +363,9 @@ func printAgentVerdict(w io.Writer, agent string, v AgentVerdict) {
 	if v.Cost.CostIncomplete {
 		suffix += " " + costIncompleteNote(v.Cost)
 	}
-	fmt.Fprintf(w, "%s %s: %.1f%% (threshold %.1f%%), %d/%d cases failed%s\n",
-		word, agent, v.Score, v.Threshold, v.CasesFailed, v.CasesTotal, suffix)
+	fmt.Fprintf(w, "%s %s: %.1f%% (threshold %.1f%%), %d/%d cases failed, success rate %.1f%% (%d/%d attempts)%s\n",
+		word, agent, v.Score, v.Threshold, v.CasesFailed, v.CasesTotal,
+		v.SuccessRate, v.AttemptsPassed, v.AttemptsTotal, suffix)
 	for _, c := range v.Criteria {
 		fmt.Fprintf(w, "  %s: %d/%d (%.1f%%)\n", c.Name, c.Score, c.MaxScore, c.Percent)
 	}

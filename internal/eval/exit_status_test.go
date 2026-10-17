@@ -52,8 +52,8 @@ func TestPrintAgentVerdictFormat(t *testing.T) {
 		v    AgentVerdict
 		want string
 	}{
-		{"pass", AgentVerdict{Score: 100, Threshold: 95, Passed: true, CasesTotal: 16}, "PASS selftest: 100.0% (threshold 95.0%), 0/16 cases failed\n"},
-		{"fail", AgentVerdict{Score: 4, Threshold: 95, Passed: false, CasesTotal: 13, CasesFailed: 13}, "FAIL selftest: 4.0% (threshold 95.0%), 13/13 cases failed\n"},
+		{"pass", AgentVerdict{Score: 100, Threshold: 95, Passed: true, CasesTotal: 16, AttemptsTotal: 16, AttemptsPassed: 16, SuccessRate: 100}, "PASS selftest: 100.0% (threshold 95.0%), 0/16 cases failed, success rate 100.0% (16/16 attempts)\n"},
+		{"fail", AgentVerdict{Score: 4, Threshold: 95, Passed: false, CasesTotal: 13, CasesFailed: 13, AttemptsTotal: 13}, "FAIL selftest: 4.0% (threshold 95.0%), 13/13 cases failed, success rate 0.0% (0/13 attempts)\n"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -206,7 +206,7 @@ func TestSingleCaseRunPrintsVerdictAndReturnsThresholdError(t *testing.T) {
 			t.Fatalf("err = %v, want nil", err)
 		}
 		lines := verdictLines(out)
-		if len(lines) != 1 || lines[0] != "PASS selftest: 100.0% (threshold 95.0%), 0/1 cases failed" {
+		if len(lines) != 1 || lines[0] != "PASS selftest: 100.0% (threshold 95.0%), 0/1 cases failed, success rate 100.0% (1/1 attempts)" {
 			t.Fatalf("verdict lines = %q\n%s", lines, out)
 		}
 	})

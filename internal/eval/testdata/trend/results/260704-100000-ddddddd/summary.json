@@ -1,0 +1,11 @@
+{
+  "git_hash": "ddddddd",
+  "judge_model": "judge-m2",
+  "sandbox": "native",
+  "agent_verdicts": {
+    "selftest": {"score": 87.5, "threshold": 70.0, "passed": true, "cases_total": 4, "cases_failed": 0, "attempts_total": 4, "attempts_passed": 3, "success_rate": 75, "cost": {}}
+  },
+  "agents": {
+    "selftest": {"agent_model": "agent-m2", "prompt_sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd", "suite_sha256": "1111111111111111111111111111111111111111111111111111111111111111", "complete": true, "case_filter": ""}
+  }
+}

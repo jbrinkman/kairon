@@ -176,7 +176,8 @@ type parsedLog struct {
 type runRecord struct {
 	exists      bool
 	hasScore    bool
-	score       float64 // percent
+	score       float64  // percent
+	successRate *float64 // attempt success rate (percent); nil when not recorded
 	promptSHA   string
 	scoreSource string
 
@@ -962,6 +963,18 @@ func loadRunRecord(resultsDir, run, agent string) runRecord {
 		rec.caseFilter = *result.CaseFilter
 	case prov.CaseFilter != nil:
 		rec.caseFilter = *prov.CaseFilter
+	}
+
+	// Attempt success rate, from the data already loaded above: the summary
+	// verdict's value when it counted attempts, else recomputed from the
+	// agent result when it holds case results, else nil (not recorded).
+	switch {
+	case sumErr == nil && summary.AgentVerdicts[agent].AttemptsTotal > 0:
+		rate := summary.AgentVerdicts[agent].SuccessRate
+		rec.successRate = &rate
+	case resErr == nil && len(result.Cases) > 0:
+		rate := agentVerdict(result).SuccessRate
+		rec.successRate = &rate
 	}
 	return rec
 }

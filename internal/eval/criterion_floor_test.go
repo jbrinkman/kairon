@@ -138,7 +138,7 @@ func TestAgentVerdictFloorNothingScoredFailsClosed(t *testing.T) {
 func TestPrintAgentVerdictFloorSuffix(t *testing.T) {
 	floor := floatPtr(50)
 	one := AgentVerdict{
-		Score: 66.7, Threshold: 60, CasesTotal: 1, MinCriterionScore: floor,
+		Score: 66.7, Threshold: 60, CasesTotal: 1, AttemptsTotal: 1, AttemptsPassed: 1, SuccessRate: 100, MinCriterionScore: floor,
 		Criteria: []CriterionTotal{
 			{Name: "file_written", Score: 2, MaxScore: 2, Percent: 100},
 			{Name: "report_marker", Score: 0, MaxScore: 1, Percent: 0},
@@ -146,7 +146,7 @@ func TestPrintAgentVerdictFloorSuffix(t *testing.T) {
 		CriteriaBelowFloor: []string{"report_marker"},
 	}
 	several := AgentVerdict{
-		Score: 80.4, Threshold: 60, CasesTotal: 2, MinCriterionScore: floor, Repeat: 2, ScoreMin: 80.4, ScoreMax: 80.4,
+		Score: 80.4, Threshold: 60, CasesTotal: 2, AttemptsTotal: 4, AttemptsPassed: 3, SuccessRate: 75, MinCriterionScore: floor, Repeat: 2, ScoreMin: 80.4, ScoreMax: 80.4,
 		Criteria: []CriterionTotal{
 			{Name: "a", Score: 2, MaxScore: 20, Percent: 10},
 			{Name: "b", Score: 0, MaxScore: 2, Percent: 0},
@@ -159,10 +159,10 @@ func TestPrintAgentVerdictFloorSuffix(t *testing.T) {
 		want string
 	}{
 		{"one criterion", one,
-			"FAIL selftest-floor: 66.7% (threshold 60.0%), 0/1 cases failed; criterion below floor 50.0%: report_marker 0.0% (0/1)\n" +
+			"FAIL selftest-floor: 66.7% (threshold 60.0%), 0/1 cases failed, success rate 100.0% (1/1 attempts); criterion below floor 50.0%: report_marker 0.0% (0/1)\n" +
 				"  file_written: 2/2 (100.0%)\n  report_marker: 0/1 (0.0%)\n"},
 		{"several with repeat suffix last", several,
-			"FAIL selftest-floor: 80.4% (threshold 60.0%), 0/2 cases failed; criteria below floor 50.0%: a 10.0% (2/20), b 0.0% (0/2) [repeat 2: min 80.4%, max 80.4%]\n" +
+			"FAIL selftest-floor: 80.4% (threshold 60.0%), 0/2 cases failed, success rate 75.0% (3/4 attempts); criteria below floor 50.0%: a 10.0% (2/20), b 0.0% (0/2) [repeat 2: min 80.4%, max 80.4%]\n" +
 				"  a: 2/20 (10.0%)\n  b: 0/2 (0.0%)\n"},
 	}
 	for _, tt := range tests {

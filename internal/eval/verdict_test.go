@@ -279,7 +279,7 @@ func TestUpdateIncrementalSummaryWritesAgentVerdicts(t *testing.T) {
 	if err := json.Unmarshal(data, &raw); err != nil {
 		t.Fatal(err)
 	}
-	for _, k := range []string{"score", "threshold", "passed", "cases_total", "cases_failed", "cost"} {
+	for _, k := range []string{"score", "threshold", "passed", "cases_total", "cases_failed", "attempts_total", "attempts_passed", "success_rate", "cost"} {
 		if _, ok := raw.Verdicts["a"][k]; !ok {
 			t.Errorf("summary.json agent_verdicts.a missing %q", k)
 		}

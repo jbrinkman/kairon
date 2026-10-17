@@ -1073,6 +1073,7 @@ passed = score >= threshold
 - Skipped, errored and no-output criteria count as 0 in the aggregate (see [Skipped Criteria](#skipped-criteria)).
 - **With `--repeat`, `score` is the mean over the repeats.** The sums run over every run of every case; each repeat has the same cases and the same maxima, so this equals the arithmetic mean of the per-repeat scores. `passed` is decided on that mean: a single repeat above the threshold does not rescue a mean below it. The spread is reported next to it in `score_min`, `score_max` and `repeat_scores`, and the number of repeats in `repeat` (see [Repeat runs](#repeat-runs---repeat)). Without `--repeat` the run is one repeat and `score_min == score == score_max`.
 - `cases_total` is the number of distinct cases and `cases_failed` the number that did not pass their own threshold. A case with several runs counts as failed when its score pooled over its runs is below its threshold. `cases_failed` is informational: it does not fail the agent by itself, the aggregate score does.
+- **Attempts.** `attempts_total`, `attempts_passed` and `success_rate` report how often a whole attempt succeeded, which the pooled `score` hides. An attempt is one case result: every case run counts, so with `--repeat N` each case is N attempts. `attempts_total` is the number of case results, `attempts_passed` the number of those that passed their own threshold (the `passed` recorded on the case, recomputed for results written before `passed` existed; a result with no output is a failed attempt), and `success_rate = attempts_passed * 100 / attempts_total` as a **percent (0-100)**, `0` when there are no attempts. These differ from `cases_total` and `cases_failed`, which count distinct cases and pool the repeats of a case before judging it. After `--repeat 2` of an agent with 21 cases, `cases_total` is 21 while `attempts_total` is 42. The three fields do not depend on the agent's threshold or the criterion floor: an agent can pass at a score of 95% with a `success_rate` of 67%, and a floor failure leaves the counts unchanged. They are always written, so `success_rate: 0` (every attempt failed) is distinguishable from a missing field. `success_rate` is not rounded in `summary.json`; only the printed line rounds it to one decimal. For a single-case run the counts cover only the cases that ran. Trends over several runs: [Attempt trend](#attempt-trend-kairon-eval-trend).
 - **Fail closed.** If nothing was scored (the denominator is 0, for example a rubric with only cost criteria), the agent gets `score`, `score_min` and `score_max` of 0, `passed: false`, and no `agent_scores` entry.
 
 #### Per-criterion scores and the floor
@@ -1098,14 +1099,14 @@ The agent `score` pools points across every check of every case, so a criterion 
 After an agent finishes, `kairon eval` prints one line, which starts with the verdict word (so `grep '^PASS \|^FAIL '` finds them):
 
 ```
-PASS selftest: 100.0% (threshold 95.0%), 0/26 cases failed
-FAIL selftest-fail: 8.3% (threshold 95.0%), 21/22 cases failed
+PASS selftest: 100.0% (threshold 95.0%), 0/26 cases failed, success rate 100.0% (26/26 attempts)
+FAIL selftest-fail: 8.3% (threshold 95.0%), 21/22 cases failed, success rate 4.5% (1/22 attempts)
 ```
 
-The format is `PASS|FAIL <agent>: <score>% (threshold <threshold>%), <cases_failed>/<cases_total> cases failed`, with one decimal for the percentages. With `--repeat N` (N > 1) `<score>` is the mean and the line ends with the spread, `[repeat N: min X%, max Y%]`; the line still starts with the verdict word and the text before the suffix is unchanged:
+The format is `PASS|FAIL <agent>: <score>% (threshold <threshold>%), <cases_failed>/<cases_total> cases failed, success rate <success_rate>% (<attempts_passed>/<attempts_total> attempts)`, with one decimal for the percentages. The success rate comes right after `cases failed`, in the same position on every line, so `success rate (\d+\.\d)%` matches it whatever follows; an agent with no attempts prints `success rate 0.0% (0/0 attempts)`. See [Agent verdict](#agent-verdict) for what an attempt is. With `--repeat N` (N > 1) `<score>` is the mean and the line ends with the spread, `[repeat N: min X%, max Y%]`; the line still starts with the verdict word and the text before the suffix is unchanged. Each repeat is a separate attempt, so the example below has two attempts for its one case:
 
 ```
-FAIL selftest-fail: 50.0% (threshold 95.0%), 1/1 cases failed [repeat 2: min 0.0%, max 100.0%]
+FAIL selftest-fail: 50.0% (threshold 95.0%), 1/1 cases failed, success rate 50.0% (1/2 attempts) [repeat 2: min 0.0%, max 100.0%]
 ```
 
 With no `--repeat` (or `--repeat 1`) there is no suffix and the line is exactly as above.
@@ -1113,18 +1114,18 @@ With no `--repeat` (or `--repeat 1`) there is no suffix and the line is exactly 
 When the verdict has `criteria`, one indented line per criterion follows the verdict line, in `criteria` order: `  <criterion>: <score>/<max_score> (<percent>%)`, with one decimal for the percent. The lines start with spaces, not `PASS ` or `FAIL `, so `grep '^PASS \|^FAIL '` still finds only the verdict lines:
 
 ```
-PASS selftest: 100.0% (threshold 95.0%), 0/25 cases failed
+PASS selftest: 100.0% (threshold 95.0%), 0/25 cases failed, success rate 100.0% (25/25 attempts)
   structural_completeness: 66/66 (100.0%)
   clarity: 125/125 (100.0%)
 ```
 
-When the rubric sets `min_criterion_score` and criteria are below it, the `FAIL` line gains a suffix naming each one with its percent and `score/max_score`, after the existing text and **before** any `[repeat …]` suffix. One criterion reads `; criterion below floor <floor>%: <name> <percent>% (<score>/<max_score>)`; several use `criteria below floor` and are joined with `, ` in `criteria` order:
+When the rubric sets `min_criterion_score` and criteria are below it, the `FAIL` line gains a suffix naming each one with its percent and `score/max_score`, after the existing text (including the success rate) and **before** any `[repeat …]` suffix. One criterion reads `; criterion below floor <floor>%: <name> <percent>% (<score>/<max_score>)`; several use `criteria below floor` and are joined with `, ` in `criteria` order:
 
 ```
-FAIL selftest-floor: 66.7% (threshold 60.0%), 0/1 cases failed; criterion below floor 50.0%: report_marker 0.0% (0/1)
+FAIL selftest-floor: 66.7% (threshold 60.0%), 0/1 cases failed, success rate 100.0% (1/1 attempts); criterion below floor 50.0%: report_marker 0.0% (0/1)
   file_written: 2/2 (100.0%)
   report_marker: 0/1 (0.0%)
-FAIL demo: 80.4% (threshold 60.0%), 0/2 cases failed; criteria below floor 50.0%: a 10.0% (2/20), b 0.0% (0/2) [repeat 2: min 80.4%, max 80.4%]
+FAIL demo: 80.4% (threshold 60.0%), 0/2 cases failed, success rate 100.0% (4/4 attempts); criteria below floor 50.0%: a 10.0% (2/20), b 0.0% (0/2) [repeat 2: min 80.4%, max 80.4%]
 ```
 
 The overall score on those first lines met its threshold; the floor alone failed the agent. Without a floor failure the first line is unchanged. In the second example `--repeat 2` doubled the pooled score and maximum (`2/20` rather than `1/10`) while the percent is the mean over the repeats.
@@ -1132,7 +1133,7 @@ The overall score on those first lines met its threshold; the floor alone failed
 When the agent's cost is incomplete (a call used a model with no configured price), the line also ends with ` [cost incomplete: no price for <models>]`, listing the unpriced model ids, after any repeat suffix. The line still starts with the verdict word:
 
 ```
-PASS selftest: 100.0% (threshold 95.0%), 0/25 cases failed [cost incomplete: no price for claude-haiku-4.5]
+PASS selftest: 100.0% (threshold 95.0%), 0/25 cases failed, success rate 100.0% (25/25 attempts) [cost incomplete: no price for claude-haiku-4.5]
 ```
 
 See [Unknown cost](#unknown-cost).
@@ -1170,6 +1171,8 @@ The verdict uses **percent**, `agent_scores` in `summary.json` uses a **0–1 fr
 | `agent_verdicts.<agent>.repeat_scores` | list of percent (0–100) | `[92, 96, 100]` |
 | `agent_verdicts.<agent>.threshold` | percent (0–100) | `95` |
 | `agent_verdicts.<agent>.min_criterion_score` | percent (0–100) | `50` |
+| `agent_verdicts.<agent>.success_rate` | percent (0–100), not a 0–1 fraction | `75` |
+| `agent_verdicts.<agent>.attempts_total`, `.attempts_passed` | integer counts of case results (attempts) | `4`, `3` |
 | `agent_verdicts.<agent>.criteria[].percent` | percent (0–100) | `66.7` |
 | `agent_verdicts.<agent>.criteria[].score`, `.max_score` | **points** (integers), not percent | `2`, `3` |
 
@@ -1203,7 +1206,7 @@ kairon eval architect --case decompose-feature --repeat 3   # repeats that one c
 | `repeat_scores` | The repeat scores in run order, one per completed repeat. |
 | `passed` | `score >= threshold`, on the mean. Repeats of 100% and 80% against a threshold of 95 give a mean of 90 and a FAIL even though the best repeat is above the threshold. |
 
-All four new fields are always written, including a legitimate `score_min` of `0`. A plain run writes `repeat: 1`, `score_min == score_max == score` and `repeat_scores: [score]`. Nothing scored fails closed with all of them `0`. `cases_total` counts distinct case names; see [Agent verdict](#agent-verdict) for `cases_failed`. These fields are the stable contract that promotion tooling can read from `summary.json`.
+All four new fields are always written, including a legitimate `score_min` of `0`. A plain run writes `repeat: 1`, `score_min == score_max == score` and `repeat_scores: [score]`. Nothing scored fails closed with all of them `0`. `cases_total` counts distinct case names; see [Agent verdict](#agent-verdict) for `cases_failed`. `attempts_total` counts every repeat, so it is N times the single-run count. These fields are the stable contract that promotion tooling can read from `summary.json`.
 
 **Cost** is the cost of all repeats: `cost` and `total_cost` sum every run, so `--repeat 3` costs about three times a single run. If any repeat had an unknown cost the sum is marked `cost_incomplete` (see [Unknown cost](#unknown-cost)).
 
@@ -1370,7 +1373,7 @@ When a call used tokens on a model with no price, its cost cannot be computed. T
 
 Where the incompleteness is shown to a human:
 
-- **Verdict line.** The `PASS`/`FAIL` line of an agent whose cost is incomplete ends with `[cost incomplete: no price for <models>]`, for example `PASS selftest: 100.0% (threshold 95.0%), 0/25 cases failed [cost incomplete: no price for claude-haiku-4.5]`. The line still starts with `PASS ` or `FAIL `, so `grep '^PASS \|^FAIL '` keeps working (see [Output and exit status](#output-and-exit-status)).
+- **Verdict line.** The `PASS`/`FAIL` line of an agent whose cost is incomplete ends with `[cost incomplete: no price for <models>]`, for example `PASS selftest: 100.0% (threshold 95.0%), 0/25 cases failed, success rate 100.0% (25/25 attempts) [cost incomplete: no price for claude-haiku-4.5]`. The line still starts with `PASS ` or `FAIL `, so `grep '^PASS \|^FAIL '` keeps working (see [Output and exit status](#output-and-exit-status)).
 - **`eval diff`.** If either run's `total_cost` is incomplete, the `Cost:` delta line is suffixed ` (incomplete: <side(s)>)` naming which run(s) are incomplete, and the quality-per-dollar lines are suffixed ` (cost incomplete)`, because a ratio over a lower bound overstates quality per dollar (see [Comparing Runs](#comparing-runs)).
 
 **Failed calls stay outside `judge_cost`.** This is unchanged by pricing. A judge call that failed, or whose reply could not be parsed, still has its `calls[]` record (with its tokens, and its `cost_usd` / `cost_unknown`), but adds nothing to the case's `judge_cost`, so `judge_cost` can be lower than the sum of the `calls[]` costs. Likewise a failed agent call is in `calls[]` only. Pricing does not change which calls are counted, only how each counted call is priced.
@@ -1597,9 +1600,9 @@ In the self-test, `stub-conventions-fixture` shows this: its workspace fixture s
   "total_cost": { "tokens_in": 4210, "tokens_out": 980, "estimated_usd": 0.0273, "cost_incomplete": true, "unpriced_models": ["claude-haiku-4.5"] },
   "agent_scores": { "architect": 0.85, "builder": 0.8 },
   "agent_verdicts": {
-    "architect": { "score": 85, "threshold": 95, "passed": false, "cases_total": 4, "cases_failed": 1, "cost": { "tokens_in": 2100, "tokens_out": 500, "estimated_usd": 0.0138 }, "repeat": 1, "score_min": 85, "score_max": 85, "repeat_scores": [85],
+    "architect": { "score": 85, "threshold": 95, "passed": false, "cases_total": 4, "cases_failed": 1, "attempts_total": 4, "attempts_passed": 3, "success_rate": 75, "cost": { "tokens_in": 2100, "tokens_out": 500, "estimated_usd": 0.0138 }, "repeat": 1, "score_min": 85, "score_max": 85, "repeat_scores": [85],
                     "criteria": [ { "name": "task_decomposition", "score": 40, "max_score": 50, "percent": 80 }, { "name": "completeness", "score": 45, "max_score": 50, "percent": 90 } ] },
-    "builder":   { "score": 80, "threshold": 95, "passed": false, "cases_total": 3, "cases_failed": 1, "cost": { "tokens_in": 2110, "tokens_out": 480, "estimated_usd": 0.0135 }, "repeat": 1, "score_min": 80, "score_max": 80, "repeat_scores": [80],
+    "builder":   { "score": 80, "threshold": 95, "passed": false, "cases_total": 3, "cases_failed": 1, "attempts_total": 3, "attempts_passed": 2, "success_rate": 66.67, "cost": { "tokens_in": 2110, "tokens_out": 480, "estimated_usd": 0.0135 }, "repeat": 1, "score_min": 80, "score_max": 80, "repeat_scores": [80],
                     "criteria": [ { "name": "code_correctness", "score": 40, "max_score": 50, "percent": 80 }, { "name": "spec_adherence", "score": 40, "max_score": 50, "percent": 80 } ] }
   },
   "judge_model": "claude-sonnet-5.5",
@@ -1634,6 +1637,9 @@ In the self-test, `stub-conventions-fixture` shows this: its workspace fixture s
 | `passed` | boolean | The agent passes when `score >= threshold` on the mean **and**, if `min_criterion_score` is set, no criterion's pooled percent is below that floor. `false` when nothing was scored. |
 | `cases_total` | integer | Number of distinct cases evaluated (a case run N times counts once). |
 | `cases_failed` | integer | Number of cases that did not pass their own threshold; for a case with several runs, its score pooled over the runs is compared to its threshold. Informational. |
+| `attempts_total` | integer | Number of attempts: every case result of the agent, counting each repeat of a case separately (`--repeat 2` of 21 cases gives 42, while `cases_total` stays 21). Always written. |
+| `attempts_passed` | integer | Number of those attempts that passed their own threshold. Independent of the agent threshold and the criterion floor. Always written. |
+| `success_rate` | number, **percent** (0–100) | `attempts_passed * 100 / attempts_total`; `0` when `attempts_total` is `0`. Not rounded. Always written, including `0`. |
 | `cost` | object | The agent's cost (agent and judge calls of every run of every case): `tokens_in`, `tokens_out`, `estimated_usd`, plus `cost_incomplete` and `unpriced_models` when a contributing call had an unknown cost (omitted otherwise; see [Unknown cost](#unknown-cost)). |
 | `repeat` | integer | Number of repeats (`--repeat`; `1` for a plain run). Always written. |
 | `score_min` | number, **percent** (0–100) | The lowest repeat score. Always written, including `0`; equals `score` for a plain run. |
@@ -1653,7 +1659,7 @@ A `--repeat 3` run of one agent records, for example (the three repeats scored 9
 
 ```json
 "agent_verdicts": {
-  "architect": { "score": 96, "threshold": 95, "passed": true, "cases_total": 4, "cases_failed": 0, "cost": { … },
+  "architect": { "score": 96, "threshold": 95, "passed": true, "cases_total": 4, "cases_failed": 0, "attempts_total": 12, "attempts_passed": 12, "success_rate": 100, "cost": { … },
                  "repeat": 3, "score_min": 92, "score_max": 100, "repeat_scores": [92, 96, 100] }
 }
 ```
@@ -1662,7 +1668,7 @@ A verdict that failed on the floor alone (overall `66.7` against a threshold of 
 
 ```json
 "agent_verdicts": {
-  "selftest-floor": { "score": 66.7, "threshold": 60, "passed": false, "cases_total": 1, "cases_failed": 0, "cost": { … },
+  "selftest-floor": { "score": 66.7, "threshold": 60, "passed": false, "cases_total": 1, "cases_failed": 0, "attempts_total": 1, "attempts_passed": 1, "success_rate": 100, "cost": { … },
                       "repeat": 1, "score_min": 66.7, "score_max": 66.7, "repeat_scores": [66.7],
                       "criteria": [ { "name": "file_written", "score": 2, "max_score": 2, "percent": 100 },
                                     { "name": "report_marker", "score": 0, "max_score": 1, "percent": 0 } ],
@@ -2808,7 +2814,7 @@ internal/eval/testdata/evals/
 
 `selftest.json` declares a `model` so the self-test passes the model-pinning pre-flight, and lists a `skill://.kiro/skills/selftest-conventions/SKILL.md` resource that no project file provides. It exercises the "missing resources are normal" rule: the run succeeds and the agent-level `resources_present` is `[]`, even if you create `.kiro/skills/selftest-conventions/SKILL.md` in the repository, because a project `*-conventions` skill is never staged. Only the `stub-conventions-fixture` case, whose workspace fixture supplies that file, lists it in its own per-case `resources_present` (see [Per-case fields](#per-case-fields-in-agentjson)).
 
-The `selftest` agent has twenty-eight cases and all of them pass (`task eval:selftest`): eight `stub-*` cases — the five original ones (`stub-basic`, `stub-marker`, `stub-quoted-input`, `stub-seeded-workspace`, `stub-usage`), which carry no `checks` and keep their pinned scores, `stub-conventions-fixture`, and the two pricing cases `stub-price-sonnet` and `stub-price-unknown` (see [Pricing](#pricing)); fourteen `check-*` cases that exercise [checks](#checks) (ten per-type cases, `check-command-inject`, and three `judge` cases: `check-judge-yes`, `check-judge-files` and `check-judge-mixed`); three [multi-turn](#multi-turn-cases) cases (`multi-turn-gh-log`, `multi-turn-judge`, `multi-turn-workspace`); and three [simulated-user](#simulated-user-elicitation-cases) cases (`sim-routes`, `sim-stop-when`, `sim-judge`). The `selftest-fail` agent is deliberately separate, so `selftest` keeps meaning "everything passes". It has twenty-two cases. Twenty-one are **expected to fail** on a plain run: sixteen `check-*` cases (ten per-type cases and five of the six `check-judge-*` cases) plus `check-partial`, all built so that checks fail. The sixth, `check-judge-repeat`, is the exception: its `stub.judge: [yes, no]` answers `yes` on the first run, so a plain run (no `--repeat`) scores it `1/1` and the agent reports `21/22 cases failed`; only under [`--repeat 2`](#repeat-runs---repeat) does it show the `1/1` then `0/1` spread that pools to a failing 50% (see the `judge` paragraph below). The agent still ends below threshold either way. The rest are `stub-timeout`, which records a timeout failure (empty `actual_output`, `error_context.stderr` containing `timeout after 1s`) in about a second; `stub-empty-response`, whose stub returns an empty response, so the case has no output, every criterion scores 0 out of its maximum, and it still counts toward the agent's score; `multi-turn-wrong-turn`; `sim-fact-not-asked`, both described below; and `calls-malformed-line`, a malformed `.eval/calls.jsonl` described under [Workflows](#verifying-with-the-self-test). Run it with:
+The `selftest` agent has twenty-eight cases and all of them pass (`task eval:selftest`): eight `stub-*` cases — the five original ones (`stub-basic`, `stub-marker`, `stub-quoted-input`, `stub-seeded-workspace`, `stub-usage`), which carry no `checks` and keep their pinned scores, `stub-conventions-fixture`, and the two pricing cases `stub-price-sonnet` and `stub-price-unknown` (see [Pricing](#pricing)); fourteen `check-*` cases that exercise [checks](#checks) (ten per-type cases, `check-command-inject`, and three `judge` cases: `check-judge-yes`, `check-judge-files` and `check-judge-mixed`); three [multi-turn](#multi-turn-cases) cases (`multi-turn-gh-log`, `multi-turn-judge`, `multi-turn-workspace`); and three [simulated-user](#simulated-user-elicitation-cases) cases (`sim-routes`, `sim-stop-when`, `sim-judge`). The `selftest-fail` agent is deliberately separate, so `selftest` keeps meaning "everything passes". It has twenty-two cases. Twenty-one are **expected to fail** on a plain run: sixteen `check-*` cases (ten per-type cases and five of the six `check-judge-*` cases) plus `check-partial`, all built so that checks fail. The sixth, `check-judge-repeat`, is the exception: its `stub.judge: [yes, no]` answers `yes` on the first run, so a plain run (no `--repeat`) scores it `1/1` and the agent reports `21/22 cases failed, success rate 4.5% (1/22 attempts)`; only under [`--repeat 2`](#repeat-runs---repeat) does it show the `1/1` then `0/1` spread that pools to a failing 50% (see the `judge` paragraph below). The agent still ends below threshold either way. The rest are `stub-timeout`, which records a timeout failure (empty `actual_output`, `error_context.stderr` containing `timeout after 1s`) in about a second; `stub-empty-response`, whose stub returns an empty response, so the case has no output, every criterion scores 0 out of its maximum, and it still counts toward the agent's score; `multi-turn-wrong-turn`; `sim-fact-not-asked`, both described below; and `calls-malformed-line`, a malformed `.eval/calls.jsonl` described under [Workflows](#verifying-with-the-self-test). Run it with:
 
 ```bash
 go run ./cmd/kairon eval --backend stub --no-sandbox --evals-dir internal/eval/testdata/evals selftest-fail
@@ -2843,7 +2849,7 @@ To see the repeat statistics end to end, run the whole `selftest` agent three ti
 go run ./cmd/kairon eval --backend stub --no-sandbox --evals-dir internal/eval/testdata/evals selftest --repeat 3
 
 # Two different scores: run 1 scores 1/1, run 2 scores 0/1. Prints
-#   FAIL selftest-fail: 50.0% (threshold 95.0%), 1/1 cases failed [repeat 2: min 0.0%, max 100.0%]
+#   FAIL selftest-fail: 50.0% (threshold 95.0%), 1/1 cases failed, success rate 50.0% (1/2 attempts) [repeat 2: min 0.0%, max 100.0%]
 # and exits 1 (the mean, 50, is below the threshold)
 go run ./cmd/kairon eval --backend stub --no-sandbox --evals-dir internal/eval/testdata/evals selftest-fail check-judge-repeat --repeat 2
 ```
@@ -2908,7 +2914,7 @@ The `selftest-floor` agent exercises [`min_criterion_score`](#per-criterion-scor
 go run ./cmd/kairon eval --backend stub --evals-dir internal/eval/testdata/evals selftest-floor   # FAIL, exit 1
 ```
 
-It prints `FAIL selftest-floor: 66.7% (threshold 60.0%), 0/1 cases failed; criterion below floor 50.0%: report_marker 0.0% (0/1)` followed by the two criterion lines, and the saved `summary.json` verdict has `passed: false`, `min_criterion_score: 50` and `criteria_below_floor: ["report_marker"]`. Removing the `min_criterion_score` line from a copy of the rubric makes the same run pass with the same score.
+It prints `FAIL selftest-floor: 66.7% (threshold 60.0%), 0/1 cases failed, success rate 100.0% (1/1 attempts); criterion below floor 50.0%: report_marker 0.0% (0/1)` followed by the two criterion lines, and the saved `summary.json` verdict has `passed: false`, `min_criterion_score: 50` and `criteria_below_floor: ["report_marker"]`. Removing the `min_criterion_score` line from a copy of the rubric makes the same run pass with the same score.
 
 `selftest-fail`, `selftest-checks-fail` and `selftest-floor` are expected-to-fail agents, and `checks-only-invalid` is an expected-to-be-rejected fixture; none of them is a regression when it fails.
 
@@ -3714,3 +3720,86 @@ Run Provenance:
 **The provenance block only reports.** It never fails the diff and never changes the deltas that follow. All the provenance and mode fields are optional, so **result directories written before this tracking existed still load**: a missing field shows as `(not recorded)` and the mode as `unknown`, and a malformed agent file is skipped as before.
 
 **Legacy results still load.** Result directories written before pass/fail verdicts existed (no `agent_verdicts`, no `threshold` or `passed` on agents and cases) load and diff exactly as before. The agent-level score in the diff comes from `agent_scores`, a 0–1 fraction, which is unchanged. The per-criterion averages in `eval diff` still leave skipped criteria out, so historical runs diff as they always did; only runs produced after the counting change score skipped criteria as 0 in `agent_scores`, so a diff across that boundary can show a lower agent score that reflects the new counting rule rather than a change in the agent.
+
+## Attempt trend (`kairon eval trend`)
+
+```bash
+kairon eval trend <agent> [--json] [--evals-dir <dir>]
+```
+
+`eval trend` lists one agent's results across every run under `<evals-dir>/results/`, oldest first, so you can read the score and the [attempt success rate](#agent-verdict) over time. It only reads saved results: it calls no model and no container, and it writes nothing. Production workflow metrics (what the watcher saw on real issues) are out of scope; the trend covers eval runs only.
+
+| Flag | Description |
+|------|-------------|
+| `<agent>` | Required, exactly one argument. A single path element: a name containing `/` or `..` is rejected. |
+| `--json` | Print a JSON array instead of text lines. |
+| `--evals-dir <dir>` | The [evals directory](#evals-directory---evals-dir) whose `results/` is read. Inherited from `kairon eval`; the default is the same as for the other `eval` commands. |
+
+**Which runs are listed.** Every directory directly under `<evals-dir>/results/` that has a score for the agent. The score is found the same way as for [`verify-log`](#where-the-recorded-score-comes-from): the `agent_verdicts` score in `summary.json`, else `agent_scores`, else the scoreable cases of `<agent>.json`. Files, directories with no data for the agent, and runs of other agents are skipped without a message.
+
+**Order and date.** Oldest first. The date is read from the run directory name (`YYMMDD-HHMMSS-<hash>`, UTC), so `260701-100000-aaaaaaa` is `2026-07-01T10:00:00Z`. It is the time the run started, not when it finished, so an interrupted or resumed run shows its start time. Runs are sorted by that date, then by directory name. A run whose name has no timestamp (the old hash-only format) has no date, so it is listed first with an empty date. File modification times are not used, because they change on checkout.
+
+**Text format.** One line per run, no header (so `wc -l` is the number of runs). Fields are separated by two spaces, and a value that is not recorded is `-`:
+
+```
+<run>  <date>  score <score>%  success <success_rate>%  agent_model <agent_model>  judge_model <judge_model>  prompt <prompt_sha256>  <completeness>
+```
+
+`score` and `success` have one decimal. `prompt` is the first 8 characters of the agent's prompt SHA-256. For the committed fixture:
+
+```
+$ kairon eval trend selftest --evals-dir internal/eval/testdata/trend
+260701-100000-aaaaaaa  2026-07-01T10:00:00Z  score 80.0%  success 75.0%  agent_model agent-m  judge_model judge-m  prompt aaaaaaaa  complete
+260702-100000-bbbbbbb  2026-07-02T10:00:00Z  score 100.0%  success 100.0%  agent_model agent-m  judge_model judge-m  prompt bbbbbbbb  complete
+260703-100000-ccccccc  2026-07-03T10:00:00Z  score 100.0%  success 100.0%  agent_model agent-m  judge_model judge-m  prompt cccccccc  INCOMPLETE
+260704-100000-ddddddd  2026-07-04T10:00:00Z  score 87.5%  success 75.0%  agent_model agent-m2  judge_model judge-m2  prompt dddddddd  complete
+```
+
+**Completeness.** The last field says whether the run covered the whole suite (the `complete` flag of [run coverage](#run-coverage-suite_sha256-complete-and-case_filter)):
+
+| Value | Meaning |
+|-------|---------|
+| `complete` | The run evaluated every case of the agent. |
+| `INCOMPLETE` | The run did not: it was limited to one case (`--case`, or `kairon eval <agent> <case>`) or was interrupted. Its score and success rate cover only the cases that ran, so do not compare it with a full run. The row is listed, not dropped or treated as an error. |
+| `completeness-unknown` | The run was written before coverage tracking existed and does not record `complete`. |
+
+**Success rate for older runs.** The `success` value is, in order: the `success_rate` of the summary verdict when its `attempts_total` is greater than 0; otherwise the rate recomputed from the case results in `<agent>.json` (each result's recorded `passed`), which gives runs written before `attempts_total` existed a rate (in the fixture, `260701-100000-aaaaaaa` has 3 passing results out of 4, so `75.0%`); otherwise unknown (`-` in text, `null` in JSON), for example when the agent file has no case results. Unlike the verdict, which reports `0` for zero attempts, the trend does not invent a rate for a run with no attempts.
+
+**JSON format.** `--json` prints an indented array with one object per run, the same runs in the same order:
+
+```json
+[
+  {
+    "run": "260703-100000-ccccccc",
+    "date": "2026-07-03T10:00:00Z",
+    "score": 100,
+    "success_rate": 100,
+    "agent_model": "agent-m",
+    "judge_model": "judge-m",
+    "prompt_sha256": "cccccccc",
+    "complete": false
+  }
+]
+```
+
+| Key | Type | Description |
+|-----|------|-------------|
+| `run` | string | The run directory name. |
+| `date` | string | RFC 3339 UTC time from the run name; `""` when the name has no timestamp. |
+| `score` | number, **percent** (0–100) | The agent's score, not rounded. |
+| `success_rate` | number, **percent** (0–100), or `null` | The attempt success rate, not rounded; `null` when it cannot be determined (see above). |
+| `agent_model` | string | The agent model; `""` when not recorded. |
+| `judge_model` | string | The judge model; `""` when not recorded. |
+| `prompt_sha256` | string | The **first 8 characters** of the prompt SHA-256, not the full hash; `""` when not recorded. |
+| `complete` | boolean or `null` | `true`, `false` (the `INCOMPLETE` case), or `null` when the run does not record it (`completeness-unknown`). |
+
+**No results.** If no run has a result for the agent, including a missing or empty `results/` directory, `eval trend` prints nothing on stdout, prints `Error: no eval results for agent "<agent>" under <evals-dir>/results` on stderr (without usage text) and exits `1` (the CLI's error handling currently prints that line twice; scripts should rely on the exit status):
+
+```
+$ kairon eval trend nope --evals-dir internal/eval/testdata/trend
+Error: no eval results for agent "nope" under internal/eval/testdata/trend/results
+$ echo $?
+1
+```
+
+The same exit status applies to an invalid agent name and to a results directory that cannot be read. A successful listing exits `0`, including when some runs are `INCOMPLETE`.
