@@ -133,16 +133,18 @@ func (e *VerifyLogError) Error() string {
 
 // logFrontMatter is the raw decoded front-matter. Pointers distinguish a
 // missing key from a zero value. Scores and the date decode as strings so
-// their exact textual format can be enforced.
+// their exact textual format can be enforced. Phase decodes into a yaml.Node
+// (not *string) so a non-scalar value is reported as a bad phase rather than
+// aborting the whole unmarshal; an absent key leaves it a zero node (Kind 0).
 type logFrontMatter struct {
-	Iteration     *string `yaml:"iteration"`
-	Date          *string `yaml:"date"`
-	ChangeType    *string `yaml:"change_type"`
-	BaselineRun   *string `yaml:"baseline_run"`
-	ResultRun     *string `yaml:"result_run"`
-	BaselineScore *string `yaml:"baseline_score"`
-	ResultScore   *string `yaml:"result_score"`
-	Phase         *string `yaml:"phase"`
+	Iteration     *string   `yaml:"iteration"`
+	Date          *string   `yaml:"date"`
+	ChangeType    *string   `yaml:"change_type"`
+	BaselineRun   *string   `yaml:"baseline_run"`
+	ResultRun     *string   `yaml:"result_run"`
+	BaselineScore *string   `yaml:"baseline_score"`
+	ResultScore   *string   `yaml:"result_score"`
+	Phase         yaml.Node `yaml:"phase"`
 }
 
 // parsedLog is one iteration file after per-file validation.
@@ -495,24 +497,48 @@ func parseFrontMatter(l *parsedLog, front string, add func(file, rule, format st
 	scoreField("result_score", fm.ResultScore, &l.resultScore)
 
 	l.valid = ok
-	checkPhaseKey(l, fm.Phase, add)
+	checkPhaseKey(l, &fm.Phase, add)
 }
 
 // checkPhaseKey validates the phase key. A missing or bad phase is its own
 // rule and deliberately does not clear l.valid, so the chain, run and score
-// checks of the same file still run.
-func checkPhaseKey(l *parsedLog, phase *string, add func(file, rule, format string, args ...any)) {
+// checks of the same file still run. The field decodes into a yaml.Node so a
+// non-scalar value (a list or map) is reported here as a bad phase rather than
+// aborting front-matter parsing and masking the file's other violations.
+func checkPhaseKey(l *parsedLog, phase *yaml.Node, add func(file, rule, format string, args ...any)) {
 	allowed := strings.Join(phaseValues, ", ")
+	value, scalar := phaseScalar(phase)
 	switch {
-	case phase == nil:
+	case phase.Kind == 0:
 		add(l.path, rulePhase, "missing required key %q (allowed values: %s)", "phase", allowed)
-	case !isPhaseValue(*phase):
-		add(l.path, rulePhase, "phase %q must be one of %s", *phase, allowed)
-	case *phase == phaseBaseline && l.num != 0:
+	case !scalar || !isPhaseValue(value):
+		add(l.path, rulePhase, "phase %q must be one of %s", value, allowed)
+	case value == phaseBaseline && l.num != 0:
 		add(l.path, rulePhase, "phase %q is allowed only in iteration-00.md, not %s", phaseBaseline, l.name)
 	default:
-		l.phase = *phase
+		l.phase = value
 	}
+}
+
+// phaseScalar returns the string value of a scalar phase node and whether the
+// node is a non-null scalar. A list, map or null node is not a usable phase
+// value; its rendered form is returned so the violation message can quote it.
+// A zero node (absent key, Kind 0) is handled by the caller before this.
+func phaseScalar(n *yaml.Node) (value string, scalar bool) {
+	if n.Kind == yaml.ScalarNode && n.Tag != "!!null" {
+		return n.Value, true
+	}
+	return renderPhaseNode(n), false
+}
+
+// renderPhaseNode produces a short single-line rendering of a non-scalar phase
+// node for use in a violation message.
+func renderPhaseNode(n *yaml.Node) string {
+	out, err := yaml.Marshal(n)
+	if err != nil {
+		return ""
+	}
+	return oneLine(string(out))
 }
 
 // isPhaseValue reports whether s is one of the allowed phase values.

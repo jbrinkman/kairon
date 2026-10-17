@@ -1938,6 +1938,36 @@ func TestVerifyLogPhaseDoesNotMaskFrontMatterViolations(t *testing.T) {
 	}
 }
 
+func TestVerifyLogPhaseNonScalarValueDoesNotSuppressOtherChecks(t *testing.T) {
+	// A non-scalar phase value (a YAML list or map) is valid YAML but is not a
+	// scalar string. It must be reported as its own phase violation, not abort
+	// front-matter parsing with a generic front-matter error that masks the
+	// file's other problems.
+	for _, bad := range []string{"[red, green]", "{a: b}"} {
+		t.Run(bad, func(t *testing.T) {
+			opts := vlSetup(t, map[string]string{
+				"iteration-00.md": vlDoc(vlFM(0, "2026-07-01", "prompt", "r0", "r1", "60.0", "72.5"), vlBody),
+				// non-scalar phase; broken chain (baseline r2 != r1); wrong claimed
+				// score; run r2b has the same prompt as r2 so prompt-change fires too.
+				"iteration-01.md": vlDoc(vlFMPhase(bad, 1, "2026-07-02", "prompt", "r2", "r2b", "90.0", "50.0"), vlBody),
+			})
+			_, err := vlRunVerify(t, opts)
+			var got []string
+			for _, v := range vlViolations(t, err) {
+				if !strings.HasSuffix(v.File, "iteration-01.md") {
+					t.Errorf("unexpected violation on another file: %+v", v)
+					continue
+				}
+				got = append(got, v.Rule)
+			}
+			want := []string{"chain", "score-match", "prompt-change", "phase"}
+			if fmt.Sprint(got) != fmt.Sprint(want) {
+				t.Fatalf("rules on iteration-01.md = %v, want %v", got, want)
+			}
+		})
+	}
+}
+
 func TestVerifyLogPhaseRuleIDsAreRegisteredInOrder(t *testing.T) {
 	ids := []string{"phase", "red", "green", "refactor", "cycle"}
 	prev := ruleOrder["suite-change"]
