@@ -6,6 +6,7 @@ baseline_run: 260702-100000-bbbbbbb
 result_run: 260705-170000-8888888
 baseline_score: 72.5
 result_score: 82.0
+phase: refactor
 ---
 
 ## Baseline

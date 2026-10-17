@@ -2101,16 +2101,17 @@ For a no-op check, evaluate a copy of the live prompt: `prompt_sha256` equals th
 
 An iteration log documents one measured change to an agent: baseline, hypothesis, change, results and reasoning. Logs live at `.kairon/iterations/<agent>/iteration-NN.md` (`NN` zero-padded, starting at `00`) and must reference eval runs committed under `<evals-dir>/results/`. `kairon eval verify-log` checks that every claim in a log set matches the recorded results, so a log cannot assert a score nobody measured.
 
-The log format (front-matter keys `iteration`, `date`, `change_type`, `baseline_run`, `result_run`, `baseline_score`, `result_score`; headings `Baseline`, `Hypothesis`, `Change`, `Results`, `Reasoning`) and a complete example are defined in [`.kairon/iterations/README.md`](../.kairon/iterations/README.md).
+The log format (eight required front-matter keys: `iteration`, `date`, `change_type`, `baseline_run`, `result_run`, `baseline_score`, `result_score`, `phase`; headings `Baseline`, `Hypothesis`, `Change`, `Results`, `Reasoning`) a complete example and a Red/Green/Refactor example are defined in [`.kairon/iterations/README.md`](../.kairon/iterations/README.md).
 
 ```bash
-kairon eval verify-log <agent> [--iterations-dir DIR] [--min-iterations N] [--evals-dir DIR]
+kairon eval verify-log <agent> [--iterations-dir DIR] [--min-iterations N] [--require-cycle[=false]] [--evals-dir DIR]
 ```
 
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--iterations-dir` | `.kairon/iterations` | Directory holding `<agent>/iteration-NN.md`. |
 | `--min-iterations` | `2` | Minimum number of iteration logs. `0` disables the minimum; a negative value is rejected. |
+| `--require-cycle` | `true` | Require a complete Red, Green, Refactor cycle in the set: a `red` iteration followed later by a `green` iteration, and at least one `refactor` iteration (rule `cycle`). `--require-cycle=false` turns that set-level requirement off; the per-iteration `phase`, `red`, `green` and `refactor` rules still apply. |
 | `--evals-dir` | `.kairon/evals` | Evals directory whose `results/` holds the referenced runs. This is the persistent `kairon eval` flag, inherited by `verify-log` (see [Evals Directory](#evals-directory---evals-dir)). |
 
 The command takes exactly one argument, the agent name (a single path element: no `/`, `\` or `..`). It does not call a model, `kiro-cli` or a container, and it reads only the iterations directory and `<evals-dir>/results/`.
@@ -2134,7 +2135,33 @@ The command takes exactly one argument, the agent name (a single path element: n
 | `score-match` | A claimed score differs from the run's recorded score by more than 0.1 percentage points (exactly 0.1 passes). The message names the field, the claimed value, the recorded value and the run. The recorded score is not rounded before the comparison. |
 | `prompt-change` | The prompt relation does not match `change_type`, when both runs record `prompt_sha256` for the agent. `prompt`: the two runs record the same `prompt_sha256`. `eval`: the two runs record different `prompt_sha256` (the prompt must stay the same). |
 | `suite-change` | The suite relation does not match `change_type`, when both runs record `suite_sha256` for the agent. `prompt`: the two runs record different `suite_sha256` (the eval suite must stay the same). `eval`: the two runs record the same `suite_sha256` **and** the same `judge_model` (both recorded identical, or both not recorded), so neither the suite nor the judge changed. |
+| `phase` | `phase` is missing, is not one of `baseline`, `red`, `green`, `refactor`, or is `baseline` in a file other than `iteration-00.md`. The message names the key, the bad value and the allowed values. It does not stop the other checks for the same file. |
+| `red` | A `red` iteration whose `change_type` is not `eval`, or whose result run has no failing check that the baseline run does not also have (see [Phases](#phases-baseline-red-green-refactor)). |
+| `green` | A `green` iteration whose `change_type` is not `prompt`; or where no check that failed in the baseline run passes in every repeat of the result run; or where the result run's recorded score is lower than the baseline run's. Each failed condition is a separate violation. |
+| `refactor` | A `refactor` iteration whose `change_type` is not `prompt`, or whose result run's recorded score is lower than the baseline run's. |
+| `cycle` | `--require-cycle` is on and the set has no `red` iteration followed later (higher iteration number) by a `green` iteration, or has no `refactor` iteration. Reported against the agent directory, one violation per missing part. It reads only the `phase` values of the logs, whether or not those logs pass their own rules. Not reported when there are no logs (`no-logs` covers that). |
 | `min-iterations` | There are fewer iteration logs than `--min-iterations` (default `2`). |
+
+### Phases: baseline, red, green, refactor
+
+Every log declares a `phase`, and `verify-log` checks the claim against the per-check results that each run stores in `<agent>.json` (`cases[].scores[].checks[]`). No runner or result-format change is involved: it compares the baseline run with the result run of each iteration.
+
+| `phase` | What the verifier requires |
+|---------|----------------------------|
+| `baseline` | Allowed only in `iteration-00.md`. Nothing else: `change_type` may be either value and no check evidence is needed, because iteration 00 compares two starting points. |
+| `red` | `change_type` is `eval`, and the result run has at least one failing check that the baseline run does not also have. |
+| `green` | `change_type` is `prompt`; at least one check that failed in the baseline run passes in every repeat of the result run; the result run's recorded score is not lower than the baseline run's. |
+| `refactor` | `change_type` is `prompt`, and the result run's recorded score is not lower than the baseline run's. |
+
+**Check identity.** Two runs are talking about the same check when the triple *(case name, criterion name, label without its leading `#<n> `)* is equal. The label is what the harness records, for example `#2 output_contains pattern=/ready/`, so that check's identity is `basic / alpha / output_contains pattern=/ready/`. Dropping the index means adding a check earlier in a case does not make the later ones look new. Only what the label prints is part of the identity; fields it omits (for example `expect_exit`, `inject`, or a `command` string past 80 characters) are not.
+
+**Failing, and the any-repeat rule.** Each entry in `cases` for one case name is one repeat; entries are counted and the `run` field is not relied on. A check is *failing* when it fails in **any** repeat. A check *passes everywhere* when its case has at least one repeat, the check is recorded in **every** repeat of that case, and every occurrence passes. A check missing from a repeat (the case errored, or the check was deleted) does not count as passing, and two checks in a case with the same identity must all pass. Skipped criteria and criteria without checks contribute nothing.
+
+**`red` and `green`.** `red` holds when the result run's failing checks are not all in the baseline run's failing checks. A baseline that records no checks has no failing checks, so any failing result check is new; a flaky check that happens to fail only in the result run also satisfies it, which the `eval` change-type rules (suite or judge must change, prompt must not) bound. `green` holds when some check in the baseline run's failing set passes everywhere in the result run.
+
+**Recorded-score comparison.** `green` and `refactor` compare the **recorded** scores of the two runs (the same score [`score-match`](#where-the-recorded-score-comes-from) reads), not the scores claimed in the front-matter. The result score must be greater than or equal to the baseline score. There is no 0.1 tolerance: a lower score by any amount fails and an equal score passes. The message prints both recorded scores with two decimals. If either run has no recorded score the comparison is skipped (`run-data` reports it); if either run does not exist the whole phase check is skipped (`run-exists` reports it).
+
+**`--require-cycle`.** The set-level `cycle` rule asks for a `red` iteration followed later by a `green` iteration, and at least one `refactor` iteration. A `refactor` iteration may appear anywhere. The flag defaults to `true` on the command line; the library option `VerifyLogOptions.RequireCycle` defaults to `false`, so existing library callers keep their behaviour.
 
 ### Where the recorded score comes from
 
@@ -2196,7 +2223,11 @@ go run ./cmd/kairon eval verify-log selftest \
   --evals-dir internal/eval/testdata/verifylog/evals
 ```
 
-This exits 0 and prints `OK selftest: 3 iterations verified`. In the `valid` set, iteration 02 is a `change_type: eval` iteration whose runs record the same `prompt_sha256` and different `suite_sha256`. The other sets each violate one rule and exit non-zero, naming the file and the rule. The eight sets for run coverage each hold `iteration-00.md` (a valid `prompt` iteration) and an `iteration-01.md` that is the only one with a violation, so they pass the default `--min-iterations 2`:
+This exits 0 and prints `OK selftest: 4 iterations verified`. The `valid` set is a complete cycle: iteration 00 is a `baseline` (`prompt`), 01 a `red` (`eval`, same `prompt_sha256`, different `suite_sha256`, and a check that fails in one of two repeats), 02 a `green` (`prompt`, that check now passes in both repeats and the score rises) and 03 a `refactor` (`prompt`, equal score). The logs are listed in the [README example](../.kairon/iterations/README.md#red--green--refactor-example). The other sets each violate one rule and exit non-zero, naming the file and the rule.
+
+Every set other than `valid`, `missing-phase` and `refactor-score-drop` lacks a complete Red, Green, Refactor cycle, so with the default `--require-cycle=true` it also reports `cycle` (against the agent directory). The tables below list the rule each set is built to trip; add `--require-cycle=false` to see only that rule. For `missing-phase` and `refactor-score-drop` the cycle is complete, so the listed rule is the only one.
+
+The sets for run coverage each hold `iteration-00.md` (a valid `baseline` iteration) and an `iteration-01.md` that is the only one with a violation, so they pass the default `--min-iterations 2`:
 
 | Set | Rule reported |
 |-----|---------------|
@@ -2213,6 +2244,26 @@ This exits 0 and prints `OK selftest: 3 iterations verified`. In the `valid` set
 | `eval-prompt-changed` | `prompt-change`: `eval` iteration whose runs record different `prompt_sha256` |
 | `eval-nothing-changed` | `suite-change`: `eval` iteration whose runs record the same `prompt_sha256`, `suite_sha256` and `judge_model` |
 | `legacy-run` | `run-data`: the result run records no `suite_sha256` and no `complete`; the message names both |
+
+The sets for phases. All use the same case `basic`, criterion `alpha` and two repeats, with `#2 output_contains pattern=/ready/` as the check under test:
+
+| Set | Logs | Rule reported |
+|-----|------|---------------|
+| `missing-phase` | `valid` with `phase` removed from `iteration-00.md` | `phase` on `iteration-00.md` only (the message names the key and the allowed values) |
+| `baseline-not-first` | `iteration-00.md` is a `baseline`, `iteration-01.md` also claims `phase: baseline` | `phase` on `iteration-01.md` (`baseline` is allowed only in `iteration-00.md`) |
+| `red-no-new-failure` | `baseline`, then a `red` `eval` iteration whose result run passes `#2` in both repeats | `red`: the result run has no failing check the baseline run does not have |
+| `green-no-fix` | `baseline`, `red`, then a `green` whose result run still fails `#2` in repeat 2 | `green`: no baseline-failing check passes in every repeat of the result run |
+| `green-score-drop` | `baseline`, `red`, then a `green` whose result run fixes `#2` but scores 65.0 against 70.0 | `green`: the result run's recorded score is lower than the baseline run's |
+| `refactor-score-drop` | the `valid` set with a `refactor` result run scoring 80.0 against 85.0 | `refactor`: the result run's recorded score is lower than the baseline run's |
+| `no-refactor` | `baseline`, `red`, `green`; no `refactor` | `cycle`: no `refactor` iteration. Exits 0 with `--require-cycle=false` |
+
+For example `green-no-fix` and `green-score-drop` report `green` and, by default, a second violation `cycle` (no `refactor` iteration). Run a single set with its rule only:
+
+```bash
+go run ./cmd/kairon eval verify-log selftest --require-cycle=false \
+  --iterations-dir internal/eval/testdata/verifylog/no-refactor \
+  --evals-dir internal/eval/testdata/verifylog/evals   # exits 0
+```
 
 ```bash
 go run ./cmd/kairon eval verify-log selftest --min-iterations 5 \
