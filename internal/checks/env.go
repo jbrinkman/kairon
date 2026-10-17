@@ -25,6 +25,7 @@ func HermeticGitEnv() []string {
 		switch {
 		case name == "GIT_DIR", name == "GIT_WORK_TREE", name == "GIT_INDEX_FILE",
 			name == "GIT_OBJECT_DIRECTORY", name == "GIT_COMMON_DIR",
+			name == "GIT_ALTERNATE_OBJECT_DIRECTORIES", name == "GIT_NAMESPACE",
 			strings.HasPrefix(name, "GIT_CONFIG"), strings.HasPrefix(name, "GIT_AUTHOR_"),
 			strings.HasPrefix(name, "GIT_COMMITTER_"):
 			continue
