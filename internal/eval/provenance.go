@@ -14,6 +14,7 @@ import (
 	"strings"
 
 	"github.com/jbrinkman/kairon/internal/config"
+	"github.com/jbrinkman/kairon/internal/inference"
 )
 
 // agentProvenance is the resolved identity of an agent under test: the model
@@ -72,9 +73,15 @@ func resolveAgentProvenance(agent string, ignoreOverlay bool) (agentProvenance, 
 }
 
 // resolveAgentProvenanceWith is resolveAgentProvenance with an explicit
-// candidate prompt. A candidate for this agent replaces the live prompt file
-// bytes in the "prompt" hash part (the live file need not exist); the config
-// and resource parts are unchanged. A candidate for another agent is ignored.
+// candidate prompt. A candidate for another agent is ignored.
+//
+// Provenance is computed from the same bytes a case workspace gets, never from
+// the repository working directory: it stages a throwaway baseline .kiro (no
+// fixture files, so the project's tracked files without *-conventions override
+// hooks, the evals-dir agents overlay unless ignoreOverlay, and the candidate
+// prompt over both) and hashes that. The directory is always removed. The
+// candidate is therefore hashed from the very bytes staged for the agent,
+// including through a resource that aliases the prompt file.
 func resolveAgentProvenanceWith(agent string, ignoreOverlay bool, cand *candidatePrompt) (agentProvenance, error) {
 	if cand != nil && cand.Agent != agent {
 		cand = nil
@@ -85,8 +92,48 @@ func resolveAgentProvenanceWith(agent string, ignoreOverlay bool, cand *candidat
 		return agentProvenance{}, err
 	}
 
+	root, err := os.MkdirTemp("", "kairon-eval-provenance-*")
+	if err != nil {
+		return agentProvenance{}, fmt.Errorf("creating baseline workspace for provenance: %w", err)
+	}
+	defer func() { _ = os.RemoveAll(root) }()
+
+	if err := stageKiroInto(filepath.Join(root, kiroDirName), nil, ignoreOverlay, cand); err != nil {
+		return agentProvenance{}, err
+	}
+	prov, err := resolveProvenanceInRoot(root, agent, cand)
+	if err != nil {
+		return agentProvenance{}, err
+	}
+	// The staged config is a copy; report the source the config came from.
+	prov.ConfigPath = path
+	return prov, nil
+}
+
+// resolveProvenanceInRoot computes the provenance of agent from a staged
+// directory root that holds a .kiro/. The config is
+// <root>/.kiro/agents/<agent>.json, a file:// prompt is relative to the
+// config's directory, and resources resolve against root (absolute paths stay
+// absolute), so what is hashed is exactly what an agent running in root sees.
+//
+// A candidate for another agent is ignored. A candidate for this agent is
+// validated (an inline, absolute or escaping prompt is an error) and recorded
+// as PromptFile; its bytes are not injected here because the caller has
+// already staged them over the prompt file inside root.
+//
+// ConfigPath is the staged config path; callers that know the source path
+// override it.
+func resolveProvenanceInRoot(root, agent string, cand *candidatePrompt) (agentProvenance, error) {
+	if cand != nil && cand.Agent != agent {
+		cand = nil
+	}
+
+	path := filepath.Join(root, kiroDirName, "agents", agent+".json")
 	configBytes, err := os.ReadFile(path)
 	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return agentProvenance{}, fmt.Errorf("agent config for %q not found in the staged %s (%s); a project config must be tracked by git (git add -N)", agent, kiroDirName, path)
+		}
 		return agentProvenance{}, fmt.Errorf("reading agent config %s: %w", path, err)
 	}
 	var conf agentConfigFile
@@ -98,23 +145,13 @@ func resolveAgentProvenanceWith(agent string, ignoreOverlay bool, cand *candidat
 	writeHashPart(h, "config", configBytes)
 
 	// Prompt: a file:// reference is read (and required); an inline prompt is
-	// already covered by the config bytes. With a candidate, its bytes stand
-	// in for the file and the live file is not read.
-	//
-	// promptAlias is the cleaned on-disk path the candidate replaces, used
-	// below so a resource entry that resolves to the same file is hashed from
-	// the candidate too (both read the candidate in the staged workspace, so
-	// hashing the untouched live file there would make an edit to it block
-	// --resume even though the agent saw identical content). It is empty when
-	// there is no candidate.
-	promptAlias := ""
+	// already covered by the config bytes.
 	if cand != nil {
 		if _, err := candidatePromptDest(path, conf.Prompt); err != nil {
 			return agentProvenance{}, err
 		}
-		writeHashPart(h, "prompt", cand.Content)
-		promptAlias = resolvePromptPath(path, conf.Prompt)
-	} else if ref, ok := strings.CutPrefix(conf.Prompt, "file://"); ok {
+	}
+	if ref, ok := strings.CutPrefix(conf.Prompt, "file://"); ok {
 		promptPath := ref
 		if !filepath.IsAbs(promptPath) {
 			promptPath = filepath.Join(filepath.Dir(path), promptPath)
@@ -132,7 +169,7 @@ func resolveAgentProvenanceWith(agent string, ignoreOverlay bool, cand *candidat
 		if err := json.Unmarshal(raw, &entry); err != nil {
 			continue // non-string (object) entries are ignored
 		}
-		files, err := resolveResourceFiles(entry)
+		files, err := resolveResourceFilesIn(root, entry)
 		if err != nil {
 			return agentProvenance{}, fmt.Errorf("resource %q in %s: %w", entry, path, err)
 		}
@@ -140,12 +177,6 @@ func resolveAgentProvenanceWith(agent string, ignoreOverlay bool, cand *candidat
 			continue // missing resources are normal (e.g. *-conventions overrides)
 		}
 		for _, f := range files {
-			if promptAlias != "" && filepath.Clean(f) == promptAlias {
-				// This resource is the file the candidate replaces; hash the
-				// candidate bytes the staged workspace actually serves.
-				writeHashPart(h, "resource", cand.Content)
-				continue
-			}
 			b, err := os.ReadFile(f)
 			if err != nil {
 				return agentProvenance{}, fmt.Errorf("resource %q in %s: %w", entry, path, err)
@@ -167,22 +198,6 @@ func resolveAgentProvenanceWith(agent string, ignoreOverlay bool, cand *candidat
 	return prov, nil
 }
 
-// resolvePromptPath returns the cleaned on-disk path a config's file:// prompt
-// reference resolves to, using the same rule as the live-prompt branch of
-// resolveAgentProvenanceWith (relative refs resolve against the config's
-// directory). It returns "" when the prompt is not a file:// reference. The
-// result is for path comparison only; the file need not exist.
-func resolvePromptPath(configPath, promptRef string) string {
-	ref, ok := strings.CutPrefix(promptRef, "file://")
-	if !ok || ref == "" {
-		return ""
-	}
-	if !filepath.IsAbs(ref) {
-		ref = filepath.Join(filepath.Dir(configPath), ref)
-	}
-	return filepath.Clean(ref)
-}
-
 // hashWriter is the subset of hash.Hash used for framing.
 type hashWriter interface{ Write(p []byte) (int, error) }
 
@@ -194,11 +209,19 @@ func writeHashPart(h hashWriter, kind string, data []byte) {
 	_, _ = h.Write(data)
 }
 
-// resolveResourceFiles returns the regular files a resource entry refers to.
-// Only file:// and skill:// (or bare) paths are local; other schemes yield no
-// files. Relative paths resolve against the working directory. A missing file
-// yields an empty result and no error; other stat errors are returned.
+// resolveResourceFiles returns the regular files a resource entry refers to,
+// resolving relative paths against the working directory. See
+// resolveResourceFilesIn.
 func resolveResourceFiles(entry string) ([]string, error) {
+	return resolveResourceFilesIn("", entry)
+}
+
+// resolveResourceFilesIn returns the regular files a resource entry refers to.
+// Only file:// and skill:// (or bare) paths are local; other schemes yield no
+// files. Relative paths resolve against root (the working directory when root
+// is ""); absolute paths stay absolute. Returned paths include root. A missing
+// file yields an empty result and no error; other stat errors are returned.
+func resolveResourceFilesIn(root, entry string) ([]string, error) {
 	p := entry
 	switch {
 	case strings.HasPrefix(p, "file://"):
@@ -211,9 +234,20 @@ func resolveResourceFiles(entry string) ([]string, error) {
 	if p == "" {
 		return nil, nil
 	}
+	globRoot, rel := "", p
+	if root != "" && !filepath.IsAbs(p) {
+		globRoot = root
+		p = filepath.Join(root, p)
+	}
 
 	if strings.ContainsAny(p, "*?[") {
-		matches, err := filepath.Glob(p)
+		pattern := p
+		if globRoot != "" {
+			// Escape only the literal root prefix so the staged root is matched
+			// verbatim while the entry keeps its own glob metacharacters.
+			pattern = filepath.Join(escapeGlobMeta(globRoot), rel)
+		}
+		matches, err := filepath.Glob(pattern)
 		if err != nil {
 			return nil, err
 		}
@@ -247,6 +281,23 @@ func resolveResourceFiles(entry string) ([]string, error) {
 	return []string{p}, nil
 }
 
+// escapeGlobMeta backslash-escapes filepath.Glob metacharacters in a literal
+// directory so a staged root such as "/tmp/a[1]" is matched verbatim. Windows
+// has no glob escape, so the path is returned unchanged there.
+func escapeGlobMeta(dir string) string {
+	if filepath.Separator == '\\' || !strings.ContainsAny(dir, `*?[\`) {
+		return dir
+	}
+	var b strings.Builder
+	for _, r := range dir {
+		if strings.ContainsRune(`*?[\`, r) {
+			b.WriteByte('\\')
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
+}
+
 // fileExists reports whether path exists (any stat success).
 func fileExists(path string) bool {
 	_, err := os.Stat(path)
@@ -270,6 +321,17 @@ type runPins struct {
 	// TrustOverrides is evals.trust_tools: agent name -> tool names trusted
 	// in container runs, taking precedence over the agent's allowedTools.
 	TrustOverrides map[string][]string
+	// Prices is the pricing table (top-level `pricing` config key) used to
+	// cost every call in the run.
+	Prices inference.PriceTable
+}
+
+// prices returns the run's price table; nil (prices nothing) when unpinned.
+func (p *runPins) prices() inference.PriceTable {
+	if p == nil {
+		return nil
+	}
+	return p.Prices
 }
 
 // trustOverride returns the evals.trust_tools entry for agent, if any. An
@@ -368,12 +430,17 @@ func pinRun(agent string, opts RunOptions, ignoreOverlay bool) error {
 		return fmt.Errorf("❌ cannot pin eval models: %w", err)
 	}
 
+	prices, err := config.LoadPricing()
+	if err != nil {
+		return fmt.Errorf("❌ cannot load pricing: %w", err)
+	}
+
 	var violations []string
 	if err := ev.CheckModel(ev.JudgeModel); err != nil {
 		violations = append(violations, fmt.Sprintf("evals.judge_model: %v", err))
 	}
 
-	pins := &runPins{Judge: ev.JudgeModel, Agents: map[string]agentPin{}, TrustOverrides: ev.TrustTools}
+	pins := &runPins{Judge: ev.JudgeModel, Agents: map[string]agentPin{}, TrustOverrides: ev.TrustTools, Prices: prices}
 	for _, name := range agentsInScope(agent, opts) {
 		prov, err := resolveAgentProvenance(name, ignoreOverlay)
 		if err != nil {

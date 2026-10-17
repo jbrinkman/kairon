@@ -30,7 +30,7 @@ func newCheckJudge(tc TestCase, cr *CaseResult) JudgeFunc {
 		Stub:    tc.Stub,
 		Debug:   debug,
 		OnCall: func(c checks.JudgeCall) {
-			cost := costFromUsage(c.Response.Model, c.Response.Usage)
+			cost := costFromUsage(servedModel(c.Request, c.Response), c.Response.Usage)
 			rec := newCallRecord(c.Request, c.Response, c.Err, c.Wall, cost)
 			rec.Criterion = c.Criterion
 			cr.Calls = append(cr.Calls, rec)

@@ -1,0 +1,21 @@
+name: stub-conventions-fixture
+description: "Self-test: a case whose workspace fixture supplies a *-conventions override hook, so its per-case provenance lists the resource and differs from a case without the fixture"
+agent: selftest
+workspace: conventions
+input: |
+  Summarise the conventions you were given.
+context:
+  - "This case runs against the deterministic stub backend"
+  - "The workspace fixture supplies .kiro/skills/selftest-conventions/SKILL.md"
+expected_output: |
+  A short report with a top-level section and at least one subsection.
+stub:
+  turns:
+    - response: |
+        ## Conventions
+
+        The fixture-supplied conventions were present in the workspace.
+
+        ### Details
+
+        The selftest-conventions skill was staged from the case fixture.

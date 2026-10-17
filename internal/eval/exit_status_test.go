@@ -134,7 +134,7 @@ func TestRunSelftestFailReturnsThresholdErrorAfterWritingResults(t *testing.T) {
 
 func TestRunBothAgentsSumsCostAndNamesOnlyFailingAgent(t *testing.T) {
 	evalsDir := copySelfTestEvals(t)
-	for _, name := range []string{"selftest-sandbox.yaml", "selftest-sandbox-ro.yaml", "selftest-checks.yaml", "selftest-checks-fail.yaml"} {
+	for _, name := range []string{"selftest-sandbox.yaml", "selftest-sandbox-ro.yaml", "selftest-checks.yaml", "selftest-checks-fail.yaml", "selftest-floor.yaml"} {
 		if err := os.Remove(filepath.Join(evalsDir, "rubrics", name)); err != nil {
 			t.Fatal(err)
 		}

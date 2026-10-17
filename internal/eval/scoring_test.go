@@ -192,7 +192,7 @@ func TestScoreCaseDeterministicPath(t *testing.T) {
 		t.Errorf("scores = %+v, want %+v", cr.Scores, want)
 	}
 	// Deterministic scoring must not incur judge cost.
-	if cr.JudgeCost != (CostInfo{}) {
+	if !reflect.DeepEqual(cr.JudgeCost, CostInfo{}) {
 		t.Errorf("JudgeCost = %+v, want zero", cr.JudgeCost)
 	}
 }
@@ -233,7 +233,7 @@ func TestScoreCaseLLMJudgeEmptyOutputSkipped(t *testing.T) {
 	if !reflect.DeepEqual(cr.Scores, want) {
 		t.Errorf("scores = %+v, want %+v", cr.Scores, want)
 	}
-	if cr.JudgeCost != (CostInfo{}) {
+	if !reflect.DeepEqual(cr.JudgeCost, CostInfo{}) {
 		t.Errorf("JudgeCost = %+v, want zero (judge must not run)", cr.JudgeCost)
 	}
 	if got := readCalls(t, calls); len(got) != 0 {
@@ -332,7 +332,7 @@ func TestScoringParityEvaluateVsEvaluateProgressive(t *testing.T) {
 		if !reflect.DeepEqual(s.Scores, p.Scores) {
 			t.Errorf("case %q scores differ:\n single:      %+v\n progressive: %+v", s.CaseName, s.Scores, p.Scores)
 		}
-		if s.JudgeCost != p.JudgeCost {
+		if !reflect.DeepEqual(s.JudgeCost, p.JudgeCost) {
 			t.Errorf("case %q judge cost differ: %+v vs %+v", s.CaseName, s.JudgeCost, p.JudgeCost)
 		}
 	}

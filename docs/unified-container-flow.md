@@ -34,7 +34,7 @@ The workspace is a temp directory under `KAIRON_EVAL_WORKSPACE_ROOT` (or the OS 
 **Purpose:** Create a container from the cached base image with explicit bind mounts.
 
 **Steps:**
-1. Build the mount list (`buildContainerMounts`): `<ws>/.kiro` read-only, `<ws>` read-write and `<ws>/.eval` read-write at the configured workspace path, the per-case bin directory holding the fake `gh` and any case mocks read-only at `/opt/kairon/bin`, plus the linux `kairon` helper read-only at `/opt/kairon/kairon` for non-`kiro-cli` backends only.
+1. Build the mount list (`buildContainerMounts`): `<ws>/.kiro` read-only, `<ws>` read-write and `<ws>/.eval` read-write at the configured workspace path, the per-case bin directory holding the fake `gh` and any case mocks read-only at `/opt/kairon/bin`, plus the linux `kairon` binary read-only at `/usr/local/bin/kairon` for every backend, including `kiro-cli` (it is on the container `PATH`, so an agent runs a bare `kairon`).
 2. Validate every host path (absolute, exists, symlink-resolved) before the container is created. Structured `HostConfig.Mounts` are used, not `Binds` strings, so a missing path fails instead of being created as a root-owned directory.
 3. Apply resource limits (CPU, memory) and `NetworkMode: none`, set `ReadonlyRootfs: true` and add the `/tmp`, `/var/tmp` and `/home/sandbox` tmpfs mounts; no tmpfs is mounted at the workspace path.
 4. Set `User: sandbox`, `WorkingDir`, `HOME=/home/sandbox`, `PATH` with `/opt/kairon/bin` first, `KAIRON_EVAL_DIR`, `GH_PROMPT_DISABLED=1`, `GH_NO_UPDATE_NOTIFIER=1` and the git `safe.directory=*` environment, plus the configured environment (for example `KIRO_CLI_DISABLE_TELEMETRY=1`). GitHub credential variables (`GH_TOKEN`, `GITHUB_TOKEN`, `GH_ENTERPRISE_TOKEN`, `GITHUB_ENTERPRISE_TOKEN`, `GH_HOST`) are never passed on.
@@ -110,7 +110,7 @@ docker run --rm kairon-eval-base:<platform>-<hash> sh -c 'id -un; command -v kir
 1. **Build failures:** check network connectivity for the kiro-cli and gh downloads.
 2. **Platform mismatches:** verify platform detection matches the target architecture (`linux/amd64` or `linux/arm64`).
 3. **Mount failures on macOS:** set `KAIRON_EVAL_WORKSPACE_ROOT` to a directory shared with the Docker Desktop / Podman machine VM.
-4. **Helper binary not usable:** the helper mounted at `/opt/kairon/kairon` must be readable and executable by uid 1000 (`0755`); set `KAIRON_SANDBOX_BINARY` to a prebuilt static linux binary.
+4. **`kairon` binary missing or not usable:** every `--sandbox` run needs it, and a missing binary fails before any case starts with an error naming `KAIRON_SANDBOX_BINARY`. The binary mounted at `/usr/local/bin/kairon` must be readable and executable by uid 1000 (`0755`); set `KAIRON_SANDBOX_BINARY` to a prebuilt static linux binary.
 5. **Resource limits:** adjust CPU/memory/timeout limits for heavy workloads; a case can set its own `timeout`.
 
 ### Enhanced Error Messages

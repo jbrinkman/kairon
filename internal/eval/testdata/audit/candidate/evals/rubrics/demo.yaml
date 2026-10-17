@@ -6,3 +6,6 @@ criteria:
   - name: beta
     description: Beta criterion.
     scoring: "1-5"
+  - name: gamma
+    description: Gamma criterion.
+    scoring: "1-5"

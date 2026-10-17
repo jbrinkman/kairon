@@ -1,0 +1,29 @@
+name: floor-one-criterion-zero
+description: "Self-test (checks_only): overall score above the threshold, but report_marker scores 0% under the min_criterion_score floor"
+agent: selftest-floor
+input: |
+  Create the marker file and report that you did.
+context:
+  - "This case runs against the deterministic stub backend"
+  - "The case passes (2/3 = 66.7% >= 60%), but report_marker is 0/1 and below the 50% floor, so the agent FAILs"
+expected_output: |
+  A short report.
+stub:
+  turns:
+    - commands:
+        - "echo hi > marker.txt"
+      response: |
+        ## Checks
+
+        The stub turn finished and wrote the file.
+checks:
+  - criterion: file_written
+    type: file_exists
+    path: marker.txt
+  - criterion: file_written
+    type: file_contains
+    path: marker.txt
+    pattern: "(?m)^hi$"
+  - criterion: report_marker
+    type: output_contains
+    pattern: "output marker alpha"

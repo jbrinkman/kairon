@@ -3,6 +3,7 @@ package eval
 import (
 	"encoding/json"
 	"regexp"
+	"sort"
 
 	"github.com/jbrinkman/kairon/internal/eval/sandbox"
 	"github.com/jbrinkman/kairon/internal/inference"
@@ -14,6 +15,11 @@ type Rubric struct {
 	Criteria []Criterion `yaml:"criteria" json:"criteria"`
 	// PassThreshold is the percent (0-100] a case must reach to pass; nil means DefaultPassThreshold.
 	PassThreshold *float64 `yaml:"pass_threshold,omitempty" json:"pass_threshold,omitempty"`
+	// MinCriterionScore is an optional per-criterion floor, a percent in
+	// (0, 100]. When set, the agent fails if any scored criterion's pooled
+	// percent is below it, even when the overall score meets the threshold.
+	// nil means no floor.
+	MinCriterionScore *float64 `yaml:"min_criterion_score,omitempty" json:"min_criterion_score,omitempty"`
 	// ChecksOnly scores every case from its pass/fail checks alone. A non-cost
 	// criterion with no checks in a case is skipped (no CriterionScore, nothing
 	// added to the case or agent score or maximum), and neither the legacy LLM
@@ -160,6 +166,13 @@ type CostInfo struct {
 	Model string `json:"model,omitempty"`
 	// UsageSource is "reported" or "estimated" (see inference.UsageSource).
 	UsageSource string `json:"usage_source,omitempty"`
+
+	// CostIncomplete is true when at least one contributing call used a model
+	// with no configured price. Those calls add 0 USD, so EstimatedUSD is a
+	// lower bound, not the real cost.
+	CostIncomplete bool `json:"cost_incomplete,omitempty"`
+	// UnpricedModels lists the models that had no price (sorted, de-duplicated).
+	UnpricedModels []string `json:"unpriced_models,omitempty"`
 }
 
 // Add accumulates other into c. Model is kept if c has none yet. The merged
@@ -169,9 +182,7 @@ type CostInfo struct {
 func (c *CostInfo) Add(other CostInfo) {
 	empty := c.TokensIn == 0 && c.TokensOut == 0 && c.EstimatedUSD == 0 && c.UsageSource == ""
 
-	c.TokensIn += other.TokensIn
-	c.TokensOut += other.TokensOut
-	c.EstimatedUSD += other.EstimatedUSD
+	c.addTotals(other)
 
 	if c.Model == "" {
 		c.Model = other.Model
@@ -189,17 +200,68 @@ func (c *CostInfo) Add(other CostInfo) {
 	}
 }
 
-// costFromUsage converts inference usage to a CostInfo using the Claude
-// Sonnet pricing estimate ($3/M input, $15/M output tokens).
+// costFromUsage prices u under model with the run's price table
+// (cfg.pins.Prices, from the top-level `pricing` config key). A model with no
+// price contributes 0 USD and marks the result CostIncomplete with the model
+// in UnpricedModels (omitted when model is ""): the cost is unknown, never
+// guessed from another model's price. Callers pass servedModel(req, resp) so
+// the priced model and the recorded model are always the same value.
 func costFromUsage(model string, u inference.Usage) CostInfo {
-	cost := (float64(u.InputTokens) * 3.0 / 1_000_000) + (float64(u.OutputTokens) * 15.0 / 1_000_000)
-	return CostInfo{
+	price := cfg.pins.prices().Cost(model, u)
+	c := CostInfo{
 		TokensIn:     u.InputTokens,
 		TokensOut:    u.OutputTokens,
-		EstimatedUSD: cost,
+		EstimatedUSD: price.USD,
 		Model:        model,
 		UsageSource:  string(u.Source),
 	}
+	if !price.Known {
+		c.CostIncomplete = true
+		if model != "" {
+			c.UnpricedModels = []string{model}
+		}
+	}
+	return c
+}
+
+// servedModel is the model a call ran under: the one the backend reported,
+// else the one requested.
+func servedModel(req inference.Request, resp inference.Response) string {
+	if resp.Model != "" {
+		return resp.Model
+	}
+	return req.Model
+}
+
+// addTotals adds other's tokens, cost and incompleteness into c without
+// touching Model or UsageSource. It is the aggregation used for case, agent
+// and run totals; UnpricedModels stays sorted and de-duplicated.
+func (c *CostInfo) addTotals(other CostInfo) {
+	c.TokensIn += other.TokensIn
+	c.TokensOut += other.TokensOut
+	c.EstimatedUSD += other.EstimatedUSD
+	if other.CostIncomplete {
+		c.CostIncomplete = true
+	}
+	c.UnpricedModels = unionModels(c.UnpricedModels, other.UnpricedModels)
+}
+
+// unionModels returns the sorted, de-duplicated union of a and b. It returns
+// nil when both are empty so an unmarked cost serialises without the field.
+func unionModels(a, b []string) []string {
+	if len(b) == 0 {
+		return a
+	}
+	seen := make(map[string]bool, len(a)+len(b))
+	var out []string
+	for _, m := range append(append([]string(nil), a...), b...) {
+		if !seen[m] {
+			seen[m] = true
+			out = append(out, m)
+		}
+	}
+	sort.Strings(out)
+	return out
 }
 
 // CriterionScore is the score for a single criterion on a single test case.
@@ -254,6 +316,34 @@ type CaseResult struct {
 	// Run is the 1-based repeat number of this result (see RunOptions.Repeat).
 	// A result file written before repeats existed has no run; it is read as 1.
 	Run int `json:"run,omitempty"`
+	// PromptSHA256 and ResourcesPresent are the case's provenance, computed
+	// from the case's own staged workspace (so a fixture that supplies a
+	// *-conventions skill is reflected). They are set only for a pinned run
+	// and are the same value the case's agent call records carry. See
+	// MarshalJSON for the serialisation rule.
+	PromptSHA256     string   `json:"prompt_sha256,omitempty"`
+	ResourcesPresent []string `json:"resources_present,omitempty"`
+}
+
+// MarshalJSON emits resources_present whenever prompt_sha256 is set, including
+// as [] when the list is empty, and omits both fields otherwise, so a result
+// from an unpinned run (or one written before per-case provenance existed)
+// keeps its shape. A plain omitempty tag would drop the empty list, hiding
+// "every declared resource was missing in this case's workspace".
+func (c CaseResult) MarshalJSON() ([]byte, error) {
+	type plain CaseResult
+	aux := struct {
+		plain
+		ResourcesPresent *[]string `json:"resources_present,omitempty"`
+	}{plain: plain(c)}
+	if c.PromptSHA256 != "" {
+		rp := c.ResourcesPresent
+		if rp == nil {
+			rp = []string{}
+		}
+		aux.ResourcesPresent = &rp
+	}
+	return json.Marshal(aux)
 }
 
 // ErrorContext captures execution details for debugging failed tests.
@@ -279,6 +369,10 @@ type AgentResult struct {
 	// Threshold is the agent's pass threshold (percent), taken from its
 	// rubric. Zero means the result predates verdicts.
 	Threshold float64 `json:"threshold,omitempty"`
+	// MinCriterionScore is the rubric's per-criterion floor (percent), stamped
+	// like Threshold. nil means no floor, which is also what a result written
+	// before the floor existed reads as.
+	MinCriterionScore *float64 `json:"min_criterion_score,omitempty"`
 	// PromptFile is the candidate prompt path given via --prompt-file; absent
 	// when the live prompt was evaluated.
 	PromptFile string `json:"prompt_file,omitempty"`
@@ -302,6 +396,15 @@ type AgentResult struct {
 	// result written before repeats existed, which is read as 1.
 	Repeat int          `json:"repeat,omitempty"`
 	Cases  []CaseResult `json:"cases"`
+}
+
+// CriterionTotal is one non-cost criterion pooled over every case and repeat of
+// an agent.
+type CriterionTotal struct {
+	Name     string  `json:"name"`
+	Score    int     `json:"score"`     // points, summed over cases and repeats (skipped counts as 0)
+	MaxScore int     `json:"max_score"` // summed maxima
+	Percent  float64 `json:"percent"`   // score*100/max_score, 0-100
 }
 
 // RunOptions configures evaluation execution.
@@ -383,6 +486,10 @@ type Containment struct {
 	ToolTrust  []string `json:"tool_trust"`
 	FakeGH     bool     `json:"fake_gh"`
 	ReadOnlyFS bool     `json:"read_only_fs"`
+	// KaironBinary is whether the linux kairon binary is mounted read-only on
+	// PATH inside the container. Always written (not omitempty); a result
+	// recorded before this fact existed decodes as false.
+	KaironBinary bool `json:"kairon_binary"`
 	// Network is always "unrestricted": Kairon makes no network containment
 	// guarantee. It is not the container runtime's NetworkMode.
 	Network string `json:"network"`

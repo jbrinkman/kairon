@@ -31,6 +31,9 @@ const (
 	toolDeniedCase     = "stub-tool-denied"
 	mockCLICase        = "stub-mock-cli"
 
+	kaironBinaryCase         = "stub-kairon-binary"
+	kaironBinaryReadOnlyCase = "stub-kairon-binary-readonly"
+
 	// testdataMockCLIScript is the self-test copy of the live mock-cli.sh
 	// fixture, relative to the repository root.
 	testdataMockCLIScript = "internal/eval/testdata/evals/fixtures/mock-cli.sh"
@@ -38,7 +41,7 @@ const (
 
 // containmentCases maps each containment agent to the cases it must have.
 var containmentCases = map[string][]string{
-	containmentAgent:   {ghFakeCase, workspaceWriteCase, toolAllowedCase, mockCLICase},
+	containmentAgent:   {ghFakeCase, workspaceWriteCase, toolAllowedCase, mockCLICase, kaironBinaryCase, kaironBinaryReadOnlyCase},
 	containmentROAgent: {writeOutsideCase, toolDeniedCase},
 }
 
@@ -169,6 +172,45 @@ func TestContainmentNativeRefusal(t *testing.T) {
 	}
 }
 
+// assertChecksPassed fails unless the case recorded at least wantChecks
+// deterministic checks and every one of them passed.
+func assertChecksPassed(t *testing.T, c CaseResult, wantChecks int) {
+	t.Helper()
+	var total int
+	for _, sc := range c.Scores {
+		for _, ck := range sc.Checks {
+			total++
+			if !ck.Passed {
+				t.Errorf("%s: check %d (%s %s) failed: %s", c.CaseName, ck.Index, ck.Type, ck.Label, ck.Detail)
+			}
+		}
+	}
+	if total != wantChecks {
+		t.Errorf("%s: %d checks recorded, want %d", c.CaseName, total, wantChecks)
+	}
+}
+
+// readSummaryContainment returns the containment map of the single run's
+// summary.json under evalsDir/results.
+func readSummaryContainment(t *testing.T, evalsDir string) map[string]Containment {
+	t.Helper()
+	paths, err := filepath.Glob(filepath.Join(evalsDir, "results", "*", "summary.json"))
+	if err != nil || len(paths) != 1 {
+		t.Fatalf("want exactly one summary.json under %s/results, got %v (err %v)", evalsDir, paths, err)
+	}
+	data, err := os.ReadFile(paths[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sum struct {
+		Containment map[string]Containment `json:"containment"`
+	}
+	if err := json.Unmarshal(data, &sum); err != nil {
+		t.Fatalf("parsing %s: %v", paths[0], err)
+	}
+	return sum.Containment
+}
+
 // readHostFile reads a file under a kept host workspace.
 func readHostFile(t *testing.T, c CaseResult, rel string) string {
 	t.Helper()
@@ -200,7 +242,7 @@ func TestContainmentSandbox(t *testing.T) {
 	t.Cleanup(resetConfig)
 	t.Chdir(repoRoot(t))
 
-	rw, _ := runEvalCopy(t, containmentAgent, RunOptions{Sandbox: true, KeepWorkspaces: true})
+	rw, rwEvals := runEvalCopy(t, containmentAgent, RunOptions{Sandbox: true, KeepWorkspaces: true})
 	ro, _ := runEvalCopy(t, containmentROAgent, RunOptions{Sandbox: true, KeepWorkspaces: true})
 	for _, res := range []AgentResult{rw, ro} {
 		for _, c := range res.Cases {
@@ -262,6 +304,49 @@ func TestContainmentSandbox(t *testing.T) {
 		want := "?? aws-out.txt\n?? aws-path.txt\n?? aws-unsimulated.txt\n"
 		if status != want {
 			t.Errorf("git status --porcelain = %q, want %q", status, want)
+		}
+	})
+
+	t.Run("kairon binary", func(t *testing.T) {
+		c := caseByName(t, rw, kaironBinaryCase)
+		if c.ErrorContext != nil {
+			t.Fatalf("case has ErrorContext: %+v", c.ErrorContext)
+		}
+		assertChecksPassed(t, c, 2)
+
+		// The cases' file_contains checks already pin the content; read the
+		// files too so a failure names the actual output.
+		if got := strings.TrimSpace(readHostFile(t, c, ".eval/kairon-version.txt")); got == "" {
+			t.Error(".eval/kairon-version.txt is empty, want the kairon --version output")
+		}
+		if got := strings.TrimSpace(readHostFile(t, c, "kairon-path.txt")); got != "/usr/local/bin/kairon" {
+			t.Errorf("kairon-path.txt = %q, want /usr/local/bin/kairon", got)
+		}
+
+		// The run's containment record says the binary was mounted, in both
+		// the per-agent result and the run summary.
+		if rw.Containment == nil || !rw.Containment.KaironBinary {
+			t.Errorf("selftest-sandbox result containment = %+v, want kairon_binary true", rw.Containment)
+		}
+		if got, ok := readSummaryContainment(t, rwEvals)[containmentAgent]; !ok || !got.KaironBinary {
+			t.Errorf("summary.json containment[%s] = %+v (present=%v), want kairon_binary true", containmentAgent, got, ok)
+		}
+	})
+
+	t.Run("kairon binary is read-only", func(t *testing.T) {
+		c := caseByName(t, rw, kaironBinaryReadOnlyCase)
+		if c.ErrorContext != nil {
+			t.Fatalf("case has ErrorContext: %+v", c.ErrorContext)
+		}
+		assertChecksPassed(t, c, 1)
+
+		refused := readHostFile(t, c, "write-refused.txt")
+		if !regexp.MustCompile(`Read-only file system|Permission denied`).MatchString(refused) {
+			t.Errorf("write-refused.txt = %q, want a Read-only file system or Permission denied refusal", refused)
+		}
+		// The binary still runs after the refused write.
+		if got := strings.TrimSpace(readHostFile(t, c, "after.txt")); got == "" {
+			t.Error("after.txt is empty, want the kairon --version output after the refused write")
 		}
 	})
 
@@ -350,7 +435,7 @@ func TestContainmentContainerGH(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = ws.Remove() })
 
-	// kiro-cli backend name: no kairon helper mount is needed for this check.
+	// kiro-cli backend name: it gets the same kairon binary mount as any other backend.
 	mounts, err := buildContainerMounts(ws, cConfig, inference.NameKiroCLI)
 	if err != nil {
 		t.Fatal(err)

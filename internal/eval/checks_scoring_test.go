@@ -3,6 +3,7 @@ package eval
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -96,7 +97,7 @@ func TestChecksScoringCheckedCriterionScoresPassedOverTotal(t *testing.T) {
 	if len(cr.Calls) != 0 {
 		t.Errorf("calls = %+v, want none", cr.Calls)
 	}
-	if cr.JudgeCost != (CostInfo{}) {
+	if !reflect.DeepEqual(cr.JudgeCost, CostInfo{}) {
 		t.Errorf("JudgeCost = %+v, want zero", cr.JudgeCost)
 	}
 	if got := readCalls(t, calls); len(got) != 0 {

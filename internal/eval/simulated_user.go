@@ -244,7 +244,7 @@ func newRouter(tc TestCase, cr *CaseResult) routeFunc {
 		}
 		wallStart := time.Now()
 		resp, err := cfg.backend.Invoke(context.Background(), req)
-		cost := costFromUsage(resp.Model, resp.Usage)
+		cost := costFromUsage(servedModel(req, resp), resp.Usage)
 		rec := newCallRecord(req, resp, err, time.Since(wallStart), cost)
 		rec.Purpose = simPurpose
 		cr.Calls = append(cr.Calls, rec)

@@ -37,19 +37,27 @@ const (
 	// TmpfsHomeSize is the size cap for /home/sandbox.
 	TmpfsHomeSize = "256m"
 
-	// SandboxUID and SandboxGID own /home/sandbox inside the container.
+	// SandboxUID and SandboxGID are the unprivileged user and group the
+	// sandbox container runs as. They do not appear in any tmpfs option (see
+	// tmpfsMounts); /home/sandbox is writable for them through its mode.
 	SandboxUID = 1000
 	SandboxGID = 1000
 )
 
 // tmpfsMounts returns the tmpfs map for the read-only root filesystem. noexec
 // is deliberately not set: kiro-cli and tools may exec from temp locations.
+//
+// No entry sets an owner option (user or group id): Podman's Docker-compatible API rejects them at
+// container create ("unknown mount option", containers/podman#10831), so they
+// would break every container on Podman hosts. Instead /home/sandbox uses mode
+// 0777 so the unprivileged sandbox user can write to it whatever owns the
+// mount. That is safe here: the tmpfs is ephemeral, size-capped, private to one
+// container, and the container has a single unprivileged user.
 func tmpfsMounts() map[string]string {
 	return map[string]string{
 		TmpfsTmpPath:    "rw,nosuid,nodev,mode=1777,size=" + TmpfsTmpSize,
 		TmpfsVarTmpPath: "rw,nosuid,nodev,mode=1777,size=" + TmpfsVarTmpSize,
-		TmpfsHomePath: fmt.Sprintf("rw,nosuid,nodev,uid=%d,gid=%d,mode=0755,size=%s",
-			SandboxUID, SandboxGID, TmpfsHomeSize),
+		TmpfsHomePath:   "rw,nosuid,nodev,mode=0777,size=" + TmpfsHomeSize,
 	}
 }
 
