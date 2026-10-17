@@ -215,6 +215,29 @@ func TestImportStepRecordsMalformedImportsNothing(t *testing.T) {
 	}
 }
 
+// TestImportStepRecordsOverflowAgainstExistingCostImportsNothing covers a
+// record that is individually valid and does not overflow ReadStepRecords'
+// own running total (which starts at 0), but whose tokens wrap past the sign
+// once added to the case's existing AgentCost. The import must fail and leave
+// cr untouched, so a workspace cannot drive the case's cost negative.
+func TestImportStepRecordsOverflowAgainstExistingCostImportsNothing(t *testing.T) {
+	dir := t.TempDir()
+	// input_tokens = math.MaxInt64: fine on its own, wraps when added to 100.
+	huge := `{"role":"agent","agent":"a","step":"s","model":"m","input_tokens":9223372036854775807,"output_tokens":0,"cost_usd":0,"estimated":false,"duration_ms":0}`
+	writeCalls(t, dir, huge+"\n")
+	cr := CaseResult{
+		Calls:     []inference.CallRecord{{Role: "agent", Agent: "outer"}},
+		AgentCost: CostInfo{TokensIn: 100, TokensOut: 40, EstimatedUSD: 0.0009},
+	}
+	err := importStepRecords(&cr, dir)
+	if err == nil || !strings.Contains(err.Error(), "overflow") {
+		t.Fatalf("err = %v, want an overflow error", err)
+	}
+	if len(cr.Calls) != 1 || cr.AgentCost.TokensIn != 100 || cr.AgentCost.TokensOut != 40 {
+		t.Fatalf("nothing may be imported: calls=%+v cost=%+v", cr.Calls, cr.AgentCost)
+	}
+}
+
 // stepCase is a stub case whose turn appends the given lines to
 // .eval/calls.jsonl before answering.
 func stepCase(name string, lines ...string) TestCase {

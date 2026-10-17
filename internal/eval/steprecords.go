@@ -1,6 +1,9 @@
 package eval
 
 import (
+	"fmt"
+	"math"
+
 	"github.com/jbrinkman/kairon/internal/inference"
 )
 
@@ -15,6 +18,24 @@ func importStepRecords(cr *CaseResult, dir string) error {
 	recs, err := readStepRecords(dir)
 	if err != nil {
 		return err
+	}
+	// ReadStepRecords only guards the records' own totals (from 0). The sums
+	// land on cr.AgentCost, which already holds the outer agent usage, so an
+	// otherwise-valid record can still wrap that total past the sign (tokens)
+	// or make it non-finite (cost). Check the running total against the
+	// existing AgentCost before mutating cr, keeping the import all-or-nothing
+	// — a workspace must not be able to drive the case's cost negative.
+	in, out := cr.AgentCost.TokensIn, cr.AgentCost.TokensOut
+	usd := cr.AgentCost.EstimatedUSD
+	for _, r := range recs {
+		if in+r.InputTokens < in || out+r.OutputTokens < out {
+			return fmt.Errorf("%s: imported tokens overflow the agent total", stepRecordsRel)
+		}
+		in, out = in+r.InputTokens, out+r.OutputTokens
+		usd += r.CostUSD
+		if math.IsInf(usd, 0) || math.IsNaN(usd) {
+			return fmt.Errorf("%s: imported cost overflows the agent total", stepRecordsRel)
+		}
 	}
 	for _, r := range recs {
 		source := string(inference.UsageReported)
