@@ -480,6 +480,51 @@ func TestChecksRunProgressiveEvaluationInvalidChecksIsFatal(t *testing.T) {
 	}
 }
 
+// writeAgentRubric writes a minimal non-checks_only rubric for agent under
+// evals/rubrics/<file>.
+func writeAgentRubric(t *testing.T, file, agent string) {
+	t.Helper()
+	writeCfgFile(t, filepath.Join("evals", "rubrics", file), "agent: "+agent+"\ncriteria:\n  - name: clarity\n    description: d\n    scoring: 1-5\n")
+}
+
+// TestChecksRunProgressiveEvaluationDuplicateNameIsFatal: a duplicate case name
+// is a malformed suite and must fail the whole run, not silently drop the
+// agent and exit 0. The duplicate lives in a LATER agent so the test also
+// proves the rejection happens before any earlier agent's case runs.
+func TestChecksRunProgressiveEvaluationDuplicateNameIsFatal(t *testing.T) {
+	checksEnv(t)
+	initGitRepoHere(t)
+	// Two agents; a-first is valid, b-dup has two case files sharing a name.
+	// loadRubrics reads rubrics/*.yaml sorted by filename, so a-first is
+	// processed before b-dup.
+	writeAgentRubric(t, "a-first.yaml", "a-first")
+	writeAgentRubric(t, "b-dup.yaml", "b-dup")
+	writeChecksCase(t, "a-first", "ok.yaml", "name: a-ok\ninput: x\n")
+	writeChecksCase(t, "b-dup", "one.yaml", "name: dup\ninput: one\n")
+	writeChecksCase(t, "b-dup", "two.yaml", "name: dup\ninput: two\n")
+
+	resultsDir := filepath.Join("evals", "results", "rdup")
+	if err := os.MkdirAll(resultsDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	err := runProgressiveEvaluation("", resultsDir, false, nil)
+	if err == nil {
+		t.Fatal("a duplicate case name must fail the run, got nil")
+	}
+	if !errors.Is(err, errMalformedCase) {
+		t.Fatalf("error does not wrap errMalformedCase: %v", err)
+	}
+	if !errors.Is(err, errDuplicateCaseName) {
+		t.Fatalf("error does not wrap errDuplicateCaseName: %v", err)
+	}
+	// The run must fail before any agent's cases run, so a-first produces no
+	// result file.
+	if _, statErr := os.Stat(filepath.Join(resultsDir, "a-first.json")); !os.IsNotExist(statErr) {
+		t.Errorf("a-first.json exists (stat err %v): a case ran before the duplicate-name agent was rejected", statErr)
+	}
+}
+
 func TestChecksRunProgressiveEvaluationMalformedCaseIsFatal(t *testing.T) {
 	checksEnv(t)
 	initGitRepoHere(t)

@@ -1799,9 +1799,11 @@ func loadCases(agent string) ([]TestCase, error) {
 			return nil, err
 		}
 		// Coverage and result files key on the case name, so a duplicate name
-		// across files lets one case's result cover another; reject it.
+		// across files lets one case's result cover another; reject it. Wrap
+		// errMalformedCase too so the fatal paths in runProgressiveEvaluation
+		// (and pinSuites) reject it rather than silently dropping the agent.
 		if first, dup := seenNames[tc.Name]; dup {
-			return nil, fmt.Errorf("%w: %q declared in both %s and %s", errDuplicateCaseName, tc.Name, first, e.Name())
+			return nil, fmt.Errorf("%w: %w: %q declared in both %s and %s", errMalformedCase, errDuplicateCaseName, tc.Name, first, e.Name())
 		}
 		seenNames[tc.Name] = e.Name()
 		if !rubricLoaded {
@@ -1922,12 +1924,11 @@ func runProgressiveEvaluation(agent, resultsDir string, isResume bool, cConfig *
 		return fmt.Errorf("❌ Fatal: no rubrics found")
 	}
 
-	// Reject an invalid checks_only agent before any agent's first case runs.
-	// Per-agent loading below would otherwise run earlier agents' cases first.
+	// Reject any agent whose cases cannot load (invalid checks block,
+	// malformed case file, or duplicate case name) before any agent's first
+	// case runs. Per-agent loading below would otherwise run earlier agents'
+	// cases first and then silently drop the broken agent.
 	for _, rubric := range rubrics {
-		if !rubric.ChecksOnly {
-			continue
-		}
 		if _, err := loadCases(rubric.Agent); errors.Is(err, errInvalidChecks) || errors.Is(err, errMalformedCase) {
 			return err
 		}
