@@ -1,0 +1,10 @@
+{
+  "agent": "selftest",
+  "prompt_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+  "suite_sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+  "complete": false,
+  "case_filter": "stub-basic",
+  "cases": [
+    {"case_name": "stub-basic", "actual_output": "ok", "scores": [{"name": "correctness", "score": 10, "max_score": 10, "deterministic": true}], "agent_cost": {"tokens_in": 0, "tokens_out": 0, "estimated_usd": 0}, "judge_cost": {"tokens_in": 0, "tokens_out": 0, "estimated_usd": 0}, "threshold": 70, "passed": true}
+  ]
+}
