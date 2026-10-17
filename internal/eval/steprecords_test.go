@@ -238,8 +238,27 @@ func TestImportStepRecordsOverflowAgainstExistingCostImportsNothing(t *testing.T
 	}
 }
 
-// stepCase is a stub case whose turn appends the given lines to
-// .eval/calls.jsonl before answering.
+// TestImportStepRecordsCostUnknownMarksIncomplete covers a record whose cost
+// is unknown (cost_unknown:true): its 0 USD must not count as a real price, so
+// the import marks cr.AgentCost incomplete and records the model as unpriced,
+// matching how costFromUsage treats an unpriced harness call.
+func TestImportStepRecordsCostUnknownMarksIncomplete(t *testing.T) {
+	dir := t.TempDir()
+	rec := `{"role":"agent","agent":"a","step":"s","model":"claude-haiku-4.5","input_tokens":10,"output_tokens":5,"cost_usd":0,"cost_unknown":true,"estimated":false,"duration_ms":1}`
+	writeCalls(t, dir, rec+"\n")
+	cr := CaseResult{}
+	if err := importStepRecords(&cr, dir); err != nil {
+		t.Fatal(err)
+	}
+	if !cr.AgentCost.CostIncomplete {
+		t.Error("AgentCost.CostIncomplete must be true after importing a cost_unknown record")
+	}
+	if want := []string{"claude-haiku-4.5"}; strings.Join(cr.AgentCost.UnpricedModels, ",") != strings.Join(want, ",") {
+		t.Errorf("UnpricedModels = %v, want %v", cr.AgentCost.UnpricedModels, want)
+	}
+}
+
+
 func stepCase(name string, lines ...string) TestCase {
 	var cmds []string
 	for _, l := range lines {

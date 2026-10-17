@@ -43,13 +43,23 @@ func importStepRecords(cr *CaseResult, dir string) error {
 			source = string(inference.UsageEstimated)
 		}
 		cr.Calls = append(cr.Calls, r)
-		cr.AgentCost.Add(CostInfo{
+		c := CostInfo{
 			TokensIn:     r.InputTokens,
 			TokensOut:    r.OutputTokens,
 			EstimatedUSD: r.CostUSD,
 			Model:        r.Model,
 			UsageSource:  source,
-		})
+		}
+		// A cost_unknown record contributes 0 USD only because its model has
+		// no price, so the merged cost is a lower bound: mark it incomplete and
+		// record the model as unpriced, exactly as costFromUsage does.
+		if r.CostUnknown {
+			c.CostIncomplete = true
+			if r.Model != "" {
+				c.UnpricedModels = []string{r.Model}
+			}
+		}
+		cr.AgentCost.Add(c)
 	}
 	return nil
 }
