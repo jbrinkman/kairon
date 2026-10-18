@@ -26,6 +26,21 @@ type Watcher struct {
 	started             bool
 	backoffTracker      *BackoffTracker
 	dependencyValidator *DependencyValidator
+
+	// spawnAgent starts the implementation agent for an issue. It is set to
+	// the manager's Spawn in New; tests replace it.
+	spawnAgent func(issueNumber int, repo string) (*agent.Agent, error)
+
+	// classifier evaluates an issue body's planner provenance. nil means no
+	// classifier is wired and every issue is treated as ProvenanceValid.
+	classifier ProvenanceClassifier
+	// planner canonicalizes issues whose provenance is none or mismatch. New
+	// leaves it nil until a production runner is wired.
+	planner PlannerRunner
+	// plannerInFlight and plannerAttempts are guarded by mu and created lazily
+	// so a zero-value Watcher stays usable.
+	plannerInFlight map[int]struct{} // issues with a planner run in progress
+	plannerAttempts map[int]int      // planner runs started per issue in this process
 }
 
 func New(cfg *config.Config, mgr *agent.Manager, user string) *Watcher {
@@ -36,7 +51,17 @@ func New(cfg *config.Config, mgr *agent.Manager, user string) *Watcher {
 		tracked:             make(map[int]bool),
 		backoffTracker:      NewBackoffTracker(),
 		dependencyValidator: NewDependencyValidator(),
+		spawnAgent:          mgr.Spawn,
 	}
+}
+
+// SetProvenanceClassifier wires the classifier that decides whether a polled
+// issue goes to the implementation pipeline or to the planner. Passing nil
+// restores the default of treating every issue as ProvenanceValid.
+func (w *Watcher) SetProvenanceClassifier(c ProvenanceClassifier) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.classifier = c
 }
 
 func (w *Watcher) Start() {
@@ -94,61 +119,145 @@ func (w *Watcher) checkIssues() {
 	}
 
 	for _, issue := range issues {
-		w.mu.RLock()
-		tracked := w.tracked[issue.Number]
-		w.mu.RUnlock()
+		w.processIssue(issue)
+	}
+}
 
-		if tracked {
-			continue
-		}
+// processIssue evaluates one polled issue and spawns the implementation agent
+// when every criterion passes.
+func (w *Watcher) processIssue(issue github.Issue) {
+	w.mu.RLock()
+	tracked := w.tracked[issue.Number]
+	w.mu.RUnlock()
 
-		if w.hasActiveWorktree(issue.Number) {
-			log.Printf("[watcher] issue #%d already has active worktree, skipping", issue.Number)
-			continue
-		}
+	if tracked {
+		return
+	}
 
-		if w.hasExceededGlobalRetries(issue.Number) {
-			log.Printf("[watcher] issue #%d exceeded retry limit (%d attempts), skipping", issue.Number, w.config.MaxRetries)
-			continue
-		}
+	if w.hasActiveWorktree(issue.Number) {
+		log.Printf("[watcher] issue #%d already has active worktree, skipping", issue.Number)
+		return
+	}
 
-		// Check dependency validation with backoff
-		if !w.backoffTracker.ShouldCheck(issue.Number) {
-			roundsRemaining := w.backoffTracker.GetRoundsUntilCheck(issue.Number)
-			log.Printf("[watcher] issue #%d in backoff, checking again in %d rounds", issue.Number, roundsRemaining)
-			continue
-		}
+	if w.hasExceededGlobalRetries(issue.Number) {
+		log.Printf("[watcher] issue #%d exceeded retry limit (%d attempts), skipping", issue.Number, w.config.MaxRetries)
+		return
+	}
 
-		validationResult, err := w.dependencyValidator.ValidateIssue(w.config.Repo, issue.Number, issue.Body)
-		if err != nil {
-			log.Printf("[watcher] dependency validation error for issue #%d: %v", issue.Number, err)
-			w.backoffTracker.RecordFailure(issue.Number)
-			continue
-		}
+	// Check dependency validation with backoff
+	if !w.backoffTracker.ShouldCheck(issue.Number) {
+		roundsRemaining := w.backoffTracker.GetRoundsUntilCheck(issue.Number)
+		log.Printf("[watcher] issue #%d in backoff, checking again in %d rounds", issue.Number, roundsRemaining)
+		return
+	}
 
-		// Log circular dependencies as warnings but don't block processing
-		if len(validationResult.CircularDependencies) > 0 {
-			log.Printf("[watcher] WARNING: circular dependency detected for issue #%d: %v", issue.Number, validationResult.CircularDependencies)
-		}
+	validationResult, err := w.dependencyValidator.ValidateIssue(w.config.Repo, issue.Number, issue.Body)
+	if err != nil {
+		log.Printf("[watcher] dependency validation error for issue #%d: %v", issue.Number, err)
+		w.backoffTracker.RecordFailure(issue.Number)
+		return
+	}
 
-		// Skip issues with unresolved dependencies
-		if !validationResult.IsValid {
-			log.Printf("[watcher] skipping issue #%d due to unresolved dependencies: %v", issue.Number, validationResult.UnresolvedDependencies)
-			w.backoffTracker.RecordFailure(issue.Number)
-			continue
-		}
+	// Log circular dependencies as warnings but don't block processing
+	if len(validationResult.CircularDependencies) > 0 {
+		log.Printf("[watcher] WARNING: circular dependency detected for issue #%d: %v", issue.Number, validationResult.CircularDependencies)
+	}
+
+	// Skip issues with unresolved dependencies
+	if !validationResult.IsValid {
+		log.Printf("[watcher] skipping issue #%d due to unresolved dependencies: %v", issue.Number, validationResult.UnresolvedDependencies)
+		w.backoffTracker.RecordFailure(issue.Number)
+		return
+	}
+
+	// Provenance is evaluated after every other criterion, so an unmarked issue
+	// that is still waiting on dependencies never reaches the classifier.
+	switch p := w.classify(issue.Body); p {
+	case ProvenanceValid:
+		w.mu.Lock()
+		delete(w.plannerAttempts, issue.Number)
+		w.mu.Unlock()
+	case ProvenanceNone, ProvenanceMismatch:
+		// Not tracked and not retry-counted: planner runs are not
+		// implementation attempts, and the issue must reach step 7 once the
+		// planner has made its body valid.
+		w.routeToPlanner(issue, p)
+		return
+	default:
+		log.Printf("[watcher] ERROR: unrecognised provenance %q for issue #%d, skipping", p, issue.Number)
+		return
+	}
+
+	w.mu.Lock()
+	w.tracked[issue.Number] = true
+	w.mu.Unlock()
+
+	w.incrementGlobalRetryCount(issue.Number)
+	attempt := w.getCurrentRetryCount(issue.Number)
+	log.Printf("[watcher] spawning agent for issue #%d %q (attempt %d)", issue.Number, issue.Title, attempt)
+	if _, err := w.spawnAgent(issue.Number, w.config.Repo); err != nil {
+		log.Printf("[watcher] failed to spawn agent for issue #%d: %v", issue.Number, err)
+	}
+}
+
+// classify returns the provenance of an issue body. With no classifier wired
+// every body is ProvenanceValid.
+func (w *Watcher) classify(body string) Provenance {
+	w.mu.RLock()
+	c := w.classifier
+	w.mu.RUnlock()
+	if c == nil {
+		return ProvenanceValid
+	}
+	return c.Classify(body)
+}
+
+// routeToPlanner starts a planner run for an issue whose body is not yet
+// canonical. It starts at most one run per issue at a time and at most
+// config.MaxRetries runs per issue per process (reset when the issue is seen
+// ProvenanceValid), which bounds spend if the planner never fixes the body.
+func (w *Watcher) routeToPlanner(issue github.Issue, p Provenance) {
+	w.mu.Lock()
+	planner := w.planner
+	if planner == nil {
+		w.mu.Unlock()
+		log.Printf("[watcher] issue #%d has provenance %s but no planner is configured, skipping", issue.Number, p)
+		return
+	}
+	if _, busy := w.plannerInFlight[issue.Number]; busy {
+		w.mu.Unlock()
+		log.Printf("[watcher] planner run already in flight for issue #%d, skipping", issue.Number)
+		return
+	}
+	if w.plannerAttempts[issue.Number] >= w.config.MaxRetries {
+		w.mu.Unlock()
+		log.Printf("[watcher] WARNING: issue #%d reached the planner attempt limit (%d), skipping", issue.Number, w.config.MaxRetries)
+		return
+	}
+	if w.plannerInFlight == nil {
+		w.plannerInFlight = make(map[int]struct{})
+	}
+	if w.plannerAttempts == nil {
+		w.plannerAttempts = make(map[int]int)
+	}
+	w.plannerInFlight[issue.Number] = struct{}{}
+	w.plannerAttempts[issue.Number]++
+	attempt := w.plannerAttempts[issue.Number]
+	w.mu.Unlock()
+
+	log.Printf("[watcher] routing issue #%d %q to planner (provenance %s, run %d)", issue.Number, issue.Title, p, attempt)
+	go func() {
+		err := planner.Run(issue, p)
 
 		w.mu.Lock()
-		w.tracked[issue.Number] = true
+		delete(w.plannerInFlight, issue.Number)
 		w.mu.Unlock()
 
-		w.incrementGlobalRetryCount(issue.Number)
-		attempt := w.getCurrentRetryCount(issue.Number)
-		log.Printf("[watcher] spawning agent for issue #%d %q (attempt %d)", issue.Number, issue.Title, attempt)
-		if _, err := w.manager.Spawn(issue.Number, w.config.Repo); err != nil {
-			log.Printf("[watcher] failed to spawn agent for issue #%d: %v", issue.Number, err)
+		if err != nil {
+			log.Printf("[watcher] planner run for issue #%d failed: %v", issue.Number, err)
+			w.backoffTracker.RecordFailure(issue.Number)
 		}
-	}
+	}()
 }
 
 func (w *Watcher) cleanupOrphanedWorktrees() {
