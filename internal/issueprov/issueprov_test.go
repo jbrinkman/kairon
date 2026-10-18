@@ -191,6 +191,34 @@ func TestRemarkKeepsHashAndSingleMarker(t *testing.T) {
 	}
 }
 
+// AC 5 (replacement path): Append strips pre-existing markers of various
+// shapes before adding a fresh one, leaving exactly one valid marker. This
+// exercises Append directly, not only Classify, closing the gap where a
+// regression in Append's marker-removal loop would go uncaught.
+func TestAppendReplacesExistingMarkers(t *testing.T) {
+	malformed := "<!-- planner-provenance: v1 sha256=abc -->"
+	valid := MarkerLine(base, t1)
+	tests := map[string]string{
+		"malformed marker, LF":     base + "\n\n" + malformed,
+		"valid + malformed, LF":    base + "\n\n" + valid + "\n" + malformed,
+		"well-formed marker, CRLF": strings.ReplaceAll(base+"\n\n"+valid, "\n", "\r\n"),
+	}
+	for name, body := range tests {
+		t.Run(name, func(t *testing.T) {
+			got := Append(body, t2)
+			if n := markerCount(got); n != 1 {
+				t.Errorf("marker lines = %d, want 1\ngot: %q", n, got)
+			}
+			if Classify(got) != StateValid {
+				t.Errorf("Classify = %q, want valid\ngot: %q", Classify(got), got)
+			}
+			if !strings.Contains(got, "Add a widget.") {
+				t.Errorf("original content lost: %q", got)
+			}
+		})
+	}
+}
+
 // AC 6: malformed markers classify as mismatch.
 func TestClassifyMalformedMarkersAreMismatch(t *testing.T) {
 	const ts = "generated=2026-10-18T19:15:34Z"
