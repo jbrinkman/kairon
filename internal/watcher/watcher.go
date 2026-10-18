@@ -35,7 +35,7 @@ type Watcher struct {
 	// classifier is wired and every issue is treated as ProvenanceValid.
 	classifier ProvenanceClassifier
 	// planner canonicalizes issues whose provenance is none or mismatch. New
-	// leaves it nil until a production runner is wired.
+	// sets the production kiro-cli runner; tests replace it.
 	planner PlannerRunner
 	// plannerInFlight and plannerAttempts are guarded by mu and created lazily
 	// so a zero-value Watcher stays usable.
@@ -52,6 +52,7 @@ func New(cfg *config.Config, mgr *agent.Manager, user string) *Watcher {
 		backoffTracker:      NewBackoffTracker(),
 		dependencyValidator: NewDependencyValidator(),
 		spawnAgent:          mgr.Spawn,
+		planner:             newKiroPlannerRunner(cfg.Repo),
 	}
 }
 
