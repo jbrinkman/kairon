@@ -116,10 +116,11 @@ func MarkerLine(body string, generated time.Time) string {
 
 // Append returns body with any existing marker lines removed, trailing blank
 // lines trimmed, and a fresh marker line added as the last line. The result has
-// no trailing newline. The body's other content, line endings and per-line
-// whitespace are preserved.
+// no trailing newline. The body's other content and per-line whitespace are
+// preserved; line endings are normalized to \n (consistent with Canonicalize
+// and Classify, which operate on normalized bodies).
 func Append(body string, generated time.Time) string {
-	lines := strings.Split(body, "\n")
+	lines := splitLines(body)
 	kept := lines[:0]
 	for _, l := range lines {
 		if isMarkerLine(l) {
@@ -127,7 +128,6 @@ func Append(body string, generated time.Time) string {
 		}
 		kept = append(kept, l)
 	}
-	// TrimSpace also absorbs the \r left on blank lines of CRLF input.
 	for len(kept) > 0 && strings.TrimSpace(kept[len(kept)-1]) == "" {
 		kept = kept[:len(kept)-1]
 	}

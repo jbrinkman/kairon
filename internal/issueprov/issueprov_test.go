@@ -202,6 +202,10 @@ func TestAppendReplacesExistingMarkers(t *testing.T) {
 		"malformed marker, LF":     base + "\n\n" + malformed,
 		"valid + malformed, LF":    base + "\n\n" + valid + "\n" + malformed,
 		"well-formed marker, CRLF": strings.ReplaceAll(base+"\n\n"+valid, "\n", "\r\n"),
+		// Lone-CR (old-Mac) endings must be split the same way Classify splits
+		// them. Append must normalize via splitLines, not strings.Split on "\n",
+		// or it leaves the pre-existing marker in place and emits two markers.
+		"well-formed marker, lone CR": strings.ReplaceAll(base+"\n\n"+valid, "\n", "\r"),
 	}
 	for name, body := range tests {
 		t.Run(name, func(t *testing.T) {
