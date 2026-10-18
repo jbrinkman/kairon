@@ -246,6 +246,32 @@ Dependencies: #314, #317
 
 A dependency is satisfied only once the referenced issue is **closed**. Any dependency that is still open — or that cannot be fetched — marks the dependent issue as blocked, so it stays out of the processing queue until every prerequisite closes.
 
+### Issue Provenance
+
+The watcher classifies each issue body by its planner provenance and uses the result to decide whether the issue goes to the implementation workflow or back to the planner. The types live in [`internal/watcher/provenance.go`](internal/watcher/provenance.go).
+
+Provenance is evaluated **after** all of the existing criteria: the assignee and label filters applied when issues are listed, the already-tracked check, the active-worktree check, the retry limit, the dependency backoff and the dependency check. It does not change any of them. An issue that is skipped for one of those reasons, for example because it is still waiting on an open dependency, is never classified.
+
+| State | Meaning | Routing |
+|-------|---------|---------|
+| `valid` | The body carries a planner marker whose hash matches | Proceeds to the implementation workflow unchanged |
+| `none` | The body has no planner marker (for example, a manually created issue) | Routed to the planner for canonicalization. Not implemented |
+| `mismatch` | The body has a planner marker but the hash does not match, meaning it was edited after generation | Routed to the planner for canonicalization. Not implemented |
+
+Any other value from a classifier is treated as an error: the issue is logged and skipped, and neither the implementation agent nor the planner runs.
+
+Planner routing follows these rules:
+
+- **Not an implementation attempt.** A planner run does not mark the issue as tracked and does not touch `.kairon/retries/issue-<number>.count`. Once the planner has made the body `valid`, a later poll picks the issue up through the normal workflow.
+- **One run at a time.** At most one planner run is in flight per issue. A poll that finds a run still in progress skips the issue.
+- **Attempt cap.** At most `max_retries` planner runs are started per issue per watcher process. The count is kept in memory, so it resets when the watcher restarts, and it also resets when the issue is seen as `valid`. After the cap is reached the issue is skipped with a warning.
+- **Failures back off.** If a planner run exits with an error, the failure is logged and recorded in the same backoff tracker that dependency failures use.
+- **Logs.** Each run appends its output to `.kairon/logs/planner-issue-<number>.log`. Planner runs are not shown in `status` and are not stopped by `stop <issue>`.
+
+The planner is started with `kiro-cli chat --agent planner --no-interactive --trust-all-tools`, with `ISSUE_NUMBER`, `REPO` and `KAIRON_WATCHER_PID` set in its environment.
+
+**No classifier by default.** A classifier is supplied with `Watcher.SetProvenanceClassifier`. When none is set, which is the case in the current `kairon` binary, every issue is treated as `valid`. Nothing is routed to the planner and behaviour is the same as before provenance was introduced.
+
 ### Retry Logic
 
 The system has two layers of retry:
