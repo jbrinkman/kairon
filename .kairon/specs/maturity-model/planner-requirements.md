@@ -432,10 +432,16 @@ is **not** one of the guards. It is the terminal action the boundary takes **aft
    later classifies issues, so the writer and the classifier can never disagree. The body being canonicalized and
    hashed is the final body, with any dependency-number substitution (§7) already applied, so the hash covers the
    exact bytes that get committed.
-2. **Commit, once.** Perform the single authoritative GitHub write: create or update the issue body, embed the
-   computed provenance, and only then mark the issue ready for the next stage. Because the agent never wrote to
-   GitHub, there is no window in which a half-planned body is live, and no concurrent-writer race to guard against
-   inside the watcher.
+2. **Commit, once, conditional on the issue being unchanged since the planner read it.** The planner input records
+   the issue's observed revision (its `updatedAt`, or an equivalent version token such as an ETag or node id) at
+   read time. Before the authoritative write, the commit step re-checks that revision. If a human (or anyone) edited
+   the issue in the interval between the planner's read and this write, the commit step does **not** overwrite it:
+   it abandons this write and re-routes the issue through intake (§9) so the human's edit is re-planned, or punches
+   out (§14) if that is not possible. Only when the revision is unchanged does it perform the single authoritative
+   GitHub write: create or update the issue body, embed the computed provenance, and only then mark the issue ready
+   for the next stage. This closes the read-to-write window so the guard never stamps a valid hash over a body that
+   superseded an unseen human edit. Because the agent never wrote to GitHub, there is still no window in which a
+   half-planned body is live, and no concurrent-writer race against the agent's own writes.
 3. **Advance.** Spawn the next stage with the committed, validated document as input.
 
 This separation (guards decide admit/reject; the boundary commits once, after all pass) is what makes the watcher
@@ -571,6 +577,10 @@ cheap-to-free; across workflows the hash is what carries it.
 The **guard** canonicalizes the validated body and computes the hash in deterministic Go, as step 3 of §4, using the
 same function the classifier uses on read. The agent never computes or writes the hash. This removes the entire
 reason the 2026-10-18 scheme needed to be tamper-evident against its own writer: the writer is now trusted code.
+
+The hash certifies the body the guard wrote, so that body must be the current one: the commit step writes only if
+the issue is unchanged since the planner read it (§4.3 step 2). This prevents the guard from stamping a valid hash
+over planner output that a concurrent human edit has already superseded.
 
 ### 8.3 Scheme
 
