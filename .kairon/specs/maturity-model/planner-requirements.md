@@ -912,6 +912,20 @@ the agent) performs all three of the following, together:
 3. **Halt the issue.** No next stage is spawned and the issue is not re-routed on later polls, by virtue of the
    fail-state label.
 
+These three writes hit GitHub independently and GitHub offers no multi-write transaction, so the terminal step must
+be **idempotent and self-reconciling**, not best-effort "fire three writes and hope":
+
+- **Comment before label, always.** Post the explanatory comment (step 1) *before* applying the fail-state label
+  (step 2). A failure after the comment leaves an explained-but-not-yet-labeled issue, which the next poll simply
+  retries; it never leaves a labeled issue with no explanation (the exact §14.5 gap this contract closes). The
+  comment-first order makes the only possible partial state the safe one.
+- **Re-running completes only what is missing.** On a retry of a partially-completed punch-out, re-check each write
+  and perform only the missing ones. Do not post a duplicate comment: detect an existing punch-out comment by a
+  stable marker and skip it. Treat applying an already-present label as a no-op. Re-running the terminal step
+  therefore converges to exactly one comment plus the label.
+- **Not complete until both the comment and the label are in place.** Until then the punch-out is not finished and
+  the issue is not treated as terminally failed, so a half-applied label can never trigger duplicate retries.
+
 ### 14.3 How a human restarts a punched-out issue
 
 The fail-state label is a one-way stop that only a human clears. To restart, a human reviews the comment, makes the
@@ -944,6 +958,10 @@ applies `<label>-failed` once retries are exhausted (the two-tier shape is alrea
   an immediately-terminal (Tier 2) failure since no retry can supply a human-only decision.
 - Gate and validation failures must route through the same two-tier contract (bounded retry where recoverable, then
   the terminal comment + label) rather than failing silently or only logging.
+- The terminal step must be made **idempotent and self-reconciling** (§14.2): comment-before-label ordering, a
+  stable marker so a retry does not post a duplicate comment, an already-present label treated as a no-op, and the
+  punch-out treated as incomplete until both writes land. Today it is a plain best-effort label write with none of
+  these guarantees.
 
 Converting all stages to the §14 contract is part of the same work as the §3 stage-output contract and the §11.1
 input-document contract.
