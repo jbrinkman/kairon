@@ -304,9 +304,11 @@ knowing what each one does:
 
 - **An admission method.**
   - **Input:** the upstream stage's output document (§3).
-  - **Output:** a boolean, `pass` or `fail`. Nothing else. This method does not mutate the document, does not write
-    to GitHub, and does not itself take failure action; it only answers "does this output satisfy my check." A
-    `pass` admits the output to the next guard; a `fail` triggers the guard's own failure method.
+  - **Output:** an `AdmissionResult`: a `pass` boolean plus, when `pass` is false, the typed `FailureContext`
+    (defined below) describing what the check expected and what it observed. `FailureContext` is present if and only
+    if `pass` is false. The result carries no more than that: the admission method does not mutate the document, does
+    not write to GitHub, and does not itself take failure action. A `pass` admits the output to the next guard; a
+    fail carries its `FailureContext` to the guard's own failure method.
 - **A failure method.**
   - **Input:** a typed `FailureContext` (defined below) describing the failure the admission method found.
   - **Action:** the guard takes the appropriate action for its own check, deciding between a **retry** of the
@@ -354,8 +356,9 @@ The boundary runs the guards in order:
 1. Run the next guard's admission method against the stage output.
 2. **On `pass`:** move on and run the next guard. When every guard in the chain has passed, the boundary proceeds to
    commit (§4.3).
-3. **On `fail`:** the admission method produces a `FailureContext` (§4.1) and the deterministic layer invokes **that
-   guard's own failure method** with it. The failure method takes the appropriate action, deciding between a
+3. **On `fail`:** the admission method's `AdmissionResult` carries the `FailureContext` (§4.1), and the
+   deterministic layer passes that context into **that guard's own failure method**. The failure method takes the
+   appropriate action, deciding between a
    **retry** of the upstream stage (recoverable failures, §14.1) and the **punch-out / failure response** (terminal
    failures, §14.2). The guard owns that decision because only it knows whether its check is retry-recoverable, and
    it enacts the decision in its failure method rather than handing it to an external decider. The chain does not
