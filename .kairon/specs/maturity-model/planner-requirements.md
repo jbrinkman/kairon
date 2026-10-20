@@ -263,7 +263,8 @@ guardrail (deterministic validation checks, hooks and sentinel files, adversaria
 adversarial review in its own context, but that list is illustrative, not a required or exhaustive checklist.
 **Which guards a boundary runs is our determination for this system:** we pick the checks that are appropriate for
 Kairon, we are not obligated to implement every type Stage 4 names, and we may add types that appear on no such list.
-The fixed commitment is the shape (a chain of uniform pass/fail guards, §4.1), not a particular catalog. The boundary
+The fixed commitment is the shape (a chain of uniform guards sharing the two-method interface of §4.1), not a
+particular catalog. The boundary
 is designed as "many guards," not "a guard," from the start.
 
 > **Terminology.** Elsewhere this document writes "the guard" as shorthand for **the deterministic boundary layer**
@@ -271,13 +272,42 @@ is designed as "many guards," not "a guard," from the start.
 > validates and commits," read it as that layer: the chain of guards admits the output, and the layer then commits
 > once. No single guard both checks and commits; §4.3 is explicit that committing is not a guard.
 
-### 4.1 A guard is a uniform pass/fail check
+### 4.1 A guard is a uniform two-method check
 
-Every guard implements the **same interface** so the boundary can compose them without knowing what each one does:
+Every guard implements the **same interface**, which has **two methods**, so the boundary can compose guards without
+knowing what each one does:
 
-- **Input:** the upstream stage's output document (§3).
-- **Output:** a boolean, `pass` or `fail`. Nothing else. A guard does not mutate the document, does not write to
-  GitHub, and does not decide what happens on failure; it only answers "does this output satisfy my check."
+- **An admission method.**
+  - **Input:** the upstream stage's output document (§3).
+  - **Output:** a boolean, `pass` or `fail`. Nothing else. This method does not mutate the document, does not write
+    to GitHub, and does not itself take failure action; it only answers "does this output satisfy my check." A
+    `pass` admits the output to the next guard; a `fail` triggers the guard's own failure method.
+- **A failure method.**
+  - **Input:** a typed `FailureContext` (defined below) describing the failure the admission method found.
+  - **Action:** the guard takes the appropriate action for its own check, deciding between a **retry** of the
+    upstream stage (recoverable, §14.1) and a **punch-out** (terminal, §14.2). The guard owns this decision because
+    only it knows whether its check is retry-recoverable. The deterministic layer invokes this method and supplies
+    the context; it does **not** decide the handling. This method is the "well-known failure endpoint" referred to
+    elsewhere: it is part of the guard, not an external component.
+
+The split keeps admission (a pure pass/fail judgment) separate from handling (the action on failure) while both live
+on the same guard. The admission method stays side-effect-free and cheaply testable; the failure method carries the
+one guard-specific policy decision.
+
+**`FailureContext`** is the typed value the admission failure produces and the failure method consumes. It carries at
+minimum:
+
+| Field | Meaning |
+|-------|---------|
+| `stage` | Which stage produced the rejected output |
+| `guard` | Which guard's admission method failed |
+| `attempt` | The current attempt number and the max for this boundary (§14.1) |
+| `expected` | What the admission method required |
+| `actual` | What it observed: the failing field, the gate output, or the reason |
+
+`FailureContext` is produced **only on a fail** and flows only into the failing guard's failure method. It is also
+exactly the information the terminal punch-out comment must contain (§14.2 step 1), so when the failure method
+punches out, the comment is rendered from this typed context rather than reconstructed from a bare boolean.
 
 Because the contract is uniform, guards are independent and order-composable. The following are **illustrative**
 examples of distinct guards a boundary *might* run; none is mandatory, the set we actually run is our choice per
@@ -296,18 +326,19 @@ boundary, and it grows over time:
 
 The boundary runs the guards in order:
 
-1. Run the next guard against the stage output.
+1. Run the next guard's admission method against the stage output.
 2. **On `pass`:** move on and run the next guard. When every guard in the chain has passed, the boundary proceeds to
    commit (§4.3).
-3. **On `fail`:** the deterministic layer calls back to a **well-known failure endpoint for that guard** so the
-   guard decides how its failure is handled. Different guards choose different handling: some trigger a **retry** of
-   the upstream stage (recoverable failures, §14.1), others trigger the **punch-out / failure response** (terminal
-   failures, §14.2). The guard owns that decision because only it knows whether its check is retry-recoverable. The
-   chain does not advance to the next guard or to commit while a failure is being handled.
+3. **On `fail`:** the admission method produces a `FailureContext` (§4.1) and the deterministic layer invokes **that
+   guard's own failure method** with it. The failure method takes the appropriate action, deciding between a
+   **retry** of the upstream stage (recoverable failures, §14.1) and the **punch-out / failure response** (terminal
+   failures, §14.2). The guard owns that decision because only it knows whether its check is retry-recoverable, and
+   it enacts the decision in its failure method rather than handing it to an external decider. The chain does not
+   advance to the next guard or to commit while a failure is being handled.
 
-A guard answering only pass/fail, with failure handling behind a separate callback, is what keeps the checks
-composable: adding a guard is adding one pass/fail function plus its failure handler, with no change to the chain
-runner or the other guards.
+A guard whose admission method answers only pass/fail, with handling behind its own failure method, is what keeps the
+checks composable: adding a guard is adding those two methods, with no change to the chain runner or the other
+guards.
 
 ### 4.3 Commit is a terminal boundary step, not a guard
 
@@ -823,7 +854,9 @@ the agent) performs all three of the following, together:
 1. **Post a comment** on the issue stating *why* it failed, in enough detail for a human to act: which stage failed,
    how many attempts were made, what was expected, what actually happened (the missing requirement, the failing gate
    and its output, the validator's standing rejection, the error), and what the human must change to let the issue
-   proceed. The comment is the human-readable record of the failure, not a generic "failed" note.
+   proceed. These are exactly the `FailureContext` fields the guard's failure method already holds (§4.1), so the
+   comment is rendered from that typed context, not reconstructed. The comment is the human-readable record of the
+   failure, not a generic "failed" note.
 2. **Apply the fail-state label** that removes the issue from the watcher's polling set, so no stage picks it up
    again while it is in the fail state. (Today that label is `<trigger-label>-failed`, e.g. `kairon-failed`;
    `internal/github/client.go` `ListIssues` already excludes any issue carrying it, alongside the `-done` label.)
