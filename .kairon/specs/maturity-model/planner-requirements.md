@@ -1022,6 +1022,14 @@ be **idempotent and self-reconciling**, not best-effort "fire three writes and h
   marker and always posts its own explanation rather than being suppressed by a stale one.
 - **Not complete until both the comment and the label are in place.** Until then the punch-out is not finished and
   the issue is not treated as terminally failed, so a half-applied label can never trigger duplicate retries.
+- **Terminal-pending excludes the issue from selection, not just the label.** Comment-first leaves a window where
+  the comment exists but the label does not, so the fail-state label cannot be the only thing that removes the issue
+  from the polling set. The watcher also skips any issue carrying the punch-out (terminal-pending) marker whose
+  fail-state label is not yet present, so no stage is spawned while terminal handling is incomplete. Selection
+  excludes an issue that is **either** labeled **or** terminal-pending; the label becoming present is what later
+  makes the exclusion permanent, and the marker is the run-scoped one above. (Implementation: the `ListIssues`-style
+  selection in `internal/github/client.go` must consult the terminal-pending marker, not only the `-failed` /
+  `-done` labels.)
 
 ### 14.3 How a human restarts a punched-out issue
 
