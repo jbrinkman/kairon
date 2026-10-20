@@ -1011,10 +1011,15 @@ be **idempotent and self-reconciling**, not best-effort "fire three writes and h
   (step 2). A failure after the comment leaves an explained-but-not-yet-labeled issue, which the next poll simply
   retries; it never leaves a labeled issue with no explanation (the exact §14.5 gap this contract closes). The
   comment-first order makes the only possible partial state the safe one.
-- **Re-running completes only what is missing.** On a retry of a partially-completed punch-out, re-check each write
-  and perform only the missing ones. Do not post a duplicate comment: detect an existing punch-out comment by a
-  stable marker and skip it. Treat applying an already-present label as a no-op. Re-running the terminal step
-  therefore converges to exactly one comment plus the label.
+- **Re-running completes only what is missing, within one failure instance.** The idempotency marker is scoped to a
+  single terminal-failure instance (one terminal run), **not** to the issue: derive it from a terminal-run identity
+  (for example a run id, or a digest of the `FailureContext` plus the attempt sequence that produced it, §4.1), so
+  it stays stable across retries of the **same** terminal write but **changes** once a human clears the label and
+  the issue later fails for a different reason. On a retry of a partially-completed punch-out, re-check each write
+  and perform only the missing ones: detect this instance's existing comment by its run-scoped marker and skip only
+  that one, and treat applying an already-present label as a no-op. Re-running the terminal step therefore converges
+  to exactly one comment plus the label for this failure instance, while a later, distinct failure carries a new
+  marker and always posts its own explanation rather than being suppressed by a stale one.
 - **Not complete until both the comment and the label are in place.** Until then the punch-out is not finished and
   the issue is not treated as terminally failed, so a half-applied label can never trigger duplicate retries.
 
@@ -1051,9 +1056,9 @@ applies `<label>-failed` once retries are exhausted (the two-tier shape is alrea
 - Gate and validation failures must route through the same two-tier contract (bounded retry where recoverable, then
   the terminal comment + label) rather than failing silently or only logging.
 - The terminal step must be made **idempotent and self-reconciling** (§14.2): comment-before-label ordering, a
-  stable marker so a retry does not post a duplicate comment, an already-present label treated as a no-op, and the
-  punch-out treated as incomplete until both writes land. Today it is a plain best-effort label write with none of
-  these guarantees.
+  run-scoped marker (per failure instance, not per issue) so a retry does not post a duplicate comment while a later
+  distinct failure still posts its own, an already-present label treated as a no-op, and the punch-out treated as
+  incomplete until both writes land. Today it is a plain best-effort label write with none of these guarantees.
 
 Converting all stages to the §14 contract is part of the same work as the §3 stage-output contract and the §11.1
 input-document contract.
