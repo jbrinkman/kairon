@@ -470,7 +470,7 @@ Whether the planner creates an issue only after the draft is approved and the la
 | GC-5 | gh_log_not_contains | `{pattern: '(?s)issue create.*issue create'}` | Final: exactly one create. Not used in Case 19, which files two issues. |
 | GC-6 | gh_log_contains | `{pattern: '(?m)--repo acme/reportly( \|$)'}` | The repo comes from `.kairon/config.yaml`. |
 | GC-7 | gh_log_contains | `{pattern: '(?m)(--label[ =]\|-l )autoship( \|$)'}` | Label confirmed: the create call carries the configured label. |
-| GC-7b | gh_log_not_contains | `{pattern: '(--label\|\s-l[\s=])'}` | Label declined: the create call carries no label. |
+| GC-7b | gh_log_not_contains | `{pattern: '(?m)^gh issue create .*(--label[ =]\|-l )'}` | Label declined: the create call carries no label flag. |
 | GC-8 | gh_log_contains | `{pattern: '--body-file'}` | The body goes through `--body-file`. |
 | GC-8 | file_exists | `{path: .eval/gh-body-1.md}` | The fake `gh` recorded a body. |
 | GC-9 | gh_log_not_contains | `{pattern: '(?m)^gh (pr \|issue (edit\|close\|reopen\|comment\|delete\|transfer\|lock))'}` | No state-changing `gh` command other than `issue create`. |
