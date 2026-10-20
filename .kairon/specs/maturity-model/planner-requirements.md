@@ -181,18 +181,21 @@ a single top-level YAML mapping with exactly these keys:
 schema_version: 1                 # integer, REQUIRED. The output-contract version; ties to the §3.4 rule.
 stage: planner                    # string enum, REQUIRED. One of:
                                   #   planner | architect | krew-lead | builder | validator | documenter
+result: canonical                 # string enum, REQUIRED. canonical | punch_out (see §3.5).
 source:                           # mapping, REQUIRED. Identifies the input this output was derived from.
   kind: github_issue              #   string enum, REQUIRED: github_issue | document
   ref: "142"                      #   string, REQUIRED: the issue number, or the upstream document's identity
 generated: 2026-10-20T20:00:00Z   # string, REQUIRED. ISO-8601 / RFC 3339 timestamp, UTC.
-body: |                           # string, REQUIRED. The stage's substantive content as a block scalar.
+body: |                           # string, REQUIRED when result=canonical. The substantive content, block scalar.
   ## Problem
   ...the canonical issue text per §5-§8...
 ```
 
 Rules for this shape:
 
-- **Required keys:** `schema_version`, `stage`, `source` (with its required `kind` and `ref`), `generated`, and
+- **Required keys:** `schema_version`, `stage`, `result`, `source` (with its required `kind` and `ref`), and
+  `generated`. `body` is required when `result: canonical`; a `result: punch_out` document carries `unresolved`
+  instead of `body` (§3.5).
   `body`. All five must be present; a missing one is a structural failure the guard rejects (§4.1).
 - **Field name is `schema_version`, not `schema`.** There is one version field, an integer, and no bare `schema`
   alternative. (This resolves the earlier `schema` / `schema_version` ambiguity.)
@@ -251,6 +254,27 @@ through the envelope's `schema_version`, not by relaxing strict parsing:
 The net effect: the schema can grow without ever misclassifying an old artifact (the version on the artifact says
 exactly which rules apply) and without ever letting an unrecognized key pass unexamined inside a version it does not
 belong to.
+
+### 3.5 Output variants: canonical and punch-out (the `result` discriminator)
+
+A stage that can both succeed and punch out (the planner is the first, §10.2) returns one of **two variants of the
+output document**, distinguished by the required `result` field in the envelope. The variant is a discriminated
+union so the boundary routes deterministically on `result` alone, without inspecting the body:
+
+- **`result: canonical`.** The document carries a `body` (the canonical issue text, §5–§8). The guard chain
+  validates it and the commit step hashes and writes it (§4). This is the success path.
+- **`result: punch_out`.** There is **no body to commit**. The envelope instead carries:
+  - `unresolved`: a **non-empty** list, each entry naming a required slot that could not be filled and the reason it
+    could not be reasonably inferred (§10.2 step 4). This is the typed evidence the terminal handler needs, and it
+    maps onto the `FailureContext` the failure method consumes (§4.1).
+
+  The guard does **not** commit a punch-out; it routes it into the Tier 2 failure contract (§14.2), which builds the
+  punch-out comment from `unresolved` and applies the fail-state label.
+
+Routing is deterministic on `result`: `canonical` goes to validate-and-commit, `punch_out` goes to the guard's
+failure method (§4.1). The two degenerate shapes are themselves structural failures the guard rejects: a `canonical`
+document with no `body`, and a `punch_out` document with an empty or absent `unresolved` list. Stages that cannot
+punch out always emit `result: canonical`.
 
 ---
 
@@ -636,13 +660,14 @@ not apply (no interview, no per-turn approval, no defaults-for-confirmation). Th
    different options is not reasonable and is not filled.
 4. **Decide: canonicalize or punch-out.**
    - If every **required** slot is now filled — directly from the issue/repository, or by a reasonable best-effort
-     inference (step 3) — produce the canonical output document (§3) and return it. The guard validates, hashes, and
-     commits it, and processing continues.
+     inference (step 3) — produce the `result: canonical` output document (§3, §3.5) and return it. The guard
+     validates, hashes, and commits it, and processing continues.
    - If any required slot **cannot be reasonably inferred** (a genuine requirement the issue does not state, the
      repository cannot settle, and no grounded inference resolves — e.g. a product decision, an external contract,
      an ambiguous scope with materially different plausible readings), **punch-out for human review**. The planner
-     returns a punch-out result naming each unresolvable item and why it could not be inferred; it does **not**
-     fabricate the data, guess among materially different options, or emit a partial canonical document.
+     returns a `result: punch_out` document (§3.5) whose `unresolved` list names each unresolvable item and why it
+     could not be inferred; it does **not** fabricate the data, guess among materially different options, or emit a
+     partial canonical document.
 5. **Punch-out is terminal and forces human intervention.** On a punch-out, the deterministic layer executes the
    shared punch-out contract (§14): it posts a comment on the issue stating exactly what must be added to the issue
    description to proceed, applies the fail-state label, and thereby **halts all further processing of that issue**
