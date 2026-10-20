@@ -265,12 +265,38 @@ union so the boundary routes deterministically on `result` alone, without inspec
 - **`result: canonical`.** The document carries a `body` (the canonical issue text, §5–§8). The guard chain
   validates it and the commit step hashes and writes it (§4). This is the success path.
 - **`result: punch_out`.** There is **no body to commit**. The envelope instead carries:
-  - `unresolved`: a **non-empty** list, each entry naming a required slot that could not be filled and the reason it
-    could not be reasonably inferred (§10.2 step 4). This is the typed evidence the terminal handler needs, and it
-    maps onto the `FailureContext` the failure method consumes (§4.1).
+  - `unresolved`: a **non-empty** list. Each entry is a mapping with two required string fields:
+    - `slot`: the name of the required slot that could not be filled (from the coverage map, §10.1 step 3), for
+      example `acceptance_criteria` or `scope.out_of_scope`.
+    - `reason`: why it could not be reasonably inferred (§10.2 step 4), in enough detail for the punch-out comment to
+      tell a human what to add.
+
+    This is the typed evidence the terminal handler needs, and it maps onto the `FailureContext` the failure method
+    consumes (§4.1).
 
   The guard does **not** commit a punch-out; it routes it into the Tier 2 failure contract (§14.2), which builds the
   punch-out comment from `unresolved` and applies the fail-state label.
+
+A complete `result: punch_out` document:
+
+```yaml
+schema_version: 1
+stage: planner
+result: punch_out
+source:
+  kind: github_issue
+  ref: "142"
+generated: 2026-10-20T20:00:00Z
+unresolved:
+  - slot: acceptance_criteria
+    reason: >-
+      The issue states the goal ("make export faster") but gives no measurable target;
+      a materially different acceptance criterion follows from each plausible target.
+  - slot: scope.external_contract
+    reason: >-
+      Whether the v2 API must stay backward compatible is a product decision the
+      repository cannot settle.
+```
 
 Routing is deterministic on `result`: `canonical` goes to validate-and-commit, `punch_out` goes to the guard's
 failure method (§4.1). The two degenerate shapes are themselves structural failures the guard rejects: a `canonical`
