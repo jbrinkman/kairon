@@ -314,9 +314,10 @@ unresolved:
 ```
 
 Routing is deterministic on `result`: `canonical` goes to validate-and-commit, `punch_out` goes to the guard's
-failure method (§4.1). The two degenerate shapes are themselves structural failures the guard rejects: a `canonical`
-document with no `body`, and a `punch_out` document with an empty or absent `unresolved` list. Stages that cannot
-punch out always emit `result: canonical`.
+failure method (§4.1). The two variants are **mutually exclusive**, and the degenerate shapes are structural
+failures the guard rejects: a `canonical` document with no `body`, a `punch_out` document with an empty or absent
+`unresolved` list, a `canonical` document that also carries `unresolved`, and a `punch_out` document that also
+carries `body`. Stages that cannot punch out always emit `result: canonical`.
 
 For a planner punch-out, the boundary builds the guard's `FailureContext` (§4.1) from the `punch_out` document:
 
