@@ -230,6 +230,15 @@ func (w *Watcher) routeToPlanner(issue github.Issue, p Provenance) {
 		log.Printf("[watcher] planner run already in flight for issue #%d, skipping", issue.Number)
 		return
 	}
+	// Recheck backoff at admission. processIssue gates on ShouldCheck at the
+	// top of its loop, but a later poll tick can reach routeToPlanner after a
+	// prior run's failure was recorded, so re-evaluate here before admitting a
+	// paid run. BackoffTracker has its own mutex, so this is safe under w.mu.
+	if !w.backoffTracker.ShouldCheck(issue.Number) {
+		w.mu.Unlock()
+		log.Printf("[watcher] issue #%d is in backoff, not starting a planner run", issue.Number)
+		return
+	}
 	if w.plannerAttempts[issue.Number] >= w.config.MaxRetries {
 		w.mu.Unlock()
 		log.Printf("[watcher] WARNING: issue #%d reached the planner attempt limit (%d), skipping", issue.Number, w.config.MaxRetries)
@@ -250,14 +259,17 @@ func (w *Watcher) routeToPlanner(issue github.Issue, p Provenance) {
 	go func() {
 		err := planner.Run(issue, p)
 
-		w.mu.Lock()
-		delete(w.plannerInFlight, issue.Number)
-		w.mu.Unlock()
-
+		// Record the failure before clearing the in-flight marker so a
+		// concurrent poll cannot observe the issue as neither in-flight nor
+		// backed-off and admit a fresh run in the gap.
 		if err != nil {
 			log.Printf("[watcher] planner run for issue #%d failed: %v", issue.Number, err)
 			w.backoffTracker.RecordFailure(issue.Number)
 		}
+
+		w.mu.Lock()
+		delete(w.plannerInFlight, issue.Number)
+		w.mu.Unlock()
 	}()
 }
 

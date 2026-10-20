@@ -414,6 +414,26 @@ func TestRouteToPlanner_FailureRecordsBackoff(t *testing.T) {
 		5*time.Second, time.Millisecond, "planner error must record a backoff failure")
 }
 
+// TestRouteToPlanner_BackoffBlocksRepeatRun guards the admission check: an
+// issue already in backoff must not start another (paid) planner run even when
+// routeToPlanner is reached directly, as a later poll tick can be between
+// processIssue's top-of-loop ShouldCheck gate and admission.
+func TestRouteToPlanner_BackoffBlocksRepeatRun(t *testing.T) {
+	h := newHarness(t)
+	h.w.backoffTracker.RecordFailure(11)
+	require.False(t, h.w.backoffTracker.ShouldCheck(11),
+		"precondition: issue must be in backoff")
+
+	h.w.routeToPlanner(github.Issue{Number: 11, Title: "t", Body: "b"}, ProvenanceNone)
+
+	assert.Empty(t, h.planner.recorded(),
+		"no planner run may start while the issue is in backoff")
+	h.w.mu.RLock()
+	_, busy := h.w.plannerInFlight[11]
+	h.w.mu.RUnlock()
+	assert.False(t, busy, "no in-flight marker may be set for a backed-off issue")
+}
+
 func TestRouteToPlanner_NilPlannerDoesNothing(t *testing.T) {
 	h := newHarness(t)
 	h.w.planner = nil
