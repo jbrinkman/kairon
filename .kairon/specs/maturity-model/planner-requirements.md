@@ -122,8 +122,10 @@ Two consequences this document carries forward:
 ### Stage-output-contract principles
 
 9. **A stage output is a value, not a side effect.** Each stage returns a structured document (§3). It does not
-   mutate shared mutable state (the GitHub issue, the repo, the labels). The thing a guard validates is the returned
-   document, not a re-read of whatever the agent did to the world.
+   mutate shared mutable state (the GitHub issue, the labels, the pushed branch). "Shared mutable state" here means
+   durable state visible beyond the run: it does **not** mean the node's own local worktree, which a stage may
+   freely edit, run tools in, and build its code/tests/branch artifact in (§2.1, intra-workflow). The thing a guard
+   validates is the returned document, not a re-read of whatever the agent did to the world.
 10. **The guard owns the commit, not the stage.** Deterministic code at the stage boundary validates the output
     document and is the only component that performs the side effect: writing the GitHub issue, computing and
     attaching provenance, creating a branch, spawning the next stage. "Provenance valid" stops meaning "an agent
@@ -150,8 +152,12 @@ Two consequences this document carries forward:
 ## 3. The stage-output contract
 
 Every pipeline stage (planner, architect, implementation/krew-lead, builder, validator, documenter) conforms to the
-same shape: it consumes a typed input document and returns a typed output document. The agent never writes to GitHub,
-the repo, or any shared resource as a means of "producing" its result; its result **is** the returned document. How
+same shape: it consumes a typed input document and returns a typed output document. The agent never writes to
+**shared state** (the GitHub issue or PR, the labels, the provenance hash) as a means of "producing" its result;
+its result **is** the returned document. This does not forbid a stage from writing its own local worktree: within a
+workflow a node may freely edit the worktree, run tools, and build the code/tests/branch artifact there (§2.1,
+intra-workflow). What it must not do is publish to shared state (commit the issue, open or push the PR, stamp
+provenance); that publication is the guard's, at the boundary. How
 that document reaches the next stage depends on the boundary (§2.1): within a workflow it can travel as a local
 object or file; across workflows it is serialized into shared state (a GitHub issue or PR) and verified back out
 (§8, §11.1).
