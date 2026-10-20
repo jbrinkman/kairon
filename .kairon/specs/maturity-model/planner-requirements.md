@@ -318,6 +318,19 @@ failure method (§4.1). The two degenerate shapes are themselves structural fail
 document with no `body`, and a `punch_out` document with an empty or absent `unresolved` list. Stages that cannot
 punch out always emit `result: canonical`.
 
+For a planner punch-out, the boundary builds the guard's `FailureContext` (§4.1) from the `punch_out` document:
+
+| `FailureContext` field | Value for a planner punch-out |
+|------------------------|-------------------------------|
+| `stage` | `planner` (from the envelope `stage`) |
+| `guard` | the intake guard that routes the punch-out |
+| `attempt` | `1` of `1`: a planner punch-out is immediately terminal (§14.1), because no retry can supply a human-only decision, so there is no retry budget to count |
+| `expected` | the required slots were fillable (directly from the issue/repository, or by grounded inference) |
+| `actual` | they were not: the `unresolved` list is the itemized `actual`, each entry's `slot` and `reason` naming what was missing and why it could not be inferred |
+
+The punch-out comment (§14.2) is rendered from this context: the `unresolved` entries are the body of the
+explanation a human reads.
+
 ---
 
 ## 4. The guards (deterministic boundary)
