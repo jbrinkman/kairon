@@ -239,8 +239,10 @@ A structured envelope separates them cleanly:
 |-------|---------|
 | `schema_version` | The output-contract version (integer), so the format can evolve without misclassifying old artifacts (§3.4) |
 | `stage` | Which stage produced this document (planner, architect, …) |
+| `result` | The output variant discriminator: `canonical` or `punch_out` (§3.5) |
 | `source` | The input artifact this output was derived from (e.g. the raw issue number, or the upstream document's identity) |
 | `generated` | ISO-8601 generation timestamp |
+| `inferences` | Optional. Recorded inference evidence (`slot`/`inferred`/`evidence`) when automated intake filled slots by inference (§3.1.1, §10.2) |
 | *(extensible)* | Future metadata (model, token/cost accounting for Stage 4 §5 audit, classification, etc.) added as new keys |
 
 Provenance (the hash) is **not** written by the agent into this envelope. The deterministic guard computes it over
