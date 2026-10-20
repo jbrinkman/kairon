@@ -98,8 +98,9 @@ Two consequences this document carries forward:
   what the producing workflow validated, and was not edited in between. For an intra-workflow handoff the hash is
   optional belt-and-suspenders; for an inter-workflow handoff it is load-bearing.
 - A single shared-state record carries only what is serialized into it. The GitHub issue body carries the body and
-  the hash, not the full metadata envelope (§3.3); preserving envelope metadata across an inter-workflow boundary is
-  a deliberate design choice (§11.1), not something the transport gives for free.
+  the hash, not the full metadata envelope (§3.3). For the planning to implementation boundary this is a settled
+  decision, not a gap: body + hash is the complete contract the implementation workflow needs, because audit is
+  per-workflow and the pared-down issue mirrors the real manual workflow (§11.1).
 
 ### Issue-content principles
 
@@ -763,23 +764,39 @@ edited after the planner committed it.
   and **verifies the provenance hash** over the canonicalized body (§4, §8) before admitting the issue to
   implementation. A body whose hash does not validate is not implemented; it is routed back through intake or punched
   out (§10.2, §14), because it is either un-planned or was edited after planning.
-- The verified body is then reconstructed into the typed input document krew-lead consumes (the same schema §3
-  defines for the planner's output), so krew-lead implements a validated document rather than parsing a sentence and
-  trusting a raw read.
+- The verified body is then reconstructed into the typed input document krew-lead consumes. That input document
+  carries the body and the verified provenance, which is all the implementation workflow consumes; it is not a
+  rehydration of the planner's full output envelope, because the envelope's other metadata (`stage`, `source`,
+  `generated`, inference evidence) is deliberately not serialized across this boundary (see the decision below). So
+  krew-lead implements a validated, hash-verified document rather than parsing a sentence and trusting a raw read.
 - Operational parameters (worktree path, repo, issue number) remain environment/CLI inputs; what changes is that the
   *requirements content* is a hash-verified document loaded from GitHub, not an unchecked live read triggered by a
   prompt.
 
-This keeps the §3 contract intact across a machine boundary without pretending machines share memory: the document is
-*serialized to GitHub by the producing guard* and *verified from GitHub by the consuming guard*. It is also what makes
-the Stage 4 audit trail (§13) reproducible on the consuming side — the input krew-lead ran on is exactly the bytes the
-hash covers, retrievable from the issue itself, not an in-process object that never left A's machine.
+This keeps the §3 contract intact across a machine boundary without pretending machines share memory: the body is
+*serialized to GitHub by the producing guard* and *verified from GitHub by the consuming guard*. The implementation
+workflow's own audit trail (§13) is reproducible on the consuming side from exactly what crossed: the input krew-lead
+ran on is the bytes the hash covers, retrievable from the issue itself, not an in-process object that never left A's
+machine.
 
-> **Open design point for the rebuild.** Whether GitHub should carry *more* than the rendered body — e.g. the full
-> YAML envelope persisted in a machine-readable block or an attached artifact — is a real decision, because today the
-> envelope's non-provenance metadata (`stage`, `source`, `generated`, model/cost) does **not** survive the trip to B.
-> The minimum that must cross is the body and a verifiable hash; preserving the rest of the envelope across machines
-> is a separate choice to make deliberately, not to assume.
+> **Decision: body + hash is the complete inter-workflow contract.** GitHub carries only the rendered issue body and
+> the provenance hash across the planning to implementation boundary, and that is sufficient by design. The
+> envelope's other metadata (`stage`, `source`, `generated`, model/cost, recorded inference evidence) is **not**
+> serialized into the issue and is **not** required by the implementation workflow. Two reasons this is a decision,
+> not a gap:
+>
+> - **Audit is per-workflow, not cross-workflow.** The Stage 4 audit trail (§13) covers a single workflow's run.
+>   Each workflow audits its own execution; it does not require the upstream workflow's metadata to travel forward,
+>   so none of the non-body envelope fields need to cross.
+> - **It mirrors the real manual workflow.** A human author always holds context beyond what the issue states; the
+>   issue is deliberately pared down to just what an implementer needs. The body plus a verifiable hash is exactly
+>   that pared-down, trusted contract. An implementer never needed the author's private notes, and krew-lead does
+>   not need the planner's envelope metadata.
+>
+> The `result` discriminator (§3.5) is also moot across this boundary: only a committed `result: canonical` issue
+> ever crosses, because a punch-out never becomes an issue to re-read. If a future workflow genuinely needs more
+> than body + hash, serializing additional envelope fields is an additive change gated by `schema_version` (§3.4),
+> not a precondition for the implementation workflow.
 
 ---
 
