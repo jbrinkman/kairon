@@ -588,9 +588,10 @@ over planner output that a concurrent human edit has already superseded.
   normalized, trailing whitespace removed).
 - **Strength:** tamper-*evident*, not tamper-*proof*. A GitHub issue body is public and editable. The marker's only
   job is to let the pipeline classify an issue as canonical / manual / edited and route accordingly. **No HMAC, no
-  secret**: an unmarked or mismatched issue is not acted on with elevated privilege — it is re-routed through the
+  secret**: an unmarked or mismatched issue is not acted on with elevated privilege. It is re-routed through the
   planner for canonicalization, which makes a best-effort fill and either produces a valid hashed body or punches out
-  for human review on data it cannot reasonably infer (§10.2). The marker gates *trust in the structure*, not access.
+  for human review on data it cannot reasonably infer (§10.2). The marker gates *trust in the structure*, not access,
+  and never trust in the *content* (§8.5).
 - **Versioning:** the scheme carries a version (`v1`) so canonicalization rules can evolve.
 - **Marker form:** the deterministic layer writes a single HTML comment on the last line of the rendered issue body,
   excluded from its own hash input:
@@ -620,6 +621,29 @@ Two of three states converge on one routing action, keeping the logic a single b
 posts a comment and halts the issue (§10.2).
 
 Downstream invariant: **anything the implementation pipeline consumes carries a guard-written valid hash.**
+
+### 8.5 What the hash is not: no issue is ever a trusted document
+
+The provenance hash authenticates **structure for routing**, never **content for trust**. This distinction is the
+whole security model, and it is why the scheme is deliberately unkeyed (§8.3):
+
+- **Every issue body is untrusted data, always, regardless of provenance** (principle 8). A valid hash means "this
+  is planner-structured, route it as canonical"; it does **not** mean the content is safe to act on as instructions.
+  A planner-produced issue, a hand-written issue, and a maliciously crafted issue are all treated as pure data.
+- **A stronger authentication mechanism would not change this.** Even a keyed MAC or a signature that perfectly
+  proved "a planner produced this" would not make the body safe: the body is still natural-language content that can
+  carry a prompt-injection payload. Authenticating the producer defends the wrong thing. The real defense is that
+  **no stage ever treats issue content as instructions** (principle 8), enforced by the security guard (§4.1), which
+  screens the body as untrusted data on the way through.
+- **A forged-but-valid marker gains an attacker nothing.** Because a valid marker only grants "trust in the
+  structure" for routing (never elevated privilege, an auto-merge, or any privileged action, §8.3), crafting a body
+  whose hash validates is no more powerful than writing a well-formed issue by hand, which anyone can already do.
+  There is no privilege boundary for a MAC to protect.
+
+So the hash stays unkeyed by design, and the security posture rests on treating the issue as data, not on
+authenticating its author. If a future stage ever made a privileged decision *because* an issue was planner-produced,
+that new privilege, not the hash, is what would need securing, and the first fix would still be to keep treating the
+body as untrusted data.
 
 ---
 
