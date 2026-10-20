@@ -346,7 +346,9 @@ Committing the side effect (for the planner boundary: the single authoritative G
 is **not** one of the guards. It is the terminal action the boundary takes **after the whole guard chain passes**:
 
 1. **Compute provenance.** Canonicalize the validated body and compute the hash (§8), using the same code path that
-   later classifies issues, so the writer and the classifier can never disagree.
+   later classifies issues, so the writer and the classifier can never disagree. The body being canonicalized and
+   hashed is the final body, with any dependency-number substitution (§7) already applied, so the hash covers the
+   exact bytes that get committed.
 2. **Commit, once.** Perform the single authoritative GitHub write: create or update the issue body, embed the
    computed provenance, and only then mark the issue ready for the next stage. Because the agent never wrote to
    GitHub, there is no window in which a half-planned body is live, and no concurrent-writer race to guard against
@@ -455,8 +457,13 @@ Dependencies: #12, #15, #18
 
 A `## Dependencies` header followed by a bullet list parses to **zero** dependencies and releases dependents early.
 A dependency is satisfied iff the referenced issue is closed. When the planner proposes a chain of issues, the
-deterministic layer captures each created issue number as the guard commits it and substitutes it into later issues'
-`Dependencies:` line before those are committed — the agent proposes the chain, the guard resolves the numbers.
+deterministic layer captures each created issue number as it commits each issue, and substitutes it into later
+issues' `Dependencies:` line **before those later issues enter their own guard chain and provenance step** (§4.3).
+Substitution is part of preparing a later issue's body for validation, not a post-hash edit: the body the guard
+chain validates and the commit step hashes is already the final, number-substituted body, so the provenance hash
+always covers exactly the committed bytes. (Equivalently: never substitute after hashing; if a number is
+substituted, the affected issue is re-validated and re-hashed over the substituted body.) The agent proposes the
+chain; the guard resolves the numbers.
 
 ---
 
