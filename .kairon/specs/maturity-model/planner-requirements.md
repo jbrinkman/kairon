@@ -190,14 +190,23 @@ generated: 2026-10-20T20:00:00Z   # string, REQUIRED. ISO-8601 / RFC 3339 timest
 body: |                           # string, REQUIRED when result=canonical. The substantive content, block scalar.
   ## Problem
   ...the canonical issue text per §5-§8...
+inferences:                       # list, OPTIONAL. Present when automated intake filled slots by inference (§10.2).
+  - slot: edge_cases              #   string, REQUIRED: the slot that was filled by inference.
+    inferred: handle empty input as a no-op          # string, REQUIRED: what was inferred.
+    evidence: existing exporters in internal/export/*.go all treat empty input as a no-op  # string, REQUIRED.
 ```
 
 Rules for this shape:
 
 - **Required keys:** `schema_version`, `stage`, `result`, `source` (with its required `kind` and `ref`), and
-  `generated`. `body` is required when `result: canonical`; a `result: punch_out` document carries `unresolved`
-  instead of `body` (§3.5).
-  `body`. All five must be present; a missing one is a structural failure the guard rejects (§4.1).
+  `generated` must always be present; a missing one is a structural failure the guard rejects (§4.1). `body` is
+  required when `result: canonical`; a `result: punch_out` document carries `unresolved` instead of `body` (§3.5).
+- **`inferences` is optional.** When present (automated intake filled one or more slots by inference), each entry is
+  a mapping with required string fields `slot`, `inferred`, and `evidence`, recording what was inferred and the
+  evidence it was grounded in (§10.2 step 3). It is part of the planning workflow's own audit record and is among
+  the envelope metadata deliberately **not** serialized across the planning-to-implementation boundary (§11.1). It
+  is a defined key, so it is accepted under `schema_version: 1`; a canonical document from interactive mode, where
+  nothing was inferred, simply omits it.
 - **Field name is `schema_version`, not `schema`.** There is one version field, an integer, and no bare `schema`
   alternative. (This resolves the earlier `schema` / `schema_version` ambiguity.)
 - **`body` is a single YAML block scalar** (literal `|`), carrying the substantive content verbatim; it is not
