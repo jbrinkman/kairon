@@ -171,6 +171,37 @@ a first-class, additive field rather than something a reader has to recover from
 format for every stage (see principle 12 for why). The existing `kiro-plan` block is the precedent: a fenced YAML
 document with a defined schema, parsed strictly.
 
+#### 3.1.1 Canonical envelope shape
+
+So two implementers cannot build incompatible documents while both following the prose, the canonical wire shape is
+a single top-level YAML mapping with exactly these keys:
+
+```yaml
+# A stage-output document: a YAML mapping carrying a metadata envelope plus a body.
+schema_version: 1                 # integer, REQUIRED. The output-contract version; ties to the §3.4 rule.
+stage: planner                    # string enum, REQUIRED. One of:
+                                  #   planner | architect | krew-lead | builder | validator | documenter
+source:                           # mapping, REQUIRED. Identifies the input this output was derived from.
+  kind: github_issue              #   string enum, REQUIRED: github_issue | document
+  ref: "142"                      #   string, REQUIRED: the issue number, or the upstream document's identity
+generated: 2026-10-20T20:00:00Z   # string, REQUIRED. ISO-8601 / RFC 3339 timestamp, UTC.
+body: |                           # string, REQUIRED. The stage's substantive content as a block scalar.
+  ## Problem
+  ...the canonical issue text per §5-§8...
+```
+
+Rules for this shape:
+
+- **Required keys:** `schema_version`, `stage`, `source` (with its required `kind` and `ref`), `generated`, and
+  `body`. All five must be present; a missing one is a structural failure the guard rejects (§4.1).
+- **Field name is `schema_version`, not `schema`.** There is one version field, an integer, and no bare `schema`
+  alternative. (This resolves the earlier `schema` / `schema_version` ambiguity.)
+- **`body` is a single YAML block scalar** (literal `|`), carrying the substantive content verbatim; it is not
+  parsed as further YAML. This is what lets multi-line prose with colons, quotes, and `#` travel without escaping.
+- **Unknown top-level keys are rejected within the declared `schema_version`** (`KnownFields(true)`), and keys are
+  added only by incrementing the version per §3.4. The provenance hash is **not** one of these keys: it is not part
+  of the agent's output and is added by the guard on commit (§4.3, §8).
+
 ### 3.2 Why structured rather than a marked-up body
 
 The 2026-10-18 design put a provenance marker as an HTML comment on the last line of the issue body and hashed the
@@ -187,7 +218,7 @@ A structured envelope separates them cleanly:
 
 | Field | Meaning |
 |-------|---------|
-| `schema` / `schema_version` | The output-contract version, so the format can evolve without misclassifying old artifacts |
+| `schema_version` | The output-contract version (integer), so the format can evolve without misclassifying old artifacts (§3.4) |
 | `stage` | Which stage produced this document (planner, architect, …) |
 | `source` | The input artifact this output was derived from (e.g. the raw issue number, or the upstream document's identity) |
 | `generated` | ISO-8601 generation timestamp |
