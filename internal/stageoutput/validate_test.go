@@ -131,6 +131,7 @@ func TestValidate_Envelope(t *testing.T) {
 		{"generated not RFC 3339", func(d *Document) { d.Generated = "2026-10-20 20:00:00" }, "generated"},
 		{"generated date only", func(d *Document) { d.Generated = "2026-10-20" }, "generated"},
 		{"generated non-UTC offset", func(d *Document) { d.Generated = "2026-10-20T20:00:00-04:00" }, "generated"},
+		{"generated minus-zero offset", func(d *Document) { d.Generated = "2026-10-20T20:00:00-00:00" }, "generated"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

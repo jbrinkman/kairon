@@ -92,6 +92,12 @@ func checkGenerated(s string) error {
 	if err != nil {
 		return fmt.Errorf("%q is not an RFC 3339 timestamp", s)
 	}
+	// RFC 3339 4.3 treats "-00:00" as "offset unknown", distinct from "Z" and
+	// "+00:00" which assert UTC. Its numeric offset is zero, so the Zone check
+	// below would accept it; reject it explicitly by its trailing offset text.
+	if strings.HasSuffix(s, "-00:00") {
+		return fmt.Errorf("%q is not in UTC (offset must be Z or +00:00)", s)
+	}
 	if _, offset := t.Zone(); offset != 0 {
 		return fmt.Errorf("%q is not in UTC (offset must be Z or +00:00)", s)
 	}
