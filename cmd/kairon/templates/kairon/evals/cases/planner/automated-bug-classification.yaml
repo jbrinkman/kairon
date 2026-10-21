@@ -49,6 +49,11 @@ checks:
   - criterion: two_mode_behavior
     type: output_not_contains
     pattern: '(?mi)^\s*recommended:'
+  # Automated mode asks the requester nothing, including inline questions the
+  # end-of-line '?' guard above cannot catch
+  - criterion: two_mode_behavior
+    type: judge
+    question: "This reply was produced in automated intake mode, where the planner must not ask the requester anything. Does the reply pose NO question to the requester (a '?' that merely appears inside a quoted string, an acceptance criterion or other document prose does not count as asking the requester)?"
   - criterion: two_mode_behavior
     type: output_not_contains
     pattern: '(?m)^result: punch_out'
@@ -105,7 +110,7 @@ checks:
     type: output_not_contains
     pattern: '(?mi)^\s*(provenance|hash|sha256)\s*:'
 stub:
-  judge: [yes]
+  judge: [yes, yes]
   turns:
     - response: |
         schema_version: 1
