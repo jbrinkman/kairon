@@ -2,12 +2,94 @@ package eval
 
 import (
 	"encoding/json"
+	"fmt"
 	"regexp"
 	"sort"
+	"strconv"
+	"strings"
 
 	"github.com/jbrinkman/kairon/internal/eval/sandbox"
 	"github.com/jbrinkman/kairon/internal/inference"
+	"gopkg.in/yaml.v3"
 )
+
+// CaseMetadata is a case's key -> scalar text map. Selection and reporting only.
+type CaseMetadata map[string]string
+
+// metadataReservedKeys are the filter keys taken from the case itself, so a
+// metadata key of the same name could never be addressed.
+var metadataReservedKeys = map[string]bool{"agent": true, "name": true}
+
+// metadataKeyForbidden are the characters a metadata key cannot contain,
+// because a --filter expression could not spell such a key.
+const metadataKeyForbidden = "=<>!,"
+
+// UnmarshalYAML decodes and validates the metadata mapping. Keys must be
+// non-empty, free of = < > ! and comma, not agent or name, and unique. Values
+// must be string, number or boolean scalars. Each value is kept as its text:
+// a boolean becomes "true" or "false", anything else is the text as written.
+func (m *CaseMetadata) UnmarshalYAML(n *yaml.Node) error {
+	n = resolveYAMLAlias(n)
+	if n.Kind != yaml.MappingNode {
+		return fmt.Errorf("metadata must be a mapping of key: value pairs (got %s)", describeYAMLNode(n))
+	}
+	out := make(CaseMetadata, len(n.Content)/2)
+	for i := 0; i+1 < len(n.Content); i += 2 {
+		kn, vn := resolveYAMLAlias(n.Content[i]), resolveYAMLAlias(n.Content[i+1])
+		if kn.Kind != yaml.ScalarNode {
+			return fmt.Errorf("metadata key must be a plain string (got %s, line %d)", describeYAMLNode(kn), kn.Line)
+		}
+		key := kn.Value
+		switch {
+		case key == "":
+			return fmt.Errorf("metadata key %q is empty (line %d)", key, kn.Line)
+		case metadataReservedKeys[key]:
+			return fmt.Errorf("metadata key %q is reserved: agent and name are built-in filter keys", key)
+		case strings.ContainsAny(key, metadataKeyForbidden):
+			return fmt.Errorf("metadata key %q cannot contain any of = < > ! or , (a --filter could not select it)", key)
+		}
+		if _, dup := out[key]; dup {
+			return fmt.Errorf("metadata key %q is declared more than once", key)
+		}
+		if vn.Kind != yaml.ScalarNode || vn.ShortTag() == "!!null" {
+			return fmt.Errorf("metadata key %q: value must be a string, number or boolean (got %s)", key, describeYAMLNode(vn))
+		}
+		text := vn.Value
+		if vn.ShortTag() == "!!bool" {
+			var b bool
+			if err := vn.Decode(&b); err != nil {
+				return fmt.Errorf("metadata key %q: %w", key, err)
+			}
+			text = strconv.FormatBool(b)
+		}
+		out[key] = text
+	}
+	*m = out
+	return nil
+}
+
+// resolveYAMLAlias follows an alias node to the node it refers to.
+func resolveYAMLAlias(n *yaml.Node) *yaml.Node {
+	for n.Kind == yaml.AliasNode && n.Alias != nil {
+		n = n.Alias
+	}
+	return n
+}
+
+// describeYAMLNode names a node's shape for an error message.
+func describeYAMLNode(n *yaml.Node) string {
+	switch {
+	case n.Kind == yaml.SequenceNode:
+		return "a list"
+	case n.Kind == yaml.MappingNode:
+		return "a map"
+	case n.Kind == yaml.ScalarNode && n.ShortTag() == "!!null":
+		return "null"
+	case n.Kind == yaml.ScalarNode:
+		return "a scalar"
+	}
+	return "an unsupported value"
+}
 
 // Rubric defines scoring criteria for an agent.
 type Rubric struct {
@@ -98,6 +180,11 @@ type TestCase struct {
 	// RequiresSandbox: a native run has no such directory on PATH and would
 	// call the real tool.
 	Mocks []CaseMock `yaml:"mocks,omitempty" json:"mocks,omitempty"`
+
+	// Metadata is the case's optional key -> scalar text map. It is used only
+	// to select (--filter) and to report cases; it never reaches the agent,
+	// the judge or scoring.
+	Metadata CaseMetadata `yaml:"metadata,omitempty" json:"metadata,omitempty"`
 
 	// Checks are deterministic pass/fail assertions on the workspace, the
 	// agent output and the gh log. A criterion with checks is scored from them.
@@ -279,8 +366,10 @@ type CriterionScore struct {
 
 // CaseResult holds scores and cost for one test case.
 type CaseResult struct {
-	CaseName     string `json:"case_name"`
-	ActualOutput string `json:"actual_output"`
+	CaseName string `json:"case_name"`
+	// Metadata is the case's metadata as it was when the case ran.
+	Metadata     CaseMetadata `json:"metadata,omitempty"`
+	ActualOutput string       `json:"actual_output"`
 	// TurnOutputs lists the agent's output for every turn, in order. It is set
 	// only for cases declared with turns; ActualOutput is the last entry.
 	TurnOutputs []string `json:"turn_outputs,omitempty"`
