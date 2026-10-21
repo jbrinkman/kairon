@@ -82,7 +82,7 @@ unresolved:
 | `result` | string | yes | `canonical` or `punch_out`. Selects the variant. |
 | `source` | mapping | yes | The input the document was derived from. |
 | `source.kind` | string | yes | `github_issue` or `document`. |
-| `source.ref` | string | yes | Non-empty after trimming, for example an issue number or a document path. The serializer always writes it quoted. |
+| `source.ref` | string | yes | Non-empty after trimming, for example an issue number or a document path. The serializer quotes it when the bare value would resolve to another YAML type (for example `"142"`). |
 | `generated` | string | yes | RFC 3339 timestamp in UTC (offset `Z` or `+00:00`). Kept as a string so it round-trips verbatim. |
 | `body` | string | `canonical` only | Not blank. Written as a block scalar (`\|`) by `Marshal`. |
 | `unresolved` | list | `punch_out` only | At least one entry. Each entry needs a non-empty `slot` and `reason`. |
