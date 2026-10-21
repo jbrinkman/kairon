@@ -316,6 +316,25 @@ func TestCommitChain_EmptyAndInvalidInput(t *testing.T) {
 	}
 }
 
+func TestCommitChain_RejectsUnsupportedKeyFormat(t *testing.T) {
+	store := newChainStore()
+	c := newChainCommitter(store, &chainRouter{})
+
+	// "schema.v2" cannot form a valid "#{schema.v2}" placeholder (the dot is
+	// outside the key character class), so a later item could never refer to
+	// it and the literal reference would reach the committed body. Reject it
+	// before any issue is written.
+	items := []provenance.ChainItem{
+		{Key: "schema.v2", Title: "A", Doc: chainDoc("# A\n\nbody\n")},
+	}
+	if _, err := c.CommitChain(context.Background(), items, newRecordingAdmit().admit); !errors.Is(err, provenance.ErrInvalid) {
+		t.Errorf("unsupported key format: err = %v, want ErrInvalid", err)
+	}
+	if store.writes() != 0 {
+		t.Errorf("store writes = %d, want 0 for invalid input", store.writes())
+	}
+}
+
 func TestCommitChain_AdmitErrorStops(t *testing.T) {
 	store := newChainStore()
 	c := newChainCommitter(store, &chainRouter{})

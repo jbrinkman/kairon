@@ -138,12 +138,18 @@ func (c *Committer) CommitChain(ctx context.Context, items []ChainItem, admit Ad
 }
 
 // validateChainKeys rejects a chain in which two items share a non-empty key,
-// because the later number would silently replace the earlier one.
+// because the later number would silently replace the earlier one. It also
+// rejects a non-empty key that cannot form a valid "#{key}" placeholder, since
+// a later item could never refer to it and the unsubstituted reference would
+// reach the committed body.
 func validateChainKeys(items []ChainItem) error {
 	seen := make(map[string]int, len(items))
 	for i, item := range items {
 		if item.Key == "" {
 			continue
+		}
+		if !chainKeyRe.MatchString(item.Key) {
+			return fmt.Errorf("%w: item %d key %q is not a valid placeholder key", ErrInvalid, i, item.Key)
 		}
 		if first, dup := seen[item.Key]; dup {
 			return fmt.Errorf("%w: items %d and %d share key %q", ErrInvalid, first, i, item.Key)

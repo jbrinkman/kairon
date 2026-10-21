@@ -28,6 +28,9 @@ var (
 	// placeholderPartRe and numberPartRe match one whole comma-separated part.
 	placeholderPartRe = regexp.MustCompile(`^#\{([A-Za-z0-9][A-Za-z0-9_-]*)\}$`)
 	numberPartRe      = regexp.MustCompile(`^#([0-9]+)$`)
+	// chainKeyRe matches a chain item key that can form a valid "#{key}"
+	// placeholder. A key outside this class could never be substituted.
+	chainKeyRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]*$`)
 )
 
 // SubstituteDependencies replaces "#{key}" placeholders on dependencies lines
