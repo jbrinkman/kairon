@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 )
 
@@ -53,7 +54,11 @@ func DiffWithOptions(runA, runB string, opts RunOptions) error {
 	if err := configure(opts); err != nil {
 		return err
 	}
-	return Diff(runA, runB)
+	filters, err := ParseFilters(opts.Filters)
+	if err != nil {
+		return err
+	}
+	return diffFiltered(os.Stdout, runA, runB, filters)
 }
 
 // Diff compares two eval runs and prints provenance and score/cost deltas to
@@ -64,7 +69,16 @@ func Diff(runA, runB string) error {
 
 // diffTo is Diff writing to w. It writes nothing anywhere else.
 func diffTo(w io.Writer, runA, runB string) error {
+	return diffFiltered(w, runA, runB, nil)
+}
+
+// diffFiltered is diffTo narrowed to the case results that match every filter.
+// With no filters it reports the recorded summaries. With filters it recomputes
+// every figure from the matching recorded case results, because the summary
+// totals cannot be filtered.
+func diffFiltered(w io.Writer, runA, runB string, filters []Filter) error {
 	resultsDir := evalsPath("results")
+	filtered := len(filters) > 0
 
 	resolvedA, err := resolveRunDirectory(runA)
 	if err != nil {
@@ -88,20 +102,71 @@ func diffTo(w io.Writer, runA, runB string) error {
 
 	fmt.Fprintf(w, "Eval Diff: %s → %s\n", runA, runB)
 	fmt.Fprintln(w, strings.Repeat("─", 60))
+	if filtered {
+		fmt.Fprintf(w, "Filter: %s\n", FormatFilters(filters))
+	}
 
 	// Provenance and execution mode, before any deltas.
 	printProvenance(w, runA, runB,
 		loadRunInfo(summaryA, filepath.Join(resultsDir, resolvedA)),
 		loadRunInfo(summaryB, filepath.Join(resultsDir, resolvedB)))
 
-	// Per-agent, per-criterion deltas
 	allAgents := mergeKeys(summaryA.AgentScores, summaryB.AgentScores)
+	if filtered {
+		sort.Strings(allAgents)
+	}
+
+	// Load every agent's recorded results once. The Cases block depends on
+	// whether any result in either run carries metadata.
+	type agentPair struct {
+		a, b       AgentResult
+		errA, errB error
+	}
+	pairs := make(map[string]agentPair, len(allAgents))
+	hasMetadata := false
 	for _, agent := range allAgents {
-		resultA, errA := loadAgentResult(filepath.Join(resultsDir, resolvedA, agent+".json"))
-		resultB, errB := loadAgentResult(filepath.Join(resultsDir, resolvedB, agent+".json"))
+		var p agentPair
+		p.a, p.errA = loadAgentResult(filepath.Join(resultsDir, resolvedA, agent+".json"))
+		p.b, p.errB = loadAgentResult(filepath.Join(resultsDir, resolvedB, agent+".json"))
+		pairs[agent] = p
+		hasMetadata = hasMetadata || resultsHaveMetadata(p.a) || resultsHaveMetadata(p.b)
+	}
+
+	sideA := diffSide{scores: map[string]float64{}}
+	sideB := diffSide{scores: map[string]float64{}}
+
+	// Per-agent, per-criterion deltas
+	for _, agent := range allAgents {
+		p := pairs[agent]
+		resultA, resultB := p.a, p.b
+		errA, errB := p.errA, p.errB
 
 		scoreA := summaryA.AgentScores[agent]
 		scoreB := summaryB.AgentScores[agent]
+		hasSideA, hasSideB := true, true
+
+		if filtered {
+			if errA != nil || errB != nil {
+				fmt.Fprintf(w, "\n%s: no case results to filter, skipped\n", agent)
+				continue
+			}
+			resultA = reduceResult(resultA, agent, filters)
+			resultB = reduceResult(resultB, agent, filters)
+			hasSideA, hasSideB = len(resultA.Cases) > 0, len(resultB.Cases) > 0
+			if !hasSideA && !hasSideB {
+				continue
+			}
+			scoreA, scoreB = fractionScore(resultA), fractionScore(resultB)
+			if hasSideA {
+				sideA.scores[agent] = scoreA
+				sideA.accumulate(resultA)
+			}
+			if hasSideB {
+				sideB.scores[agent] = scoreB
+				sideB.accumulate(resultB)
+			}
+		}
+
 		delta := scoreB - scoreA
 		indicator := "→"
 		if delta > 0.001 {
@@ -109,7 +174,14 @@ func diffTo(w io.Writer, runA, runB string) error {
 		} else if delta < -0.001 {
 			indicator = "↓"
 		}
-		fmt.Fprintf(w, "\n%s: %.3f → %.3f  %s %+.3f\n", agent, scoreA, scoreB, indicator, delta)
+		switch {
+		case !hasSideA:
+			fmt.Fprintf(w, "\n%s: - → %.3f\n", agent, scoreB)
+		case !hasSideB:
+			fmt.Fprintf(w, "\n%s: %.3f → -\n", agent, scoreA)
+		default:
+			fmt.Fprintf(w, "\n%s: %.3f → %.3f  %s %+.3f\n", agent, scoreA, scoreB, indicator, delta)
+		}
 
 		if errA != nil || errB != nil {
 			continue
@@ -119,6 +191,9 @@ func diffTo(w io.Writer, runA, runB string) error {
 		avgA := criterionAverages(resultA)
 		avgB := criterionAverages(resultB)
 		allCriteria := mergeKeys(avgA, avgB)
+		if filtered {
+			sort.Strings(allCriteria)
+		}
 
 		for _, crit := range allCriteria {
 			cA, hasA := avgA[crit]
@@ -142,23 +217,34 @@ func diffTo(w io.Writer, runA, runB string) error {
 			}
 		}
 
+		if hasMetadata {
+			showCaseScores(w, resultA, resultB)
+		}
+
 		// Show output changes for significant score deltas
-		if delta > 0.05 || delta < -0.05 {
+		if hasSideA && hasSideB && (delta > 0.05 || delta < -0.05) {
 			showOutputChanges(w, resultA, resultB)
 		}
 	}
 
-	// Cost delta
+	// Cost delta. The summary totals cover every case, so a filtered diff
+	// sums the matching case results instead.
+	totalA, totalB := summaryA.TotalCost, summaryB.TotalCost
+	scoresA, scoresB := summaryA.AgentScores, summaryB.AgentScores
+	if filtered {
+		totalA, totalB = sideA.total(), sideB.total()
+		scoresA, scoresB = sideA.scores, sideB.scores
+	}
 	fmt.Fprintf(w, "\nCost Delta:\n")
-	costDelta := summaryB.TotalCost.EstimatedUSD - summaryA.TotalCost.EstimatedUSD
-	tokenDelta := (summaryB.TotalCost.TokensIn + summaryB.TotalCost.TokensOut) -
-		(summaryA.TotalCost.TokensIn + summaryA.TotalCost.TokensOut)
+	costDelta := totalB.EstimatedUSD - totalA.EstimatedUSD
+	tokenDelta := (totalB.TokensIn + totalB.TokensOut) -
+		(totalA.TokensIn + totalA.TokensOut)
 	fmt.Fprintf(w, "  Tokens: %+d\n", tokenDelta)
 	var incompleteSides []string
-	if summaryA.TotalCost.CostIncomplete {
+	if totalA.CostIncomplete {
 		incompleteSides = append(incompleteSides, runA)
 	}
-	if summaryB.TotalCost.CostIncomplete {
+	if totalB.CostIncomplete {
 		incompleteSides = append(incompleteSides, runB)
 	}
 	anyIncomplete := len(incompleteSides) > 0
@@ -172,20 +258,47 @@ func diffTo(w io.Writer, runA, runB string) error {
 
 	// Cost trends (agent vs judge)
 	fmt.Fprintf(w, "\nCost Trends:\n")
-	showCostTrends(w, summaryA, summaryB, resolvedA, resolvedB, resultsDir)
+	if filtered {
+		printCostTrends(w, sideA.agentCost, sideA.judges, sideB.agentCost, sideB.judges)
+	} else {
+		showCostTrends(w, summaryA, summaryB, resolvedA, resolvedB, resultsDir)
+	}
 
 	// Quality per dollar
 	fmt.Fprintf(w, "\nQuality per Dollar:\n")
-	avgA := avgScore(summaryA.AgentScores)
-	avgB := avgScore(summaryB.AgentScores)
-	if summaryA.TotalCost.EstimatedUSD > 0 {
-		fmt.Fprintf(w, "  %s: %.2f quality/$%s\n", runA, avgA/summaryA.TotalCost.EstimatedUSD, qualityNote)
+	avgA := avgScore(scoresA)
+	avgB := avgScore(scoresB)
+	if totalA.EstimatedUSD > 0 {
+		fmt.Fprintf(w, "  %s: %.2f quality/$%s\n", runA, avgA/totalA.EstimatedUSD, qualityNote)
 	}
-	if summaryB.TotalCost.EstimatedUSD > 0 {
-		fmt.Fprintf(w, "  %s: %.2f quality/$%s\n", runB, avgB/summaryB.TotalCost.EstimatedUSD, qualityNote)
+	if totalB.EstimatedUSD > 0 {
+		fmt.Fprintf(w, "  %s: %.2f quality/$%s\n", runB, avgB/totalB.EstimatedUSD, qualityNote)
 	}
 
 	return nil
+}
+
+// diffSide is what one run contributes to the filtered sections of a diff: the
+// score of each agent that has a matching case, and the cost of those cases.
+type diffSide struct {
+	scores            map[string]float64
+	agentCost, judges CostInfo
+}
+
+// accumulate adds the agent and judge cost of every case in r.
+func (s *diffSide) accumulate(r AgentResult) {
+	for _, c := range r.Cases {
+		s.agentCost.addTotals(c.AgentCost)
+		s.judges.addTotals(c.JudgeCost)
+	}
+}
+
+// total is the agent and judge cost together.
+func (s diffSide) total() CostInfo {
+	var t CostInfo
+	t.addTotals(s.agentCost)
+	t.addTotals(s.judges)
+	return t
 }
 
 func loadSummary(path string) (Summary, error) {
@@ -280,10 +393,27 @@ func showOutputChanges(w io.Writer, resultA, resultB AgentResult) {
 	// repeats either side ran.
 	outputsA := runOneOutputs(resultA)
 	outputsB := runOneOutputs(resultB)
+	metaA := caseMetadataByName(resultA)
+	metaB := caseMetadataByName(resultB)
 
-	for caseName, outputA := range outputsA {
+	names := make([]string, 0, len(outputsA))
+	for caseName := range outputsA {
+		names = append(names, caseName)
+	}
+	sort.Strings(names)
+
+	for _, caseName := range names {
+		outputA := outputsA[caseName]
 		if outputB, exists := outputsB[caseName]; exists && outputA != outputB {
-			fmt.Fprintf(w, "    Case '%s' output changed:\n", caseName)
+			// Run B's metadata wins; run A's is the fallback.
+			marker := formatMetadata(metaB[caseName])
+			if marker == "" {
+				marker = formatMetadata(metaA[caseName])
+			}
+			if marker != "" {
+				marker = " " + marker
+			}
+			fmt.Fprintf(w, "    Case '%s' output changed:%s\n", caseName, marker)
 
 			// Truncate long outputs for side-by-side display
 			linesA := strings.Split(strings.TrimSpace(outputA), "\n")
@@ -303,10 +433,136 @@ func showOutputChanges(w io.Writer, resultA, resultB AgentResult) {
 	}
 }
 
+// reduceResult returns r holding only the case results that match every
+// filter. agent is the agent the result belongs to.
+func reduceResult(r AgentResult, agent string, filters []Filter) AgentResult {
+	var kept []CaseResult
+	for _, c := range r.Cases {
+		if matchAll(filters, resultLookup(agent, c)) {
+			kept = append(kept, c)
+		}
+	}
+	r.Cases = kept
+	return r
+}
+
+// fractionScore is the agent score as a 0-1 fraction (score/max), 0 when
+// nothing was scored.
+func fractionScore(r AgentResult) float64 {
+	score, max := agentScoreTotals(r)
+	if max <= 0 {
+		return 0
+	}
+	return score / max
+}
+
+// resultsHaveMetadata reports whether any case result records metadata.
+func resultsHaveMetadata(r AgentResult) bool {
+	for _, c := range r.Cases {
+		if len(c.Metadata) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// formatMetadata renders metadata as "[k=v, k=v]" with keys sorted, or "" when
+// there is none.
+func formatMetadata(m CaseMetadata) string {
+	if len(m) == 0 {
+		return ""
+	}
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	parts := make([]string, len(keys))
+	for i, k := range keys {
+		parts[i] = k + "=" + m[k]
+	}
+	return "[" + strings.Join(parts, ", ") + "]"
+}
+
+// caseMetadataByName maps each case name to the first non-empty metadata
+// recorded for it.
+func caseMetadataByName(r AgentResult) map[string]CaseMetadata {
+	out := make(map[string]CaseMetadata)
+	for _, c := range r.Cases {
+		if len(out[c.CaseName]) == 0 && len(c.Metadata) > 0 {
+			out[c.CaseName] = c.Metadata
+		}
+	}
+	return out
+}
+
+// casePooledScore returns the pooled score/max over every result of a case
+// name, and whether the case has any result.
+func casePooledScore(r AgentResult, name string) (float64, bool) {
+	var score, max float64
+	found := false
+	for _, c := range r.Cases {
+		if c.CaseName != name {
+			continue
+		}
+		found = true
+		cs, cm := caseTotals(c)
+		score += float64(cs)
+		max += float64(cm)
+	}
+	if !found || max <= 0 {
+		return 0, found
+	}
+	return score / max, true
+}
+
+// showCaseScores prints the Cases block: one line per case name seen in either
+// run, with its metadata marker and its pooled score on each side.
+func showCaseScores(w io.Writer, resultA, resultB AgentResult) {
+	seen := map[string]bool{}
+	var names []string
+	for _, r := range []AgentResult{resultA, resultB} {
+		for _, c := range r.Cases {
+			if !seen[c.CaseName] {
+				seen[c.CaseName] = true
+				names = append(names, c.CaseName)
+			}
+		}
+	}
+	if len(names) == 0 {
+		return
+	}
+	sort.Strings(names)
+	metaA := caseMetadataByName(resultA)
+	metaB := caseMetadataByName(resultB)
+
+	score := func(r AgentResult, name string) string {
+		if v, ok := casePooledScore(r, name); ok {
+			return fmt.Sprintf("%.3f", v)
+		}
+		return "-"
+	}
+	fmt.Fprintln(w, "  Cases:")
+	for _, name := range names {
+		marker := formatMetadata(metaB[name])
+		if marker == "" {
+			marker = formatMetadata(metaA[name])
+		}
+		label := name
+		if marker != "" {
+			label += " " + marker
+		}
+		fmt.Fprintf(w, "    %s  %s → %s\n", label, score(resultA, name), score(resultB, name))
+	}
+}
+
 func showCostTrends(w io.Writer, summaryA, summaryB Summary, runA, runB, resultsDir string) {
 	agentCostA, judgeCostA := calculateAgentJudgeCosts(runA, resultsDir)
 	agentCostB, judgeCostB := calculateAgentJudgeCosts(runB, resultsDir)
+	printCostTrends(w, agentCostA, judgeCostA, agentCostB, judgeCostB)
+}
 
+func printCostTrends(w io.Writer, agentCostA, judgeCostA, agentCostB, judgeCostB CostInfo) {
 	fmt.Fprintf(w, "  Agent tokens:  %d → %d (%+d)\n",
 		agentCostA.TokensIn+agentCostA.TokensOut,
 		agentCostB.TokensIn+agentCostB.TokensOut,

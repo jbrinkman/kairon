@@ -544,6 +544,10 @@ type RunOptions struct {
 	// Repeat runs every case this many times (--repeat). 0 means 1; a
 	// negative value is rejected.
 	Repeat int
+
+	// Filters are the raw --filter expressions (see ParseFilters). Run
+	// selection, eval diff and eval trend narrow to the cases that match.
+	Filters []string
 }
 
 // Summary holds aggregate results for an eval run.
