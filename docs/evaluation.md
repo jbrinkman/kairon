@@ -3008,8 +3008,76 @@ All six shipped agents have rubrics and test cases:
 | `builder` | `rubrics/builder.yaml` | code_correctness, spec_adherence, code_quality, test_coverage |
 | `documenter` | `rubrics/documenter.yaml` | documentation_completeness, accuracy, file_naming_convention, practical_usage_guidance |
 | `krew-lead` | `rubrics/krew-lead.yaml` | workflow_adherence, delegation_quality, retry_policy_compliance, error_handling |
-| `planner` | `rubrics/planner.yaml` | requirement_clarity, scope_appropriateness, acceptance_criteria_quality, constraint_identification |
+| `planner` | `rubrics/planner.yaml` | output_document_validity, two_mode_behavior, option_rules, best_effort_then_punch_out (see [Planner suite](#planner-suite)) |
 | `validator` | `rubrics/validator.yaml` | issue_coverage, test_execution, defect_detection, actionable_feedback |
+
+## Planner suite
+
+The planner suite (`rubrics/planner.yaml` plus `cases/planner/*.yaml`) certifies the planner's output-document contract from `.kairon/specs/maturity-model/planner-requirements.md`. It is the failing-first target for the planner prompt rewrite in #381. It adds no harness code: `kairon eval planner` finds the suite by agent name.
+
+### What it certifies
+
+- **The output document.** The reply is a [stage-output document](stage-output.md) (`schema_version: 1`, `stage: planner`, `result`, `source`, `generated`), with a `body` when `canonical` and an `unresolved` list when `punch_out`, and nothing else in the reply.
+- **Two modes.** Interactive: asks one decision per turn, never returns a `punch_out`, returns no document before approval. Automated: never asks or offers options, and returns a document immediately.
+- **Hard bars.** The rubric is `checks_only: true` with `pass_threshold: 90` and `min_criterion_score: 60`. The floor stops a high total from hiding a criterion that scores near zero, such as `output_document_validity`.
+
+The planner does not write to GitHub or add a provenance marker. The suite only asserts that no `gh issue create` happens (`gh_log_not_contains`), never on the result of one.
+
+### Cases and criteria
+
+| Case file | Mode | Criteria it feeds |
+|-----------|------|-------------------|
+| `interactive-single-decision.yaml` | interactive | conversation_protocol, elicitation_completeness, requirements_boundary, two_mode_behavior, gate_compliance |
+| `interactive-option-rules.yaml` | interactive | conversation_protocol, option_rules, two_mode_behavior, gate_compliance |
+| `interactive-return-document.yaml` | interactive | output_document_validity, issue_quality, elicitation_completeness, requirements_boundary, two_mode_behavior, gate_compliance |
+| `automated-best-effort-fill.yaml` | automated | output_document_validity, best_effort_then_punch_out, issue_quality, two_mode_behavior, gate_compliance |
+| `automated-punch-out.yaml` | automated | output_document_validity, best_effort_then_punch_out, two_mode_behavior, gate_compliance |
+| `automated-bug-classification.yaml` | automated | output_document_validity, best_effort_then_punch_out, issue_quality, two_mode_behavior, gate_compliance |
+| `multi-issue-split.yaml` | interactive | dependency_split, issue_quality, output_document_validity, conversation_protocol, two_mode_behavior, gate_compliance |
+
+`cost_efficiency` (`type: cost`) applies to every case. Fixtures are `fixtures/planner-*.md` and are synced to the templates like the rest of the evals tree.
+
+### Running it
+
+Offline, with no model. Each case carries a reference transcript in `stub.turns`, so this is the GREEN check on the suite itself:
+
+```bash
+kairon eval --backend stub planner
+```
+
+Against the real planner:
+
+```bash
+kairon eval --sandbox planner
+```
+
+Always pass `--sandbox` when the planner prompt is not yet rewritten. The pre-#381 prompt can run `gh issue create`, and outside the sandbox that creates real GitHub issues. Under `--sandbox` the call goes to the [fake `gh`](#the-fake-gh) and the `gh_log_not_contains` check records it as a failure. Cases do not set `requires_sandbox`, because the harness would then fail them under `--backend stub`.
+
+### RED/GREEN workflow for #381
+
+1. **RED.** Run `kairon eval --sandbox planner` against the unmodified prompt. The suite is expected to FAIL against the pre-#381 planner prompt, with `output_document_validity` and `two_mode_behavior` at or near 0%. Record the result in the PR description. Do not commit run output.
+2. **Iterate.** Write the new prompt as a candidate under `.kairon/iterations/planner/vN.md` and score it with `--prompt-file` (see [Evaluating a candidate prompt](#evaluating-a-candidate-prompt---prompt-file)). Do not edit the live prompt while iterating.
+3. **GREEN.** Copy the winning candidate over `.kiro/agents/planner-prompt.md` and re-run `kairon eval --sandbox planner` until the agent verdict passes.
+
+### The automated-mode preamble
+
+The requirements do not say how the planner is told it is running unattended, so the three automated cases open their `input` with an explicit preamble:
+
+```
+AUTOMATED INTAKE: non-interactive, no human is available to answer questions. Do not ask questions and do not offer options.
+```
+
+Interactive cases use a plain user request. This is an assumption to confirm in #381. If the rewrite picks a different mode signal, change only the preamble in the `input` of the three `automated-*.yaml` cases (and their copies under `cmd/kairon/templates/kairon/evals/cases/planner/`).
+
+### Offline proof: `TestPlannerSuite`
+
+`go test ./internal/eval -run TestPlannerSuite` reproduces the RED/GREEN claim without a model:
+
+- The suite registers all seven cases, and each case file declares `agent: planner`.
+- **GREEN.** The shipped reference transcripts score a passing agent verdict, every YAML document in them parses and validates with `internal/stageoutput`, and every `output_contains`/`output_not_contains` pattern compiles.
+- **RED.** Legacy transcripts in `internal/eval/testdata/planner-legacy/` reproduce what the pre-#381 prompt produces (User Story drafts, several questions in one reply, `gh issue create`, questions in automated mode, no document). They must fail the agent verdict, with `output_document_validity` and `two_mode_behavior` below the 60% floor.
+
+The test does not call a model and does not touch `.kairon/evals/results/`.
 
 ## Evaluation Workflow
 

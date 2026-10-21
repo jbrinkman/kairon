@@ -1,0 +1,75 @@
+name: interactive-option-rules
+description: "Every option is a single commitment and the recommendation names exactly one option (planner-requirements 10.1 step 4 and 10.3): a bug whose root cause may differ from its symptom gets a symptom / root cause / both choice with no disjunctive option and no conditional recommendation"
+agent: planner
+input: |
+  Bug: running `kairon export --format csv --issues 7,7` prints the rows for issue 7 twice.
+  Please make sure the CSV never shows the same row twice.
+setup:
+  - type: file
+    label: "Repository Context"
+    path: ".kairon/evals/fixtures/planner-repo-context.md"
+context:
+  - "The symptom is duplicate CSV rows. The repository shows the cause is Dedupe in internal/export/history.go, which never records the issue numbers it has seen"
+  - "The planner should offer symptom, root cause and both as options, each a single commitment, and recommend exactly one"
+checks:
+  - criterion: option_rules
+    type: output_contains
+    pattern: '(?m)^\s*a\)'
+  - criterion: option_rules
+    type: output_contains
+    pattern: '(?m)^\s*b\)'
+  - criterion: option_rules
+    type: output_contains
+    pattern: '(?m)^\s*c\)'
+  - criterion: option_rules
+    type: output_contains
+    pattern: '(?i)\bsymptom\b'
+  - criterion: option_rules
+    type: output_contains
+    pattern: '(?i)root.cause'
+  - criterion: option_rules
+    type: output_contains
+    pattern: '(?i)\bboth\b'
+  # No option joins alternatives with "or"
+  - criterion: option_rules
+    type: output_not_contains
+    pattern: '(?mi)^\s*[a-e]\)[^\n]*\bor\b'
+  # The recommendation is not conditional or branching
+  - criterion: option_rules
+    type: output_not_contains
+    pattern: '(?i)recommend[^\n]*\b[a-e]\)[^\n]*\b(or|if|else|unless|depending)\b'
+  - criterion: option_rules
+    type: output_contains
+    pattern: '(?i)recommend'
+  - criterion: option_rules
+    type: judge
+    question: "Does the reply recommend exactly one of the listed options, naming a single option letter without hedging between options?"
+  - criterion: conversation_protocol
+    type: output_not_contains
+    pattern: '(?s)\?[^?]*\?'
+  - criterion: two_mode_behavior
+    type: output_not_contains
+    pattern: '(?m)^schema_version:'
+  - criterion: two_mode_behavior
+    type: output_not_contains
+    pattern: '(?m)^result: punch_out'
+  - criterion: gate_compliance
+    type: output_not_contains
+    pattern: 'gh issue create'
+  - criterion: gate_compliance
+    type: gh_log_not_contains
+    pattern: 'issue create'
+stub:
+  judge: [yes]
+  turns:
+    - response: |
+        I read the code before asking. kairon export builds its list with export.Dedupe (cmd/kairon/export.go:38), and Dedupe in internal/export/history.go:77 never sets seen[n] to true, so repeated issue numbers are never dropped. The duplicate rows in the CSV come from that.
+
+        The report names a symptom, and the cause sits in a different place. What should this issue cover?
+
+        a) Symptom only: the CSV exporter skips rows it has already written
+        b) Root cause only: Dedupe in internal/export/history.go records each issue number it has seen
+        c) Both: Dedupe records each issue number it has seen, and the CSV exporter skips rows it has already written
+        d) Other: describe a different scope
+
+        Recommended: b) because it fixes the cause once for every exporter, not just CSV.

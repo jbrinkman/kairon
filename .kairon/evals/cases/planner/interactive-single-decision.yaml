@@ -1,0 +1,141 @@
+name: interactive-single-decision
+description: "Interactive mode asks one decision per turn (planner-requirements 10.1 steps 1 and 4): investigates before asking, never asks what the repository answers, offers a) b) options, returns no document and writes nothing to GitHub before approval"
+agent: planner
+input: "I want to add a JSON Lines exporter for run history."
+setup:
+  - type: file
+    label: "Repository Context"
+    path: ".kairon/evals/fixtures/planner-repo-context.md"
+simulated_user:
+  facts:
+    - id: duration_format
+      answer: "Write the duration as an integer number of milliseconds."
+      discoverable: false
+    - id: scope_boundary
+      answer: "Only the new exporter, its registration and its tests. Leave the CSV and Markdown exporters alone."
+      discoverable: false
+    - id: empty_input
+      answer: "Empty input writes nothing and returns no error, like the other exporters."
+      discoverable: true
+  default_reply: "I don't know, use your best judgement."
+  max_turns: 3
+context:
+  - "Empty input behavior and the --format registration are answered by the repository context; the planner must state them with a file reference and not ask"
+  - "Duration encoding and the scope boundary are not stated anywhere in the request or the repository"
+checks:
+  # Turn 1: investigate, then one decision with options
+  - criterion: conversation_protocol
+    type: output_contains
+    pattern: '(?i)internal/export/\w+\.go'
+    turn: 1
+  - criterion: conversation_protocol
+    type: output_contains
+    pattern: '\?'
+    turn: 1
+  - criterion: conversation_protocol
+    type: output_not_contains
+    pattern: '(?s)\?[^?]*\?'
+    turn: 1
+  - criterion: conversation_protocol
+    type: output_contains
+    pattern: '(?m)^\s*a\)'
+    turn: 1
+  - criterion: conversation_protocol
+    type: output_contains
+    pattern: '(?m)^\s*b\)'
+    turn: 1
+  - criterion: two_mode_behavior
+    type: output_not_contains
+    pattern: '(?m)^schema_version:'
+    turn: 1
+  - criterion: gate_compliance
+    type: output_not_contains
+    pattern: 'gh issue create'
+    turn: 1
+  - criterion: gate_compliance
+    type: gh_log_not_contains
+    pattern: 'issue create'
+    turn: 1
+  # Turn 2: still one decision, still no document
+  - criterion: conversation_protocol
+    type: output_contains
+    pattern: '\?'
+    turn: 2
+  - criterion: conversation_protocol
+    type: output_not_contains
+    pattern: '(?s)\?[^?]*\?'
+    turn: 2
+  - criterion: conversation_protocol
+    type: output_contains
+    pattern: '(?m)^\s*a\)'
+    turn: 2
+  - criterion: conversation_protocol
+    type: output_contains
+    pattern: '(?m)^\s*b\)'
+    turn: 2
+  - criterion: conversation_protocol
+    type: judge
+    question: "Does this reply ask the requester about exactly one decision, rather than bundling several different decisions into one question?"
+    turn: 2
+  - criterion: two_mode_behavior
+    type: output_not_contains
+    pattern: '(?m)^schema_version:'
+    turn: 2
+  - criterion: gate_compliance
+    type: output_not_contains
+    pattern: 'gh issue create'
+    turn: 2
+  - criterion: gate_compliance
+    type: gh_log_not_contains
+    pattern: 'issue create'
+    turn: 2
+  # Coverage: unstated requirements are asked, repository facts are not
+  - criterion: elicitation_completeness
+    type: fact_asked
+    fact: duration_format
+  - criterion: elicitation_completeness
+    type: fact_asked
+    fact: scope_boundary
+  - criterion: requirements_boundary
+    type: fact_not_asked
+    fact: empty_input
+stub:
+  routes: [duration_format, scope_boundary]
+  judge: [yes]
+  turns:
+    - response: |
+        I read the exporter code before asking. Every exporter implements Exporter in internal/export/exporter.go:11 and is registered in internal/export/registry.go:9, and empty input is a no-op in internal/export/csv.go:19. I will follow those patterns, so I am not asking about them.
+
+        One requirement is open. Go encodes time.Duration as integer nanoseconds by default, and the request does not say how the duration should appear in each line.
+
+        How should the duration field be written in each JSON line?
+
+        a) Integer milliseconds
+        b) Integer nanoseconds, the Go default
+        c) A string such as "1.5s"
+        d) Other: describe the format you want
+
+        Recommended: a) because jq and log tools can compare it without parsing a unit suffix.
+    - response: |
+        Duration will be written as integer milliseconds.
+
+        The next open requirement is the scope boundary. internal/export/registry.go:9 shows the CSV and Markdown exporters sit beside the new one, and the request does not say whether they may change.
+
+        Which files may this change touch?
+
+        a) Only the new exporter, its registration and its tests
+        b) The new exporter plus the CSV and Markdown exporters, to share one field mapping
+        c) The new exporter plus the CLI wiring in cmd/kairon/export.go
+        d) Other: describe the files you want in scope
+
+        Recommended: a) because it keeps the change to one reviewable pull request.
+    - response: |
+        Scope is the new exporter, its registration and its tests.
+
+        I defaulted these slots from the repository, and none needs a decision from you:
+
+        - Empty input writes nothing and returns no error (internal/export/csv.go:19).
+        - A write failure is returned wrapped with the record index (internal/export/csv.go:41).
+        - The format is selected with --format jsonl (cmd/kairon/export.go:27).
+
+        Do these defaults match what you want?

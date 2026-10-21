@@ -1,0 +1,169 @@
+name: automated-bug-classification
+description: "Automated intake classifies a defect report as a Bug and attaches the Bug sections (planner-requirements 5, 6.1, 6.2, 10.2 step 2): a canonical body with a Reproduction section and a current-versus-expected statement, Verify lines, and no Verification or Test Plan section"
+agent: planner
+input: |
+  AUTOMATED INTAKE: non-interactive, no human is available to answer questions. Do not ask questions and do not offer options.
+  Read the issue and the repository context below, fill every slot they ground by reasonable inference and record each inference with its evidence.
+  Return exactly one stage-output document as the whole reply, with nothing before or after it.
+  If a required slot cannot be reasonably inferred, return a punch_out document instead of guessing.
+setup:
+  - type: file
+    label: "Issue"
+    path: ".kairon/evals/fixtures/planner-intake-bug-issue.md"
+  - type: file
+    label: "Repository Context"
+    path: ".kairon/evals/fixtures/planner-repo-context.md"
+context:
+  - "The issue reports wrong behavior with a reproduction, a current behavior and an expected behavior. It is a bug, not a feature"
+  - "Dedupe in internal/export/history.go never records the issue numbers it has seen, which the repository context shows"
+checks:
+  # Envelope: the reply is the document, from its first line
+  - criterion: output_document_validity
+    type: output_contains
+    pattern: '\A\s*(\x60{3}ya?ml\s*\n)?schema_version: 1\s*\n'
+  - criterion: output_document_validity
+    type: output_contains
+    pattern: '(?m)^stage: planner\s*$'
+  - criterion: output_document_validity
+    type: output_contains
+    pattern: '(?m)^result: canonical\s*$'
+  - criterion: output_document_validity
+    type: output_contains
+    pattern: '(?m)^source:\s*\n\s+kind: (github_issue|document)\s*\n\s+ref: \S+'
+  - criterion: output_document_validity
+    type: output_contains
+    pattern: '(?m)^generated: "?\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z"?\s*$'
+  - criterion: output_document_validity
+    type: output_contains
+    pattern: '(?m)^body: \|'
+  - criterion: output_document_validity
+    type: output_not_contains
+    pattern: '(?m)^unresolved:'
+  # Automated mode never asks, never offers options, never punches out here
+  - criterion: two_mode_behavior
+    type: output_not_contains
+    pattern: '(?m)\?\s*$'
+  - criterion: two_mode_behavior
+    type: output_not_contains
+    pattern: '(?m)^\s*a\)'
+  - criterion: two_mode_behavior
+    type: output_not_contains
+    pattern: '(?m)^result: punch_out'
+  - criterion: best_effort_then_punch_out
+    type: output_not_contains
+    pattern: '(?m)^unresolved:'
+  # Bug classification: Reproduction section and current-versus-expected
+  - criterion: issue_quality
+    type: output_contains
+    pattern: '(?mi)^\s*#{1,6}\s*Reproduction\b'
+  - criterion: issue_quality
+    type: output_contains
+    pattern: '(?is)\bcurrent(ly)?\b.*\bexpected\b'
+  - criterion: issue_quality
+    type: output_contains
+    pattern: '(?m)^\s*1\.\s+\S'
+  - criterion: issue_quality
+    type: judge
+    question: "Is the issue body written as a bug report (observable behavior is wrong, with the gap between current and expected behavior and a reproduction) rather than as a request for a new feature?"
+  # Shared spine, in order
+  - criterion: issue_quality
+    type: output_contains
+    pattern: '(?ims)^\s*#{1,6}\s*Problem( Statement)?\b.*^\s*#{1,6}\s*Context\b.*^\s*#{1,6}\s*Scope\b.*^\s*#{1,6}\s*Acceptance Criteria\b.*^\s*(#{1,6}\s*)?Dependencies\b'
+  - criterion: issue_quality
+    type: output_contains
+    pattern: '(?i)out of scope'
+  - criterion: issue_quality
+    type: output_contains
+    pattern: '(?s)Verify:.*Verify:'
+  - criterion: issue_quality
+    type: output_contains
+    pattern: '(?m)^\s*Dependencies:\s*(#\d+(,\s*#\d+)*|none)\s*$'
+  - criterion: issue_quality
+    type: output_not_contains
+    pattern: '(?mi)^\s*#{1,6}\s*Dependencies\s*\n(\s*\n)*\s*[-*]\s'
+  - criterion: issue_quality
+    type: output_not_contains
+    pattern: '(?mi)^\s*#{1,6}\s*User Story'
+  # A bug has no Verification or Test Plan section: the reproduction becomes the regression test
+  - criterion: issue_quality
+    type: output_not_contains
+    pattern: '(?mi)^\s*#{1,6}\s*(Verification|Test Plan)\b'
+  - criterion: issue_quality
+    type: output_not_contains
+    pattern: '(?i)\b(properly|appropriate(ly)?|gracefully|robust(ly)?|as needed|should work|fast)\b|\betc\.'
+  # The planner returns the document and leaves the GitHub write to the guard
+  - criterion: gate_compliance
+    type: output_not_contains
+    pattern: 'gh issue create'
+  - criterion: gate_compliance
+    type: gh_log_not_contains
+    pattern: 'issue create'
+  - criterion: gate_compliance
+    type: output_not_contains
+    pattern: '(?mi)^\s*(provenance|hash|sha256)\s*:'
+stub:
+  judge: [yes]
+  turns:
+    - response: |
+        schema_version: 1
+        stage: planner
+        result: canonical
+        source:
+          kind: github_issue
+          ref: "433"
+        generated: "2026-10-21T12:00:00Z"
+        inferences:
+          - slot: scope.in_scope
+            inferred: "The change is confined to Dedupe in internal/export/history.go and its tests."
+            evidence: "internal/export/history.go:77 declares seen but never sets seen[n], and cmd/kairon/export.go:38 passes the issue list through export.Dedupe."
+        body: |
+          # Export prints each run twice when an issue number is repeated
+
+          ## Problem Statement
+
+          `kairon export --format csv --issues 7,7` prints the runs of issue 7 twice. `Dedupe` is meant to drop repeated issue numbers (internal/export/history.go:77), but it never records the numbers it has seen, so every repeat survives. After this change, each run appears once.
+
+          ## Context
+
+          - Affects anyone who passes the same issue number more than once to `kairon export`.
+          - `cmd/kairon/export.go:38` passes the issue list through `export.Dedupe` before `export.Load`.
+
+          ## Reproduction
+
+          1. Make sure the run history directory contains `issue-7.json` with two records.
+          2. Run:
+
+             ```bash
+             kairon export --format csv --issues 7,7
+             ```
+
+          3. Count the data rows in the output.
+
+          Current behavior: the CSV contains four data rows, the two records for issue 7 and then the same two records again.
+
+          Expected behavior: the CSV contains two data rows, one per record for issue 7.
+
+          ## Scope
+
+          ### In Scope
+
+          - `internal/export/history.go` (`Dedupe`)
+          - `internal/export/history_test.go` (new)
+
+          ### Out of Scope
+
+          - Changes to the CSV and Markdown exporters
+          - Changes to how run history files are read
+
+          ## Acceptance Criteria
+
+          1. With `issue-7.json` holding two records, `kairon export --format csv --issues 7,7` prints two data rows.
+             Verify: run the command and count the data rows after the header; the count is 2 and the exit code is 0.
+          2. The first occurrence of each issue number keeps its position.
+             Verify: with `issue-3.json` holding one record, run `kairon export --format csv --issues 7,3,7`; the output lists the issue 7 rows, then the issue 3 row, and no issue 7 row follows it.
+          3. A list without repeats is unchanged.
+             Verify: run `kairon export --format csv --issues 7`; the output has the same two data rows as before the change.
+
+          ## Dependencies
+
+          Dependencies: none

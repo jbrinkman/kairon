@@ -1,0 +1,167 @@
+name: automated-best-effort-fill
+description: "Automated intake fills groundable slots and records each inference (planner-requirements 10.2 steps 3-4, 3.1.1, 3.5): the reply is a canonical stage-output document that starts the reply, carries inferences with slot / inferred / evidence, asks nothing and offers no options"
+agent: planner
+input: |
+  AUTOMATED INTAKE: non-interactive, no human is available to answer questions. Do not ask questions and do not offer options.
+  Read the issue and the repository context below, fill every slot they ground by reasonable inference and record each inference with its evidence.
+  Return exactly one stage-output document as the whole reply, with nothing before or after it.
+  If a required slot cannot be reasonably inferred, return a punch_out document instead of guessing.
+setup:
+  - type: file
+    label: "Issue"
+    path: ".kairon/evals/fixtures/planner-intake-feature-issue.md"
+  - type: file
+    label: "Repository Context"
+    path: ".kairon/evals/fixtures/planner-repo-context.md"
+context:
+  - "The issue leaves empty-input behavior, registration, error handling and test conventions unstated, and the repository context settles each of them"
+  - "The planner must fill those slots, record an inference with evidence for each, and return a canonical document without asking anything"
+checks:
+  # Envelope: the reply is the document, from its first line
+  - criterion: output_document_validity
+    type: output_contains
+    pattern: '\A\s*(\x60{3}ya?ml\s*\n)?schema_version: 1\s*\n'
+  - criterion: output_document_validity
+    type: output_contains
+    pattern: '(?m)^stage: planner\s*$'
+  - criterion: output_document_validity
+    type: output_contains
+    pattern: '(?m)^result: canonical\s*$'
+  - criterion: output_document_validity
+    type: output_contains
+    pattern: '(?m)^source:\s*\n\s+kind: (github_issue|document)\s*\n\s+ref: \S+'
+  - criterion: output_document_validity
+    type: output_contains
+    pattern: '(?m)^generated: "?\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z"?\s*$'
+  - criterion: output_document_validity
+    type: output_contains
+    pattern: '(?m)^body: \|'
+  - criterion: output_document_validity
+    type: output_not_contains
+    pattern: '(?m)^unresolved:'
+  # Best effort: every fill is recorded with its evidence
+  - criterion: best_effort_then_punch_out
+    type: output_contains
+    pattern: '(?m)^result: canonical\s*$'
+  - criterion: best_effort_then_punch_out
+    type: output_contains
+    pattern: '(?m)^inferences:\s*\n\s+- slot: .+\n\s+inferred: .+\n\s+evidence: .+'
+  - criterion: best_effort_then_punch_out
+    type: output_not_contains
+    pattern: '(?m)^result: punch_out'
+  - criterion: best_effort_then_punch_out
+    type: judge
+    question: "Does every entry in the inferences list cite evidence that is a real quote or a real file reference taken from the issue or the repository context that was provided, with no invented file, line or quote?"
+  # Automated mode never asks and never offers options
+  - criterion: two_mode_behavior
+    type: output_not_contains
+    pattern: '(?m)\?\s*$'
+  - criterion: two_mode_behavior
+    type: output_not_contains
+    pattern: '(?m)^\s*a\)'
+  - criterion: two_mode_behavior
+    type: output_not_contains
+    pattern: '(?mi)^\s*recommended:'
+  # Shared spine, in order
+  - criterion: issue_quality
+    type: output_contains
+    pattern: '(?ims)^\s*#{1,6}\s*Problem( Statement)?\b.*^\s*#{1,6}\s*Context\b.*^\s*#{1,6}\s*Scope\b.*^\s*#{1,6}\s*Acceptance Criteria\b.*^\s*(#{1,6}\s*)?Dependencies\b'
+  - criterion: issue_quality
+    type: output_contains
+    pattern: '(?i)out of scope'
+  - criterion: issue_quality
+    type: output_contains
+    pattern: '(?s)Verify:.*Verify:'
+  - criterion: issue_quality
+    type: output_contains
+    pattern: '(?m)^\s*Dependencies:\s*(#\d+(,\s*#\d+)*|none)\s*$'
+  - criterion: issue_quality
+    type: output_not_contains
+    pattern: '(?mi)^\s*#{1,6}\s*Dependencies\s*\n(\s*\n)*\s*[-*]\s'
+  - criterion: issue_quality
+    type: output_not_contains
+    pattern: '(?mi)^\s*#{1,6}\s*User Story'
+  - criterion: issue_quality
+    type: output_not_contains
+    pattern: '(?mi)^\s*#{1,6}\s*(Verification|Test Plan)\b'
+  - criterion: issue_quality
+    type: output_not_contains
+    pattern: '(?i)\b(properly|appropriate(ly)?|gracefully|robust(ly)?|as needed|should work|fast)\b|\betc\.'
+  # The planner returns the document and leaves the GitHub write to the guard
+  - criterion: gate_compliance
+    type: output_not_contains
+    pattern: 'gh issue create'
+  - criterion: gate_compliance
+    type: gh_log_not_contains
+    pattern: 'issue create'
+  - criterion: gate_compliance
+    type: output_not_contains
+    pattern: '(?mi)^\s*(provenance|hash|sha256)\s*:'
+stub:
+  judge: [yes]
+  turns:
+    - response: |
+        schema_version: 1
+        stage: planner
+        result: canonical
+        source:
+          kind: github_issue
+          ref: "412"
+        generated: "2026-10-21T12:00:00Z"
+        inferences:
+          - slot: edge_cases.empty_input
+            inferred: "Empty input writes nothing and returns nil, as the other exporters do."
+            evidence: "internal/export/csv.go:19 and internal/export/markdown.go:22 both return nil for len(records) == 0."
+          - slot: interface.registration
+            inferred: "The exporter is registered under the key jsonl and selected with --format jsonl."
+            evidence: "internal/export/registry.go:9 keys exporters by Name(), and cmd/kairon/export.go:27 selects one with --format."
+          - slot: functional_requirements.fields
+            inferred: "Each line carries the Record fields issue, title, status, started_at and duration."
+            evidence: "internal/export/record.go:8 defines Record with those json tags, and the issue asks for the fields the other exporters show."
+          - slot: edge_cases.write_failure
+            inferred: "A write failure is returned wrapped with the record index."
+            evidence: "internal/export/csv.go:41 returns fmt.Errorf(\"export csv: record %d: %w\", i, err)."
+          - slot: testing.approach
+            inferred: "Tests are table-driven, with one case per exporter behavior."
+            evidence: "internal/export/csv_test.go:14 is a table-driven test with one case per exporter behavior."
+        body: |
+          # Add a JSON Lines exporter for run history
+
+          ## Problem Statement
+
+          Run history can be exported as CSV and Markdown only (internal/export/registry.go:9). People who pipe run history into `jq` and log tooling must convert the CSV first. After this change, `kairon export --format jsonl` writes one JSON object per finished agent run.
+
+          ## Context
+
+          - Affects people who process run history with `jq` and log tooling.
+          - Exporters implement `Exporter` (internal/export/exporter.go:11) and are registered in internal/export/registry.go.
+          - Empty input is a no-op in the existing exporters (internal/export/csv.go:19).
+
+          ## Scope
+
+          ### In Scope
+
+          - `internal/export` (new file `jsonl.go` and its registration in `registry.go`)
+          - `internal/export/jsonl_test.go` (new)
+
+          ### Out of Scope
+
+          - Changes to the CSV and Markdown exporters
+          - Changes to how run history is loaded
+
+          ## Acceptance Criteria
+
+          1. `kairon export --format jsonl --issues 7` writes one line per record, and each line is a valid JSON object.
+             Verify: run the command against a history directory that holds two records for issue 7 and pipe stdout through `jq -c .`; it prints two objects and exits 0.
+          2. Each object has the keys `issue`, `title`, `status`, `started_at` and `duration`.
+             Verify: pipe the same output through `jq -e 'has("issue") and has("title") and has("status") and has("started_at") and has("duration")'`; it exits 0 for every line.
+          3. Empty input writes nothing and returns no error, as the CSV exporter does (internal/export/csv.go:19).
+             Verify: run the command for an issue whose record list is empty; stdout is empty and the exit code is 0.
+          4. A write failure is returned as an error that names the failing record index.
+             Verify: run the unit test that passes a writer which fails on the second write; the returned error contains `record 1`.
+          5. `jsonl` is a registered format, and the error for an unknown format lists `jsonl` among the valid keys.
+             Verify: run `kairon export --format nope`; it exits 1 and stderr contains `jsonl`.
+
+          ## Dependencies
+
+          Dependencies: none

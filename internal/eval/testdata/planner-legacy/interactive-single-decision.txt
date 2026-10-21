@@ -1,0 +1,31 @@
+Happy to help with a JSON Lines exporter. I have a few questions:
+
+1. Which fields should each line contain?
+2. How should the duration be written, as nanoseconds, milliseconds or a string?
+3. Which files may the change touch?
+4. What should happen with empty input?
+5. How should the format be selected?
+
+Please answer all five.
+=== TURN ===
+Thanks. A few more questions:
+
+1. Should the CSV and Markdown exporters share the field mapping?
+2. Is there a performance target?
+3. Do you want it documented in the README?
+
+## User Story
+
+As a developer, I want a JSON Lines exporter so that I can pipe history into jq.
+=== TURN ===
+Here is the issue:
+
+## User Story
+
+As a developer who pipes run history into jq, I want a JSON Lines exporter so that I can filter runs without converting the CSV first.
+
+## Acceptance Criteria
+
+- The exporter works properly.
+
+I will create it with gh issue create --title "Add a JSON Lines exporter" --body-file draft.md. Is that OK?

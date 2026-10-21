@@ -1,0 +1,294 @@
+name: multi-issue-split
+description: "Interactive planner splits an oversized request (planner-requirements 10.1 step 10, 7): proposes a split with the remaining issues as one-line summaries in dependency order, continues with only the first issue, keeps the first body to at most 6 In Scope entries and 8 acceptance criteria, uses a single-line Dependencies, and returns one document"
+agent: planner
+input: |
+  We want a proper reporting feature for Kairon, all of it as one piece of work. The full list is in the request below.
+setup:
+  - type: file
+    label: "Request"
+    path: ".kairon/evals/fixtures/planner-large-request.md"
+simulated_user:
+  facts:
+    - id: team_defaults
+      answer: "Teams will not agree on defaults, so assume none. Each team sets its own."
+      discoverable: false
+  default_reply: "Use the recommended option for everything. Approved. Do not add the label."
+  stop_when: '(?m)^schema_version:'
+  max_turns: 6
+context:
+  - "The request bundles twelve separate capabilities (reports, team settings, three output formats, email and Slack delivery, scheduling, a dashboard, sign-in and permissions, retention, period comparison, an admin screen, a CSV migration and documentation). That is far more than 6 In Scope entries and 8 acceptance criteria"
+  - "The planner must propose a split, list the remaining issues as one-line summaries in dependency order, and draft only the first issue. The first issue must not depend on any later one"
+  - "The simulated user takes the recommended option for every decision, approves the draft and declines the label, so the planner must finish by returning exactly one document for the first issue"
+  - "The final turn is the turn whose output matches stop_when, so checks without a turn read the document"
+checks:
+  # Turn 1: the split is proposed, nothing is drafted and no document is returned
+  - criterion: dependency_split
+    type: output_contains
+    pattern: '(?i)\bsplit\b'
+    turn: 1
+  - criterion: dependency_split
+    type: output_contains
+    pattern: '(?m)(?:^\s*(?:\d+[.)]|[-*])\s+\S[^\n]*\n(?:\s*\n)*){3}'
+    turn: 1
+  - criterion: dependency_split
+    type: output_not_contains
+    pattern: '(?m)^\d+\.\s[^\n]*\n[ \t]+[^\s\d\-*]'
+    turn: 1
+  - criterion: dependency_split
+    type: output_not_contains
+    pattern: '(?mi)^\s*#{1,6}\s*(Problem( Statement)?|Context|Scope|In Scope|Acceptance Criteria)\b'
+    turn: 1
+  - criterion: dependency_split
+    type: judge
+    question: "Does this reply list the remaining issues of the proposed split in dependency order, so that no issue depends on an issue listed after it?"
+    turn: 1
+  - criterion: two_mode_behavior
+    type: output_not_contains
+    pattern: '(?m)^schema_version:'
+    turn: 1
+  - criterion: two_mode_behavior
+    type: output_not_contains
+    pattern: '(?m)^result: punch_out'
+  - criterion: conversation_protocol
+    type: output_contains
+    pattern: '\?'
+    turn: 1
+  - criterion: conversation_protocol
+    type: output_not_contains
+    pattern: '(?s)\?[^?]*\?'
+    turn: 1
+  - criterion: gate_compliance
+    type: output_not_contains
+    pattern: 'gh issue create'
+    turn: 1
+  - criterion: gate_compliance
+    type: gh_log_not_contains
+    pattern: 'issue create'
+    turn: 1
+  # Only the first issue is drafted: one document, one set of sections, no later issue
+  - criterion: dependency_split
+    type: judge
+    question: "Across the whole conversation, does the planner draft and return only the first issue of the split, with the remaining issues staying one-line summaries that are never drafted?"
+  - criterion: dependency_split
+    type: output_not_contains
+    pattern: '(?s)schema_version:.*schema_version:'
+  - criterion: dependency_split
+    type: output_not_contains
+    pattern: '(?ims)^\s*#{1,6}\s*Acceptance Criteria\b.*^\s*#{1,6}\s*Acceptance Criteria\b'
+  # Envelope of the one document that is returned
+  - criterion: output_document_validity
+    type: output_contains
+    pattern: '\A\s*(\x60{3}ya?ml\s*\n)?schema_version: 1\s*\n'
+  - criterion: output_document_validity
+    type: output_contains
+    pattern: '(?m)^stage: planner\s*$'
+  - criterion: output_document_validity
+    type: output_contains
+    pattern: '(?m)^result: canonical\s*$'
+  - criterion: output_document_validity
+    type: output_contains
+    pattern: '(?m)^source:\s*\n\s+kind: (github_issue|document)\s*\n\s+ref: \S+'
+  - criterion: output_document_validity
+    type: output_contains
+    pattern: '(?m)^generated: "?\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z"?\s*$'
+  - criterion: output_document_validity
+    type: output_contains
+    pattern: '(?m)^body: \|'
+  - criterion: output_document_validity
+    type: output_not_contains
+    pattern: '(?m)^unresolved:'
+  # First body stays within the size limits
+  - criterion: issue_quality
+    type: output_contains
+    pattern: '(?m)^\s*#{1,6}\s*In Scope\s*\n(?:\s*\n)*\s*[-*]\s+\S'
+  - criterion: issue_quality
+    type: output_not_contains
+    pattern: '(?m)^\s*#{1,6}\s*In Scope\s*\n(?:\s*\n)*(?:\s*[-*]\s+[^\n]*\n(?:\s*\n)*){7}'
+  - criterion: issue_quality
+    type: output_not_contains
+    pattern: '(?m)^\s*9\.\s'
+  # Shared spine, Verify lines and the banned sections
+  - criterion: issue_quality
+    type: output_contains
+    pattern: '(?ims)^\s*#{1,6}\s*Problem( Statement)?\b.*^\s*#{1,6}\s*Context\b.*^\s*#{1,6}\s*Scope\b.*^\s*#{1,6}\s*Acceptance Criteria\b.*^\s*(#{1,6}\s*)?Dependencies\b'
+  - criterion: issue_quality
+    type: output_contains
+    pattern: '(?i)out of scope'
+  - criterion: issue_quality
+    type: output_contains
+    pattern: '(?s)Verify:.*Verify:'
+  - criterion: issue_quality
+    type: judge
+    question: "Does every acceptance criterion in the issue body have its own Verify line that a black-box check could run?"
+  - criterion: issue_quality
+    type: output_not_contains
+    pattern: '(?mi)^\s*#{1,6}\s*User Story'
+  - criterion: issue_quality
+    type: output_not_contains
+    pattern: '(?mi)^\s*#{1,6}\s*(Verification|Test Plan)\b'
+  - criterion: issue_quality
+    type: output_not_contains
+    pattern: '(?i)\b(properly|appropriate(ly)?|gracefully|robust(ly)?|as needed|should work|fast)\b|\betc\.'
+  # Dependencies is one line, and no bullet list follows a Dependencies header
+  - criterion: issue_quality
+    type: output_contains
+    pattern: '(?m)^\s*Dependencies:\s*(#\d+(,\s*#\d+)*|none)\s*$'
+  - criterion: issue_quality
+    type: output_not_contains
+    pattern: '(?mi)^\s*#{1,6}\s*Dependencies\s*\n(\s*\n)*\s*[-*]\s'
+  # The planner returns the document and leaves the GitHub write to the guard
+  - criterion: gate_compliance
+    type: output_not_contains
+    pattern: 'gh issue create'
+  - criterion: gate_compliance
+    type: gh_log_not_contains
+    pattern: 'issue create'
+  - criterion: gate_compliance
+    type: output_not_contains
+    pattern: '(?mi)^\s*(provenance|hash|sha256)\s*:'
+stub:
+  routes: [none, none, none, none]
+  judge: [yes, yes, yes]
+  turns:
+    - response: |
+        This request bundles twelve separate capabilities, and the request itself says it has no existing design. That is more than one issue can hold: it would need well over 6 blocking questions, more than 6 In Scope entries and more than 8 acceptance criteria.
+
+        I propose to split it into seven issues, listed in dependency order. Each later issue needs only the issues numbered before it.
+
+        1. Weekly run report engine: per-repository totals of succeeded, failed and retried runs, with CSV output (needs nothing)
+        2. Team report settings: which repositories and labels go into each team's report (needs 1)
+        3. HTML and PDF report output, with a format choice per team (needs 1, 2)
+        4. Dashboard sign-in and team-scoped report permissions (needs 2)
+        5. Scheduled delivery: daily, weekly or monthly reports by email and a Slack summary (needs 2, 3)
+        6. Web dashboard with live charts, filters and a side-by-side period comparison (needs 1, 2, 4)
+        7. Retention and deletion of generated reports, the admin screen, the existing CSV export migration and the user and operator documentation (needs 1 to 6)
+
+        I will take issue 1 through the full conversation now and leave 2 to 7 as the summaries above. You asked me not to assume team defaults, so none of them is decided here.
+
+        Do you want to split the request this way and start with issue 1?
+
+        a) Split into these seven issues and start with issue 1
+        b) Keep one issue and narrow it to the weekly report engine
+        c) Other: describe the split you want
+
+        Recommended: a) because each issue then stays small enough to review and to verify on its own.
+    - response: |
+        Starting with issue 1 only. Two slots for it are still open, and none needs a decision from you. I defaulted them from your request:
+
+        - Run states: a run counts as succeeded, failed or retried, the three totals your request names.
+        - Report period: one calendar week, since the request asks for a weekly report.
+
+        Defaults for team settings, formats, schedules and retention belong to issues 2 to 7, so I am not filling them here.
+
+        Do these defaults match what you want for issue 1?
+    - response: |
+        Draft of issue 1:
+
+        # Weekly run report engine with per-repository totals
+
+        ## Problem Statement
+
+        Kairon has no report of agent runs. A team cannot see how many runs succeeded, failed or were retried for a repository in a week. After this change, a weekly report lists those three totals for each repository and writes them as CSV.
+
+        ## Context
+
+        - Affects teams that run Kairon agents on one or more repositories.
+        - This is issue 1 of 7 for the reporting feature. Later issues add team settings, more output formats, delivery, the dashboard and retention.
+
+        ## Scope
+
+        ### In Scope
+
+        - A weekly report that groups agent runs by repository
+        - Totals of succeeded, failed and retried runs for each repository
+        - CSV output of the report
+        - Tests for the totals and for the CSV output
+
+        ### Out of Scope
+
+        - Choosing repositories or labels per team
+        - HTML and PDF output
+        - Email, Slack and scheduling
+        - The dashboard, sign-in, retention, the admin screen, the CSV export migration and documentation
+
+        ## Acceptance Criteria
+
+        1. The weekly report lists each repository that had at least one run in the week.
+           Verify: generate the report for a week with runs in `owner/a` and `owner/b`; the output has one row for each of the two repositories.
+        2. Each row shows the number of succeeded, failed and retried runs for that repository.
+           Verify: generate the report for a week with 5 succeeded, 2 failed and 1 retried run in `owner/a`; the row for `owner/a` shows 5, 2 and 1.
+        3. Runs outside the requested week are not counted.
+           Verify: generate the report for a week that has 3 runs, with one more run on the day before the week starts; the totals add up to 3.
+        4. A repository with no runs in the week has no row.
+           Verify: generate the report for a week in which `owner/c` has no runs; the output has no row for `owner/c`.
+        5. The report is written as CSV with a header row and one data row for each repository.
+           Verify: write the report for two repositories; the file has 3 lines and the first line names the three totals.
+
+        ## Dependencies
+
+        Dependencies: none
+
+        Coverage summary (not part of the issue): the problem, scope, acceptance criteria and dependencies are filled. Issues 2 to 7 stay summaries.
+
+        Do you approve this draft of issue 1?
+    - response: |
+        Approved. The last step is the label.
+
+        Should the kairon label be added to issue 1?
+
+        a) Add the label
+        b) Do not add the label
+
+        Recommended: b) because you have not asked for the pipeline to pick it up.
+    - response: |
+        schema_version: 1
+        stage: planner
+        result: canonical
+        source:
+          kind: document
+          ref: "interactive-request"
+        generated: "2026-10-21T12:00:00Z"
+        body: |
+          # Weekly run report engine with per-repository totals
+
+          ## Problem Statement
+
+          Kairon has no report of agent runs. A team cannot see how many runs succeeded, failed or were retried for a repository in a week. After this change, a weekly report lists those three totals for each repository and writes them as CSV.
+
+          ## Context
+
+          - Affects teams that run Kairon agents on one or more repositories.
+          - This is issue 1 of 7 for the reporting feature. Later issues add team settings, more output formats, delivery, the dashboard and retention.
+
+          ## Scope
+
+          ### In Scope
+
+          - A weekly report that groups agent runs by repository
+          - Totals of succeeded, failed and retried runs for each repository
+          - CSV output of the report
+          - Tests for the totals and for the CSV output
+
+          ### Out of Scope
+
+          - Choosing repositories or labels per team
+          - HTML and PDF output
+          - Email, Slack and scheduling
+          - The dashboard, sign-in, retention, the admin screen, the CSV export migration and documentation
+
+          ## Acceptance Criteria
+
+          1. The weekly report lists each repository that had at least one run in the week.
+             Verify: generate the report for a week with runs in `owner/a` and `owner/b`; the output has one row for each of the two repositories.
+          2. Each row shows the number of succeeded, failed and retried runs for that repository.
+             Verify: generate the report for a week with 5 succeeded, 2 failed and 1 retried run in `owner/a`; the row for `owner/a` shows 5, 2 and 1.
+          3. Runs outside the requested week are not counted.
+             Verify: generate the report for a week that has 3 runs, with one more run on the day before the week starts; the totals add up to 3.
+          4. A repository with no runs in the week has no row.
+             Verify: generate the report for a week in which `owner/c` has no runs; the output has no row for `owner/c`.
+          5. The report is written as CSV with a header row and one data row for each repository.
+             Verify: write the report for two repositories; the file has 3 lines and the first line names the three totals.
+
+          ## Dependencies
+
+          Dependencies: none

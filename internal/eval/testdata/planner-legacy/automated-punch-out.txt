@@ -1,0 +1,21 @@
+I read issue #427 and I can't write it up yet. I have a few questions:
+
+1. How much faster does the export need to be, and measured against what?
+2. What does the v2 export return? Is it backward compatible with the current one?
+3. Which clients are affected?
+
+What target would you like?
+
+a) 2x faster than today
+b) 10x faster than today
+c) Whatever is possible
+
+Recommended: a) because it is a clear, modest target.
+
+## User Story
+
+As a platform engineer, I want a faster export so that I do not wait.
+
+Once you answer, I will run:
+
+gh issue create --title "Make run-history export faster" --label kairon --body-file draft.md
