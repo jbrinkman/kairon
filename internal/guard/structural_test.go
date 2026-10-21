@@ -259,6 +259,20 @@ func TestStructural_MissingSectionMessages(t *testing.T) {
 	assert.Equal(t, "missing sections: Context, Acceptance Criteria, Dependencies", res.Failure.Actual)
 }
 
+func TestStructural_RejectsEmptyLaterAcceptanceCriteriaSection(t *testing.T) {
+	// A later Acceptance Criteria section with only prose (no list items) must
+	// be rejected, even though an earlier section is fully verified.
+	body := wellFormedBody + `
+## Acceptance Criteria
+Just prose, no list items here.
+`
+	res := NewStructural(nil).Admit(structuralInput(canonicalRaw(t, stageoutput.StagePlanner, body)))
+	require.NotNil(t, res.Failure)
+	assert.False(t, res.Pass)
+	assert.Equal(t, "every acceptance criterion carries a Verify: line", res.Failure.Expected)
+	assert.Equal(t, "Acceptance Criteria section has no list items", res.Failure.Actual)
+}
+
 func TestStructural_ChecksEveryAcceptanceCriteriaSection(t *testing.T) {
 	// A second peer Acceptance Criteria section whose item lacks Verify: must
 	// be rejected, even though the first section is fully verified.

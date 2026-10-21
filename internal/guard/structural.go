@@ -88,12 +88,13 @@ func (s *Structural) Admit(in Input) AdmissionResult {
 	}
 	var items []string
 	for _, start := range starts {
-		items = append(items, listItems(lines[start+1:sectionEnd(lines, start)])...)
-	}
-	if len(items) == 0 {
-		return in.Reject(StructuralName,
-			"every acceptance criterion carries a Verify: line",
-			"Acceptance Criteria section has no list items")
+		sectionItems := listItems(lines[start+1 : sectionEnd(lines, start)])
+		if len(sectionItems) == 0 {
+			return in.Reject(StructuralName,
+				"every acceptance criterion carries a Verify: line",
+				"Acceptance Criteria section has no list items")
+		}
+		items = append(items, sectionItems...)
 	}
 	var bad []string
 	for i, item := range items {
