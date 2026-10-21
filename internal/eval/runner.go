@@ -43,6 +43,17 @@ func RunWithOptions(agent string, testcase string, options RunOptions) error {
 		return err
 	}
 
+	// Parse --filter next, for the same reason: a malformed expression is
+	// reported before any state changes or case runs, with or without
+	// --strict.
+	filters, err := ParseFilters(options.Filters)
+	if err != nil {
+		return err
+	}
+	if err := validateFilterOptions(options, len(filters) > 0); err != nil {
+		return err
+	}
+
 	// Validate the candidate prompt first: --prompt-file problems (no agent,
 	// unusable file, incompatible mode) are reported before any state is
 	// changed or any case runs.
@@ -58,11 +69,23 @@ func RunWithOptions(agent string, testcase string, options RunOptions) error {
 	}
 	// configure resets cfg, so a candidate never leaks between runs.
 	cfg.candidate = candidate
-	cfg.caseFilter = testcase
+	cfg.filters = filters
+	cfg.caseFilter = caseFilterLabel(testcase, filters)
 
 	// Handle cleanup operation early
 	if options.Cleanup {
 		return RunCleanup()
+	}
+
+	// Pre-flight selection: narrow to the agents with a matching case, or
+	// stop (warn, or fail under --strict) when nothing matches. This runs
+	// before pinning, the sandbox and any results directory. --list without
+	// an agent is left to listTestCases, which reports the missing agent.
+	if !(options.List && agent == "") {
+		proceed, err := selectForRun(os.Stderr, agent, testcase, filters, options.Strict, options)
+		if err != nil || !proceed {
+			return err
+		}
 	}
 
 	// Pre-flight: pin and validate the judge and agent models before any
@@ -266,6 +289,14 @@ func runSingleTestCase(agent string, testcase string, cConfig *ContainerConfig) 
 	targetCase, err := GetTestCase(agent, testcase)
 	if err != nil {
 		return fmt.Errorf("❌ %w", err)
+	}
+
+	// Direct callers can reach here with filters the case does not match
+	// (the CLI path was already narrowed by selectForRun): same outcome as
+	// the pre-flight no-match, nothing runs.
+	if len(cfg.filters) > 0 && len(filterCases([]TestCase{*targetCase}, cfg.filters)) == 0 {
+		fmt.Fprint(os.Stderr, noMatchWarning(cfg.filters, agent, testcase))
+		return nil
 	}
 
 	fmt.Printf("🚀 Running single test case: %s/%s\n", agent, testcase)
@@ -1923,6 +1954,25 @@ func runProgressiveEvaluation(agent, resultsDir string, isResume bool, cConfig *
 		}
 	}
 
+	// On a resume, verify the integrity of EVERY in-scope agent that already
+	// has a saved result file before any agent is evaluated. Doing this per
+	// agent inside the loop is not enough: an agent that now matches the
+	// filter and has no saved file would pass its own check and write results
+	// before a later saved agent with a different recorded case_filter (or a
+	// changed sandbox mode, repeat, ...) is rejected, leaving one directory
+	// with two selections. The sweep aborts before any write when a saved
+	// agent's recorded run no longer matches the current one.
+	if isResume {
+		for _, rubric := range rubrics {
+			if _, statErr := os.Stat(filepath.Join(resultsDir, rubric.Agent+".json")); statErr != nil {
+				continue
+			}
+			if err := checkResumeIntegrity(resultsDir, rubric.Agent, cConfig != nil); err != nil {
+				return err
+			}
+		}
+	}
+
 	var failed []AgentFailure
 	evaluated := 0
 	for _, rubric := range rubrics {
@@ -1937,6 +1987,18 @@ func runProgressiveEvaluation(agent, resultsDir string, isResume bool, cConfig *
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "⚠️  Warning: no test cases for agent %s: %v\n", rubric.Agent, err)
 			continue
+		}
+
+		if len(cfg.filters) > 0 {
+			total := len(cases)
+			cases = filterCases(cases, cfg.filters)
+			if len(cases) == 0 {
+				// A changed filter on a saved agent was already refused by the
+				// pre-loop integrity sweep above, so a skip here is safe.
+				fmt.Printf("⏭  Skipping %s: no cases match --filter %s\n", rubric.Agent, FormatFilters(cfg.filters))
+				continue
+			}
+			fmt.Printf("   filter %s: %d of %d cases\n", FormatFilters(cfg.filters), len(cases), total)
 		}
 
 		if isResume {
@@ -2058,6 +2120,11 @@ func checkResumeIntegrity(resultsDir, agent string, sandbox bool) error {
 				// A legacy file (no recorded repeat) holds one run per case.
 				return fmt.Errorf("❌ cannot resume: repeat changed since the interrupted run of %s (recorded repeat=%d; now %d) — resume with --repeat %d or start a fresh run",
 					agent, effectiveRepeat(existing.Repeat), runRepeat(), effectiveRepeat(existing.Repeat))
+			case derefString(existing.CaseFilter) != cfg.caseFilter:
+				// One result file never mixes two selections. A legacy file
+				// (no recorded case_filter) reads as unfiltered.
+				return fmt.Errorf("❌ cannot resume: --filter changed since the interrupted run of %s (recorded case_filter=%q; now %q) — resume with the same --filter or start a fresh run",
+					agent, derefString(existing.CaseFilter), cfg.caseFilter)
 			case sandbox && existing.Containment == nil:
 				// sandbox-mode tracking predates the containment record, so a
 				// sandbox result written in that window has Sandbox=true but
@@ -2256,7 +2323,10 @@ func stampResumedCases(result *AgentResult, cases []TestCase, rubric Rubric) {
 			continue
 		}
 		if tc, ok := byName[result.Cases[i].CaseName]; ok {
+			// A saved result keeps the metadata it ran with.
+			recorded := result.Cases[i].Metadata
 			stampCase(&result.Cases[i], tc, rubric)
+			result.Cases[i].Metadata = recorded
 		}
 	}
 }

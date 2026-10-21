@@ -131,6 +131,9 @@ kairon update
 # Run a YAML list of checks against a directory (PASS/FAIL per check; exit 0 only if all pass)
 kairon check --checks checks.yaml --dir path/to/dir
 
+# Run only the eval cases whose metadata matches (quote < and > in a shell)
+kairon eval architect --filter 'speed==fast' --filter 'retries>=3'
+
 # Start interactive REPL (default when no arguments)
 kairon
 ```
@@ -158,6 +161,17 @@ Press **Ctrl+Alt+P** (or **Ctrl+Option+P** on macOS) to toggle between console a
 - **Planning Mode**: Interactive AI-assisted issue creation and planning
 
 Both modes preserve their state when you switch, allowing seamless workflow transitions. See [docs/hotkey-toggle.md](docs/hotkey-toggle.md) for detailed usage information.
+
+### Selecting Eval Cases
+
+An eval case can carry `metadata` (for example `speed: fast`), and `kairon eval --filter` runs only the cases that match. Repeat `--filter` to require all of them, and add `--strict` to fail when nothing matches:
+
+```bash
+kairon eval architect --filter 'speed==fast'
+kairon eval --list architect --filter 'skill==cli' --filter 'retries>=3'
+```
+
+A filtered run is recorded as a partial run. `eval diff` and `eval trend` accept `--filter` too. See [docs/evaluation.md](docs/evaluation.md#selecting-cases-metadata-and---filter) for the syntax, operators and result fields.
 
 ### Running Checks Without an Eval
 

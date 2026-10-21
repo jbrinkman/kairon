@@ -123,6 +123,9 @@ output: |
 workspace: seeded         # Optional: workspace fixture name (see Case Workspaces)
 min_score: 90              # Optional: pass threshold in percent for this case (overrides the rubric's pass_threshold)
 timeout: 30s               # Optional: timeout per agent call, i.e. per turn (Go duration)
+metadata:                  # Optional: labels for selecting cases with --filter (see Selecting cases)
+  speed: fast
+  skill: cli
 requires_sandbox: true     # Optional: refuse to run without --sandbox (see Sandbox Containment)
 gh_issue:                  # Optional: data for the sandbox's fake `gh issue view` (needs requires_sandbox)
   title: "Add widget"
@@ -151,6 +154,7 @@ Fields:
 - `workspace` — (optional) name of a fixture under `<evals-dir>/fixtures/workspaces/` that the case's workspace starts from (see [Case Workspaces](#case-workspaces)). Must match `^[A-Za-z0-9._-]+$` (and not be `.` or `..`) and the fixture directory must exist, otherwise loading the cases fails with an error naming the case.
 - `min_score` — (optional) the pass threshold for this case, in percent. It overrides the rubric's `pass_threshold` for this case only. A case's threshold is resolved in this order: the case `min_score`, then the rubric `pass_threshold`, then the default `95`. The threshold decides whether the case counts toward `cases_failed`; the agent's own verdict always uses the rubric threshold (see [Pass/Fail Verdict and Exit Status](#passfail-verdict-and-exit-status)).
 - `timeout` — (optional) a positive Go duration such as `30s` or `2m`. It overrides the default timeout for this case, natively and under `--sandbox` (see [Case Timeout](#case-timeout)). In a `turns` case it applies to **each turn**, not to the case as a whole. An invalid or non-positive value is a load error naming the case.
+- `metadata` — (optional) a mapping of labels such as `speed: fast` or `skill: cli` that `--filter` can select on (see [Selecting cases: metadata and `--filter`](#selecting-cases-metadata-and---filter)). Keys are free-form text, values are strings, numbers or booleans. Metadata is only used to select and report cases: it is never part of the prompt and never changes scoring. It is copied into each case's result as `metadata`. A case without `metadata` behaves exactly as before.
 - `requires_sandbox` — (optional, default `false`) when `true`, the case refuses to run without `--sandbox`: a native run records the case as failed with `case "<name>" requires --sandbox` before it creates a workspace or invokes anything (see [Sandbox Containment](#sandbox-containment)).
 - `gh_issue` — (optional) the issue the sandbox's fake `gh issue view` answers with: `number` (default `1`), `title` (required), `body`, `state` (default `OPEN`), `author` (default `fake-user`), `labels`. It is only valid together with `requires_sandbox: true`; otherwise loading the cases fails with an error naming the case, because a native run would call the developer's **real** `gh` (see [The fake `gh`](#the-fake-gh)).
 - `mocks` — (optional) a list of `{command, script}` entries that each place a mock of a command on the container `PATH`, so a bare `aws`, `npm` or `curl` resolves to the author's script instead of a real tool. `command` is the bare command name (it must match `^[A-Za-z0-9][A-Za-z0-9._+-]*$`, must be unique within the case, and cannot be `gh`, which is the harness's fake, or `kairon`, which is the harness's own binary mounted at `/usr/local/bin/kairon`; a mock of either would silently shadow it because the mock directory is first on `PATH`). `script` is a path relative to the evals directory (no absolute path, no `..`) naming an existing regular file; `fixtures/mock-cli.sh` is the reusable one. Like `gh_issue`, `mocks` is only valid together with `requires_sandbox: true`, because a native run has no such directory on `PATH` and would silently call the **real** tool; otherwise loading the cases fails with an error naming the case. See [Preventing Production Side Effects](#preventing-production-side-effects-containment-and-mocking).
@@ -977,6 +981,18 @@ kairon eval architect --prompt-file .kairon/iterations/architect/v2.md
 
 # Run every case 5 times and report the mean score with its spread
 kairon eval architect --repeat 5
+
+# Run only the cases labelled speed: fast (quote the expression)
+kairon eval architect --filter speed==fast
+
+# Repeat --filter to require all of them; a comma lists alternatives
+kairon eval architect --filter 'skill==cli' --filter 'speed<>slow'
+
+# Quote < and > so the shell does not treat them as redirections
+kairon eval architect --filter 'retries>=3'
+
+# See which cases a filter selects without running them
+kairon eval --list architect --filter speed==fast
 ```
 
 | Flag | Default | Description |
@@ -986,6 +1002,167 @@ kairon eval architect --repeat 5
 | `--keep-workspaces` | off | Keep each case's workspace after the run instead of deleting it. The path is printed on the case line and recorded as `workspace_dir` in the results (see [Case Workspaces](#case-workspaces)). Combine with `--debug` to inspect both the preserved container and its workspace. |
 | `--prompt-file` | none | Evaluate this file as the agent's prompt instead of the live one, in the per-case workspaces only. Requires an agent (`kairon eval <agent> --prompt-file <path>`); nothing under `.kiro/agents/` is modified. Local to `kairon eval` (not available on `eval diff`). See [Evaluating a candidate prompt](#evaluating-a-candidate-prompt---prompt-file). |
 | `--repeat` | `1` | Run every case N times, each run in a fresh workspace, and keep every result. The agent `score` becomes the **mean** over the N runs, with `score_min`, `score_max` and `repeat_scores` showing the spread. A value below `1` is rejected (non-zero exit). Cannot be combined with `--list`, `--cleanup` or `--perf` (they run no cases). Combined with `--case` (or `<agent> <testcase>`) it repeats that one case. `--resume` requires the same value the interrupted run used. See [Repeat runs](#repeat-runs---repeat). |
+| `--filter` | none | Select cases by `agent`, `name` or a case `metadata` key: `<key><op><value>` with `<op>` one of `==`, `<>`, `!=`, `<`, `<=`, `>`, `>=`. Repeatable; every filter must match. A comma-separated value (`speed==fast,medium`) lists alternatives for `==`, `<>` and `!=`. Quote the expression in a shell, because `<` and `>` are redirections there. A filtered run is a partial run (`complete: false`). A persistent flag, so `eval diff` and `eval trend` accept it too and then narrow the saved results. See [Selecting cases](#selecting-cases-metadata-and---filter). |
+| `--strict` | off | With `--filter`: exit non-zero, and run nothing, when no case matches (the default is a warning and exit 0). Local to `kairon eval`. Without `--filter` it has no effect; it cannot be combined with `--perf` or `--cleanup`. |
+
+## Selecting cases: metadata and `--filter`
+
+A case can carry labels, and `--filter` runs only the cases whose labels match. Use it to run a quick subset while iterating on a prompt, or to compare one kind of case across runs.
+
+### Adding metadata to a case
+
+`metadata` is an optional mapping on a case file:
+
+```yaml
+name: add-flag
+description: "Add a CLI flag"
+input: |
+  Add a --verbose flag to the CLI.
+metadata:
+  speed: fast
+  skill: cli
+  category: smoke
+  retries: 3
+  slow_ok: true
+```
+
+Rules:
+
+- `metadata` must be a mapping. A scalar or a list in its place is a load error.
+- Each value is a string, a number or a boolean. A list, a mapping or an empty value (`speed:` or `speed: ~`) is a load error.
+- The value's text is what a filter compares. A string, number or timestamp keeps the text exactly as written (`3.0` stays `3.0`, and the quoted `"3"` is the text `3`). A boolean is normalised to `true` or `false`, so `True` and `TRUE` both read as `true`.
+- A key cannot be empty, cannot contain any of `=`, `<`, `>`, `!` or `,` (a filter could never name it), cannot be `agent` or `name` (those are built-in filter keys, below), and cannot appear twice.
+- Keys are case-sensitive and have no fixed set. `skill` has no special meaning to the harness.
+
+A bad `metadata` block is a **fatal** load error that names the case file and the key, for example:
+
+```
+malformed case file: stub-basic.yaml: metadata key "tags": value must be a string, number or boolean (got a list)
+malformed case file: stub-basic.yaml: metadata key "agent" is reserved: agent and name are built-in filter keys
+```
+
+A case without `metadata` loads and runs exactly as before. Metadata is never read when the prompt is assembled, when the agent runs, or when a case is scored or judged: two cases that differ only in `metadata` get the same prompt and the same score.
+
+#### Suggested keys
+
+The harness does not define any metadata keys. These three are a suggested convention so that cases are labelled alike across agents; nothing checks or requires them.
+
+| Key | Suggested values | Use |
+|-----|------------------|-----|
+| `speed` | `fast`, `slow` | Separate the quick cases you run on every edit from the slow ones. |
+| `skill` | the skill or capability the case exercises | Run every case for one skill, for example `skill==cli`. |
+| `category` | free-form grouping such as `smoke` or `regression` | Any other grouping you want to select on. |
+
+### Filter syntax
+
+```
+--filter <key><operator><value>
+```
+
+`<key>` is `agent`, `name` or a metadata key. Whitespace around the key and around each value is ignored. The first `=`, `<`, `>` or `!` in the expression starts the operator, so a key cannot contain those characters. The key is case-sensitive.
+
+| Key | Where the value comes from |
+|-----|----------------------------|
+| `agent` | The agent the case belongs to. Always present. |
+| `name` | The case's `name`. Always present. |
+| any other | The case's `metadata`, present only if the case declares that key. |
+
+| Operator | Matches a case when |
+|----------|---------------------|
+| `==` | the case's text equals any listed value |
+| `<>` | the case has the key and its text equals none of the listed values |
+| `!=` | same as `<>` |
+| `<` | the case's value is a number below the filter value |
+| `<=` | the case's value is a number at or below the filter value |
+| `>` | the case's value is a number above the filter value |
+| `>=` | the case's value is a number at or above the filter value |
+
+Rules that apply to every operator:
+
+- **Text comparison is exact.** `==`, `<>` and `!=` compare bytes and are case-sensitive: `speed==fast` does not match `Fast`. They never parse numbers, so `retries==3` does not match `3.0`.
+- **Comma lists.** `==`, `<>` and `!=` accept a comma-separated list: `speed==fast,medium` matches either value, and `color<>red,blue` matches a case whose `color` is neither. The ordering operators take exactly one value.
+- **Several filters are ANDed.** Repeat `--filter` to require all of them: `--filter 'skill==cli' --filter 'speed<>slow'`. There is no OR between filters (use a comma list for alternatives on one key) and no grouping. `--case <name>` (or `kairon eval <agent> <case>`) is ANDed with the filters too.
+- **A missing key never matches.** If a case does not declare the key, every operator fails for it, including `<>` and `!=`. `--filter 'speed<>slow'` selects the cases that declare a `speed` other than `slow`; it does not select untagged cases. There is no filter for "cases that do not declare this key".
+- **Numeric rules.** `<`, `<=`, `>` and `>=` match only when both the case's value and the filter value are plain decimal numbers: an optional sign, digits with an optional fraction, and an optional exponent (`3`, `-2`, `0.5`, `.5`, `1e3`). They are compared as floating-point numbers, so `retries<10` matches `9` and `2.5` but not `10`. `NaN`, `Inf`, hexadecimal (`0x10`) and non-numeric text are not numbers, so a case whose value is not a number never matches an ordering filter, and an ordering filter whose value is not a number matches nothing.
+- **A value cannot contain a comma.** There is no escape syntax, because `,` separates list items. Avoid commas in metadata values you want to select on; to select a value that contains one, filter on another key or on `name`.
+
+### Quoting in a shell
+
+Quote every `--filter` expression. In a shell `<` and `>` are redirections, so an unquoted `--filter retries>3` runs `kairon eval --filter retries` and writes its output to a file named `3`:
+
+```bash
+# Wrong: the shell redirects stdout to a file named "3"
+kairon eval architect --filter retries>3
+
+# Right
+kairon eval architect --filter 'retries>3'
+kairon eval architect --filter 'retries>=3' --filter 'retries<10'
+kairon eval architect --filter 'name==add-flag,remove-flag'
+```
+
+### Usage errors
+
+A malformed `--filter` is a usage error. It is rejected before anything runs (no case, no model call, no results directory), with or without `--strict`, and the command prints the usage text and exits non-zero. The message shows the expected syntax:
+
+```
+$ kairon eval --list architect --filter 'speed=fast'
+Error: invalid --filter "speed=fast": unknown operator; expected <key><operator><value> with operator one of ==, <>, !=, <, <=, >, >= (for example speed==fast, color<>red,blue, retries>=2)
+```
+
+The rejected forms are: no operator, an unknown operator (`=`, `=>`, `!`), an empty key, an empty value, an empty list item (`speed==fast,` or `speed==,fast`), and a comma list with `<`, `<=`, `>` or `>=`.
+
+`--filter` and `--strict` cannot be combined with `--perf` or `--cleanup`, which run no cases; the command fails with a message naming both flags instead of ignoring the filter. `--strict` without `--filter` is accepted and has no effect.
+
+### When nothing matches: warning and `--strict`
+
+The selection is made before the run starts, from the cases on disk, together with the agent and `--case` you gave.
+
+| Situation | Without `--strict` | With `--strict` |
+|-----------|--------------------|-----------------|
+| At least one case matches | Those cases run. | Same. |
+| No case matches | Prints `⚠️  No eval cases match --filter <filters> (agent: <agent>)` to stderr, runs nothing, creates no results directory, exits `0`. | Prints `❌ no eval cases match --filter <filters> (agent: <agent>) (--strict)`, runs nothing and exits `1`. |
+
+The `(agent: …, case: …)` part appears when you named an agent or a case. The same rule applies to `--list`. Use `--strict` in scripts and CI, where a typo in a filter would otherwise pass silently with nothing run.
+
+Two details:
+
+- With several agents in scope (no agent argument), an agent with no matching case is skipped with `⏭  Skipping <agent>: no cases match --filter …`: it records no result file, no `summary.json` entry and no `suite_sha256`, and a model that is not allowed for a skipped agent does not block the run. The no-match rule applies only when no agent has a matching case. An agent that runs prints `   filter <filters>: N of M cases` before its cases.
+- A `--case` that names a case the agent does not have still fails with the usual `test case '<name>' not found for agent '<agent>'` error, not the filter message. A case that exists but does not match the filter follows the no-match rule above.
+
+### Listing the selection: `--list`
+
+`kairon eval --list <agent> --filter …` lists only the matching cases, and the header names the filter. A case with metadata gets an extra line with its keys sorted; a case without metadata is listed as before. `--list` still needs an agent.
+
+```
+$ kairon eval --list architect --filter 'speed==fast'
+📋 Test cases for agent 'architect' (filter: speed==fast):
+   • add-flag - Add a CLI flag
+       metadata: category=smoke, retries=3, skill=cli, speed=fast
+```
+
+`--filter` is shown in its normalised form (no spaces, values joined by `,`), and several filters are sorted into a canonical order and joined with ` AND `, so the label depends only on the set of filters and not on the order the flags were given.
+
+### Results: `metadata`, `complete` and `case_filter`
+
+- **Per-case `metadata`.** Each case result in `<agent>.json` carries the case's `metadata` map (every repeat of a case records it). The field is omitted for a case without metadata, so existing results are unchanged. Metadata is recorded as the case had it when it ran; `--resume` does not back-fill results saved earlier.
+- **A filtered run is a partial run.** It records `complete: false` and `case_filter` set to the selection label, in `<agent>.json` and in `summary.json` under `agents.<agent>`, exactly like a `--case` run (see [Run coverage](#run-coverage-suite_sha256-complete-and-case_filter)). [`verify-log`](#iteration-logs-and-verify-log) therefore does not accept it as a full run, and [`eval trend`](#attempt-trend-kairon-eval-trend) marks it `INCOMPLETE`. A filtered run never overwrites another run: each run still writes its own results directory.
+- **The label.** With no `--case`, `case_filter` is the filters in normalised form, sorted into a canonical order and joined with ` AND `, for example `skill==cli AND speed==fast` whichever order the two flags were given. With `--case`, it starts with `case=<name>`, for example `case=add-flag AND speed==fast`. A run with `--case` and no filter keeps recording just the case name, and an unfiltered run records `""`, as before.
+- **Resume.** `--resume --filter …` applies the filter to the resumed run. The filter must select the same set as the interrupted run's: resuming with a different, added or dropped `--filter` is refused, but reordering the same `--filter` flags is accepted because the recorded label is canonical (see [Resume refusal](#resume-refusal)).
+
+### Comparing runs with `--filter`
+
+`eval diff` and `eval trend` read saved results, not case files, so they filter on what each result recorded: `agent` is the agent being reported, `name` is the case name, and every other key is the result's `metadata`. A result saved before metadata existed has no metadata, so it matches only `agent` and `name` filters. `--strict` does not apply to either command.
+
+- **`kairon eval diff <runA> <runB> --filter …`** prints a `Filter:` line under the title and recomputes everything from the matching case results only: each agent's score, the per-criterion averages, the output changes, and the cost, token and quality-per-dollar figures (the totals in `summary.json` cannot be filtered). An agent with matches on only one side is shown as `-` on the other side with no delta; an agent with no match on either side is left out. See [Comparing Runs](#comparing-runs).
+- **`kairon eval trend <agent> --filter …`** scores each run from its matching case results: `score` and `success` are recomputed from those results. A run with no matching result is dropped, and when no run is left the command fails with `no eval results for agent "<agent>" matching --filter <filters> under <evals-dir>/results` and exits `1`. The `complete` flag still reports the run's own coverage, so a filtered row describes a subset of that run. See [Attempt trend](#attempt-trend-kairon-eval-trend).
+
+Both commands show recorded metadata when there is any (see their sections), and print nothing extra when no result has metadata.
+
+### Metadata and the suite hash
+
+`suite_sha256` is still the hash of the raw bytes of every `cases/<agent>/*.yaml`, so **editing only the `metadata` of a case changes `suite_sha256`**. That invalidates `--resume` of an interrupted run and makes [`verify-log`](#iteration-logs-and-verify-log) treat runs made before and after the edit as different suites, like any other edit to a case file (see [Run coverage](#run-coverage-suite_sha256-complete-and-case_filter) and [Resume refusal](#resume-refusal)).
+
+This was chosen over excluding `metadata` from the hash because excluding it would mean re-serialising every case file, which changes every existing `suite_sha256` and breaks comparison with every recorded baseline. A case file without `metadata` hashes exactly as it did before this feature. Tagging cases is a one-time edit: add the metadata, then record a new baseline.
 
 ## Adding Test Cases
 
@@ -1590,6 +1767,14 @@ Relation to the agent-level fields:
 
 In the self-test, `stub-conventions-fixture` shows this: its workspace fixture supplies `selftest-conventions`, so the case lists it in `resources_present` with a `prompt_sha256` that differs from `stub-basic`'s, while the agent-level `resources_present` stays `[]`.
 
+**`metadata`.** Independently of pinning, each entry of `cases` also carries the case's `metadata` map when the case file declares one (see [Selecting cases](#selecting-cases-metadata-and---filter)). Every repeat of a case records it, and the field is omitted for a case without metadata, so results for untagged cases keep their earlier shape:
+
+```json
+{ "case_name": "add-flag", "run": 1, "metadata": { "speed": "fast", "skill": "cli", "retries": "3" }, "…": "…" }
+```
+
+Values are the text form described in the case format, so a number or boolean is recorded as a string. `eval diff` and `eval trend` read this field to filter and to show metadata.
+
 #### Run summary (`summary.json`)
 
 `summary.json` always carries `judge_model` and an `agents` map with `agent_model`, `prompt_sha256` and `resources_present` per agent (plus `prompt_file` for a [candidate prompt run](#evaluating-a-candidate-prompt---prompt-file), and the run-coverage fields `suite_sha256`, `complete` and `case_filter`, see [Run coverage](#run-coverage-suite_sha256-complete-and-case_filter)). These are the agent-level baseline values; per-case values live only in `<agent>.json` (see [Per-case fields](#per-case-fields-in-agentjson)). For a workflow agent, `agents.<agent>` also nests `sub_agents` and `workflow_sha256` (see [Workflows](#workflows-sub-agent-provenance-and-step-records)); sub-agents are never keys of `agents`. It also records the run's execution mode in `sandbox` and, for container runs, a per-agent `containment` map. The example below is a `--sandbox` (container) run (the `tool_trust` values are illustrative; they follow each agent's trust set, see [Tool trust](#tool-trust)):
@@ -1739,7 +1924,7 @@ The daemon-gated test `TestProvenanceParitySandbox` (run by `task eval:selftest:
 |-------|------|---------|
 | `suite_sha256` | string, 64 lowercase hex | Identity of the agent's eval suite (below). |
 | `complete` | boolean | `true` only when every case of the agent has a result for every repeat **and** `case_filter` is empty. |
-| `case_filter` | string | The `--case` value (`kairon eval <agent> <case>` or `--case`); `""` for a full run. |
+| `case_filter` | string | The selection label: the `--case` value (`kairon eval <agent> <case>` or `--case`), the `--filter` expressions, or both (see below); `""` for a full run. |
 
 They are written to `<agent>.json` and to `summary.json` under `agents.<agent>`, always together. The top-level single-agent mirror fields of `summary.json` (`prompt_sha256`, `agent_model`, ...) are **not** extended: the coverage fields live only in `agents.<agent>` and `<agent>.json`. `complete: false` and `case_filter: ""` are written explicitly, so a recorded `false` or `""` is distinguishable from a result that never recorded the fields (a run made before this tracking existed, or a direct library call that bypasses `kairon eval`), which has none of the three. `verify-log` reads that second case as "not recorded".
 
@@ -1747,13 +1932,14 @@ They are written to `<agent>.json` and to `summary.json` under `agents.<agent>`,
 
 - A case counts as covered when it has a saved result for every run `1..repeat` (a result with no `run` counts as run 1). An agent with no cases is never complete.
 - **A `--case` run is never complete**, even if the agent has exactly one case: "full run" means "no filter and every case covered". It records `case_filter: <case name>` and `complete: false`.
+- **A `--filter` run is never complete either**, even if every case of the agent matches the filter. It records `complete: false` and `case_filter` set to the filters in normalised form, sorted into a canonical order and joined with ` AND ` (`skill==cli AND speed==fast`). Combined with `--case`, the label starts with `case=<name>` (`case=add-flag AND speed==fast`). Treat it as a partial run: `verify-log` will not accept it as a full run, and `eval trend` marks it `INCOMPLETE`. See [Selecting cases](#selecting-cases-metadata-and---filter).
 - Every progressive save records its own coverage. A run interrupted after the first of several cases is left with `complete: false`; the final save of a finished run records `complete: true`. A resumed run recomputes `complete` over the saved and the new results together.
 - `verify-log` does not look at the `.progress` marker. `complete` is per agent and is the single signal, so an agent that finished in a multi-agent run whose other agent was interrupted is still usable.
 
 **How `suite_sha256` is computed.** It is a lowercase hex SHA-256 of the agent's eval suite, computed from the active evals directory (so it honours [`--evals-dir`](#evals-directory---evals-dir)) before any case starts. Only the bytes of these inputs are hashed:
 
 1. **The rubric.** Every `rubrics/*.yaml` whose parsed `agent` equals the agent (the same selection the rubric loader makes).
-2. **The case files.** Every `cases/<agent>/*.yaml` (non-recursive, `.yaml` only). This covers the whole agent suite whatever `--case` selects, so a filtered run and a full run of the same suite hash alike.
+2. **The case files.** Every `cases/<agent>/*.yaml` (non-recursive, `.yaml` only). This covers the whole agent suite whatever `--case` or `--filter` selects, so a filtered run and a full run of the same suite hash alike. The files are hashed as raw bytes, so editing only a case's `metadata` changes the hash (see [Metadata and the suite hash](#metadata-and-the-suite-hash)).
 3. **What those cases reference:**
    - `workspace: <name>`: every regular file under `fixtures/workspaces/<name>/`. Symlinks and other non-regular entries are skipped, as when the workspace is built, and a file's execute bit is part of its identity because the workspace builder preserves it.
    - `checks[].inject` entries: `fixtures/hidden/<entry>`.
@@ -1982,6 +2168,14 @@ A file that holds cases but records no `suite_sha256` (written before suite trac
 ```
 
 An empty result file is never refused, and nothing is checked for an agent that has no pinned suite (its rubric or cases could not be loaded). Edit a case, the rubric or a fixture, or add a case, and the interrupted run can no longer be resumed: start a fresh one. The same check is what refuses a resume after a suite edit made during a run was caught (see [Editing the suite during a run](#editing-the-suite-during-a-run)).
+
+**Case selection.** Resume also refuses to continue into a result file that holds saved cases recorded under a different `--case`/`--filter` selection, so one `<agent>.json` never mixes two selections. The comparison is the `case_filter` label recorded in the existing `<agent>.json` against the label of the resumed run (see [Run coverage](#run-coverage-suite_sha256-complete-and-case_filter)):
+
+```
+❌ cannot resume: --filter changed since the interrupted run of architect (recorded case_filter="speed==fast"; now "speed==slow") — resume with the same --filter or start a fresh run
+```
+
+Adding a filter to a run that had none, or dropping it, is refused the same way (the unfiltered label is `""`). A result file that records no `case_filter` (written before run coverage was tracked) reads as unfiltered, so it still resumes without `--filter` and is refused with one. Resume with the same `--filter`, or start a fresh run. Because a metadata-only edit changes `suite_sha256`, it also blocks a resume through the **Eval suite** check above.
 
 **Execution mode.** Resume also refuses to switch between native and `--sandbox`, because scoring `requires_sandbox` cases under the other mode would mark them completed under the wrong execution model. The check is made at two levels:
 
@@ -3770,10 +3964,39 @@ The `eval diff` command shows, in this order:
 - Per-criterion score deltas per agent
 - Token and cost deltas
 - Quality-per-dollar assessment
+- With `--filter` or recorded metadata, the extra lines described under [Filtering and metadata](#filtering-and-metadata-in-eval-diff)
 
 **Incomplete costs.** If either run's `total_cost` is `cost_incomplete` (a call used a model with no configured price, see [Unknown cost](#unknown-cost)), the diff says so instead of comparing two lower bounds as if they were totals: the `Cost:` delta line is suffixed ` (incomplete: <side(s)>)`, naming which run(s) are incomplete, and each quality-per-dollar line is suffixed ` (cost incomplete)`. Runs written before cost marking existed have no `cost_incomplete` and are read as complete, so they diff exactly as before.
 
 Runs made with [`--repeat`](#repeat-runs---repeat) diff like any other. The per-criterion averages and the cost cover every result of the run (so they are means and totals over the repeats), and the case output comparison uses run 1 of each case, so it does not depend on how many repeats either run used. The spread (`score_min`, `score_max`, `repeat_scores`) is not shown by `eval diff`; read it from `summary.json`.
+
+### Filtering and metadata in `eval diff`
+
+```bash
+kairon eval diff <runA> <runB> --filter 'skill==cli'
+```
+
+`--filter` (the same flag and syntax as for a run, see [Selecting cases](#selecting-cases-metadata-and---filter)) narrows the comparison to the case results that match, using what each result recorded: `agent`, `name` and the result's `metadata`. A result saved without metadata matches only `agent` and `name` filters. `--strict` does not apply.
+
+With filters the diff:
+
+- prints `Filter: <filters>` under the title;
+- recomputes each agent's score line, the per-criterion averages and the output changes from the matching case results only;
+- recomputes `Cost:`, the token lines, `Cost Trends` and `Quality per Dollar` from the cost of the matching case results, because the totals in `summary.json` cover every case;
+- shows `-` for a side with no matching result of an agent (and no delta), and leaves out an agent with none on either side;
+- prints `<agent>: no case results to filter, skipped` when an agent's result file cannot be loaded.
+
+When any result of either run has metadata (filtered or not), each agent also gets a `Cases:` block with one line per case, its metadata and its pooled score in each run, and an `output changed` line carries the same metadata:
+
+```
+selftest: 1.000 → 1.000  → +0.000
+  clarity                         1.000 → 1.000  → +0.000
+  Cases:
+    stub-basic [category=smoke, retries=3, skill=cli, speed=fast]  1.000 → 1.000
+    stub-usage [retries=2.5, skill=docs, speed=fast]  1.000 → 1.000
+```
+
+When no result has metadata and there is no `--filter`, the output is unchanged from earlier versions.
 
 ### Run Provenance
 
@@ -3822,6 +4045,7 @@ kairon eval trend <agent> [--json] [--evals-dir <dir>]
 | `<agent>` | Required, exactly one argument. A single path element: a name containing `/` or `..` is rejected. |
 | `--json` | Print a JSON array instead of text lines. |
 | `--evals-dir <dir>` | The [evals directory](#evals-directory---evals-dir) whose `results/` is read. Inherited from `kairon eval`; the default is the same as for the other `eval` commands. |
+| `--filter <expr>` | Only count the case results that match. Repeatable, same syntax as for a run (see [Selecting cases](#selecting-cases-metadata-and---filter)); `agent`, `name` and the metadata recorded with each result can be used. Inherited from `kairon eval`. See [Filtering the trend](#filtering-the-trend). |
 
 **Which runs are listed.** Every directory directly under `<evals-dir>/results/` that has a score for the agent. The score is found the same way as for [`verify-log`](#where-the-recorded-score-comes-from): the `agent_verdicts` score in `summary.json`, else `agent_scores`, else the scoreable cases of `<agent>.json`. Files, directories with no data for the agent, and runs of other agents are skipped without a message.
 
@@ -3848,7 +4072,7 @@ $ kairon eval trend selftest --evals-dir internal/eval/testdata/trend
 | Value | Meaning |
 |-------|---------|
 | `complete` | The run evaluated every case of the agent. |
-| `INCOMPLETE` | The run did not: it was limited to one case (`--case`, or `kairon eval <agent> <case>`) or was interrupted. Its score and success rate cover only the cases that ran, so do not compare it with a full run. The row is listed, not dropped or treated as an error. |
+| `INCOMPLETE` | The run did not: it was limited to one case (`--case`, or `kairon eval <agent> <case>`) or to the cases matching a `--filter`, or it was interrupted. Its score and success rate cover only the cases that ran, so do not compare it with a full run. The row is listed, not dropped or treated as an error. |
 | `completeness-unknown` | The run was written before coverage tracking existed and does not record `complete`. |
 
 **Success rate for older runs.** The `success` value is, in order: the `success_rate` of the summary verdict when its `attempts_total` is greater than 0; otherwise the rate recomputed from the case results in `<agent>.json` (each result's recorded `passed`), which gives runs written before `attempts_total` existed a rate (in the fixture, `260701-100000-aaaaaaa` has 3 passing results out of 4, so `75.0%`); otherwise unknown (`-` in text, `null` in JSON), for example when the agent file has no case results. Unlike the verdict, which reports `0` for zero attempts, the trend does not invent a rate for a run with no attempts.
@@ -3880,6 +4104,7 @@ $ kairon eval trend selftest --evals-dir internal/eval/testdata/trend
 | `judge_model` | string | The judge model; `""` when not recorded. |
 | `prompt_sha256` | string | The **first 8 characters** of the prompt SHA-256, not the full hash; `""` when not recorded. |
 | `complete` | boolean or `null` | `true`, `false` (the `INCOMPLETE` case), or `null` when the run does not record it (`completeness-unknown`). |
+| `case_metadata` | object | Present only when the run's (filtered) case results carry metadata: each metadata key mapped to the sorted list of its distinct values. Omitted otherwise. |
 
 **No results.** If no run has a result for the agent, including a missing or empty `results/` directory, `eval trend` prints nothing on stdout, prints `Error: no eval results for agent "<agent>" under <evals-dir>/results` on stderr (without usage text) and exits `1` (the CLI's error handling currently prints that line twice; scripts should rely on the exit status):
 
@@ -3891,3 +4116,25 @@ $ echo $?
 ```
 
 The same exit status applies to an invalid agent name and to a results directory that cannot be read. A successful listing exits `0`, including when some runs are `INCOMPLETE`.
+
+### Filtering the trend
+
+```bash
+kairon eval trend selftest --filter 'skill==cli'
+```
+
+With `--filter`, each run is scored from its matching case results only. `eval trend` reads saved results, so the filter applies to what each result recorded: `agent`, `name` and its `metadata`; a result saved without metadata matches only `agent` and `name`. A malformed filter is a usage error, like for a run. `--strict` does not apply.
+
+- `score` and `success` are recomputed from the matching case results of each run.
+- A run with no matching result is dropped. If no run is left, the command prints nothing on stdout, prints `Error: no eval results for agent "<agent>" matching --filter <filters> under <evals-dir>/results` on stderr and exits `1`.
+- `complete` is still the run's own flag. A row for a filtered view is a subset of that run, so a `complete` run can show a score computed from a few cases.
+
+**Metadata in rows.** When a run's case results carry metadata (after filtering, if any), its text row ends with `metadata <key>=<values>` for each key, keys sorted and each key's distinct values sorted and joined by `,`, and its JSON object gains `case_metadata`, a map from key to the sorted list of distinct values. Both are left out when no case result has metadata, so rows for older runs are unchanged:
+
+```
+<run>  <date>  score 100.0%  success 100.0%  …  prompt c14763dd  INCOMPLETE  metadata category=smoke retries=3 skill=cli speed=fast
+```
+
+```json
+"case_metadata": { "category": ["smoke"], "retries": ["3"], "skill": ["cli"], "speed": ["fast"] }
+```

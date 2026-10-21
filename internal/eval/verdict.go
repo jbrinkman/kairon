@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"sort"
 	"strings"
 )
@@ -82,6 +83,7 @@ func stampCase(cr *CaseResult, tc TestCase, rubric Rubric) {
 	passed := cr.ActualOutput != "" && percentAtLeast(score, max, threshold)
 	cr.Threshold = threshold
 	cr.Passed = &passed
+	cr.Metadata = maps.Clone(tc.Metadata)
 }
 
 // agentVerdict computes the verdict of an agent from its result alone. The
