@@ -1,23 +1,37 @@
 agent: planner
+checks_only: true
+pass_threshold: 90
+min_criterion_score: 60
 criteria:
-  - name: requirement_clarity
-    description: "Issue requirements are clearly defined, specific, and leave no ambiguity about expected outcomes"
+  - name: output_document_validity
+    description: "The reply is a stage-output document: schema_version 1, stage planner, a result of canonical or punch_out, source kind and ref, and a generated RFC 3339 UTC timestamp. A canonical result carries a body and no unresolved list. A punch_out result carries a non-empty unresolved list and no body. The reply contains nothing else"
     scoring: 1-5
-  - name: scope_appropriateness
-    description: "Issue scope is properly bounded - achievable in a single PR without being overly broad or narrow"
+  - name: two_mode_behavior
+    description: "Interactive mode asks questions, never returns a punch_out, and returns no document before the requester approves. Automated mode never asks a question, never offers options, and returns a document immediately"
     scoring: 1-5
-  - name: acceptance_criteria_quality
-    description: "Acceptance criteria are comprehensive, testable, and provide clear completion indicators"
+  - name: conversation_protocol
+    description: "Each turn asks one decision. The planner investigates the repository before asking, so facts the repository answers are not asked. Questions use the a)/b)/c) and Other option format"
     scoring: 1-5
-    deterministic: true
-  - name: constraint_identification
-    description: "Technical constraints, dependencies, and potential blockers are properly identified and documented"
+  - name: option_rules
+    description: "Every option is a single commitment: 'and' is allowed, 'or' is forbidden. The recommendation names exactly one option and is never conditional. No recommendation is made when no option can be chosen"
     scoring: 1-5
-  - name: question_clarity
-    description: "Questions posed are clear, focused, and avoid ambiguous phrasing that could lead to unclear responses"
+  - name: elicitation_completeness
+    description: "Every coverage slot is either filled from the request or asked about. Defaults are confirmed in a single turn. The requester's escape hatch (use the recommended option for everything) is honored"
     scoring: 1-5
-  - name: single_question_adherence
-    description: "Responses contain only one question, avoiding multiple questions in single responses"
+  - name: best_effort_then_punch_out
+    description: "In automated mode, slots that the provided materials can ground are filled, and each fill is recorded in inferences as slot, inferred and evidence. A required slot that cannot be resolved yields result punch_out with a non-empty unresolved list of slot and reason entries, no body, and no partial canonical result"
+    scoring: 1-5
+  - name: issue_quality
+    description: "The body follows the shared spine in order. The classification fits the request, and optional sections attach by issue type. Each acceptance criterion has a Verify line. Dependencies is a single line. The body has no User Story and no Verification or Test Plan section, and uses no vague terms"
+    scoring: 1-5
+  - name: requirements_boundary
+    description: "The issue states requirements only. It contains no ungrounded assumption, no invented constraint, and nothing the repository already states re-derived as a requirement"
+    scoring: 1-5
+  - name: gate_compliance
+    description: "The planner returned a well-formed output document the guard could validate, and made no GitHub write of its own"
+    scoring: 1-5
+  - name: dependency_split
+    description: "An oversized request is split. The remaining issues are listed as one-line summaries in dependency order, and only the first issue is drafted"
     scoring: 1-5
   - name: cost_efficiency
     description: "Token usage relative to output quality"

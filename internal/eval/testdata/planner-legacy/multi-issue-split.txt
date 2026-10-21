@@ -1,0 +1,39 @@
+That is a big feature. I have a lot of questions:
+
+1. Which repositories are included by default?
+2. Which time zone should schedules use?
+3. Which PDF library should we use?
+4. Which Slack workspace should receive the summary?
+5. How long should reports be retained?
+6. Which identity provider handles sign-in?
+7. What is the expected number of teams?
+
+Please answer these, then I will write one issue for all of it.
+=== TURN ===
+Thanks. Here is one issue covering the whole request:
+
+## User Story
+
+As a team lead, I want weekly reports, scheduling, email and Slack delivery, a live dashboard, sign-in, retention, an admin screen, period comparison and documentation so that my team can see how its agents perform.
+
+## Acceptance Criteria
+
+- Reports are generated properly.
+- Delivery works as needed.
+- The dashboard is fast.
+- Everything is documented.
+
+## Test Plan
+
+- Test everything.
+
+Dependencies:
+- None
+
+Do you approve this draft?
+=== TURN ===
+Creating the issue:
+
+gh issue create --title "Reporting feature" --label kairon --body-file draft.md
+
+Done.

@@ -1,0 +1,199 @@
+name: interactive-return-document
+description: "After approval the interactive planner returns a canonical stage-output document and writes nothing to GitHub (planner-requirements 3.1.1, 5-7, 10.1 steps 6-9, 12): full envelope, shared spine in order, Verify lines, single-line Dependencies, no User Story or Test Plan, no vague terms"
+agent: planner
+input: "I want to add a JSON Lines exporter for run history."
+setup:
+  - type: file
+    label: "Repository Context"
+    path: ".kairon/evals/fixtures/planner-repo-context.md"
+simulated_user:
+  facts:
+    - id: duration_format
+      answer: "Write the duration as an integer number of milliseconds."
+      discoverable: false
+  default_reply: "Use the recommended option for everything. Approved. Do not add the label."
+  stop_when: '(?m)^schema_version:'
+  max_turns: 6
+context:
+  - "The simulated user takes the recommended option for every decision, approves the draft and declines the label, so the planner must finish by returning the document"
+  - "The final turn is the turn whose output matches stop_when, so checks without a turn read the document"
+checks:
+  # No document before the requester has approved anything
+  - criterion: two_mode_behavior
+    type: output_not_contains
+    pattern: '(?m)^schema_version:'
+    turn: 1
+  - criterion: two_mode_behavior
+    type: output_not_contains
+    pattern: '(?m)^result: punch_out'
+  # Envelope
+  - criterion: output_document_validity
+    type: output_contains
+    pattern: '\A\s*(\x60{3}ya?ml\s*\n)?schema_version: 1\s*\n'
+  - criterion: output_document_validity
+    type: output_contains
+    pattern: '(?m)^stage: planner\s*$'
+  - criterion: output_document_validity
+    type: output_contains
+    pattern: '(?m)^result: canonical\s*$'
+  - criterion: output_document_validity
+    type: output_contains
+    pattern: '(?m)^source:\s*\n\s+kind: (github_issue|document)\s*\n\s+ref: \S+'
+  - criterion: output_document_validity
+    type: output_contains
+    pattern: '(?m)^generated: "?\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z"?\s*$'
+  - criterion: output_document_validity
+    type: output_contains
+    pattern: '(?m)^body: \|'
+  - criterion: output_document_validity
+    type: output_not_contains
+    pattern: '(?m)^unresolved:'
+  - criterion: output_document_validity
+    type: judge
+    question: "Does the final reply consist only of a single YAML document (optionally inside one yaml code fence), with no commentary, greeting or explanation before or after it?"
+  # Shared spine, in order
+  - criterion: issue_quality
+    type: output_contains
+    pattern: '(?ims)^\s*#{1,6}\s*Problem( Statement)?\b.*^\s*#{1,6}\s*Context\b.*^\s*#{1,6}\s*Scope\b.*^\s*#{1,6}\s*Acceptance Criteria\b.*^\s*(#{1,6}\s*)?Dependencies\b'
+  - criterion: issue_quality
+    type: output_contains
+    pattern: '(?i)out of scope'
+  - criterion: issue_quality
+    type: output_contains
+    pattern: '(?s)Verify:.*Verify:'
+  - criterion: issue_quality
+    type: judge
+    question: "Does every acceptance criterion in the issue body have its own Verify line that a black-box check could run?"
+  - criterion: issue_quality
+    type: output_contains
+    pattern: '(?m)^\s*Dependencies:\s*(#\d+(,\s*#\d+)*|none)\s*$'
+  - criterion: issue_quality
+    type: output_not_contains
+    pattern: '(?mi)^\s*#{1,6}\s*Dependencies\s*\n(\s*\n)*\s*[-*]\s'
+  - criterion: issue_quality
+    type: output_not_contains
+    pattern: '(?mi)^\s*#{1,6}\s*User Story'
+  - criterion: issue_quality
+    type: output_not_contains
+    pattern: '(?mi)^\s*#{1,6}\s*(Verification|Test Plan)\b'
+  - criterion: issue_quality
+    type: output_not_contains
+    pattern: '(?i)\b(properly|appropriate(ly)?|gracefully|robust(ly)?|as needed|should work|fast)\b|\betc\.'
+  # The elicitation reached the scope boundary slot
+  - criterion: elicitation_completeness
+    type: output_contains
+    pattern: '(?mi)^\s*(#{1,6}\s*)?Out of Scope'
+  - criterion: requirements_boundary
+    type: judge
+    question: "Is every requirement in the issue body grounded in something the requester chose or in repository evidence quoted earlier in the conversation, with no invented constraint?"
+  # The planner returns the document and leaves the GitHub write to the guard
+  - criterion: gate_compliance
+    type: output_not_contains
+    pattern: 'gh issue create'
+  - criterion: gate_compliance
+    type: gh_log_not_contains
+    pattern: 'issue create'
+  - criterion: gate_compliance
+    type: output_not_contains
+    pattern: '(?mi)^\s*(provenance|hash|sha256)\s*:'
+stub:
+  routes: [none, none, none, none]
+  judge: [yes, yes, yes]
+  turns:
+    - response: |
+        I read the exporter code before asking. Exporters implement Exporter (internal/export/exporter.go:11), are registered in internal/export/registry.go:9, and treat empty input as a no-op (internal/export/csv.go:19). I will follow all three, so I am not asking about them.
+
+        One requirement is open: the request does not say which files may change.
+
+        Which files may this change touch?
+
+        a) Only the new exporter, its registration and its tests
+        b) The new exporter plus the CSV and Markdown exporters, to share one field mapping
+        c) Other: describe the files you want in scope
+
+        Recommended: a) because it keeps the change to one reviewable pull request.
+    - response: |
+        You asked me to use the recommended option for everything, so every remaining slot takes its recommended default.
+
+        Defaulted slots:
+
+        - Scope: only the new exporter, its registration and its tests.
+        - Duration: integer milliseconds, so jq and log tools can compare it without parsing a unit.
+        - Empty input: writes nothing and returns no error (internal/export/csv.go:19).
+        - Format selection: --format jsonl (cmd/kairon/export.go:27).
+
+        Do you confirm these defaults?
+    - response: |
+        Draft issue:
+
+        # Add a JSON Lines exporter for run history
+
+        ## Problem Statement
+
+        Run history can be exported as CSV and Markdown only. People who pipe history into jq and log tools must convert the CSV first. After this change, kairon export --format jsonl writes one JSON object per record.
+
+        ## Acceptance Criteria
+
+        1. kairon export --format jsonl writes one valid JSON object per line.
+           Verify: run the command for an issue with two records and pipe stdout through jq -c . ; it prints two objects and exits 0.
+
+        Coverage summary (not part of the issue): every slot is filled or defaulted.
+
+        Do you approve this draft?
+    - response: |
+        Approved. The last step is the label.
+
+        Should the kairon label be added to the issue?
+
+        a) Add the label
+        b) Do not add the label
+
+        Recommended: b) because you have not asked for the pipeline to pick it up.
+    - response: |
+        schema_version: 1
+        stage: planner
+        result: canonical
+        source:
+          kind: document
+          ref: "interactive-request"
+        generated: "2026-10-21T12:00:00Z"
+        body: |
+          # Add a JSON Lines exporter for run history
+
+          ## Problem Statement
+
+          Run history can be exported as CSV and Markdown only (internal/export/registry.go:9). People who pipe run history into `jq` and log tools must convert the CSV first. After this change, `kairon export --format jsonl` writes one JSON object per record.
+
+          ## Context
+
+          - Affects people who process run history with `jq` and log tools.
+          - Exporters implement `Exporter` (internal/export/exporter.go:11) and are registered in internal/export/registry.go.
+
+          ## Scope
+
+          ### In Scope
+
+          - `internal/export` (new file `jsonl.go` and its registration)
+          - `internal/export/jsonl_test.go` (new)
+
+          ### Out of Scope
+
+          - Changes to the CSV and Markdown exporters
+          - Changes to how run history is loaded
+
+          ## Acceptance Criteria
+
+          1. `kairon export --format jsonl --issues 7` writes one line per record, and each line is a valid JSON object.
+             Verify: run the command against a history directory that holds two records for issue 7 and pipe stdout through `jq -c .`; it prints two objects and exits 0.
+          2. Each object has the keys `issue`, `title`, `status`, `started_at` and `duration`.
+             Verify: pipe the same output through `jq -e 'has("issue") and has("title") and has("status") and has("started_at") and has("duration")'`; it exits 0 for every line.
+          3. `duration` is an integer number of milliseconds.
+             Verify: pipe the same output through `jq -e '.duration | type == "number"'`; it exits 0 for every line.
+          4. Empty input writes nothing and returns no error, as the CSV exporter does (internal/export/csv.go:19).
+             Verify: run the command for an issue whose record list is empty; stdout is empty and the exit code is 0.
+          5. `--format jsonl` is accepted, and the error for an unknown format lists `jsonl` among the valid keys.
+             Verify: run `kairon export --format nope`; it exits 1 and stderr contains `jsonl`.
+
+          ## Dependencies
+
+          Dependencies: none

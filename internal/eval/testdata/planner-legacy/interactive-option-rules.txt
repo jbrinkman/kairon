@@ -1,0 +1,19 @@
+I have a few questions about this bug before I draft anything:
+
+1. Should the fix change the CSV exporter, the dedupe step, or both?
+2. Do you want the same behaviour for the Markdown exporter?
+3. Which should take priority, fixing the symptom or the root cause?
+
+a) Fix the symptom, or fix the root cause if that is easy
+b) Fix the root cause only
+c) Both, or just the symptom if the root cause turns out to be risky
+
+I recommend a) or b), depending on how big the change is.
+
+Here is a draft:
+
+## User Story
+
+As a user of the export command, I want the CSV to be free of duplicate rows so that my report is correct.
+
+When you are happy with it I will run gh issue create.

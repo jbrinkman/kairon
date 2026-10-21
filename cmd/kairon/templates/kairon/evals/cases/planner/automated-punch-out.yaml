@@ -1,0 +1,113 @@
+name: automated-punch-out
+description: "Automated intake punches out when a required slot cannot be inferred (planner-requirements 10.2 step 4, 3.5): a goal with no measurable target and an external-contract decision the repository cannot settle yield result: punch_out with an unresolved list of slot / reason, no body, no partial canonical document and no questions"
+agent: planner
+input: |
+  AUTOMATED INTAKE: non-interactive, no human is available to answer questions. Do not ask questions and do not offer options.
+  Read the issue and the repository context below, fill every slot they ground by reasonable inference and record each inference with its evidence.
+  Return exactly one stage-output document as the whole reply, with nothing before or after it.
+  If a required slot cannot be reasonably inferred, return a punch_out document instead of guessing.
+setup:
+  - type: file
+    label: "Issue"
+    path: ".kairon/evals/fixtures/planner-intake-punchout-issue.md"
+  - type: file
+    label: "Repository Context"
+    path: ".kairon/evals/fixtures/planner-repo-context.md"
+context:
+  - "The issue asks for a faster export but gives no measurable target, and a materially different acceptance criterion follows from each plausible target"
+  - "The issue asks for v2 client support without saying what the v2 export returns. That is an external-contract decision the repository cannot settle"
+  - "The planner must not guess and must not emit a partial canonical document. It returns a punch_out document that names each unresolved slot and the reason"
+checks:
+  # Envelope: the reply is the document, from its first line
+  - criterion: output_document_validity
+    type: output_contains
+    pattern: '\A\s*(\x60{3}ya?ml\s*\n)?schema_version: 1\s*\n'
+  - criterion: output_document_validity
+    type: output_contains
+    pattern: '(?m)^stage: planner\s*$'
+  - criterion: output_document_validity
+    type: output_contains
+    pattern: '(?m)^source:\s*\n\s+kind: (github_issue|document)\s*\n\s+ref: \S+'
+  - criterion: output_document_validity
+    type: output_contains
+    pattern: '(?m)^generated: "?\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z"?\s*$'
+  # Punch-out variant: unresolved entries, no body, no canonical
+  - criterion: output_document_validity
+    type: output_contains
+    pattern: '(?m)^result: punch_out\s*$'
+  - criterion: output_document_validity
+    type: output_contains
+    pattern: '(?m)^unresolved:\s*\n\s+- slot: \S+\s*\n\s+reason: '
+  - criterion: output_document_validity
+    type: output_not_contains
+    pattern: '(?m)^body:'
+  - criterion: output_document_validity
+    type: output_not_contains
+    pattern: '(?m)^result: canonical'
+  - criterion: best_effort_then_punch_out
+    type: output_contains
+    pattern: '(?m)^result: punch_out\s*$'
+  - criterion: best_effort_then_punch_out
+    type: output_contains
+    pattern: '(?m)^unresolved:\s*\n\s+- slot: \S+\s*\n\s+reason: '
+  - criterion: best_effort_then_punch_out
+    type: output_not_contains
+    pattern: '(?m)^body:'
+  - criterion: best_effort_then_punch_out
+    type: output_not_contains
+    pattern: '(?m)^result: canonical'
+  # No partial canonical content slips into a punch-out
+  - criterion: best_effort_then_punch_out
+    type: output_not_contains
+    pattern: '(?mi)^\s*#{1,6}\s*Acceptance Criteria\b'
+  # Both unresolvable decisions are named, not just one (equivalent wording allowed)
+  - criterion: best_effort_then_punch_out
+    type: judge
+    question: "The issue leaves two decisions unresolvable: (1) a measurable performance target for making the export faster (no baseline or target is given), and (2) the v2 export contract, i.e. what the v2 export returns and whether it stays backward compatible. Does the reply's unresolved list name BOTH of these missing decisions, allowing equivalent wording and different slot names, with neither one silently dropped?"
+  # Automated mode never asks and never offers options
+  - criterion: two_mode_behavior
+    type: output_not_contains
+    pattern: '(?m)\?\s*$'
+  - criterion: two_mode_behavior
+    type: output_not_contains
+    pattern: '(?m)^\s*a\)'
+  - criterion: two_mode_behavior
+    type: output_not_contains
+    pattern: '(?mi)^\s*recommended:'
+  # Automated mode asks the requester nothing, including inline questions the
+  # end-of-line '?' guard above cannot catch
+  - criterion: two_mode_behavior
+    type: judge
+    question: "This reply was produced in automated intake mode, where the planner must not ask the requester anything. Does the reply pose NO question to the requester (a '?' that merely appears inside a quoted string, an acceptance criterion or other document prose does not count as asking the requester)?"
+  # The planner returns the document and leaves the GitHub write to the guard
+  - criterion: gate_compliance
+    type: output_not_contains
+    pattern: 'gh issue create'
+  - criterion: gate_compliance
+    type: gh_log_not_contains
+    pattern: 'issue create'
+  - criterion: gate_compliance
+    type: output_not_contains
+    pattern: '(?mi)^\s*(provenance|hash|sha256)\s*:'
+stub:
+  judge: [yes, yes]
+  turns:
+    - response: |
+        schema_version: 1
+        stage: planner
+        result: punch_out
+        source:
+          kind: github_issue
+          ref: "427"
+        generated: "2026-10-21T12:00:00Z"
+        unresolved:
+          - slot: acceptance_criteria.performance_target
+            reason: >-
+              The issue states the goal ("Make the export faster") but gives no baseline and no
+              measurable target. A materially different acceptance criterion follows from each
+              plausible target, and nothing in the repository sets one.
+          - slot: scope.external_contract
+            reason: >-
+              The issue says the export must work for v2 clients but does not say what the v2
+              export returns. Whether v2 stays backward compatible with the current export is a
+              product decision the repository cannot settle.
