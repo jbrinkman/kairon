@@ -837,6 +837,57 @@ func TestResumeRefusesChangedOrMissingFilter(t *testing.T) {
 	}
 }
 
+// TestResumeChangedFilterRefusedEvenWhenSavedAgentNowMatchesNothing pins the
+// multi-agent resume hole: a run of speed==fast saves alpha (its only match)
+// and skips beta. Resuming with speed==slow makes alpha match zero cases, so
+// the per-agent filter block would `continue` past it before
+// checkResumeIntegrity ever runs; meanwhile beta now matches and, having no
+// saved file, would pass the integrity check and write slow results into the
+// same directory, mixing two selections. The resume must be refused for the
+// changed filter, and the saved alpha.json must be left untouched.
+func TestResumeChangedFilterRefusedEvenWhenSavedAgentNowMatchesNothing(t *testing.T) {
+	env := newFilterEnv(t, map[string]map[string]string{
+		"alpha": {"a1.yaml": fcase("a1", "speed: fast\n")},
+		"beta":  {"b1.yaml": fcase("b1", "speed: slow\n")},
+	})
+	if err := RunWithOptions("", "", env.opts(RunOptions{Filters: []string{"speed==fast"}})); err != nil {
+		t.Fatalf("initial fast run: %v", err)
+	}
+	dir := env.onlyRun(t)
+	markInterrupted(t, dir)
+
+	// alpha ran under speed==fast and has a saved file; beta was skipped.
+	alphaFile := filepath.Join(dir, "alpha.json")
+	before, err := os.ReadFile(alphaFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, statErr := os.Stat(filepath.Join(dir, "beta.json")); !os.IsNotExist(statErr) {
+		t.Fatalf("beta.json exists after the fast run (stat err = %v)", statErr)
+	}
+
+	// Resume with a different filter. alpha now matches nothing; beta matches.
+	err = RunWithOptions("", "", env.opts(RunOptions{Filters: []string{"speed==slow"}, Resume: true}))
+	if err == nil {
+		t.Fatal("resume with a changed filter was accepted; it must be refused")
+	}
+	for _, want := range []string{"cannot resume", "--filter changed", "alpha", `recorded case_filter="speed==fast"`, `now "speed==slow"`} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q lacks %q", err, want)
+		}
+	}
+
+	// The refused resume must not have added beta's slow results or touched
+	// alpha's saved file.
+	if _, statErr := os.Stat(filepath.Join(dir, "beta.json")); !os.IsNotExist(statErr) {
+		t.Errorf("refused resume wrote beta.json into the fast run's directory (stat err = %v)", statErr)
+	}
+	after, _ := os.ReadFile(alphaFile)
+	if !bytes.Equal(before, after) {
+		t.Error("refused resume modified the saved alpha result")
+	}
+}
+
 func TestResumeLegacyResultWithoutCaseFilterResumesAsBefore(t *testing.T) {
 	env := oneAgent(t)
 	if err := RunWithOptions("alpha", "", env.opts(RunOptions{})); err != nil {

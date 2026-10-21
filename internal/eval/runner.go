@@ -1974,6 +1974,22 @@ func runProgressiveEvaluation(agent, resultsDir string, isResume bool, cConfig *
 			total := len(cases)
 			cases = filterCases(cases, cfg.filters)
 			if len(cases) == 0 {
+				// This agent has no case under the current filter. On a
+				// resume, an agent with a saved result file still had that
+				// result written under some earlier selection; skipping it
+				// here before checkResumeIntegrity would let a changed
+				// --filter slip past the guard (the recorded case_filter would
+				// never be compared) while a different agent appends its
+				// results beside the stale ones. Run the integrity check for
+				// any saved agent before skipping, so a changed filter is
+				// refused rather than silently mixing two selections.
+				if isResume {
+					if _, statErr := os.Stat(filepath.Join(resultsDir, rubric.Agent+".json")); statErr == nil {
+						if err := checkResumeIntegrity(resultsDir, rubric.Agent, cConfig != nil); err != nil {
+							return err
+						}
+					}
+				}
 				// No saved file, summary entry or suite hash for this agent.
 				fmt.Printf("⏭  Skipping %s: no cases match --filter %s\n", rubric.Agent, FormatFilters(cfg.filters))
 				continue
