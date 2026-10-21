@@ -220,9 +220,11 @@ Fallbacks:
 | Ready | `kairon` | Watcher will pick up this issue |
 | Processing | — | Agent spawned and working |
 | Done | `kairon-done` | PR created successfully |
-| Failed | `kairon-failed` | Exhausted retries |
+| Failed | `kairon-failed` | Exhausted retries, or an unrecoverable failure. An explanatory comment is posted before this label is added |
 
 Issues with `kairon-done` or `kairon-failed` labels are excluded from polling. The done/failed labels are derived from the configured label (e.g., if label is `my-label`, done becomes `my-label-done`).
+
+When an issue fails, Kairon posts a comment that says which stage failed, how many attempts were made, what was expected and what was found, and only then adds the `<label>-failed` label. An issue is never labeled failed without a stated reason. To restart a failed issue, fix the cause and remove the `<label>-failed` label. See [docs/failure-contract.md](docs/failure-contract.md).
 
 ### Issue Dependencies
 
@@ -259,7 +261,7 @@ The system has two layers of retry:
 1. **Global retries** (watcher level) — Persisted in `.kairon/retries/issue-<number>.count`. The watcher skips issues that have reached `max_retries` attempts and survives process restarts.
 2. **Per-agent retries** (manager level) — When an agent exits with a non-zero code, the manager retries with exponential backoff (delay = retry count × 1 second) up to `max_retries`.
 
-After exhausting retries, the issue is labeled `<label>-failed`.
+After exhausting retries, Kairon posts an explanatory comment and then labels the issue `<label>-failed`. The comment is always posted before the label. Removing the label restarts the issue with a fresh retry budget. The two-tier model (bounded retry, then punch-out), the `max_retries` and `max_qa_retries` semantics, and the restart flow are described in [docs/failure-contract.md](docs/failure-contract.md).
 
 ## Agent Configuration
 

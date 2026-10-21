@@ -14,7 +14,10 @@ import (
 	"time"
 
 	"github.com/jbrinkman/kairon/internal/config"
+	"github.com/jbrinkman/kairon/internal/failure"
 	"github.com/jbrinkman/kairon/internal/github"
+	"github.com/jbrinkman/kairon/internal/guard"
+	"github.com/jbrinkman/kairon/internal/stageoutput"
 )
 
 type Status string
@@ -34,6 +37,9 @@ type Agent struct {
 	Status      Status
 	RetryCount  int
 	StartTime   time.Time
+	// RunID scopes the punch-out comment marker to this terminal run. It is set
+	// once at Spawn and reused by every retry of the same run.
+	RunID string
 }
 
 type Manager struct {
@@ -43,14 +49,26 @@ type Manager struct {
 	outputCapture        *OutputCapture
 	terminalOutputPaused bool
 	statusGen            atomic.Uint64
+
+	// Seams. NewManager sets production defaults; tests replace them so no
+	// test needs gh, kiro-cli or git.
+	issues   failure.Issues
+	prExists func(repo string, issue int) (bool, error)
+	retry    func(*Agent)
+	cleanup  func(issue, pid int)
 }
 
 func NewManager(cfg *config.Config) *Manager {
-	return &Manager{
+	m := &Manager{
 		agents:        make(map[string]*Agent),
 		config:        cfg,
 		outputCapture: NewOutputCapture(1000), // Buffer 1000 lines
+		issues:        github.CLI{},
+		prExists:      github.PRExistsForIssue,
 	}
+	m.retry = m.retryAgent
+	m.cleanup = m.performCleanup
+	return m
 }
 
 type prefixedWriter struct {
@@ -244,6 +262,7 @@ func (m *Manager) Spawn(issueNumber int, repo string) (*Agent, error) {
 		Status:      StatusRunning,
 		RetryCount:  0,
 		StartTime:   time.Now(),
+		RunID:       failure.NewRunID(),
 	}
 
 	m.agents[id] = agent
@@ -330,7 +349,7 @@ func (m *Manager) HandleExit(id string, exitCode int) {
 		log.Printf("[agent] %s completed with exit code 0 (issue #%d), verifying PR exists", id, issueNumber)
 
 		// Verify PR exists before marking as done
-		prExists, err := github.PRExistsForIssue(m.config.Repo, issueNumber)
+		prExists, err := m.prExists(m.config.Repo, issueNumber)
 		if err != nil {
 			log.Printf("[agent] failed to check for PR for issue #%d: %v", issueNumber, err)
 		}
@@ -361,42 +380,85 @@ func (m *Manager) HandleExit(id string, exitCode int) {
 			updatedAgent.Status = StatusFailed
 			m.statusGen.Add(1)
 			log.Printf("[agent] %s completed but no PR found (issue #%d, retry %d/%d)", id, updatedAgent.IssueNumber, updatedAgent.RetryCount, m.config.MaxRetries)
-			if updatedAgent.RetryCount < m.config.MaxRetries {
-				updatedAgent.RetryCount++
-				log.Printf("[agent] retrying %s (issue #%d, attempt %d)", id, updatedAgent.IssueNumber, updatedAgent.RetryCount)
-				go m.retryAgent(updatedAgent)
-				m.mu.Unlock()
-			} else {
-				failedLabel := m.config.Label + "-failed"
-				log.Printf("[agent] %s exhausted retries, labeling issue #%d as %s", id, updatedAgent.IssueNumber, failedLabel)
-				m.mu.Unlock()
-				github.AddLabel(m.config.Repo, issueNumber, failedLabel)
+			actual := fmt.Sprintf("exited 0 but no pull request was found for branch spec/issue-%d-*", issueNumber)
+			punch, runID, fc := m.decideFailureLocked(id, updatedAgent, actual)
+			m.mu.Unlock()
+
+			// GitHub writes happen outside the lock.
+			if punch {
+				m.punchOut(id, issueNumber, runID, fc)
 			}
 		}
 		// Perform cleanup after successful completion
-		go m.performCleanup(agent.IssueNumber, os.Getpid())
+		go m.cleanup(agent.IssueNumber, os.Getpid())
 
 	} else {
 		m.mu.Lock()
-		defer m.mu.Unlock()
-
 		agent, exists := m.agents[id]
 		if !exists {
+			m.mu.Unlock()
 			return
 		}
 
 		agent.Status = StatusFailed
 		m.statusGen.Add(1)
 		log.Printf("[agent] %s exited with code %d (issue #%d, retry %d/%d)", id, exitCode, agent.IssueNumber, agent.RetryCount, m.config.MaxRetries)
-		if agent.RetryCount < m.config.MaxRetries {
-			agent.RetryCount++
-			log.Printf("[agent] retrying %s (issue #%d, attempt %d)", id, agent.IssueNumber, agent.RetryCount)
-			go m.retryAgent(agent)
-		} else {
-			failedLabel := m.config.Label + "-failed"
-			log.Printf("[agent] %s exhausted retries, labeling issue #%d as %s", id, agent.IssueNumber, failedLabel)
-			github.AddLabel(m.config.Repo, agent.IssueNumber, failedLabel)
+		issueNumber := agent.IssueNumber
+		punch, runID, fc := m.decideFailureLocked(id, agent, fmt.Sprintf("krew-lead exited with code %d", exitCode))
+		m.mu.Unlock()
+
+		// GitHub writes happen outside the lock.
+		if punch {
+			m.punchOut(id, issueNumber, runID, fc)
 		}
+	}
+}
+
+// decideFailureLocked is the shared terminal-path decision for both a non-zero
+// exit and an exit 0 without a PR. The caller must hold m.mu. It builds the
+// FailureContext and asks failure.Decide. On a retry it bumps the counter and
+// starts the retry seam; on a punch-out it returns the run id and context so
+// the caller can write to GitHub after releasing the lock.
+func (m *Manager) decideFailureLocked(id string, a *Agent, actual string) (punch bool, runID string, fc guard.FailureContext) {
+	fc = m.implementationFailure(a.IssueNumber, a.RetryCount, actual)
+	if failure.Decide(fc, failure.Recoverable) == failure.DecisionRetry {
+		a.RetryCount++
+		log.Printf("[agent] retrying %s (issue #%d, attempt %d)", id, a.IssueNumber, a.RetryCount)
+		go m.retry(a)
+		return false, "", fc
+	}
+	if a.RunID == "" {
+		a.RunID = failure.NewRunID()
+	}
+	return true, a.RunID, fc
+}
+
+func (m *Manager) implementationFailure(issueNumber, retryCount int, actual string) guard.FailureContext {
+	return guard.FailureContext{
+		Stage:    stageoutput.StageKrewLead,
+		Guard:    "implementation-run",
+		Attempt:  failure.PolicyFor(m.config, failure.BoundaryImplementation).Attempt(retryCount + 1),
+		Expected: fmt.Sprintf("krew-lead exits 0 and a pull request exists for issue #%d", issueNumber),
+		Actual:   actual,
+	}
+}
+
+// punchOut is Tier 2 for an issue: the explanatory comment, then the failed
+// label. It must be called without m.mu held because it performs GitHub
+// writes. On success it clears the issue's retry count file so that clearing
+// the label later restarts the issue with a fresh budget. On error it logs and
+// leaves the retry count file alone; the watcher reconciles the missing label.
+func (m *Manager) punchOut(id string, issueNumber int, runID string, fc guard.FailureContext) {
+	failedLabel := failure.FailedLabel(m.config.Label)
+	log.Printf("[agent] %s exhausted retries, punching out issue #%d (%s)", id, issueNumber, failedLabel)
+	remedy := fmt.Sprintf("Read the agent log at .kairon/logs/issue-%d.log to see why the run failed, fix the cause, then remove the `%s` label.", issueNumber, failedLabel)
+	target := failure.Target{Repo: m.config.Repo, Issue: issueNumber, FailLabel: failedLabel}
+	if err := failure.PunchOut(m.issues, target, runID, fc, remedy); err != nil {
+		log.Printf("[agent] punch-out for issue #%d incomplete, will be reconciled on the next poll: %v", issueNumber, err)
+		return
+	}
+	if err := m.cleanupRetryFile(issueNumber); err != nil {
+		log.Printf("[agent] failed to clear retry count for issue #%d: %v", issueNumber, err)
 	}
 }
 
