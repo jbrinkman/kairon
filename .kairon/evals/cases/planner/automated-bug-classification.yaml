@@ -48,6 +48,9 @@ checks:
     pattern: '(?m)^\s*a\)'
   - criterion: two_mode_behavior
     type: output_not_contains
+    pattern: '(?mi)^\s*recommended:'
+  - criterion: two_mode_behavior
+    type: output_not_contains
     pattern: '(?m)^result: punch_out'
   - criterion: best_effort_then_punch_out
     type: output_not_contains
