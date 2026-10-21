@@ -82,11 +82,14 @@ func (s *Structural) Admit(in Input) AdmissionResult {
 			"missing sections: "+strings.Join(missing, ", "))
 	}
 
-	start, ok := findSection(lines, acceptanceCriteria)
-	if !ok {
+	starts := findSections(lines, acceptanceCriteria)
+	if len(starts) == 0 {
 		return Admitted()
 	}
-	items := listItems(lines[start+1 : sectionEnd(lines, start)])
+	var items []string
+	for _, start := range starts {
+		items = append(items, listItems(lines[start+1:sectionEnd(lines, start)])...)
+	}
 	if len(items) == 0 {
 		return in.Reject(StructuralName,
 			"every acceptance criterion carries a Verify: line",
@@ -190,6 +193,20 @@ func findSection(lines []bodyLine, name string) (int, bool) {
 		}
 	}
 	return 0, false
+}
+
+// findSections returns the indexes of every heading line that names the
+// section, in order. A canonical body should have one, but duplicates must all
+// be checked so a later section cannot smuggle an unverified criterion past the
+// first.
+func findSections(lines []bodyLine, name string) []int {
+	var out []int
+	for i, l := range lines {
+		if l.level > 0 && headingMatches(l.heading, name) {
+			out = append(out, i)
+		}
+	}
+	return out
 }
 
 // sectionEnd returns the index of the first line after the section that starts

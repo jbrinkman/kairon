@@ -259,6 +259,20 @@ func TestStructural_MissingSectionMessages(t *testing.T) {
 	assert.Equal(t, "missing sections: Context, Acceptance Criteria, Dependencies", res.Failure.Actual)
 }
 
+func TestStructural_ChecksEveryAcceptanceCriteriaSection(t *testing.T) {
+	// A second peer Acceptance Criteria section whose item lacks Verify: must
+	// be rejected, even though the first section is fully verified.
+	body := wellFormedBody + `
+## Acceptance Criteria
+3. A later unverified criterion.
+`
+	res := NewStructural(nil).Admit(structuralInput(canonicalRaw(t, stageoutput.StagePlanner, body)))
+	require.NotNil(t, res.Failure)
+	assert.False(t, res.Pass)
+	assert.Equal(t, "every acceptance criterion carries a Verify: line", res.Failure.Expected)
+	assert.Contains(t, res.Failure.Actual, "criteria without Verify:")
+}
+
 func TestStructural_AcceptanceCriteriaSectionEndsAtNextHeading(t *testing.T) {
 	// The unverified item belongs to Dependencies, not Acceptance Criteria.
 	body := strings.Replace(wellFormedBody, "None.\n", "- #12 must merge first\n", 1)
