@@ -163,6 +163,10 @@ Both modes preserve their state when you switch, allowing seamless workflow tran
 
 `kairon check` runs a checks file (the YAML list of deterministic checks used by [eval cases](docs/evaluation.md#checks)) against any directory and prints one `PASS`/`FAIL` line per check. It exits 0 only if every check passes, and validates the whole file before running anything. See [docs/evaluation.md](docs/evaluation.md#running-checks-on-any-directory-kairon-check) for the flags, file format and safety notes (`command` checks run on the host).
 
+### Stage-Output Document
+
+The document a pipeline stage returns (a strict-schema YAML envelope with a `canonical` or `punch_out` result) is defined in [docs/stage-output.md](docs/stage-output.md).
+
 ## Architecture
 
 ### Agent Pipeline
