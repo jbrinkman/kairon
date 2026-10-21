@@ -167,6 +167,8 @@ Both modes preserve their state when you switch, allowing seamless workflow tran
 
 The document a pipeline stage returns (a strict-schema YAML envelope with a `canonical` or `punch_out` result) is defined in [docs/stage-output.md](docs/stage-output.md).
 
+The guards that check a stage-output document between stages, and the ordered chain runner that applies them, are described in [docs/guards.md](docs/guards.md).
+
 ## Architecture
 
 ### Agent Pipeline
