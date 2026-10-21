@@ -95,3 +95,11 @@ func isNil(g Guard) bool {
 	}
 	return false
 }
+
+// DefaultChain returns the hard-coded, ordered guard chain for a stage
+// boundary. It is the single place the order is written; Run still takes a
+// plain slice. The handler is the failure action the guards invoke through
+// OnFailure; a nil handler makes OnFailure return ErrNoFailureHandler.
+func DefaultChain(handler FailureHandler) []Guard {
+	return []Guard{NewStructural(handler)}
+}

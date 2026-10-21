@@ -197,3 +197,9 @@ func TestRun_ContractViolation(t *testing.T) {
 		})
 	}
 }
+
+func TestDefaultChain_Order(t *testing.T) {
+	chain := DefaultChain(nil)
+	require.Len(t, chain, 1)
+	assert.IsType(t, &Structural{}, chain[0])
+}
