@@ -242,10 +242,11 @@ update path rechecks the revision first.
 check and the write to one request round trip. It cannot close it. `updatedAt` also has one-second granularity, so an
 edit in the same second as the observed revision does not change the token.
 
-An edit that slips into that window is still caught on read. The stored hash was computed from the body the
-committer wrote, so it no longer matches the edited text, and `Classify` returns `mismatch`. The issue is then
-re-routed to the planner (§8.4). The window can cost a re-plan. It cannot let an unvalidated body pass as `valid`
-through an honest edit.
+An edit made after the revision check but before the write can be overwritten and lost without detection. The
+replacement body carries its own matching hash, so `Classify` returns `valid`, not `mismatch`. Only an edit made
+after the write, which changes the canonical body without updating the marker, leaves a stale hash: `Classify` then
+returns `mismatch` and the issue is re-routed to the planner (§8.4). The window can cost a lost edit, but it can never
+let an unvalidated body pass as `valid`, because any post-write edit is caught on the next read.
 
 ## Dependency substitution
 
