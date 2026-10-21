@@ -2,6 +2,7 @@ package eval
 
 import (
 	"fmt"
+	"os"
 	"strings"
 )
 
@@ -62,21 +63,7 @@ func GetTestCase(agent, testcase string) (*TestCase, error) {
 }
 
 // PrintTestCaseList displays available test cases for an agent in a user-friendly format.
+// It honors the run's --filter and shows each case's metadata.
 func PrintTestCaseList(agent string) error {
-	cases, err := loadCases(agent)
-	if err != nil {
-		return fmt.Errorf("failed to load test cases for %s: %w", agent, err)
-	}
-
-	if len(cases) == 0 {
-		fmt.Printf("📋 No test cases found for agent '%s'\n", agent)
-		return nil
-	}
-
-	fmt.Printf("📋 Test cases for agent '%s':\n", agent)
-	for _, tc := range cases {
-		fmt.Printf("   • %s - %s\n", tc.Name, tc.Description)
-	}
-
-	return nil
+	return printTestCaseList(os.Stdout, agent, cfg.filters)
 }

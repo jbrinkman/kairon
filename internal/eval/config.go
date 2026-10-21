@@ -44,6 +44,11 @@ type runConfig struct {
 	suites map[string]string
 	// caseFilter is the --case value of the run; "" for a full run.
 	caseFilter string
+	// filters are the parsed --filter expressions of the run; nil when none.
+	filters []Filter
+	// scopeAgents narrows agentsInScope to the agents that have a matching
+	// case; nil means no narrowing.
+	scopeAgents []string
 }
 
 // cfg is the active run configuration. Call configure before use; tests
@@ -113,6 +118,31 @@ func validateRepeat(opts RunOptions) error {
 			if m.set {
 				return fmt.Errorf("❌ repeat %d cannot be combined with %s: it does not run any cases", opts.Repeat, m.flag)
 			}
+		}
+	}
+	return nil
+}
+
+// validateFilterOptions rejects --filter and --strict for the modes that never
+// run cases (--perf, --cleanup), rather than silently ignoring them, like
+// validateRepeat. --strict without --filter is accepted and has no effect.
+func validateFilterOptions(opts RunOptions, hasFilters bool) error {
+	var used []string
+	if hasFilters {
+		used = append(used, "--filter")
+	}
+	if opts.Strict {
+		used = append(used, "--strict")
+	}
+	if len(used) == 0 {
+		return nil
+	}
+	for _, m := range []struct {
+		flag string
+		set  bool
+	}{{"--cleanup", opts.Cleanup}, {"--perf", opts.Perf}} {
+		if m.set {
+			return fmt.Errorf("❌ %s cannot be combined with %s: it does not run any cases", strings.Join(used, " and "), m.flag)
 		}
 	}
 	return nil

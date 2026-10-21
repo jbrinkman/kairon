@@ -548,6 +548,9 @@ type RunOptions struct {
 	// Filters are the raw --filter expressions (see ParseFilters). Run
 	// selection, eval diff and eval trend narrow to the cases that match.
 	Filters []string
+
+	// Strict turns "the filters matched no case" into an error.
+	Strict bool
 }
 
 // Summary holds aggregate results for an eval run.
