@@ -152,6 +152,8 @@ func mustParseFilters(t *testing.T, exprs ...string) []Filter {
 // ---- label ----
 
 func TestCaseFilterLabel(t *testing.T) {
+	// ParseFilters canonicalizes the set into sorted order, so the label is
+	// order-independent: "skill<>cli,go" sorts before "speed==fast".
 	fs := mustParseFilters(t, "speed==fast", "skill<>cli,go")
 	for _, tc := range []struct {
 		name     string
@@ -161,8 +163,8 @@ func TestCaseFilterLabel(t *testing.T) {
 	}{
 		{"nothing", "", nil, ""},
 		{"case only is the bare case name", "add-flag", nil, "add-flag"},
-		{"filters only", "", fs, "speed==fast AND skill<>cli,go"},
-		{"case and filters", "add-flag", fs, "case=add-flag AND speed==fast AND skill<>cli,go"},
+		{"filters only", "", fs, "skill<>cli,go AND speed==fast"},
+		{"case and filters", "add-flag", fs, "case=add-flag AND skill<>cli,go AND speed==fast"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := caseFilterLabel(tc.testcase, tc.filters); got != tc.want {
@@ -535,7 +537,7 @@ func TestSelectForRun(t *testing.T) {
 		if ok || err != nil {
 			t.Fatalf("= (%v, %v), want (false, nil)", ok, err)
 		}
-		for _, want := range []string{"⚠️", "speed==warp AND skill==x", "agent: alpha"} {
+		for _, want := range []string{"⚠️", "skill==x AND speed==warp", "agent: alpha"} {
 			if !strings.Contains(buf.String(), want) {
 				t.Errorf("warning %q lacks %q", buf.String(), want)
 			}
@@ -596,7 +598,7 @@ func TestFilteredRunRecordsIncompleteAndLabel(t *testing.T) {
 		t.Fatal(err)
 	}
 	dir := env.onlyRun(t)
-	want := "speed==fast AND skill==cli"
+	want := "skill==cli AND speed==fast"
 	for label, m := range map[string]map[string]json.RawMessage{
 		"alpha.json":   readRawJSON(t, filepath.Join(dir, "alpha.json")),
 		"summary.json": summaryAgent(t, dir, "alpha"),
@@ -801,6 +803,51 @@ func TestResumeSameFilterContinuesAndAppliesFilter(t *testing.T) {
 	}
 }
 
+// TestResumeReorderedFiltersAreTheSameSelection pins that the recorded
+// case_filter is a canonical (order-independent) encoding of the filter set,
+// not the raw flag order. Two --filter flags select the same cases whichever
+// order they are given, so a resume that reorders them must be accepted, and
+// the recorded label must be identical for both orders.
+func TestResumeReorderedFiltersAreTheSameSelection(t *testing.T) {
+	env := oneAgent(t)
+	// a1 is speed=fast AND skill=cli; the two filters together select only a1.
+	if err := RunWithOptions("alpha", "", env.opts(RunOptions{Filters: []string{"speed==fast", "skill==cli"}})); err != nil {
+		t.Fatalf("initial run: %v", err)
+	}
+	dir := env.onlyRun(t)
+	agentFile := filepath.Join(dir, "alpha.json")
+
+	// A canonical label is order-independent: both flag orders record the same
+	// case_filter.
+	recorded := readSelfTestResult(t, agentFile)
+	if recorded.CaseFilter == nil {
+		t.Fatal("case_filter not recorded")
+	}
+	label := *recorded.CaseFilter
+
+	// Drop the saved case so the resume has work to do.
+	recorded.Cases = recorded.Cases[:0]
+	data, _ := json.MarshalIndent(recorded, "", "  ")
+	if err := os.WriteFile(agentFile, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	markInterrupted(t, dir)
+
+	// Resume with the SAME two filters in the reverse order. Same selection,
+	// so it must be accepted, not refused as a "changed filter".
+	err := RunWithOptions("alpha", "", env.opts(RunOptions{Filters: []string{"skill==cli", "speed==fast"}, Resume: true}))
+	if err != nil {
+		t.Fatalf("resume with reordered filters was refused: %v", err)
+	}
+	after := readSelfTestResult(t, agentFile)
+	if after.CaseFilter == nil || *after.CaseFilter != label {
+		t.Errorf("case_filter after reordered resume = %v, want the same canonical label %q", after.CaseFilter, label)
+	}
+	if got, want := caseNames(after), []string{"a1"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("cases after resume = %v, want %v", got, want)
+	}
+}
+
 func TestResumeRefusesChangedOrMissingFilter(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
@@ -809,7 +856,7 @@ func TestResumeRefusesChangedOrMissingFilter(t *testing.T) {
 	}{
 		{"different filter", []string{"speed==slow"}, "speed==slow"},
 		{"filter dropped", nil, ""},
-		{"filter added to it", []string{"speed==fast", "skill==cli"}, "speed==fast AND skill==cli"},
+		{"filter added to it", []string{"speed==fast", "skill==cli"}, "skill==cli AND speed==fast"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			env := oneAgent(t)
@@ -955,7 +1002,7 @@ func TestPrintTestCaseListHonorsFilters(t *testing.T) {
 	if err := printTestCaseList(&buf, "alpha", mustParseFilters(t, "speed==fast", "skill==cli")); err != nil {
 		t.Fatal(err)
 	}
-	want := "📋 Test cases for agent 'alpha' (filter: speed==fast AND skill==cli):\n" +
+	want := "📋 Test cases for agent 'alpha' (filter: skill==cli AND speed==fast):\n" +
 		"   • a1 - desc a1\n" +
 		"       metadata: skill=cli, speed=fast\n"
 	if buf.String() != want {

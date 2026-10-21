@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"math"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 )
@@ -94,6 +95,11 @@ func ParseFilters(exprs []string) ([]Filter, error) {
 		}
 		fs = append(fs, f)
 	}
+	// Sort into a canonical order so the recorded case_filter label (and the
+	// resume integrity check that compares it) depends only on the set of
+	// filters, not the order the flags were given. Matching is an AND over all
+	// filters, so order never affects selection.
+	sort.SliceStable(fs, func(i, j int) bool { return fs[i].String() < fs[j].String() })
 	return fs, nil
 }
 

@@ -1140,14 +1140,14 @@ $ kairon eval --list architect --filter 'speed==fast'
        metadata: category=smoke, retries=3, skill=cli, speed=fast
 ```
 
-`--filter` is shown in its normalised form (no spaces, values joined by `,`), and several filters are joined with ` AND `.
+`--filter` is shown in its normalised form (no spaces, values joined by `,`), and several filters are sorted into a canonical order and joined with ` AND `, so the label depends only on the set of filters and not on the order the flags were given.
 
 ### Results: `metadata`, `complete` and `case_filter`
 
 - **Per-case `metadata`.** Each case result in `<agent>.json` carries the case's `metadata` map (every repeat of a case records it). The field is omitted for a case without metadata, so existing results are unchanged. Metadata is recorded as the case had it when it ran; `--resume` does not back-fill results saved earlier.
 - **A filtered run is a partial run.** It records `complete: false` and `case_filter` set to the selection label, in `<agent>.json` and in `summary.json` under `agents.<agent>`, exactly like a `--case` run (see [Run coverage](#run-coverage-suite_sha256-complete-and-case_filter)). [`verify-log`](#iteration-logs-and-verify-log) therefore does not accept it as a full run, and [`eval trend`](#attempt-trend-kairon-eval-trend) marks it `INCOMPLETE`. A filtered run never overwrites another run: each run still writes its own results directory.
-- **The label.** With no `--case`, `case_filter` is the filters in normalised form joined with ` AND `, for example `speed==fast AND skill==cli`. With `--case`, it starts with `case=<name>`, for example `case=add-flag AND speed==fast`. A run with `--case` and no filter keeps recording just the case name, and an unfiltered run records `""`, as before.
-- **Resume.** `--resume --filter …` applies the filter to the resumed run. The filter must be the same as the interrupted run's: resuming with a different, added or dropped `--filter` is refused (see [Resume refusal](#resume-refusal)).
+- **The label.** With no `--case`, `case_filter` is the filters in normalised form, sorted into a canonical order and joined with ` AND `, for example `skill==cli AND speed==fast` whichever order the two flags were given. With `--case`, it starts with `case=<name>`, for example `case=add-flag AND speed==fast`. A run with `--case` and no filter keeps recording just the case name, and an unfiltered run records `""`, as before.
+- **Resume.** `--resume --filter …` applies the filter to the resumed run. The filter must select the same set as the interrupted run's: resuming with a different, added or dropped `--filter` is refused, but reordering the same `--filter` flags is accepted because the recorded label is canonical (see [Resume refusal](#resume-refusal)).
 
 ### Comparing runs with `--filter`
 
@@ -1932,7 +1932,7 @@ They are written to `<agent>.json` and to `summary.json` under `agents.<agent>`,
 
 - A case counts as covered when it has a saved result for every run `1..repeat` (a result with no `run` counts as run 1). An agent with no cases is never complete.
 - **A `--case` run is never complete**, even if the agent has exactly one case: "full run" means "no filter and every case covered". It records `case_filter: <case name>` and `complete: false`.
-- **A `--filter` run is never complete either**, even if every case of the agent matches the filter. It records `complete: false` and `case_filter` set to the filters in normalised form joined with ` AND ` (`speed==fast AND skill==cli`). Combined with `--case`, the label starts with `case=<name>` (`case=add-flag AND speed==fast`). Treat it as a partial run: `verify-log` will not accept it as a full run, and `eval trend` marks it `INCOMPLETE`. See [Selecting cases](#selecting-cases-metadata-and---filter).
+- **A `--filter` run is never complete either**, even if every case of the agent matches the filter. It records `complete: false` and `case_filter` set to the filters in normalised form, sorted into a canonical order and joined with ` AND ` (`skill==cli AND speed==fast`). Combined with `--case`, the label starts with `case=<name>` (`case=add-flag AND speed==fast`). Treat it as a partial run: `verify-log` will not accept it as a full run, and `eval trend` marks it `INCOMPLETE`. See [Selecting cases](#selecting-cases-metadata-and---filter).
 - Every progressive save records its own coverage. A run interrupted after the first of several cases is left with `complete: false`; the final save of a finished run records `complete: true`. A resumed run recomputes `complete` over the saved and the new results together.
 - `verify-log` does not look at the `.progress` marker. `complete` is per agent and is the single signal, so an agent that finished in a multi-agent run whose other agent was interrupted is still usable.
 

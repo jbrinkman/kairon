@@ -179,7 +179,7 @@ func TestTrendFilterNoRemainingRunNamesAgentAndFilter(t *testing.T) {
 	if err == nil {
 		t.Fatal("want an error when no run has a matching case")
 	}
-	for _, want := range []string{`"selftest"`, "speed==nothing AND skill==cli", "--filter"} {
+	for _, want := range []string{`"selftest"`, "skill==cli AND speed==nothing", "--filter"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("error %q does not contain %q", err, want)
 		}
