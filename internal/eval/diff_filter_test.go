@@ -211,6 +211,30 @@ func TestDiffFilterAgentFileMissingIsNotedAndSkipped(t *testing.T) {
 	requireAbsent(t, out, "0.500")
 }
 
+// TestDiffFilterAgentPresentOnOneSideShownWithDash pins that an agent present
+// in only one run is shown with "-" on the side whose <agent>.json is absent,
+// not skipped. r1 has a1's results; r2's summary names a1 but has no a1.json.
+// A missing file (os.ErrNotExist) is an empty side, so the matching cases from
+// r1 are still shown and the missing side reads "-". Skipping is reserved for a
+// genuinely unreadable file or both sides failing to load.
+func TestDiffFilterAgentPresentOnOneSideShownWithDash(t *testing.T) {
+	chdirTemp(t)
+	writeProvRun(t, "r1", provRun{
+		summary: provSummary("native", map[string]float64{"a1": 0.5}),
+		agents: map[string]AgentResult{"a1": {Agent: "a1", Cases: []CaseResult{
+			filterCase("fast-1", metaFast, 4, 4, "out", 10, 1, 0.01),
+		}}},
+	})
+	// r2 names a1 in its summary but has no a1.json (agent removed between runs).
+	writeProvRun(t, "r2", provRun{summary: provSummary("native", map[string]float64{"a1": 0.6})})
+
+	out := runDiffFiltered(t, "r1", "r2", "speed==fast")
+
+	requireAbsent(t, out, "no case results to filter, skipped")
+	// a1 matched on side A only (score 1.000), so side B shows "-".
+	requireContains(t, out, "a1: 1.000 → -")
+}
+
 func TestDiffShowsCasesBlockAndMarkersWhenMetadataPresent(t *testing.T) {
 	chdirTemp(t)
 	writeFilterRuns(t, metaFast, metaSlow)

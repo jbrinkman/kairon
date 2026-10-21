@@ -2,6 +2,7 @@ package eval
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -146,6 +147,19 @@ func diffFiltered(w io.Writer, runA, runB string, filters []Filter) error {
 		hasSideA, hasSideB := true, true
 
 		if filtered {
+			// An agent present in only one run has no <agent>.json on the
+			// other side. Treat that one missing file (os.ErrNotExist) as an
+			// empty side, so the agent is still shown with "-" on the empty
+			// side rather than skipped. If BOTH sides are missing, or a file
+			// is genuinely unreadable, there is nothing to match: skip.
+			missingA := errors.Is(errA, os.ErrNotExist)
+			missingB := errors.Is(errB, os.ErrNotExist)
+			if missingA && !missingB && errB == nil {
+				resultA, errA = AgentResult{}, nil
+			}
+			if missingB && !missingA && errA == nil {
+				resultB, errB = AgentResult{}, nil
+			}
 			if errA != nil || errB != nil {
 				fmt.Fprintf(w, "\n%s: no case results to filter, skipped\n", agent)
 				continue
