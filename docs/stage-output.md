@@ -204,10 +204,13 @@ case errors.Is(err, stageoutput.ErrUnknownVersion):
 	if errors.As(err, &uv) {
 		// uv.Version is what the document declared; uv.MaxSupported is what this build understands.
 	}
+	return err
 case errors.Is(err, stageoutput.ErrInvalidDocument):
 	// malformed or structurally invalid; err lists every problem
+	return err
 case err != nil:
 	// unexpected
+	return err
 }
 
 if doc.Result == stageoutput.ResultPunchOut {
