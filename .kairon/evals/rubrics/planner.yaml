@@ -25,7 +25,7 @@ criteria:
     description: "The body follows the shared spine in order. The classification fits the request, and optional sections attach by issue type. Each acceptance criterion has a Verify line. Dependencies is a single line. The body has no User Story and no Verification or Test Plan section, and uses no vague terms"
     scoring: 1-5
   - name: requirements_boundary
-    description: "The issue states requirements only. It contains no ungrounded assumption, no invented Constraint, no design outside the Constraints section, and nothing the repository already states re-derived as a requirement"
+    description: "The issue states requirements only. It contains no ungrounded assumption, no invented constraint, and nothing the repository already states re-derived as a requirement"
     scoring: 1-5
   - name: gate_compliance
     description: "The planner returned a well-formed output document the guard could validate, and made no GitHub write of its own"
