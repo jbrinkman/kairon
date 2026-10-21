@@ -342,6 +342,40 @@ func TestRunMalformedFilterBeatsNotFoundCase(t *testing.T) {
 	}
 }
 
+// TestRunFilterNoAgentSurfacesRubricLoadError pins that a filtered run without
+// an agent argument does not exit successfully when the rubrics cannot be
+// loaded. agentsInScope swallows a loadRubrics error (returning no agents) so
+// that the downstream, more specific error surfaces; the pre-flight selection
+// must not turn that empty scope into a silent no-match success before the
+// real error is ever reported.
+func TestRunFilterNoAgentSurfacesRubricLoadError(t *testing.T) {
+	for _, strict := range []bool{false, true} {
+		t.Run(map[bool]string{false: "not strict", true: "strict"}[strict], func(t *testing.T) {
+			env := oneAgent(t)
+			// Break rubric loading: a malformed rubric file makes loadRubrics
+			// fail for the whole directory.
+			writeCfgFile(t, filepath.Join(env.evalsDir, "rubrics", "alpha.yaml"), "agent: [this is not: valid: yaml\n")
+
+			var err error
+			stderr := captureStderr(t, func() {
+				err = RunWithOptions("", "", env.opts(RunOptions{Filters: []string{"speed==fast"}, Strict: strict}))
+			})
+			if err == nil {
+				t.Fatalf("filtered no-agent run exited nil with unloadable rubrics (stderr=%q); want the rubric-load error", stderr)
+			}
+			if !strings.Contains(err.Error(), "rubric") {
+				t.Errorf("error = %q, want the rubric-load error", err)
+			}
+			if strings.Contains(err.Error(), "no eval cases match") {
+				t.Errorf("error = %q is the no-match message, want the rubric-load error", err)
+			}
+			if dirs := env.runDirs(t); len(dirs) != 0 {
+				t.Errorf("results dirs created: %v", dirs)
+			}
+		})
+	}
+}
+
 func TestRunFilterRejectedWithPerfAndCleanup(t *testing.T) {
 	for _, tc := range []struct {
 		name string

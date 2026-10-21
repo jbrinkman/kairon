@@ -74,6 +74,18 @@ func selectForRun(w io.Writer, agent, testcase string, filters []Filter, strict 
 		return true, nil
 	}
 
+	// A whole-suite selection (no agent argument) draws its agents from the
+	// rubrics. agentsInScope swallows a loadRubrics error so a downstream,
+	// more specific error can surface — but that downstream path runs only
+	// after this pre-flight, so an unloadable rubrics directory would reach
+	// the no-match rule below and report a clean "no cases match" (or exit 0),
+	// never running a case. Surface the rubric-load error here first.
+	if agent == "" && !opts.Perf {
+		if _, err := loadRubrics(""); err != nil {
+			return false, err
+		}
+	}
+
 	var scope []string
 	total := 0
 	loadFailed := false
