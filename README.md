@@ -169,6 +169,8 @@ The document a pipeline stage returns (a strict-schema YAML envelope with a `can
 
 The guards that check a stage-output document between stages, and the ordered chain runner that applies them, are described in [docs/guards.md](docs/guards.md).
 
+The provenance step that runs after a guard chain passes (canonicalize, hash, classify as `valid`, `none` or `mismatch`, and write an issue body once with a `v1` marker) is described in [docs/provenance.md](docs/provenance.md).
+
 ## Architecture
 
 ### Agent Pipeline
