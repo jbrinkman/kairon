@@ -60,6 +60,10 @@ checks:
   - criterion: best_effort_then_punch_out
     type: output_not_contains
     pattern: '(?mi)^\s*#{1,6}\s*Acceptance Criteria\b'
+  # Both unresolvable decisions are named, not just one (equivalent wording allowed)
+  - criterion: best_effort_then_punch_out
+    type: judge
+    question: "The issue leaves two decisions unresolvable: (1) a measurable performance target for making the export faster (no baseline or target is given), and (2) the v2 export contract, i.e. what the v2 export returns and whether it stays backward compatible. Does the reply's unresolved list name BOTH of these missing decisions, allowing equivalent wording and different slot names, with neither one silently dropped?"
   # Automated mode never asks and never offers options
   - criterion: two_mode_behavior
     type: output_not_contains
@@ -81,6 +85,7 @@ checks:
     type: output_not_contains
     pattern: '(?mi)^\s*(provenance|hash|sha256)\s*:'
 stub:
+  judge: [yes]
   turns:
     - response: |
         schema_version: 1

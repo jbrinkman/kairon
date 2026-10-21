@@ -52,6 +52,10 @@ checks:
   - criterion: best_effort_then_punch_out
     type: judge
     question: "Does every entry in the inferences list cite evidence that is a real quote or a real file reference taken from the issue or the repository context that was provided, with no invented file, line or quote?"
+  # Both groundable decisions are inferred, not just one (equivalent wording allowed)
+  - criterion: best_effort_then_punch_out
+    type: judge
+    question: "The repository context settles two decisions the issue left unstated: (1) empty-input behavior for the exporter (write nothing and return no error, as the other exporters do), and (2) how the exporter is registered and selected (a format key chosen with --format). Does the reply's inferences list record an inference for BOTH of these, allowing equivalent wording and different slot names, with neither one silently dropped?"
   # Automated mode never asks and never offers options
   - criterion: two_mode_behavior
     type: output_not_contains
@@ -98,7 +102,7 @@ checks:
     type: output_not_contains
     pattern: '(?mi)^\s*(provenance|hash|sha256)\s*:'
 stub:
-  judge: [yes]
+  judge: [yes, yes]
   turns:
     - response: |
         schema_version: 1
