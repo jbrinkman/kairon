@@ -1954,6 +1954,25 @@ func runProgressiveEvaluation(agent, resultsDir string, isResume bool, cConfig *
 		}
 	}
 
+	// On a resume, verify the integrity of EVERY in-scope agent that already
+	// has a saved result file before any agent is evaluated. Doing this per
+	// agent inside the loop is not enough: an agent that now matches the
+	// filter and has no saved file would pass its own check and write results
+	// before a later saved agent with a different recorded case_filter (or a
+	// changed sandbox mode, repeat, ...) is rejected, leaving one directory
+	// with two selections. The sweep aborts before any write when a saved
+	// agent's recorded run no longer matches the current one.
+	if isResume {
+		for _, rubric := range rubrics {
+			if _, statErr := os.Stat(filepath.Join(resultsDir, rubric.Agent+".json")); statErr != nil {
+				continue
+			}
+			if err := checkResumeIntegrity(resultsDir, rubric.Agent, cConfig != nil); err != nil {
+				return err
+			}
+		}
+	}
+
 	var failed []AgentFailure
 	evaluated := 0
 	for _, rubric := range rubrics {
@@ -1974,23 +1993,8 @@ func runProgressiveEvaluation(agent, resultsDir string, isResume bool, cConfig *
 			total := len(cases)
 			cases = filterCases(cases, cfg.filters)
 			if len(cases) == 0 {
-				// This agent has no case under the current filter. On a
-				// resume, an agent with a saved result file still had that
-				// result written under some earlier selection; skipping it
-				// here before checkResumeIntegrity would let a changed
-				// --filter slip past the guard (the recorded case_filter would
-				// never be compared) while a different agent appends its
-				// results beside the stale ones. Run the integrity check for
-				// any saved agent before skipping, so a changed filter is
-				// refused rather than silently mixing two selections.
-				if isResume {
-					if _, statErr := os.Stat(filepath.Join(resultsDir, rubric.Agent+".json")); statErr == nil {
-						if err := checkResumeIntegrity(resultsDir, rubric.Agent, cConfig != nil); err != nil {
-							return err
-						}
-					}
-				}
-				// No saved file, summary entry or suite hash for this agent.
+				// A changed filter on a saved agent was already refused by the
+				// pre-loop integrity sweep above, so a skip here is safe.
 				fmt.Printf("⏭  Skipping %s: no cases match --filter %s\n", rubric.Agent, FormatFilters(cfg.filters))
 				continue
 			}

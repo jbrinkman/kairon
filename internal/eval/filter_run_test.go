@@ -969,6 +969,57 @@ func TestResumeChangedFilterRefusedEvenWhenSavedAgentNowMatchesNothing(t *testin
 	}
 }
 
+// TestResumeChangedFilterRefusedBeforeEarlierMatchingAgentWrites pins the
+// sort-order variant: the saved agent is evaluated AFTER a newly-matching one.
+// aaa has only a slow case; zzz has a fast case. A speed==fast run saves zzz
+// and skips aaa. Resuming with speed==slow makes aaa (iterated first, rubrics
+// load in sorted filename order) match with no saved file, so a per-agent
+// check would let aaa's results be written before zzz's changed case_filter is
+// rejected later in the loop. The integrity sweep must run for every saved
+// agent before any agent is evaluated, so the resume is refused before aaa
+// writes anything.
+func TestResumeChangedFilterRefusedBeforeEarlierMatchingAgentWrites(t *testing.T) {
+	env := newFilterEnv(t, map[string]map[string]string{
+		"aaa": {"c1.yaml": fcase("c1", "speed: slow\n")},
+		"zzz": {"c2.yaml": fcase("c2", "speed: fast\n")},
+	})
+	if err := RunWithOptions("", "", env.opts(RunOptions{Filters: []string{"speed==fast"}})); err != nil {
+		t.Fatalf("initial fast run: %v", err)
+	}
+	dir := env.onlyRun(t)
+	markInterrupted(t, dir)
+
+	// zzz was saved under speed==fast; aaa was skipped (no file).
+	if _, statErr := os.Stat(filepath.Join(dir, "aaa.json")); !os.IsNotExist(statErr) {
+		t.Fatalf("aaa.json exists after the fast run (stat err = %v)", statErr)
+	}
+	zzzBefore, err := os.ReadFile(filepath.Join(dir, "zzz.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Resume with a changed filter: aaa now matches, zzz does not.
+	err = RunWithOptions("", "", env.opts(RunOptions{Filters: []string{"speed==slow"}, Resume: true}))
+	if err == nil {
+		t.Fatal("resume with a changed filter was accepted; it must be refused")
+	}
+	for _, want := range []string{"cannot resume", "--filter changed", "zzz", `recorded case_filter="speed==fast"`, `now "speed==slow"`} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q lacks %q", err, want)
+		}
+	}
+
+	// The refused resume must not have written aaa's slow results, nor touched
+	// zzz's saved file.
+	if _, statErr := os.Stat(filepath.Join(dir, "aaa.json")); !os.IsNotExist(statErr) {
+		t.Errorf("refused resume wrote aaa.json before the changed-filter abort (stat err = %v)", statErr)
+	}
+	zzzAfter, _ := os.ReadFile(filepath.Join(dir, "zzz.json"))
+	if !bytes.Equal(zzzBefore, zzzAfter) {
+		t.Error("refused resume modified the saved zzz result")
+	}
+}
+
 func TestResumeLegacyResultWithoutCaseFilterResumesAsBefore(t *testing.T) {
 	env := oneAgent(t)
 	if err := RunWithOptions("alpha", "", env.opts(RunOptions{})); err != nil {
