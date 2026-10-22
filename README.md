@@ -185,6 +185,10 @@ The guards that check a stage-output document between stages, and the ordered ch
 
 The provenance step that runs after a guard chain passes (canonicalize, hash, classify as `valid`, `none` or `mismatch`, and write an issue body once with a `v1` marker) is described in [docs/provenance.md](docs/provenance.md).
 
+### Planner Output
+
+The planner agent does not create GitHub issues. Its final reply is a stage-output document, which a deterministic boundary checks and writes through the provenance step (or routes as a punch-out). In interactive use, run `kairon planner submit --repo owner/name --file reply.yaml` to create the issue. The output contract, the two modes, the boundary's outcomes and what the planner eval suite does and does not certify so far (the live eval has not yet been run) are in [docs/planner.md](docs/planner.md).
+
 ## Architecture
 
 ### Agent Workflow

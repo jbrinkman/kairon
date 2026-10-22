@@ -14,12 +14,13 @@ Four related pieces are out of scope here:
 
 - **#377** is the [guard interface and chain runner](guards.md). The commit step runs after `guard.Run` returns
   `OutcomeReadyToCommit`.
-- **#381** makes the planner emit the stage-output document, supplies the `gh`-backed `IssueStore`, and resumes a
-  partly committed chain.
+- **#381** makes the planner emit the stage-output document and drives this package from the output boundary. The
+  `gh`-backed `IssueStore` and the `kairon planner submit` command are described in [planner.md](planner.md).
 - **#382** makes the watcher read the marker and route on the state.
 - **#379** owns bounded retry, the punch-out behavior and the attempt counter.
 
-Nothing in the watcher or any stage calls this package yet.
+The planner output boundary ([planner.md](planner.md)) and `kairon planner submit` call this package. Nothing in the
+watcher calls it yet.
 
 ## The marker
 
@@ -253,7 +254,8 @@ let an unvalidated body pass as `valid`, because any post-write edit is caught o
 Section 7 requires that the number of an earlier issue is written into a later issue's `Dependencies:` line before
 the later issue enters its guard chain and is hashed. The hash must cover the text that is actually committed.
 
-#381 has not defined a placeholder convention, so this package does:
+The placeholder convention is defined here. The planner writes it in split chains as `#{issue-N}`, where `N` is the
+1-based position in the proposed list ([planner.md](planner.md#d7-split-chains-use-issue-n-placeholders)):
 
 - In a proposed chain, a body refers to an earlier proposed issue as `#{key}` on its dependencies line, for example
   `Dependencies: #{schema}, #314`. A key matches `[A-Za-z0-9][A-Za-z0-9_-]*`.
@@ -291,7 +293,12 @@ body that already uses the wrong form is not repaired.
 
 ```go
 func (c *Committer) CommitChain(ctx context.Context, items []ChainItem, admit Admit) (ChainResult, error)
+func (c *Committer) CommitChainWith(ctx context.Context, items []ChainItem, admit Admit, known map[string]int) (ChainResult, error)
 ```
+
+`CommitChain` calls `CommitChainWith` with a nil `known`. `known` seeds the number map with keys already committed, so
+a split can be resumed or submitted one document at a time. An item whose `Key` is also in `known` is rejected with
+`ErrInvalid` before anything is written.
 
 `ChainItem` holds a `Key`, a `Title`, a `stageoutput.Document` and a `Target`. `Admit` is the boundary's wrapper around
 `guard.Run`. It receives the exact stage-output text for one item.
@@ -327,13 +334,14 @@ because the later number would silently replace the earlier one. Both return an 
 nothing written.
 
 GitHub has no multi-write transaction, so issues already committed are not rolled back. Each is a complete, valid
-standalone issue. Resuming a partly committed chain is #381's concern.
+standalone issue. A partly committed chain is resumed with `CommitChainWith` and `known`; `kairon planner submit
+--known issue-1=412` does this from the command line ([planner.md](planner.md#kairon-planner-submit)).
 
 ### No `gh` adapter in this package
 
 This package defines `IssueStore` and `Router` but does not implement them. A `gh`-backed store would need
-`os/exec`, which the import rule forbids, and it has no consumer until the planner emits documents (#381). #381
-supplies the adapter. The interface does not change.
+`os/exec`, which the import rule forbids. The adapter is `internal/github.IssueStore`, and the output boundary in
+`internal/planner` wires it to this package ([planner.md](planner.md)). The interface did not change.
 
 ## The hash is a routing signal, not a trust control
 

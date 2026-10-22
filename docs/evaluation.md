@@ -3207,7 +3207,7 @@ All six shipped agents have rubrics and test cases:
 
 ## Planner suite
 
-The planner suite (`rubrics/planner.yaml` plus `cases/planner/*.yaml`) certifies the planner's output-document contract from `.kairon/specs/maturity-model/planner-requirements.md`. It is the failing-first target for the planner prompt rewrite in #381. It adds no harness code: `kairon eval planner` finds the suite by agent name.
+The planner suite (`rubrics/planner.yaml` plus `cases/planner/*.yaml`) certifies the planner's output-document contract from `.kairon/specs/maturity-model/planner-requirements.md`. It is the target the rewritten planner prompt of #381 is measured against (see [planner.md](planner.md)). It adds no harness code: `kairon eval planner` finds the suite by agent name.
 
 ### What it certifies
 
@@ -3245,33 +3245,36 @@ Against the real planner:
 kairon eval --sandbox planner
 ```
 
-Always pass `--sandbox` when the planner prompt is not yet rewritten. The pre-#381 prompt can run `gh issue create`, and outside the sandbox that creates real GitHub issues. Under `--sandbox` the call goes to the [fake `gh`](#the-fake-gh) and the `gh_log_not_contains` check records it as a failure. Cases do not set `requires_sandbox`, because the harness would then fail them under `--backend stub`.
+Always pass `--sandbox`, and especially with a legacy planner prompt (the one before #381, recoverable with `git show f3d604f:.kiro/agents/planner-prompt.md`). That prompt can run `gh issue create`, and outside the sandbox that creates real GitHub issues. Under `--sandbox` the call goes to the [fake `gh`](#the-fake-gh) and the `gh_log_not_contains` check records it as a failure. Cases do not set `requires_sandbox`, because the harness would then fail them under `--backend stub`.
 
-### RED/GREEN workflow for #381
+### RED/GREEN workflow
 
-1. **RED.** Run `kairon eval --sandbox planner` against the unmodified prompt. The suite is expected to FAIL against the pre-#381 planner prompt, with `output_document_validity` and `two_mode_behavior` at or near 0%. Record the result in the PR description. Do not commit run output.
-2. **Iterate.** Write the new prompt as a candidate under `.kairon/iterations/planner/vN.md` and score it with `--prompt-file` (see [Evaluating a candidate prompt](#evaluating-a-candidate-prompt---prompt-file)). Do not edit the live prompt while iterating.
-3. **GREEN.** Copy the winning candidate over `.kiro/agents/planner-prompt.md` and re-run `kairon eval --sandbox planner` until the agent verdict passes.
+1. **RED.** Run `kairon eval --sandbox planner` against the legacy prompt. Pass it as a candidate with `--prompt-file` if the live prompt has already been replaced. Run it before any change to the prompt or to the `planner-conventions` skill, because the skill is staged into every eval workspace. The offline reproduction of this (the legacy transcripts in `internal/eval/testdata/planner-legacy/`) fails with `output_document_validity` and `two_mode_behavior` below the floor. A live run of the legacy prompt is the expected RED evidence.
+2. **Iterate.** Write the new prompt as a candidate under `.kairon/iterations/planner/vN.md` and score it with `--prompt-file` (see [Evaluating a candidate prompt](#evaluating-a-candidate-prompt---prompt-file)). Do not edit the live prompt while iterating, and do not edit the suite.
+3. **GREEN.** Copy the winning candidate over `.kiro/agents/planner-prompt.md` and re-run `kairon eval --sandbox planner` until the agent verdict passes. Record the runs as iteration logs and check them with `kairon eval verify-log planner --require-cycle=false`. The cycle rule is off for #381 because the RED change to the suite happened in #387, so a `red` iteration cannot be replayed honestly.
+
+**Status for #381: the live GREEN run has not been done.** The `kiro-cli` inside the sandbox container had no credentials, so every live call exited with no output (`LIVE-EVAL-BLOCKED`). No live score for the legacy prompt or the new one is recorded. The new prompt is backed by the offline tests below only. The commands a maintainer runs to finish this are in `.kairon/iterations/planner/ITERATIONS.md`, and [planner.md](planner.md#what-is-certified-and-what-is-not) says what is and is not certified.
 
 ### The automated-mode preamble
 
-The requirements do not say how the planner is told it is running unattended, so the three automated cases open their `input` with an explicit preamble:
+The requirements do not say how the planner is told it is running unattended. #381 chose an explicit preamble, and the three automated cases open their `input` with it:
 
 ```
 AUTOMATED INTAKE: non-interactive, no human is available to answer questions. Do not ask questions and do not offer options.
 ```
 
-Interactive cases use a plain user request. This is an assumption to confirm in #381. If the rewrite picks a different mode signal, change only the preamble in the `input` of the three `automated-*.yaml` cases (and their copies under `cmd/kairon/templates/kairon/evals/cases/planner/`).
+Interactive cases use a plain user request, and the absence of the line means interactive. The first line is the Go constant `planner.AutomatedIntakeLine`, and `TestPlannerBoundary*` in `internal/eval` reads the `automated-*.yaml` cases and fails if their first line differs from it. The preamble is therefore confirmed and pinned, not an assumption. Changing it means changing the constant, the three cases (and their copies under `cmd/kairon/templates/kairon/evals/cases/planner/`) and the prompt together, which is a suite change (`change_type: eval`).
 
 ### Offline proof: `TestPlannerSuite`
 
-`go test ./internal/eval -run TestPlannerSuite` reproduces the RED/GREEN claim without a model:
+`go test ./internal/eval -run 'TestPlannerSuite|TestPlannerBoundary'` reproduces the RED/GREEN claim for the suite without a model. It checks the suite, not the live prompt:
 
 - The suite registers all seven cases, and each case file declares `agent: planner`.
 - **GREEN.** The shipped reference transcripts score a passing agent verdict, every YAML document in them parses and validates with `internal/stageoutput`, and every `output_contains`/`output_not_contains` pattern compiles.
-- **RED.** Legacy transcripts in `internal/eval/testdata/planner-legacy/` reproduce what the pre-#381 prompt produces (User Story drafts, several questions in one reply, `gh issue create`, questions in automated mode, no document). They must fail the agent verdict, with `output_document_validity` and `two_mode_behavior` below the 60% floor.
+- **RED.** Legacy transcripts in `internal/eval/testdata/planner-legacy/` reproduce what the legacy (pre-#381) prompt produces (User Story drafts, several questions in one reply, `gh issue create`, questions in automated mode, no document). They must fail the agent verdict, with `output_document_validity` and `two_mode_behavior` below the 60% floor.
+- **Boundary.** `TestPlannerBoundary*` passes every stub document of the suite through the planner boundary (extract, mode contract, guard chain), checks the preamble against `planner.AutomatedIntakeLine`, and checks that both modes produce the same document type.
 
-The test does not call a model and does not touch `.kairon/evals/results/`.
+The tests do not call a model and do not touch `.kairon/evals/results/`.
 
 ## Evaluation Workflow
 
