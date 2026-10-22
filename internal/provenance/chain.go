@@ -83,6 +83,21 @@ type ChainResult struct {
 // the ChainResult so far. Items are never written when the chain is
 // malformed.
 func (c *Committer) CommitChain(ctx context.Context, items []ChainItem, admit Admit) (ChainResult, error) {
+	return c.CommitChainWith(ctx, items, admit, nil)
+}
+
+// CommitChainWith is CommitChain with the placeholder number map seeded from
+// known. Use it to resume a chain that stopped part way, or to commit a split
+// chain one document at a time: known maps the keys of issues that are
+// already committed to their real issue numbers, so a later item can refer to
+// them as "#{key}".
+//
+// A key in known may not also be the Key of an item in this call, because the
+// item's number would silently replace the known one. That, a key that cannot
+// form a valid "#{key}" placeholder, and a non-positive number are all
+// rejected with ErrInvalid before anything is written. The caller's map is not
+// modified. A nil or empty known behaves exactly like CommitChain.
+func (c *Committer) CommitChainWith(ctx context.Context, items []ChainItem, admit Admit, known map[string]int) (ChainResult, error) {
 	res := ChainResult{StoppedAt: -1}
 	if admit == nil {
 		return res, fmt.Errorf("%w: no admit function", ErrInvalid)
@@ -90,8 +105,14 @@ func (c *Committer) CommitChain(ctx context.Context, items []ChainItem, admit Ad
 	if err := validateChainKeys(items); err != nil {
 		return res, err
 	}
+	if err := validateKnownKeys(items, known); err != nil {
+		return res, err
+	}
 
-	numbers := make(map[string]int, len(items))
+	numbers := make(map[string]int, len(items)+len(known))
+	for k, n := range known {
+		numbers[k] = n
+	}
 	for i, item := range items {
 		fail := func(err error) (ChainResult, error) {
 			res.StoppedAt = i
@@ -155,6 +176,32 @@ func validateChainKeys(items []ChainItem) error {
 			return fmt.Errorf("%w: items %d and %d share key %q", ErrInvalid, first, i, item.Key)
 		}
 		seen[item.Key] = i
+	}
+	return nil
+}
+
+// validateKnownKeys rejects a known entry that an item in the chain reuses, a
+// key that cannot form a valid "#{key}" placeholder, or a number that cannot
+// be an issue number.
+func validateKnownKeys(items []ChainItem, known map[string]int) error {
+	if len(known) == 0 {
+		return nil
+	}
+	for k, n := range known {
+		if !chainKeyRe.MatchString(k) {
+			return fmt.Errorf("%w: known key %q is not a valid placeholder key", ErrInvalid, k)
+		}
+		if n <= 0 {
+			return fmt.Errorf("%w: known key %q has non-positive issue number %d", ErrInvalid, k, n)
+		}
+	}
+	for i, item := range items {
+		if item.Key == "" {
+			continue
+		}
+		if _, dup := known[item.Key]; dup {
+			return fmt.Errorf("%w: item %d key %q is already in the known keys", ErrInvalid, i, item.Key)
+		}
 	}
 	return nil
 }

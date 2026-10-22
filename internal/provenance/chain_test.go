@@ -353,3 +353,110 @@ func TestCommitChain_AdmitErrorStops(t *testing.T) {
 }
 
 func itoa(n int) string { return strconv.Itoa(n) }
+
+func TestCommitChainWithKnown_SubstitutesSeededNumber(t *testing.T) {
+	store := newChainStore()
+	c := newChainCommitter(store, &chainRouter{})
+	items := []provenance.ChainItem{
+		{Key: "b", Title: "B", Doc: chainDoc("# B\n\nUse a.\n\nDependencies: #{a}\n")},
+	}
+	adm := newRecordingAdmit()
+
+	res, err := c.CommitChainWith(context.Background(), items, adm.admit, map[string]int{"a": 412})
+	if err != nil {
+		t.Fatalf("CommitChainWith error: %v", err)
+	}
+	if len(res.Committed) != 1 || res.StoppedAt != -1 || res.Stopped != nil {
+		t.Fatalf("result = %+v, want 1 committed", res)
+	}
+	stored := store.bodies[res.Committed[0].Result.Number]
+	if !strings.Contains(stored, "Dependencies: #412") {
+		t.Errorf("stored body lacks the real number:\n%s", stored)
+	}
+	if strings.Contains(stored, "#{") {
+		t.Errorf("stored body still has a placeholder:\n%s", stored)
+	}
+	if len(adm.raws) != 1 || strings.Contains(adm.raws[0], "#{") {
+		t.Errorf("admit did not see the substituted document: %v", adm.raws)
+	}
+	// Classify validates the stored hash against the committed body.
+	if st := provenance.Classify(stored); st != provenance.StateValid {
+		t.Errorf("Classify(stored) = %v, want valid", st)
+	}
+	got := (&watcher.DependencyParser{}).ParseDependencies(stored)
+	if !reflect.DeepEqual(got, []int{412}) {
+		t.Errorf("ParseDependencies = %v, want [412]", got)
+	}
+}
+
+func TestCommitChainWithKnown_ItemCanUseSeededAndCommittedKeys(t *testing.T) {
+	store := newChainStore()
+	c := newChainCommitter(store, &chainRouter{})
+	items := []provenance.ChainItem{
+		{Key: "b", Title: "B", Doc: chainDoc("# B\n\nbody\n")},
+		{Key: "c", Title: "C", Doc: chainDoc("# C\n\nbody\n\nDependencies: #{a}, #{b}\n")},
+	}
+
+	res, err := c.CommitChainWith(context.Background(), items, newRecordingAdmit().admit, map[string]int{"a": 7})
+	if err != nil {
+		t.Fatalf("CommitChainWith error: %v", err)
+	}
+	b, cc := res.Committed[0].Result.Number, res.Committed[1].Result.Number
+	if want := "Dependencies: #7, #" + itoa(b); !strings.Contains(store.bodies[cc], want) {
+		t.Errorf("stored body lacks %q:\n%s", want, store.bodies[cc])
+	}
+}
+
+func TestCommitChainWithKnown_DuplicateKeyWritesNothing(t *testing.T) {
+	store := newChainStore()
+	c := newChainCommitter(store, &chainRouter{})
+	adm := newRecordingAdmit()
+	items := []provenance.ChainItem{
+		{Key: "x", Title: "X", Doc: chainDoc("# X\n\nbody\n")},
+		{Key: "a", Title: "A", Doc: chainDoc("# A\n\nbody\n")},
+	}
+
+	res, err := c.CommitChainWith(context.Background(), items, adm.admit, map[string]int{"a": 412})
+	if !errors.Is(err, provenance.ErrInvalid) {
+		t.Fatalf("err = %v, want ErrInvalid", err)
+	}
+	if store.writes() != 0 || len(adm.raws) != 0 || len(res.Committed) != 0 {
+		t.Errorf("writes=%d admits=%d res=%+v, want nothing", store.writes(), len(adm.raws), res)
+	}
+}
+
+func TestCommitChainWithKnown_InvalidKnownEntryWritesNothing(t *testing.T) {
+	for name, known := range map[string]map[string]int{
+		"bad key":         {"schema.v2": 5},
+		"zero number":     {"a": 0},
+		"negative number": {"a": -3},
+	} {
+		t.Run(name, func(t *testing.T) {
+			store := newChainStore()
+			c := newChainCommitter(store, &chainRouter{})
+			items := []provenance.ChainItem{{Key: "b", Title: "B", Doc: chainDoc("# B\n\nbody\n")}}
+
+			_, err := c.CommitChainWith(context.Background(), items, newRecordingAdmit().admit, known)
+			if !errors.Is(err, provenance.ErrInvalid) {
+				t.Fatalf("err = %v, want ErrInvalid", err)
+			}
+			if store.writes() != 0 {
+				t.Errorf("store writes = %d, want 0", store.writes())
+			}
+		})
+	}
+}
+
+func TestCommitChainWithKnown_CallerMapNotMutated(t *testing.T) {
+	store := newChainStore()
+	c := newChainCommitter(store, &chainRouter{})
+	known := map[string]int{"a": 412}
+	items := []provenance.ChainItem{{Key: "b", Title: "B", Doc: chainDoc("# B\n\nbody\n")}}
+
+	if _, err := c.CommitChainWith(context.Background(), items, newRecordingAdmit().admit, known); err != nil {
+		t.Fatalf("CommitChainWith error: %v", err)
+	}
+	if !reflect.DeepEqual(known, map[string]int{"a": 412}) {
+		t.Errorf("known was mutated: %v", known)
+	}
+}
