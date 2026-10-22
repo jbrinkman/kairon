@@ -346,20 +346,20 @@ checks:
 - **Setup files versus workspace files.** `files` names files in the **case workspace**, and nothing else. A `setup` entry of `type: file` is read from disk by the harness and concatenated into the **agent prompt**; it is never written into the workspace. So a file that is only in `setup` reaches the agent but not the judge, and listing it in `files` fails the check with `file does not exist` before any model call. A judge that is asked whether the agent's citations are real, and is shown none of the sources, can only judge plausibility.
 - **Giving a judge sources: one file for `setup` and `files`.** Put the source file in a [workspace fixture](#workspace-fixtures), set `workspace:` on the case, list the file in the check's `files`, and point the `setup` entry at **that same fixture file**. The harness copies the fixture into the case workspace, so the agent reads the bytes through its prompt and the judge reads the same bytes from the workspace copy. There is one file in the repository and no second copy to drift. Do not use a symlink to share the file: the fixture copy skips symlinks.
 
-  ```yaml
-  workspace: planner-evidence          # => fixtures/workspaces/planner-evidence/
-  setup:
-    - type: file
-      label: "Repository Context"
-      path: ".kairon/evals/fixtures/workspaces/planner-evidence/planner-repo-context.md"   # the agent reads it here
-  checks:
-    - criterion: requirements_boundary
-      type: judge
-      question: "Is every requirement grounded in something the requester chose or in repository evidence quoted earlier in the conversation, with no invented constraint?"
-      files: [planner-repo-context.md]   # the judge reads the same file from the workspace
-  ```
+```yaml
+workspace: planner-evidence          # => fixtures/workspaces/planner-evidence/
+setup:
+  - type: file
+    label: "Repository Context"
+    path: ".kairon/evals/fixtures/workspaces/planner-evidence/planner-repo-context.md"   # the agent reads it here
+checks:
+  - criterion: requirements_boundary
+    type: judge
+    question: "Is every requirement grounded in something the requester chose or in repository evidence quoted earlier in the conversation, with no invented constraint?"
+    files: [planner-repo-context.md]   # the judge reads the same file from the workspace
+```
 
-  The `path` of a `setup` entry is relative to the repository root and the `files` entry is relative to the workspace root, which is the fixture directory. The shipped planner suite uses this pattern for its evidence checks (see [Evidence sources for the judge](#evidence-sources-for-the-judge)). Keep a fixture to the files the judge needs: under the `kiro-cli` backend the workspace is also the agent's working directory, so the agent can read every file in it.
+The `path` of a `setup` entry is relative to the repository root and the `files` entry is relative to the workspace root, which is the fixture directory. The shipped planner suite uses this pattern for its evidence checks (see [Evidence sources for the judge](#evidence-sources-for-the-judge)). Keep a fixture to the files the judge needs: under the `kiro-cli` backend the workspace is also the agent's working directory, so the agent can read every file in it.
 - **Caps.** Each file is capped at 64 KiB and the files together at 256 KiB. Excess is cut, the prompt carries an explicit `[truncated: showing first N of M bytes]` marker and the file's header says `[truncated]`. Non-UTF-8 bytes are replaced.
 - **Judge model.** The call runs on the host through the inference backend, pinned to `evals.judge_model` (see [Model Pinning and Run Provenance](#model-pinning-and-run-provenance)), with a 2-minute timeout. This holds under `--sandbox` too: judge calls never run in the container.
 - **Fail closed.** A `judge` check never passes by default and is never skipped. An unparseable answer (`judge parse error: …`), a backend error (`judge call failed: …`), a missing or unreadable file, and a check evaluated with no judge configured (`no judge configured`) all **fail** the check. This differs from the legacy 1–5 judge, whose parse failures mark the criterion *skipped* (see [Skipped Criteria](#skipped-criteria)). The reply is parsed from the **last** `===JSON_START===` to the next `===JSON_END===`, so a judge that quotes the delimiters while explaining cannot confuse the parse.
