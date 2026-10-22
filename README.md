@@ -131,6 +131,9 @@ kairon update
 # Run a YAML list of checks against a directory (PASS/FAIL per check; exit 0 only if all pass)
 kairon check --checks checks.yaml --dir path/to/dir
 
+# Run only the eval cases whose metadata matches (quote < and > in a shell)
+kairon eval architect --filter 'speed==fast' --filter 'retries>=3'
+
 # Start interactive REPL (default when no arguments)
 kairon
 ```
@@ -159,6 +162,17 @@ Press **Ctrl+Alt+P** (or **Ctrl+Option+P** on macOS) to toggle between console a
 
 Both modes preserve their state when you switch, allowing seamless workflow transitions. See [docs/hotkey-toggle.md](docs/hotkey-toggle.md) for detailed usage information.
 
+### Selecting Eval Cases
+
+An eval case can carry `metadata` (for example `speed: fast`), and `kairon eval --filter` runs only the cases that match. Repeat `--filter` to require all of them, and add `--strict` to fail when nothing matches:
+
+```bash
+kairon eval architect --filter 'speed==fast'
+kairon eval --list architect --filter 'skill==cli' --filter 'retries>=3'
+```
+
+A filtered run is recorded as a partial run. `eval diff` and `eval trend` accept `--filter` too. See [docs/evaluation.md](docs/evaluation.md#selecting-cases-metadata-and---filter) for the syntax, operators and result fields.
+
 ### Running Checks Without an Eval
 
 `kairon check` runs a checks file (the YAML list of deterministic checks used by [eval cases](docs/evaluation.md#checks)) against any directory and prints one `PASS`/`FAIL` line per check. It exits 0 only if every check passes, and validates the whole file before running anything. See [docs/evaluation.md](docs/evaluation.md#running-checks-on-any-directory-kairon-check) for the flags, file format and safety notes (`command` checks run on the host).
@@ -168,6 +182,8 @@ Both modes preserve their state when you switch, allowing seamless workflow tran
 The document a pipeline stage returns (a strict-schema YAML envelope with a `canonical` or `punch_out` result) is defined in [docs/stage-output.md](docs/stage-output.md).
 
 The guards that check a stage-output document between stages, and the ordered chain runner that applies them, are described in [docs/guards.md](docs/guards.md).
+
+The provenance step that runs after a guard chain passes (canonicalize, hash, classify as `valid`, `none` or `mismatch`, and write an issue body once with a `v1` marker) is described in [docs/provenance.md](docs/provenance.md).
 
 ## Architecture
 

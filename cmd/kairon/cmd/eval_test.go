@@ -434,3 +434,192 @@ func readJSON(t *testing.T, path string, v any) {
 		t.Fatalf("%s: %v", path, err)
 	}
 }
+
+func TestEvalFilterAndStrictFlagsRegistered(t *testing.T) {
+	filter := evalCmd.PersistentFlags().Lookup("filter")
+	if filter == nil {
+		t.Fatal("--filter must be a persistent flag on eval")
+	}
+	if filter.Value.Type() != "stringArray" {
+		t.Errorf("--filter type = %q, want stringArray (stringSlice would split on commas)", filter.Value.Type())
+	}
+	// Persistent: diff and trend inherit it from the one declaration.
+	if diffCmd.InheritedFlags().Lookup("filter") == nil {
+		t.Error("diff subcommand does not inherit --filter")
+	}
+	if trendCmd.InheritedFlags().Lookup("filter") == nil {
+		t.Error("trend subcommand does not inherit --filter")
+	}
+
+	strict := evalCmd.Flags().Lookup("strict")
+	if strict == nil {
+		t.Fatal("--strict flag not registered on eval")
+	}
+	if strict.Value.Type() != "bool" || strict.DefValue != "false" {
+		t.Errorf("--strict = type %q default %q, want bool false", strict.Value.Type(), strict.DefValue)
+	}
+	if evalCmd.PersistentFlags().Lookup("strict") != nil {
+		t.Error("--strict must be local to eval, not persistent")
+	}
+	if diffCmd.InheritedFlags().Lookup("strict") != nil {
+		t.Error("diff subcommand must not inherit --strict")
+	}
+	if trendCmd.InheritedFlags().Lookup("strict") != nil {
+		t.Error("trend subcommand must not inherit --strict")
+	}
+
+	usage := evalCmd.UsageString()
+	for _, name := range []string{"--filter", "--strict"} {
+		if !strings.Contains(usage, name) {
+			t.Errorf("eval usage (--help) does not list %s", name)
+		}
+	}
+}
+
+// Repeating --filter collects every value; a value containing commas stays a
+// single value.
+func TestEvalFilterFlagRepeatedAndCommas(t *testing.T) {
+	flag := evalCmd.PersistentFlags().Lookup("filter")
+	if flag == nil {
+		t.Fatal("--filter flag not registered on eval")
+	}
+	orig := evalFilter
+	t.Cleanup(func() { evalFilter = orig })
+	evalFilter = nil
+	t.Cleanup(func() { _ = flag.Value.(interface{ Replace([]string) error }).Replace(nil) })
+
+	for _, v := range []string{"speed==fast,medium", "skill==cli"} {
+		if err := evalCmd.PersistentFlags().Set("filter", v); err != nil {
+			t.Fatalf("set --filter %q: %v", v, err)
+		}
+	}
+	want := []string{"speed==fast,medium", "skill==cli"}
+	if len(evalFilter) != len(want) {
+		t.Fatalf("evalFilter = %q, want %q", evalFilter, want)
+	}
+	for i := range want {
+		if evalFilter[i] != want[i] {
+			t.Errorf("evalFilter[%d] = %q, want %q", i, evalFilter[i], want[i])
+		}
+	}
+}
+
+// A malformed --filter is refused before any work, with or without --strict:
+// the usage is still shown (SilenceUsage not yet set) and the unknown backend
+// is never reached.
+func TestEvalMalformedFilterRejectedBeforeWork(t *testing.T) {
+	for _, strict := range []bool{false, true} {
+		t.Run("strict="+strconv.FormatBool(strict), func(t *testing.T) {
+			evalsDir := evalSelfTestProject(t, "")
+			origFilter, origStrict, origSilence := evalFilter, evalStrict, evalCmd.SilenceUsage
+			t.Cleanup(func() { evalFilter, evalStrict, evalCmd.SilenceUsage = origFilter, origStrict, origSilence })
+			evalFilter = []string{"speed"} // no operator
+			evalStrict = strict
+			evalCmd.SilenceUsage = false
+			evalBackend = "nope" // restored by evalSelfTestProject's cleanup
+
+			err := evalCmd.RunE(evalCmd, []string{"selftest"})
+			if err == nil {
+				t.Fatal("expected an error for a malformed filter")
+			}
+			if strings.Contains(err.Error(), "unknown backend") {
+				t.Errorf("error %q: the backend was reached before --filter was parsed", err)
+			}
+			if !strings.Contains(err.Error(), "speed") {
+				t.Errorf("error %q does not mention the malformed expression", err)
+			}
+			if evalCmd.SilenceUsage {
+				t.Error("usage must still be shown for a malformed filter (SilenceUsage was set)")
+			}
+			if _, statErr := os.Stat(filepath.Join(evalsDir, "results")); !os.IsNotExist(statErr) {
+				t.Errorf("results dir exists after rejection (stat err = %v)", statErr)
+			}
+		})
+	}
+}
+
+// --filter and --strict reach eval.RunOptions: a filter that matches nothing
+// is a warning without --strict and an error with it.
+func TestEvalStrictNoMatch(t *testing.T) {
+	for _, tc := range []struct {
+		strict  bool
+		wantErr bool
+	}{{false, false}, {true, true}} {
+		t.Run("strict="+strconv.FormatBool(tc.strict), func(t *testing.T) {
+			evalsDir := evalSelfTestProject(t, "")
+			origFilter, origStrict := evalFilter, evalStrict
+			t.Cleanup(func() { evalFilter, evalStrict = origFilter, origStrict })
+			evalFilter = []string{"name==nope"}
+			evalStrict = tc.strict
+
+			err := evalCmd.RunE(evalCmd, []string{"selftest"})
+			if tc.wantErr {
+				if err == nil {
+					t.Fatal("--strict with no matching case: expected an error")
+				}
+				if !strings.Contains(err.Error(), "name==nope") {
+					t.Errorf("error %q does not name the filter", err)
+				}
+			} else if err != nil {
+				t.Fatalf("no matching case without --strict: err = %v, want nil", err)
+			}
+			if _, statErr := os.Stat(filepath.Join(evalsDir, "results")); !os.IsNotExist(statErr) {
+				t.Errorf("results dir exists although no case matched (stat err = %v)", statErr)
+			}
+		})
+	}
+}
+
+// A matching filter narrows the run to the selected case.
+func TestEvalFilterNarrowsRun(t *testing.T) {
+	evalsDir := evalSelfTestProject(t, "")
+	origFilter := evalFilter
+	t.Cleanup(func() { evalFilter = origFilter })
+	evalFilter = []string{"name==stub-basic"}
+
+	if err := evalCmd.RunE(evalCmd, []string{"selftest"}); err != nil {
+		t.Fatalf("selftest --filter name==stub-basic: %v", err)
+	}
+	runs, _ := filepath.Glob(filepath.Join(evalsDir, "results", "*"))
+	if len(runs) != 1 {
+		t.Fatalf("run directories = %v, want 1", runs)
+	}
+	var agentRes struct {
+		Cases []struct {
+			CaseName string `json:"case_name"`
+		} `json:"cases"`
+	}
+	readJSON(t, filepath.Join(runs[0], "selftest.json"), &agentRes)
+	if len(agentRes.Cases) != 1 || agentRes.Cases[0].CaseName != "stub-basic" {
+		t.Errorf("cases = %+v, want only stub-basic", agentRes.Cases)
+	}
+}
+
+// diff receives the filters: a malformed one is refused before SilenceUsage,
+// and a valid one is applied (the report carries a Filter: line).
+func TestEvalDiffReceivesFilters(t *testing.T) {
+	origFilter, origEvals, origSilence := evalFilter, evalEvalsDir, diffCmd.SilenceUsage
+	t.Cleanup(func() { evalFilter, evalEvalsDir, diffCmd.SilenceUsage = origFilter, origEvals, origSilence })
+	evalEvalsDir = trendFixtureEvalsDir
+	runs := []string{"260701-100000-aaaaaaa", "260702-100000-bbbbbbb"}
+
+	evalFilter = []string{"speed"}
+	diffCmd.SilenceUsage = false
+	err := diffCmd.RunE(diffCmd, runs)
+	if err == nil {
+		t.Fatal("diff with a malformed filter: expected an error")
+	}
+	if diffCmd.SilenceUsage {
+		t.Error("usage must still be shown for a malformed filter (SilenceUsage was set)")
+	}
+
+	evalFilter = []string{"agent==selftest"}
+	out := captureStdout(t, func() {
+		if err := diffCmd.RunE(diffCmd, runs); err != nil {
+			t.Errorf("diff with a valid filter: %v", err)
+		}
+	})
+	if !strings.Contains(out, "Filter: agent==selftest") {
+		t.Errorf("diff output has no Filter line:\n%s", out)
+	}
+}

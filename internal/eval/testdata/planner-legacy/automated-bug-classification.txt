@@ -1,0 +1,27 @@
+Thanks for the report on issue #433. A few questions first:
+
+1. Which operating system and Go version were you using?
+2. Does the problem also happen with the Markdown exporter?
+3. Is the duplicate output a regression, or has it always behaved this way?
+
+## User Story
+
+As a user of the export command, I want repeated issue numbers to be handled gracefully so that my report is not confusing.
+
+## Acceptance Criteria
+
+- The export handles repeated issue numbers appropriately.
+
+## Test Plan
+
+- Add a unit test for the duplicate case.
+- Run the whole suite and check that it works.
+
+Is this a bug or a feature?
+
+a) A bug in the export command
+b) A feature request for de-duplication
+
+Shall I create this as a feature request?
+
+gh issue create --title "Handle repeated issue numbers in export" --body-file draft.md

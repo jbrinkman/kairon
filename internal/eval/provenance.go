@@ -590,8 +590,13 @@ func shortHash(h string) string {
 // agentsInScope lists the agents a run covers. An explicit agent wins; a
 // --perf run without an agent covers none; otherwise every rubric's agent.
 // Unreadable rubrics yield no agents so that the downstream, more specific
-// error ("rubrics directory not found", ...) is what the user sees.
+// error ("rubrics directory not found", ...) is what the user sees. When a
+// --filter run has narrowed the scope (cfg.scopeAgents), that wins, so only
+// agents that will run are pinned.
 func agentsInScope(agent string, opts RunOptions) []string {
+	if cfg.scopeAgents != nil {
+		return cfg.scopeAgents
+	}
 	if agent != "" {
 		return []string{agent}
 	}

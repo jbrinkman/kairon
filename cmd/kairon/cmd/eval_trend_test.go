@@ -155,3 +155,26 @@ func TestTrendSilencesUsageOnError(t *testing.T) {
 		t.Error("usage must be silenced once arguments are parsed")
 	}
 }
+
+// trend receives the filters: a malformed one is refused before SilenceUsage,
+// and a valid one that matches no case makes the run list empty (an error
+// naming the filter).
+func TestTrendReceivesFilters(t *testing.T) {
+	origFilter, origSilence := evalFilter, trendCmd.SilenceUsage
+	t.Cleanup(func() { evalFilter, trendCmd.SilenceUsage = origFilter, origSilence })
+
+	evalFilter = []string{"speed"}
+	trendCmd.SilenceUsage = false
+	if _, err := runTrend(t, "selftest", false); err == nil {
+		t.Fatal("trend with a malformed filter: expected an error")
+	}
+	if trendCmd.SilenceUsage {
+		t.Error("usage must still be shown for a malformed filter (SilenceUsage was set)")
+	}
+
+	evalFilter = []string{"name==nope"}
+	_, err := runTrend(t, "selftest", false)
+	if err == nil || !strings.Contains(err.Error(), "name==nope") {
+		t.Errorf("trend with a non-matching filter: err = %v, want an error naming the filter", err)
+	}
+}

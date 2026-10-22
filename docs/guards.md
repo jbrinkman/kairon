@@ -13,7 +13,7 @@ design background is in `.kairon/specs/maturity-model/planner-requirements.md` (
 This package defines the guard contract and the runner. Two related pieces are out of scope here:
 
 - **#378** adds the commit step that runs after every guard has passed (the single GitHub write and the provenance
-  hash).
+  hash). It is described in [provenance.md](provenance.md).
 - **#379** defines what a guard's failure method actually does: the bounded retry, the punch-out, and the attempt
   counter. It is described in [failure-contract.md](failure-contract.md).
 
@@ -161,7 +161,7 @@ An empty chain is an error because a boundary with no guards would admit everyth
 
 The runner performs no side effect. It reads `in`, calls the guards and returns a value. It does not commit, write to
 GitHub, retry, count attempts or recover from a guard that panics. When the result is `OutcomeReadyToCommit`, the
-caller commits (#378). What a failing guard's `OnFailure` does, including the retry-then-punch-out behavior and the
+caller commits (#378, see [provenance.md](provenance.md)). What a failing guard's `OnFailure` does, including the retry-then-punch-out behavior and the
 attempt counter, belongs to #379.
 
 ## The structural reference guard

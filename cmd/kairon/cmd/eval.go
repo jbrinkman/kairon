@@ -24,6 +24,8 @@ var (
 	evalKeepWorkspaces bool
 	evalPromptFile     string
 	evalRepeat         int
+	evalFilter         []string
+	evalStrict         bool
 )
 
 var evalCmd = &cobra.Command{
@@ -36,6 +38,13 @@ var evalCmd = &cobra.Command{
 		// programmatic callers.
 		if evalRepeat < 1 {
 			return fmt.Errorf("--repeat must be at least 1 (got %d)", evalRepeat)
+		}
+
+		// Reject a malformed --filter the same way, with or without
+		// --strict. RunWithOptions parses the expressions again; this early
+		// check is what keeps the usage visible for the mistake.
+		if _, err := eval.ParseFilters(evalFilter); err != nil {
+			return err
 		}
 
 		// Arguments are parsed; from here an error is a run result (for
@@ -78,6 +87,8 @@ var evalCmd = &cobra.Command{
 			KeepWorkspaces: evalKeepWorkspaces,
 			PromptFile:     evalPromptFile,
 			Repeat:         evalRepeat,
+			Filters:        evalFilter,
+			Strict:         evalStrict,
 		})
 	},
 }
@@ -87,7 +98,7 @@ var diffCmd = &cobra.Command{
 	Short: "Compare two evaluation runs",
 	Args:  cobra.ExactArgs(2),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		return eval.DiffWithOptions(args[0], args[1], eval.RunOptions{EvalsDir: evalEvalsDir})
+		return eval.DiffWithOptions(args[0], args[1], eval.RunOptions{EvalsDir: evalEvalsDir, Filters: evalFilter})
 	},
 }
 
@@ -108,6 +119,10 @@ func init() {
 		"Evaluate a candidate prompt file in place of the agent's prompt, in per-case workspaces only (requires an agent; the live .kiro/agents is not modified)")
 	evalCmd.Flags().IntVar(&evalRepeat, "repeat", 1,
 		"Run every case N times, each in a fresh workspace; the agent score is the mean over runs, with min/max reported (must be at least 1)")
+	evalCmd.Flags().BoolVar(&evalStrict, "strict", false,
+		"Fail when --filter matches no case (default: warn and exit 0)")
+	evalCmd.PersistentFlags().StringArrayVar(&evalFilter, "filter", nil,
+		"Select cases by metadata: <key><op><value> with op one of ==, <>, !=, <, <=, >, >= (e.g. speed==fast,medium); repeat to require all. Also narrows eval diff and eval trend (built-in keys: agent, name)")
 	evalCmd.PersistentFlags().StringVar(&evalEvalsDir, "evals-dir", "",
 		"Evals directory holding rubrics, cases, fixtures and results (default \".kairon/evals\")")
 
