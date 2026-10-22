@@ -36,6 +36,10 @@ const (
 	CheckJudge             CheckType = "judge"
 	CheckFactAsked         CheckType = "fact_asked"
 	CheckFactNotAsked      CheckType = "fact_not_asked"
+
+	// CheckOutputDocumentValid passes when the output parses as a stage-output
+	// document with internal/stageoutput.Parse, the parser the runtime guard uses.
+	CheckOutputDocumentValid CheckType = "output_document_valid"
 )
 
 // Check is one declarative pass/fail assertion, optionally attached to a rubric criterion.
@@ -137,6 +141,8 @@ var checkSpecs = map[CheckType]struct{ required, allowed checkFields }{
 	CheckJudge:             {checkFields{question: true}, checkFields{question: true, files: true, turn: true}},
 	CheckFactAsked:         {checkFields{fact: true}, checkFields{fact: true}},
 	CheckFactNotAsked:      {checkFields{fact: true}, checkFields{fact: true}},
+
+	CheckOutputDocumentValid: {checkFields{}, checkFields{turn: true}},
 }
 
 // present reports which fields the check actually sets. Empty strings, a nil

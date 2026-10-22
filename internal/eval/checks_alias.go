@@ -41,6 +41,8 @@ const (
 	CheckFactAsked         = checks.CheckFactAsked
 	CheckFactNotAsked      = checks.CheckFactNotAsked
 
+	CheckOutputDocumentValid = checks.CheckOutputDocumentValid
+
 	// simLogRel is the workspace-relative path of the simulated-user decision log.
 	simLogRel = checks.SimLogRel
 	// judgeStart and judgeEnd delimit the JSON object in a judge reply.

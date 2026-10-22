@@ -27,6 +27,9 @@ checks:
     type: output_not_contains
     pattern: '(?m)^result: punch_out'
   # Envelope
+  # Runs the real stage-output parser (internal/stageoutput.Parse), which the regex envelope below cannot do
+  - criterion: output_document_validity
+    type: output_document_valid
   - criterion: output_document_validity
     type: output_contains
     pattern: '\A\s*(\x60{3}ya?ml\s*\n)?schema_version: 1\s*\n'

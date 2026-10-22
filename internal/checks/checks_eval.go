@@ -96,6 +96,12 @@ func runCheck(c Check, in Input) (bool, string) {
 			return false, detail
 		}
 		return evalText(c, ev.Output, "output", c.Type == CheckOutputContains)
+	case CheckOutputDocumentValid:
+		ev, detail := turnEvidence(c, in)
+		if detail != "" {
+			return false, detail
+		}
+		return evalDocument(ev.Output)
 	case CheckGHLogContains, CheckGHLogNotContains:
 		ev, detail := turnEvidence(c, in)
 		if detail != "" {

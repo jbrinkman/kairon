@@ -18,6 +18,9 @@ context:
   - "The planner must fill those slots, record an inference with evidence for each, and return a canonical document without asking anything"
 checks:
   # Envelope: the reply is the document, from its first line
+  # Runs the real stage-output parser (internal/stageoutput.Parse), which the regex envelope below cannot do
+  - criterion: output_document_validity
+    type: output_document_valid
   - criterion: output_document_validity
     type: output_contains
     pattern: '\A\s*(\x60{3}ya?ml\s*\n)?schema_version: 1\s*\n'
