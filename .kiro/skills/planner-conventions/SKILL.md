@@ -7,6 +7,21 @@ description: Comprehensive analysis methodology and conventions for deep root ca
 
 Advanced root cause analysis techniques for transforming surface-level issue reports into deep understanding of underlying problems.
 
+## Mode applicability
+
+The planner runs in one of two modes, chosen by the first line of the request. A request whose first line is the
+automated-intake line (`AUTOMATED INTAKE: non-interactive, no human is available to answer questions. ...`) is
+**automated**. Anything else is **interactive**.
+
+- **Interactive mode**: the root-cause decision framework, hypothesis testing, the planning-worktree guidance and the
+  checklists in this skill all apply in full. Present the symptom / root cause choice to the user, one decision per
+  turn.
+- **Automated mode**: no human is available, so nothing is asked and no options are offered. The investigation
+  still happens, but its findings go into the body's `Context` section (as non-binding notes) and into the
+  `inferences` list (`slot`, `inferred`, `evidence`). Do not present the option block below, do not wait for a
+  decision, and do not treat the checklists as a reason to stop and ask. Keep to what the issue asks; punch out
+  only when the issue's ask and the root cause make the acceptance criteria materially different.
+
 ## Root Cause Analysis Process
 
 ### Phase 1: Initial Assessment
@@ -98,7 +113,16 @@ ERROR MESSAGE → Exception Location → Calling Function → Data Source → Ro
 
 ## Decision Framework: Root Cause vs Symptom
 
-When investigation reveals root cause differs from reported symptom:
+When investigation reveals root cause differs from reported symptom, and the session is **interactive** (see
+Mode applicability):
+
+### Option Rules
+- Every option is a single commitment: one thing the user is choosing to do. An `and` conjunction joining two parts
+  of the same commitment is allowed. An `or` that leaves the choice open inside an option is forbidden.
+- Mark exactly one option as recommended, and say why in one sentence. Never recommend two, and never make the
+  recommendation conditional.
+- Do not list Pros/Cons lines. Put any trade-off in the option's own sentence.
+- Always include an `Other` choice so the user can answer in their own words.
 
 ### Option Presentation Format
 ```
@@ -110,15 +134,12 @@ When investigation reveals root cause differs from reported symptom:
 ### Implementation Options:
 
 a) **Address Reported Symptom**: [Surface-level fix description]
-   - Pros: Quick resolution, matches user expectation  
-   - Cons: Underlying issue persists, potential for recurrence
 
-b) **Address Root Cause**: [Comprehensive fix description]  
-   - Pros: Permanent resolution, prevents related issues
-   - Cons: Larger scope, may affect other functionality
+b) **Address Root Cause** (recommended): [Comprehensive fix description]. Recommended because [one-sentence reason].
 
-c) **Hybrid Approach**: [Combined strategy]
-   - Immediate symptom relief + planned root cause fix
+c) **Fix Symptom Now and Root Cause Later**: [Immediate symptom fix, and a separate root cause fix scheduled afterwards]
+
+d) **Other**: [Describe what you would like instead]
 ```
 
 ### User Decision Authority
@@ -130,13 +151,15 @@ c) **Hybrid Approach**: [Combined strategy]
 ## Quality Validation
 
 ### Analysis Completeness Checklist
+Applies to interactive mode. In automated mode, record the same findings in `Context` and `inferences` instead.
+
 - [ ] Symptom fully documented with reproduction steps
 - [ ] Code path traced from symptom to source
 - [ ] At least 3 potential root causes identified  
 - [ ] Hypotheses tested in planning worktree
 - [ ] Evidence collected for preferred explanation
 - [ ] Impact and scope clearly defined
-- [ ] Solution options presented with trade-offs
+- [ ] Solution options presented as single commitments, with exactly one recommended
 
 ### Investigation Depth Indicators
 - **Surface Level**: "Error happens when..."
