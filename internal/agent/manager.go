@@ -375,6 +375,10 @@ func (m *Manager) HandleExit(id string, exitCode int) {
 			if err := github.AddLabel(m.config.Repo, issueNumber, doneLabel); err != nil {
 				log.Printf("[agent] failed to add %s label to issue #%d: %v", doneLabel, issueNumber, err)
 			}
+			// Clean up only on a successful completion. The no-PR branch either
+			// retries (cleanup would delete the retry worktree and reset the
+			// retry budget) or punches out (punchOut removes its own worktree).
+			go m.cleanup(issueNumber, os.Getpid())
 		} else {
 			m.mu.Lock()
 			updatedAgent, exists := m.agents[id]
@@ -395,8 +399,6 @@ func (m *Manager) HandleExit(id string, exitCode int) {
 				m.punchOut(id, issueNumber, runID, fc)
 			}
 		}
-		// Perform cleanup after successful completion
-		go m.cleanup(agent.IssueNumber, os.Getpid())
 
 	} else {
 		m.mu.Lock()

@@ -258,6 +258,11 @@ func TestHandleExit_RetriesRemainNoWrites(t *testing.T) {
 			if h.agent.RetryCount != 2 {
 				t.Errorf("RetryCount = %d, want 2", h.agent.RetryCount)
 			}
+			// Cleanup must NOT run while a retry is scheduled: it would delete
+			// the retry worktree and reset the persisted retry budget.
+			if n := len(h.cleaned); n != 0 {
+				t.Errorf("cleanup seam called %d times on a retry, want 0", n)
+			}
 		})
 	}
 }
@@ -376,8 +381,30 @@ func TestPunchOut_RetriesRemainDoesNotRemoveWorktree(t *testing.T) {
 	}
 }
 
-func TestHandleExit_ZeroExitWithoutPRStillRunsCleanup(t *testing.T) {
-	h := newHarness(t, 1, 1, false)
+// TestHandleExit_ZeroExitWithoutPRDoesNotRunGenericCleanup pins that the
+// generic cleanup seam does not run on the exit-0/no-PR path. That path is a
+// failure: it either retries (cleanup would delete the retry worktree) or
+// punches out (punchOut removes its own worktree first). Either way the
+// unconditional success cleanup must not fire here.
+func TestHandleExit_ZeroExitWithoutPRDoesNotRunGenericCleanup(t *testing.T) {
+	h := newHarness(t, 1, 1, false) // retries exhausted: terminal punch-out
+
+	h.m.HandleExit(h.agent.ID, 0)
+
+	// Punch-out removes the worktree through removeWorktree, not the generic
+	// cleanup seam.
+	if n := h.removedCount(); n != 1 {
+		t.Errorf("worktree removal called %d times on terminal no-PR, want 1", n)
+	}
+	if n := len(h.cleaned); n != 0 {
+		t.Errorf("generic cleanup seam called %d times on no-PR path, want 0", n)
+	}
+}
+
+// TestHandleExit_ZeroExitWithPRRunsCleanup pins that a successful exit-0 run
+// with a PR runs the generic cleanup seam (worktree + retry file).
+func TestHandleExit_ZeroExitWithPRRunsCleanup(t *testing.T) {
+	h := newHarness(t, 1, 0, true) // PR exists: success path
 
 	h.m.HandleExit(h.agent.ID, 0)
 
@@ -387,7 +414,7 @@ func TestHandleExit_ZeroExitWithoutPRStillRunsCleanup(t *testing.T) {
 			t.Errorf("cleanup issue = %d, want %d", issue, testIssue)
 		}
 	case <-time.After(time.Second):
-		t.Fatal("cleanup seam was not called")
+		t.Fatal("cleanup seam was not called on the success path")
 	}
 }
 
