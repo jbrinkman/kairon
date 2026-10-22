@@ -12,7 +12,7 @@ setup:
     path: ".kairon/evals/fixtures/planner-intake-bug-issue.md"
   - type: file
     label: "Repository Context"
-    path: ".kairon/evals/fixtures/planner-repo-context.md"
+    path: ".kairon/evals/fixtures/workspaces/planner-evidence/planner-repo-context.md"
 context:
   - "The issue reports wrong behavior with a reproduction, a current behavior and an expected behavior. It is a bug, not a feature"
   - "Dedupe in internal/export/history.go never records the issue numbers it has seen, which the repository context shows"

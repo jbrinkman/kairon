@@ -1,6 +1,7 @@
 name: automated-best-effort-fill
 description: "Automated intake fills groundable slots and records each inference (planner-requirements 10.2 steps 3-4, 3.1.1, 3.5): the reply is a canonical stage-output document that starts the reply, carries inferences with slot / inferred / evidence, asks nothing and offers no options"
 agent: planner
+workspace: planner-evidence
 input: |
   AUTOMATED INTAKE: non-interactive, no human is available to answer questions. Do not ask questions and do not offer options.
   Read the issue and the repository context below, fill every slot they ground by reasonable inference and record each inference with its evidence.
@@ -9,10 +10,10 @@ input: |
 setup:
   - type: file
     label: "Issue"
-    path: ".kairon/evals/fixtures/planner-intake-feature-issue.md"
+    path: ".kairon/evals/fixtures/workspaces/planner-evidence/planner-intake-feature-issue.md"
   - type: file
     label: "Repository Context"
-    path: ".kairon/evals/fixtures/planner-repo-context.md"
+    path: ".kairon/evals/fixtures/workspaces/planner-evidence/planner-repo-context.md"
 context:
   - "The issue leaves empty-input behavior, registration, error handling and test conventions unstated, and the repository context settles each of them"
   - "The planner must fill those slots, record an inference with evidence for each, and return a canonical document without asking anything"
@@ -52,6 +53,7 @@ checks:
   - criterion: best_effort_then_punch_out
     type: judge
     question: "Does every entry in the inferences list cite evidence that is a real quote or a real file reference taken from the issue or the repository context that was provided, with no invented file, line or quote?"
+    files: [planner-intake-feature-issue.md, planner-repo-context.md]
   # Both groundable decisions are inferred, not just one (equivalent wording allowed)
   - criterion: best_effort_then_punch_out
     type: judge

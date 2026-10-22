@@ -80,9 +80,9 @@ func copyPlannerFile(t *testing.T, src, dst string) {
 	writeProjectFile(t, dst, string(data))
 }
 
-// copyPlannerSuite copies the shipped rubric, cases and planner fixtures into
-// a fresh evals directory and returns it. The results directory is never
-// copied.
+// copyPlannerSuite copies the shipped rubric, cases, planner fixtures and
+// workspace fixtures (fixtures/workspaces/**) into a fresh evals directory and
+// returns it. The results directory is never copied.
 func copyPlannerSuite(t *testing.T, p plannerPaths) string {
 	t.Helper()
 	dst := t.TempDir()
@@ -103,7 +103,38 @@ func copyPlannerSuite(t *testing.T, p plannerPaths) string {
 			copyPlannerFile(t, f, filepath.Join(dst, rel))
 		}
 	}
+	copyPlannerWorkspaces(t, p, dst)
 	return dst
+}
+
+// copyPlannerWorkspaces copies every regular file under the shipped
+// fixtures/workspaces/ tree into the same place below dst, preserving relative
+// paths. A planner case that sets `workspace:` fails to load when its fixture
+// directory is missing, so the copied suite needs them. A missing
+// fixtures/workspaces/ directory is not an error: it copies nothing.
+func copyPlannerWorkspaces(t *testing.T, p plannerPaths, dst string) {
+	t.Helper()
+	root := filepath.Join(p.evals, "fixtures", "workspaces")
+	if _, err := os.Stat(root); os.IsNotExist(err) {
+		return
+	}
+	err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if !d.Type().IsRegular() {
+			return nil
+		}
+		rel, err := filepath.Rel(p.evals, path)
+		if err != nil {
+			return err
+		}
+		copyPlannerFile(t, path, filepath.Join(dst, rel))
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
 }
 
 // readLegacyTurns reads the transcript of a case and splits it into turns.

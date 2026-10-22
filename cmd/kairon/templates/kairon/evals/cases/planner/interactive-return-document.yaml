@@ -1,11 +1,12 @@
 name: interactive-return-document
 description: "After approval the interactive planner returns a canonical stage-output document and writes nothing to GitHub (planner-requirements 3.1.1, 5-7, 10.1 steps 6-9, 12): full envelope, shared spine in order, Verify lines, single-line Dependencies, no User Story or Test Plan, no vague terms"
 agent: planner
+workspace: planner-evidence
 input: "I want to add a JSON Lines exporter for run history."
 setup:
   - type: file
     label: "Repository Context"
-    path: ".kairon/evals/fixtures/planner-repo-context.md"
+    path: ".kairon/evals/fixtures/workspaces/planner-evidence/planner-repo-context.md"
 simulated_user:
   facts:
     - id: duration_format
@@ -86,6 +87,7 @@ checks:
   - criterion: requirements_boundary
     type: judge
     question: "Is every requirement in the issue body grounded in something the requester chose or in repository evidence quoted earlier in the conversation, with no invented constraint?"
+    files: [planner-repo-context.md]
   # The planner returns the document and leaves the GitHub write to the guard
   - criterion: gate_compliance
     type: output_not_contains

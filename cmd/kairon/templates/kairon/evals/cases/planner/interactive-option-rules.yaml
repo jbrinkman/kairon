@@ -7,7 +7,7 @@ input: |
 setup:
   - type: file
     label: "Repository Context"
-    path: ".kairon/evals/fixtures/planner-repo-context.md"
+    path: ".kairon/evals/fixtures/workspaces/planner-evidence/planner-repo-context.md"
 context:
   - "The symptom is duplicate CSV rows. The repository shows the cause is Dedupe in internal/export/history.go, which never records the issue numbers it has seen"
   - "The planner should offer symptom, root cause and both as options, each a single commitment, and recommend exactly one"
