@@ -69,6 +69,8 @@ const (
 	// OutcomeRejected: the reply broke the contract. Nothing was written.
 	// Result.Failure says why and Result.Disposition is Recoverable.
 	OutcomeRejected
+	// OutcomeChecked: Check found every reply acceptable and wrote nothing.
+	OutcomeChecked
 )
 
 // String returns a short name for o.
@@ -84,6 +86,8 @@ func (o Outcome) String() string {
 		return "routed_to_intake"
 	case OutcomeRejected:
 		return "rejected"
+	case OutcomeChecked:
+		return "checked"
 	}
 	return "invalid"
 }
@@ -149,72 +153,15 @@ func (b *Boundary) Handle(ctx context.Context, req Request) (Result, error) {
 		return Result{}, err
 	}
 
-	rejectAt := func(index int, expected, actual string) Result {
-		return Result{
-			Outcome:     OutcomeRejected,
-			Disposition: failure.Recoverable,
-			Index:       index,
-			Failure: &guard.FailureContext{
-				Stage:    stageoutput.StagePlanner,
-				Guard:    BoundaryGuard,
-				Attempt:  attempt,
-				Expected: expected,
-				Actual:   actual,
-			},
-		}
+	docs, items, rejected, err := b.prepareAll(req, attempt)
+	if err != nil {
+		return Result{}, err
 	}
-
-	if req.Mode == ModeAutomated && len(req.Replies) != 1 {
-		return rejectAt(0, "automated intake returns exactly one stage-output document",
-			fmt.Sprintf("%d replies", len(req.Replies))), nil
+	if rejected != nil {
+		return *rejected, nil
 	}
-	if len(req.Replies) == 0 {
-		return rejectAt(0, "at least one reply containing a stage-output document", "no replies"), nil
-	}
-
-	docs := make([]prepared, 0, len(req.Replies))
-	for i, reply := range req.Replies {
-		p, rejected, err := b.prepare(req, attempt, i, reply)
-		if err != nil {
-			return Result{}, err
-		}
-		if rejected != nil {
-			return *rejected, nil
-		}
-		docs = append(docs, p)
-	}
-
 	if docs[0].doc.Result == stageoutput.ResultPunchOut {
 		return b.punchOut(req, docs[0].doc)
-	}
-
-	// Resolve placeholders on a dry run so an unknown or forward reference is
-	// a rejection before the first write rather than a half-written chain.
-	items := make([]provenance.ChainItem, len(docs))
-	numbers := make(map[string]int, len(req.Known)+len(docs))
-	for k, n := range req.Known {
-		numbers[k] = n
-	}
-	for i, p := range docs {
-		key := "issue-" + strconv.Itoa(len(req.Known)+i+1)
-		if _, err := provenance.SubstituteDependencies(p.doc.Body, numbers); err != nil {
-			if errors.Is(err, provenance.ErrUnknownPlaceholder) || errors.Is(err, provenance.ErrBadDependencyLine) {
-				return rejectAt(i,
-					"dependencies lines list #<number> or #{issue-N} for an earlier issue in this split (keys available here: "+availableKeys(numbers)+")",
-					err.Error()), nil
-			}
-			return Result{}, err
-		}
-		numbers[key] = 1 // placeholder number: later documents may refer to this key
-		items[i] = provenance.ChainItem{
-			Key:   key,
-			Title: p.title,
-			Doc:   *p.doc,
-			Target: provenance.Target{
-				Number:           req.Issue,
-				ObservedRevision: req.ObservedRevision,
-			},
-		}
 	}
 
 	var lastRoute *failure.Route
@@ -251,6 +198,82 @@ func (b *Boundary) Handle(ctx context.Context, req Request) (Result, error) {
 		}
 	}
 	return res, nil
+}
+
+// prepareAll runs every reply through extraction, the mode contract, the
+// guard chain and placeholder resolution, without writing anything. It
+// returns the prepared documents and, for canonical documents, the chain
+// items. A punch_out first document returns no items. A rejection is the
+// non-nil *Result.
+func (b *Boundary) prepareAll(req Request, attempt guard.Attempt) ([]prepared, []provenance.ChainItem, *Result, error) {
+	rejectAt := func(index int, expected, actual string) *Result {
+		return &Result{
+			Outcome:     OutcomeRejected,
+			Disposition: failure.Recoverable,
+			Index:       index,
+			Failure: &guard.FailureContext{
+				Stage:    stageoutput.StagePlanner,
+				Guard:    BoundaryGuard,
+				Attempt:  attempt,
+				Expected: expected,
+				Actual:   actual,
+			},
+		}
+	}
+
+	if req.Mode == ModeAutomated && len(req.Replies) != 1 {
+		return nil, nil, rejectAt(0, "automated intake returns exactly one stage-output document",
+			fmt.Sprintf("%d replies", len(req.Replies))), nil
+	}
+	if len(req.Replies) == 0 {
+		return nil, nil, rejectAt(0, "at least one reply containing a stage-output document", "no replies"), nil
+	}
+
+	docs := make([]prepared, 0, len(req.Replies))
+	for i, reply := range req.Replies {
+		p, rejected, err := b.prepare(req, attempt, i, reply)
+		if err != nil {
+			return nil, nil, nil, err
+		}
+		if rejected != nil {
+			return nil, nil, rejected, nil
+		}
+		docs = append(docs, p)
+	}
+
+	if docs[0].doc.Result == stageoutput.ResultPunchOut {
+		return docs, nil, nil, nil
+	}
+
+	// Resolve placeholders on a dry run so an unknown or forward reference is
+	// a rejection before the first write rather than a half-written chain.
+	items := make([]provenance.ChainItem, len(docs))
+	numbers := make(map[string]int, len(req.Known)+len(docs))
+	for k, n := range req.Known {
+		numbers[k] = n
+	}
+	for i, p := range docs {
+		key := "issue-" + strconv.Itoa(len(req.Known)+i+1)
+		if _, err := provenance.SubstituteDependencies(p.doc.Body, numbers); err != nil {
+			if errors.Is(err, provenance.ErrUnknownPlaceholder) || errors.Is(err, provenance.ErrBadDependencyLine) {
+				return nil, nil, rejectAt(i,
+					"dependencies lines list #<number> or #{issue-N} for an earlier issue in this split (keys available here: "+availableKeys(numbers)+")",
+					err.Error()), nil
+			}
+			return nil, nil, nil, err
+		}
+		numbers[key] = 1 // placeholder number: later documents may refer to this key
+		items[i] = provenance.ChainItem{
+			Key:   key,
+			Title: p.title,
+			Doc:   *p.doc,
+			Target: provenance.Target{
+				Number:           req.Issue,
+				ObservedRevision: req.ObservedRevision,
+			},
+		}
+	}
+	return docs, items, nil, nil
 }
 
 // prepare extracts one reply and applies the mode contract and the guard
@@ -407,4 +430,29 @@ func availableKeys(numbers map[string]int) string {
 	}
 	sort.Strings(keys)
 	return strings.Join(keys, ", ")
+}
+
+// Check runs everything Handle runs before its first write, and stops there:
+// extraction, the mode contract, the guard chain and placeholder resolution
+// for every reply. It never calls Store, Router or Issues, so a Boundary with
+// none of them can Check. A reply that would be rejected gives
+// OutcomeRejected as Handle would; otherwise the outcome is OutcomeChecked.
+// Handle still runs the guard chain again on the substituted text, so a
+// checked request can in rare cases be rejected by Handle.
+func (b *Boundary) Check(req Request) (Result, error) {
+	attempt := req.Attempt
+	if attempt == (guard.Attempt{}) {
+		attempt = guard.Attempt{Current: 1, Max: 1}
+	}
+	if err := validateRequest(req, attempt); err != nil {
+		return Result{}, err
+	}
+	_, _, rejected, err := b.prepareAll(req, attempt)
+	if err != nil {
+		return Result{}, err
+	}
+	if rejected != nil {
+		return *rejected, nil
+	}
+	return Result{Outcome: OutcomeChecked}, nil
 }
