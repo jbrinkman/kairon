@@ -185,6 +185,8 @@ The guards that check a stage-output document between stages, and the ordered ch
 
 The provenance step that runs after a guard chain passes (canonicalize, hash, classify as `valid`, `none` or `mismatch`, and write an issue body once with a `v1` marker) is described in [docs/provenance.md](docs/provenance.md).
 
+The planner is two single-mode agents (`planner` for interactive use, `planner-automated` for unattended intake) that share the Kairon-managed `planner-shared` skill, with a deterministic output boundary that is the only writer to GitHub. The agents, the skill's ownership tier, the boundary and its outcomes, the eval driver and the known gaps are described in [docs/planner.md](docs/planner.md).
+
 ## Architecture
 
 ### Agent Workflow

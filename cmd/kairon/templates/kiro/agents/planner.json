@@ -1,8 +1,8 @@
 {
   "name": "planner",
-  "description": "Interactive planning agent that collaborates with the user to create well-structured GitHub issues. Does NOT implement or fix code.",
+  "description": "Interactive planning agent that interviews the user and returns a requirements document as a stage-output document. Does NOT create issues, implement or fix code.",
   "prompt": "file://./planner-prompt.md",
-  "resources": ["skill://.kiro/skills/planner-conventions/SKILL.md"],
+  "resources": ["skill://.kiro/skills/planner-conventions/SKILL.md", "skill://.kiro/skills/planner-shared/SKILL.md"],
   "tools": ["read", "write", "shell", "web_search", "web_fetch"],
   "allowedTools": ["read", "write", "shell", "web_search", "web_fetch"],
   "toolsSettings": {

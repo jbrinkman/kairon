@@ -3209,6 +3209,36 @@ All six shipped agents have rubrics and test cases:
 
 The planner suite (`rubrics/planner.yaml` plus `cases/planner/*.yaml`) certifies the planner's output-document contract from `.kairon/specs/maturity-model/planner-requirements.md`. It is the failing-first target for the planner prompt rewrite in #381. It adds no harness code: `kairon eval planner` finds the suite by agent name.
 
+### Two agents, one suite
+
+The planner is two single-mode agents: `planner` (interactive elicitation) and `planner-automated` (unattended intake). Both load the Kairon-managed `planner-shared` skill. The mode is not a prompt branch: the caller picks the agent name, and that name is the mode signal. The agents themselves are described in `docs/planner.md`.
+
+The harness keys a suite by its directory name: `loadCases` sets every case's agent to `planner`, and the rubric is `rubrics/planner.yaml`. A single run of `kairon eval planner` therefore runs all seven cases against the `planner` agent, which cannot pass the three automated cases. So the suite is run in two halves, each against the agent of its mode:
+
+| Half | Cases | Agent under test | How |
+|------|-------|------------------|-----|
+| Interactive | `interactive-single-decision`, `interactive-option-rules`, `interactive-return-document`, `multi-issue-split` | `planner` | `.kiro/agents/planner.json`, unchanged |
+| Automated | `automated-best-effort-fill`, `automated-bug-classification`, `automated-punch-out` | `planner-automated` | an [`--evals-dir` overlay](#evals-directory---evals-dir) whose `agents/planner.json` is the `planner-automated` manifest |
+
+The overlay is a temporary copy of the evals directory (without `results/`) with two files added under `agents/`: `planner.json`, which is `.kiro/agents/planner-automated.json` with only `name` changed to `planner`, and `planner-automated-prompt.md`, which the manifest's `file://./planner-automated-prompt.md` prompt resolves to. The shared skill is not copied into the overlay: the harness stages the git-tracked `.kiro/skills/planner-shared` from the repository, so both halves are certified against the real skill. Run `git add` on new agent and skill files before evaluating, or they are not staged.
+
+`scripts/eval-planner.sh` drives both halves, and `task eval:planner` runs it:
+
+```bash
+task eval:planner                    # both halves, --sandbox, needs a model backend and a container runtime
+task eval:planner -- --dry-run       # print both commands and the overlay; run nothing, write nothing
+bash scripts/eval-planner.sh --dry-run
+```
+
+The script runs these two commands (both with `--sandbox`; the filter names are exact):
+
+```bash
+kairon eval --sandbox planner --filter 'name==interactive-single-decision,interactive-option-rules,interactive-return-document,multi-issue-split'
+kairon eval --evals-dir <overlay> --sandbox planner --filter 'name==automated-best-effort-fill,automated-bug-classification,automated-punch-out'
+```
+
+Both halves always run. The script exits non-zero if either fails, and copies the automated half's new result directories from the overlay back under `.kairon/evals/results/` whether or not it passed (the interactive half writes there directly). Set `KAIRON_BIN` to use a binary that is not `kairon` on `PATH`, and `KAIRON_EVALS_DIR` to use another evals directory.
+
 ### What it certifies
 
 - **The output document.** The reply is a [stage-output document](stage-output.md) (`schema_version: 1`, `stage: planner`, `result`, `source`, `generated`), with a `body` when `canonical` and an `unresolved` list when `punch_out`, and nothing else in the reply.
@@ -3239,29 +3269,25 @@ Offline, with no model. Each case carries a reference transcript in `stub.turns`
 kairon eval --backend stub planner
 ```
 
-Against the real planner:
+Offline, `kairon eval --backend stub planner` replays the reference transcripts for all seven cases whatever the prompt says, so it certifies the suite and not the prompts. Against the real agents, run both halves with `task eval:planner` (see [Two agents, one suite](#two-agents-one-suite)). A bare `kairon eval --sandbox planner` runs every case against the interactive `planner` and is expected to fail the three automated cases.
 
-```bash
-kairon eval --sandbox planner
-```
-
-Always pass `--sandbox` when the planner prompt is not yet rewritten. The pre-#381 prompt can run `gh issue create`, and outside the sandbox that creates real GitHub issues. Under `--sandbox` the call goes to the [fake `gh`](#the-fake-gh) and the `gh_log_not_contains` check records it as a failure. Cases do not set `requires_sandbox`, because the harness would then fail them under `--backend stub`.
+Always pass `--sandbox` when an agent prompt is not yet verified. The pre-#381 prompt can run `gh issue create`, and outside the sandbox that creates real GitHub issues. Under `--sandbox` the call goes to the [fake `gh`](#the-fake-gh) and the `gh_log_not_contains` check records it as a failure. Cases do not set `requires_sandbox`, because the harness would then fail them under `--backend stub`.
 
 ### RED/GREEN workflow for #381
 
-1. **RED.** Run `kairon eval --sandbox planner` against the unmodified prompt. The suite is expected to FAIL against the pre-#381 planner prompt, with `output_document_validity` and `two_mode_behavior` at or near 0%. Record the result in the PR description. Do not commit run output.
+1. **RED.** Run `kairon eval --sandbox planner` against the unmodified prompt (before the split, one agent served both modes). The suite is expected to FAIL against the pre-#381 planner prompt, with `output_document_validity` and `two_mode_behavior` at or near 0%. Record the result in the PR description. Do not commit run output.
 2. **Iterate.** Write the new prompt as a candidate under `.kairon/iterations/planner/vN.md` and score it with `--prompt-file` (see [Evaluating a candidate prompt](#evaluating-a-candidate-prompt---prompt-file)). Do not edit the live prompt while iterating.
-3. **GREEN.** Copy the winning candidate over `.kiro/agents/planner-prompt.md` and re-run `kairon eval --sandbox planner` until the agent verdict passes.
+3. **GREEN.** Copy the winning candidate over `.kiro/agents/planner-prompt.md` (or `planner-automated-prompt.md`) and re-run `task eval:planner` until both halves pass.
 
-### The automated-mode preamble
+### The mode signal is the agent name
 
-The requirements do not say how the planner is told it is running unattended, so the three automated cases open their `input` with an explicit preamble:
+The mode is not signalled in the prompt text. The caller picks `planner` for an interactive session and `planner-automated` for unattended intake, and neither prompt branches on mode. The three `automated-*` cases still open their `input` with a preamble:
 
 ```
 AUTOMATED INTAKE: non-interactive, no human is available to answer questions. Do not ask questions and do not offer options.
 ```
 
-Interactive cases use a plain user request. This is an assumption to confirm in #381. If the rewrite picks a different mode signal, change only the preamble in the `input` of the three `automated-*.yaml` cases (and their copies under `cmd/kairon/templates/kairon/evals/cases/planner/`).
+That preamble is now only input text that makes the case read like an unattended request. It is not what selects the mode, and `planner-automated` does not need it. Do not edit it to change the mode: the cases under `cases/planner/` are consumed as written, and the mode is chosen by the agent under test (`planner` for the interactive half, `planner-automated` through the overlay for the automated half).
 
 ### Offline proof: `TestPlannerSuite`
 
