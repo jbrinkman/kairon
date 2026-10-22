@@ -99,29 +99,6 @@ func PRExistsForIssue(repo string, issueNumber int) (bool, error) {
 	return len(prs) > 0, nil
 }
 
-type PullRequest struct {
-	Number      int    `json:"number"`
-	HeadRefName string `json:"headRefName"`
-}
-
-// VerifyPRExists checks if a PR exists with the expected branch name pattern
-func VerifyPRExists(repo string, issueNumber, pid int) (bool, error) {
-	expectedBranch := fmt.Sprintf("spec/issue-%d-%d", issueNumber, pid)
-
-	cmd := exec.Command("gh", "pr", "list", "--repo", repo, "--head", expectedBranch, "--json", "number,headRefName")
-	output, err := cmd.Output()
-	if err != nil {
-		return false, fmt.Errorf("gh pr list failed: %w", err)
-	}
-
-	var prs []PullRequest
-	if err := json.Unmarshal(output, &prs); err != nil {
-		return false, fmt.Errorf("failed to parse gh output: %w", err)
-	}
-
-	return len(prs) > 0, nil
-}
-
 type Release struct {
 	TagName string `json:"tag_name"`
 	Name    string `json:"name"`

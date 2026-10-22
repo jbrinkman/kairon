@@ -89,6 +89,21 @@ func (f *fakeIssues) writes() []string {
 	defer f.mu.Unlock()
 	var w []string
 	for _, c := range f.calls {
+		if c != "State" && c != "RemoveWorktree" {
+			w = append(w, c)
+		}
+	}
+	return w
+}
+
+// orderedCalls returns every recorded call (GitHub writes and the worktree
+// removal), in order, so a test can assert the worktree is removed before the
+// fail label is applied.
+func (f *fakeIssues) orderedCalls() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var w []string
+	for _, c := range f.calls {
 		if c != "State" {
 			w = append(w, c)
 		}
@@ -103,6 +118,7 @@ type harness struct {
 	agent   *Agent
 	retried chan *Agent
 	cleaned chan int
+	removed chan int
 }
 
 func newHarness(t *testing.T, maxRetries, retryCount int, prExists bool) *harness {
@@ -116,12 +132,22 @@ func newHarness(t *testing.T, maxRetries, retryCount int, prExists bool) *harnes
 		issues:  newFakeIssues(),
 		retried: make(chan *Agent, 32),
 		cleaned: make(chan int, 32),
+		removed: make(chan int, 32),
 	}
 	h.issues.mgr = h.m
 	h.m.issues = h.issues
 	h.m.prExists = func(repo string, issue int) (bool, error) { return prExists, nil }
 	h.m.retry = func(a *Agent) { h.retried <- a }
 	h.m.cleanup = func(issue, pid int) { h.cleaned <- issue }
+	h.m.removeWorktree = func(issue, pid int) error {
+		// Record ordering against the GitHub writes so a test can prove the
+		// worktree is removed before the fail label is applied.
+		h.issues.mu.Lock()
+		h.issues.calls = append(h.issues.calls, "RemoveWorktree")
+		h.issues.mu.Unlock()
+		h.removed <- issue
+		return nil
+	}
 
 	h.agent = &Agent{
 		ID:          "agent-42-1",
@@ -302,6 +328,54 @@ func TestHandleExit_NoPRPunchOutErrorKeepsRetryFile(t *testing.T) {
 	}
 }
 
+// removedCount waits briefly for the (synchronous) worktree-removal seam and
+// returns how many times it ran.
+func (h *harness) removedCount() int {
+	time.Sleep(50 * time.Millisecond)
+	return len(h.removed)
+}
+
+func TestPunchOut_RemovesWorktreeBeforeApplyingFailLabel(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		exit     int
+		prExists bool
+	}{
+		{"non-zero exit", 1, true},
+		{"exit 0 without PR", 0, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newHarness(t, 1, 1, tc.prExists)
+
+			h.m.HandleExit(h.agent.ID, tc.exit)
+
+			if n := h.removedCount(); n != 1 {
+				t.Fatalf("worktree removal called %d times, want 1", n)
+			}
+			if issue := <-h.removed; issue != testIssue {
+				t.Errorf("removed worktree for issue %d, want %d", issue, testIssue)
+			}
+			// The worktree must be gone before the fail label is applied, so a
+			// human who clears the label gets a clean restart (hasActiveWorktree
+			// no longer sees a leftover directory named with the live watcher PID).
+			want := []string{"RemoveWorktree", "PostComment", "AddLabel kairon-failed"}
+			if got := h.issues.orderedCalls(); !slices.Equal(got, want) {
+				t.Fatalf("call order = %v, want %v", got, want)
+			}
+		})
+	}
+}
+
+func TestPunchOut_RetriesRemainDoesNotRemoveWorktree(t *testing.T) {
+	h := newHarness(t, 3, 1, true) // retries remain: not a punch-out
+
+	h.m.HandleExit(h.agent.ID, 1)
+
+	if n := h.removedCount(); n != 0 {
+		t.Errorf("worktree removal called %d times on a retry, want 0", n)
+	}
+}
+
 func TestHandleExit_ZeroExitWithoutPRStillRunsCleanup(t *testing.T) {
 	h := newHarness(t, 1, 1, false)
 
@@ -314,5 +388,27 @@ func TestHandleExit_ZeroExitWithoutPRStillRunsCleanup(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("cleanup seam was not called")
+	}
+}
+
+// TestPerformCleanup_RemovesWorktreeAndRetryFileUnconditionally pins that the
+// success-path cleanup no longer guards on a PR existing: a worktree is cleaned
+// up because the work is done, not because a PR was found. It drives the real
+// performCleanup with a fake removeWorktree so no gh call is reachable.
+func TestPerformCleanup_RemovesWorktreeAndRetryFileUnconditionally(t *testing.T) {
+	h := newHarness(t, 1, 0, false) // prExists=false: cleanup must still run
+
+	p := h.writeRetryFile(t)
+
+	h.m.performCleanup(testIssue, 1234)
+
+	if n := h.removedCount(); n != 1 {
+		t.Fatalf("worktree removal called %d times, want 1 (cleanup must not depend on a PR)", n)
+	}
+	if issue := <-h.removed; issue != testIssue {
+		t.Errorf("removed worktree for issue %d, want %d", issue, testIssue)
+	}
+	if exists(p) {
+		t.Error("retry count file still exists after performCleanup")
 	}
 }

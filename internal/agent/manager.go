@@ -56,6 +56,11 @@ type Manager struct {
 	prExists func(repo string, issue int) (bool, error)
 	retry    func(*Agent)
 	cleanup  func(issue, pid int)
+	// removeWorktree deletes an issue's worktree. On a terminal punch-out the
+	// manager calls it before the fail label is applied, so clearing the label
+	// later restarts the issue cleanly (no leftover directory makes
+	// hasActiveWorktree report the long-lived watcher PID as still active).
+	removeWorktree func(issue, pid int) error
 }
 
 func NewManager(cfg *config.Config) *Manager {
@@ -68,6 +73,7 @@ func NewManager(cfg *config.Config) *Manager {
 	}
 	m.retry = m.retryAgent
 	m.cleanup = m.performCleanup
+	m.removeWorktree = m.cleanupWorktree
 	return m
 }
 
@@ -451,6 +457,13 @@ func (m *Manager) implementationFailure(issueNumber, retryCount int, actual stri
 func (m *Manager) punchOut(id string, issueNumber int, runID string, fc guard.FailureContext) {
 	failedLabel := failure.FailedLabel(m.config.Label)
 	log.Printf("[agent] %s exhausted retries, punching out issue #%d (%s)", id, issueNumber, failedLabel)
+	// The run is terminal and will not retry, so the work is done: remove the
+	// worktree before the fail label is applied. Otherwise the leftover
+	// directory, named with the long-lived watcher PID, makes hasActiveWorktree
+	// report the issue as active forever, so clearing the label never restarts it.
+	if err := m.removeWorktree(issueNumber, os.Getpid()); err != nil {
+		log.Printf("[agent] failed to remove worktree for issue #%d during punch-out: %v", issueNumber, err)
+	}
 	remedy := fmt.Sprintf("Read the agent log at .kairon/logs/issue-%d.log to see why the run failed, fix the cause, then remove the `%s` label.", issueNumber, failedLabel)
 	target := failure.Target{Repo: m.config.Repo, Issue: issueNumber, FailLabel: failedLabel}
 	if err := failure.PunchOut(m.issues, target, runID, fc, remedy); err != nil {
@@ -630,22 +643,10 @@ func (m *Manager) cleanupRetryFile(issueNumber int) error {
 
 // performCleanup verifies PR creation and cleans up worktree and retry files
 func (m *Manager) performCleanup(issueNumber, pid int) {
-	// Verify PR exists with expected branch name
-	prExists, err := github.VerifyPRExists(m.config.Repo, issueNumber, pid)
-	if err != nil {
-		log.Printf("[cleanup] failed to verify PR for issue #%d: %v", issueNumber, err)
-		return
-	}
-
-	if !prExists {
-		log.Printf("[cleanup] no PR found with expected branch name for issue #%d, skipping cleanup", issueNumber)
-		return
-	}
-
-	log.Printf("[cleanup] PR verified for issue #%d, proceeding with cleanup", issueNumber)
-
-	// Clean up worktree
-	if err := m.cleanupWorktree(issueNumber, pid); err != nil {
+	// The run is done, so clean up unconditionally. A PR may or may not exist
+	// (a terminal failure has none), but either way the worktree and retry file
+	// should go.
+	if err := m.removeWorktree(issueNumber, pid); err != nil {
 		log.Printf("[cleanup] worktree cleanup failed for issue #%d: %v", issueNumber, err)
 	}
 
