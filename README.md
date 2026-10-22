@@ -179,7 +179,7 @@ A filtered run is recorded as a partial run. `eval diff` and `eval trend` accept
 
 ### Stage-Output Document
 
-The document a pipeline stage returns (a strict-schema YAML envelope with a `canonical` or `punch_out` result) is defined in [docs/stage-output.md](docs/stage-output.md).
+The document a workflow stage returns (a strict-schema YAML envelope with a `canonical` or `punch_out` result) is defined in [docs/stage-output.md](docs/stage-output.md).
 
 The guards that check a stage-output document between stages, and the ordered chain runner that applies them, are described in [docs/guards.md](docs/guards.md).
 
@@ -187,7 +187,7 @@ The provenance step that runs after a guard chain passes (canonicalize, hash, cl
 
 ## Architecture
 
-### Agent Pipeline
+### Agent Workflow
 
 When the watcher detects a labeled issue:
 

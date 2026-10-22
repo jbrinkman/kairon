@@ -1,6 +1,6 @@
 # Guards
 
-A guard is a deterministic check that runs between two pipeline stages. It looks at the
+A guard is a deterministic check that runs between two workflow stages. It looks at the
 [stage-output document](stage-output.md) one stage returned and decides whether the next step may proceed. The
 guard interface, the ordered chain runner and one reference guard live in
 [`internal/guard`](../internal/guard).
