@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jbrinkman/kairon/internal/boundary"
 	"github.com/jbrinkman/kairon/internal/failure"
 )
 
@@ -179,14 +180,22 @@ func (c CLI) State(repo string, issue int, failLabel string) (failure.IssueState
 	if err := json.Unmarshal(out, &view); err != nil {
 		return failure.IssueState{}, fmt.Errorf("failed to parse issue: %w", err)
 	}
+	return resolveState(run, repo, issue, failLabel, view.Labels, view.Comments)
+}
 
+// resolveState turns decoded labels and comments into a failure.IssueState. It
+// is the tail shared by State and ReadIssue. The authenticated user is looked
+// up only if a marker comment exists, and the label events only if a marker
+// comment by that user exists and failLabel is not currently applied.
+func resolveState(run ghFunc, repo string, issue int, failLabel string, labels []Label, comments []rawComment) (failure.IssueState, error) {
 	viewer := ""
-	if hasMarkerComment(view.Comments) {
+	if hasMarkerComment(comments) {
+		var err error
 		if viewer, err = viewerLogin(run); err != nil {
 			return failure.IssueState{}, err
 		}
 	}
-	st := issueState(view.Labels, view.Comments, viewer)
+	st := issueState(labels, comments, viewer)
 
 	if hasViewerMarker(st) && !containsLabel(st.Labels, failLabel) {
 		at, err := fetchFailLabelRemovedAt(run, repo, issue, failLabel)
@@ -196,6 +205,44 @@ func (c CLI) State(repo string, issue int, failLabel string) (failure.IssueState
 		st.FailLabelRemovedAt = at
 	}
 	return st, nil
+}
+
+var _ boundary.Reader = CLI{}
+
+// ReadIssue reads title, body, open state, labels and comments of an issue in a
+// single `gh issue view` call, then resolves the failure-contract state with the
+// same logic State uses. The body is returned raw, exactly as GitHub returned it.
+// Any error returns a zero Snapshot: a partial read is never trusted.
+func (c CLI) ReadIssue(repo string, issue int, failLabel string) (boundary.Snapshot, error) {
+	if err := validateTarget(repo, issue); err != nil {
+		return boundary.Snapshot{}, err
+	}
+	run := c.gh()
+	out, err := run("", "issue", "view", fmt.Sprintf("%d", issue), "--repo", repo,
+		"--json", "title,body,state,labels,comments")
+	if err != nil {
+		return boundary.Snapshot{}, fmt.Errorf("gh issue view failed: %w", err)
+	}
+	var view struct {
+		Title    string       `json:"title"`
+		Body     string       `json:"body"`
+		State    string       `json:"state"`
+		Labels   []Label      `json:"labels"`
+		Comments []rawComment `json:"comments"`
+	}
+	if err := json.Unmarshal(out, &view); err != nil {
+		return boundary.Snapshot{}, fmt.Errorf("failed to parse issue: %w", err)
+	}
+	st, err := resolveState(run, repo, issue, failLabel, view.Labels, view.Comments)
+	if err != nil {
+		return boundary.Snapshot{}, err
+	}
+	return boundary.Snapshot{
+		Title: view.Title,
+		Body:  view.Body,
+		Open:  view.State == "OPEN",
+		State: st,
+	}, nil
 }
 
 func hasViewerMarker(st failure.IssueState) bool {

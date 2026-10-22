@@ -16,10 +16,12 @@ Four related pieces are out of scope here:
   `OutcomeReadyToCommit`.
 - **#381** makes the planner emit the stage-output document, supplies the `gh`-backed `IssueStore`, and resumes a
   partly committed chain.
-- **#382** makes the watcher read the marker and route on the state.
+- **#382** makes the watcher read the marker and route on the state. It is done: the [watcher boundary](boundary.md)
+  classifies the body it just read and acts on the state.
 - **#379** owns bounded retry, the punch-out behavior and the attempt counter.
 
-Nothing in the watcher or any stage calls this package yet.
+The watcher boundary ([`internal/boundary`](../internal/boundary), see [boundary.md](boundary.md)) calls `Classify`
+on every spawn and retry. Nothing calls `Committer` yet, so nothing stamps a marker on an issue today.
 
 ## The marker
 
@@ -105,8 +107,8 @@ on GitHub has no two-space breaks. Use a backslash at the end of the line or a b
 | `none` | No line starts with the marker prefix. The issue was created by hand. | Planner-process the issue. |
 | `mismatch` | A marker line is present, but the body is not `valid`. For example, a planner issue edited afterwards. | Planner-process the issue, the same as `none`. |
 
-If the hash is not `valid`, the issue goes to the planner. Otherwise it proceeds. Acting on the state is the watcher's
-job (#382). This package only reports it.
+If the hash is not `valid`, the issue goes to the planner. Otherwise it proceeds. Acting on the state is the job of the
+[watcher boundary](boundary.md) (#382). This package only reports it.
 
 ### Classification algorithm
 
