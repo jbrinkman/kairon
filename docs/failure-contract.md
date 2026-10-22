@@ -111,7 +111,10 @@ res, err := runner.Run(func(a guard.Attempt) failure.StageResult {
 3. After each failure the runner overwrites `Failure.Attempt` with its own counter, so a stage cannot misreport it,
    and validates the context. An invalid context returns an error that wraps `guard.ErrInvalid`, with no GitHub write.
 4. A retry writes nothing to GitHub. A punch-out calls `PunchOut` and the stage is never called again.
-5. If `PunchOut` fails part way, the result is `OutcomePunchOutPending` plus the error. `Reconcile` finishes it later.
+5. If `PunchOut` fails part way, the result is `OutcomePunchOutPending` plus the error. Whether `Reconcile` can
+   finish it depends on how far `PunchOut` got: if the comment landed but the label write failed, the issue is
+   terminal-pending and `Reconcile` applies the label later; if the state read or the comment write failed,
+   nothing was written, so the issue stays eligible and re-runs with a fresh budget rather than being reconciled.
 
 The caller must supply a run id (see below). There is no fallback.
 

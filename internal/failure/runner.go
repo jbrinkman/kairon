@@ -19,8 +19,10 @@ const (
 	OutcomeSucceeded Outcome = iota + 1
 	// OutcomePunchedOut: the comment and label are both in place.
 	OutcomePunchedOut
-	// OutcomePunchOutPending: a punch-out was decided but a write failed. The
-	// issue is terminal-pending and Reconcile finishes the label.
+	// OutcomePunchOutPending: a punch-out was decided but a GitHub call failed.
+	// If the comment landed and the label did not, the issue is terminal-pending
+	// and Reconcile finishes the label. If the state read or the comment write
+	// failed, nothing was written and the issue stays eligible.
 	OutcomePunchOutPending
 	// OutcomeHalted: the issue is labeled or terminal-pending, so the stage
 	// was not called.
