@@ -1,6 +1,7 @@
 package eval
 
 import (
+	"bytes"
 	"fmt"
 	"io/fs"
 	"os"
@@ -8,6 +9,8 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+
+	"gopkg.in/yaml.v3"
 
 	"github.com/jbrinkman/kairon/internal/stageoutput"
 )
@@ -373,4 +376,97 @@ func TestPlannerEvidenceFabricatedReplyFails(t *testing.T) {
 	if strings.Contains(run.result.Detail, "no source files") {
 		t.Errorf("the judge was given no sources, so it did not reject the reply on its citations: %s", run.result.Detail)
 	}
+}
+
+// TestShippedCaseWorkspacesAreMirroredInTemplates pins the invariant behind the
+// `task sync:check` workspace loop from the Go side. kairon init/update extract
+// cmd/kairon/templates, and a case that sets `workspace:` fails to load when its
+// fixture directory is absent. So every workspace a shipped case names must
+// exist in the templates, with the same files and the same bytes as the live one.
+func TestShippedCaseWorkspacesAreMirroredInTemplates(t *testing.T) {
+	root := repoRoot(t)
+	liveEvals := filepath.Join(root, ".kairon", "evals")
+	tmplEvals := filepath.Join(root, "cmd", "kairon", "templates", "kairon", "evals")
+
+	// Collect the workspace names from the case heads. Parse YAML directly so
+	// the test does not depend on loadCases.
+	workspaces := map[string][]string{} // workspace -> case files naming it
+	err := filepath.WalkDir(filepath.Join(liveEvals, "cases"), func(path string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() || !strings.HasSuffix(path, ".yaml") {
+			return err
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		var head struct {
+			Workspace string `yaml:"workspace"`
+		}
+		if err := yaml.Unmarshal(data, &head); err != nil {
+			return fmt.Errorf("%s: %w", path, err)
+		}
+		if head.Workspace != "" {
+			workspaces[head.Workspace] = append(workspaces[head.Workspace], path)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Do not pass vacuously: the planner suite names planner-evidence.
+	if _, ok := workspaces["planner-evidence"]; !ok {
+		t.Fatalf("no shipped case names workspace planner-evidence; found %v", workspaces)
+	}
+
+	for name, cases := range workspaces {
+		live := filepath.Join(liveEvals, "fixtures", "workspaces", name)
+		tmpl := filepath.Join(tmplEvals, "fixtures", "workspaces", name)
+		if st, err := os.Stat(tmpl); err != nil || !st.IsDir() {
+			t.Errorf("workspace %q (used by %v) is missing from the templates: want directory %s", name, cases, tmpl)
+			continue
+		}
+		liveFiles := regularFiles(t, live)
+		tmplFiles := regularFiles(t, tmpl)
+		for rel := range liveFiles {
+			got, ok := tmplFiles[rel]
+			if !ok {
+				t.Errorf("workspace %q: %s is in the live fixture but not in the templates", name, rel)
+				continue
+			}
+			if !bytes.Equal(liveFiles[rel], got) {
+				t.Errorf("workspace %q: %s differs between the live fixture and the templates", name, rel)
+			}
+		}
+		for rel := range tmplFiles {
+			if _, ok := liveFiles[rel]; !ok {
+				t.Errorf("workspace %q: %s is in the templates but not in the live fixture", name, rel)
+			}
+		}
+	}
+}
+
+// regularFiles returns the content of every regular file under dir, keyed by
+// its slash-separated path relative to dir.
+func regularFiles(t *testing.T, dir string) map[string][]byte {
+	t.Helper()
+	out := map[string][]byte{}
+	err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil || !d.Type().IsRegular() {
+			return err
+		}
+		rel, err := filepath.Rel(dir, path)
+		if err != nil {
+			return err
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		out[filepath.ToSlash(rel)] = data
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("reading %s: %v", dir, err)
+	}
+	return out
 }

@@ -70,9 +70,17 @@ tasks:
         diff -rq .kairon/scripts/ cmd/kairon/templates/kairon/scripts/ || error=1
         diff -rq .kairon/themes/ cmd/kairon/templates/kairon/themes/ || error=1
         # fixtures/workspaces (per-case workspace fixtures) and fixtures/hidden are
-        # live-only eval inputs; they are not distributed in the templates.
+        # excluded from this bulk comparison; workspaces that ship in the templates
+        # are diffed one by one in the loop below. hidden/ stays live-only.
         diff -rq --exclude=results --exclude=.DS_Store --exclude=tmp --exclude=workspaces --exclude=hidden .kairon/evals/ cmd/kairon/templates/kairon/evals/ || error=1
         diff -rq .kiro/skills/sentinel-protocol/ cmd/kairon/templates/kiro/skills/sentinel-protocol/ || error=1
+        # Workspace fixtures that ship with the templates must match the live ones:
+        # a shipped case that sets `workspace:` fails to load without its fixture.
+        # A workspace absent from the templates stays live-only.
+        for d in cmd/kairon/templates/kairon/evals/fixtures/workspaces/*/; do
+          [ -d "$d" ] || continue
+          diff -rq ".kairon/evals/fixtures/workspaces/$(basename "$d")" "$d" || error=1
+        done
 
         if [ $error -eq 0 ]; then
           echo "✅ All template-synchronized files match"
