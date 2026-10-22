@@ -14,8 +14,8 @@ This package defines the guard contract and the runner. Two related pieces are o
 
 - **#378** adds the commit step that runs after every guard has passed (the single GitHub write and the provenance
   hash). It is described in [provenance.md](provenance.md).
-- **#379** adds what a guard's failure method actually does: the bounded retry, the punch-out, and the attempt
-  counter.
+- **#379** defines what a guard's failure method actually does: the bounded retry, the punch-out, and the attempt
+  counter. It is described in [failure-contract.md](failure-contract.md).
 
 Nothing in the watcher or any stage calls the runner yet.
 

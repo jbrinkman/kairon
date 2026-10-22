@@ -13,6 +13,7 @@ import (
 
 	"github.com/jbrinkman/kairon/internal/agent"
 	"github.com/jbrinkman/kairon/internal/config"
+	"github.com/jbrinkman/kairon/internal/failure"
 	"github.com/jbrinkman/kairon/internal/github"
 )
 
@@ -26,6 +27,10 @@ type Watcher struct {
 	started             bool
 	backoffTracker      *BackoffTracker
 	dependencyValidator *DependencyValidator
+
+	// Seams so the poll logic is testable without gh. New sets production defaults.
+	selectIssues func(repo, label, assignee string) (github.Selection, error)
+	reconcile    func(repo string, issue int, failLabel string) error
 }
 
 func New(cfg *config.Config, mgr *agent.Manager, user string) *Watcher {
@@ -36,7 +41,63 @@ func New(cfg *config.Config, mgr *agent.Manager, user string) *Watcher {
 		tracked:             make(map[int]bool),
 		backoffTracker:      NewBackoffTracker(),
 		dependencyValidator: NewDependencyValidator(),
+		selectIssues:        github.SelectIssues,
+		reconcile:           reconcileWithGitHub,
 	}
+}
+
+// reconcileWithGitHub is the production reconcile: it finishes a half-done
+// punch-out by applying the missing fail-state label through the gh adapter.
+func reconcileWithGitHub(repo string, issue int, failLabel string) error {
+	_, err := failure.Reconcile(github.CLI{}, failure.Target{Repo: repo, Issue: issue, FailLabel: failLabel})
+	return err
+}
+
+// reconcilePending finishes the punch-out of each terminal-pending issue (a
+// trusted explanation comment exists but the fail-state label does not) and, on
+// success, resets its global retry count so a later restart gets a fresh budget.
+// An error on one issue is logged and does not stop the others. These issues are
+// never spawned: the caller passes them here instead of to the spawn loop.
+func (w *Watcher) reconcilePending(pending []github.Issue) {
+	failLabel := failure.FailedLabel(w.config.Label)
+	for _, issue := range pending {
+		if err := w.reconcile(w.config.Repo, issue.Number, failLabel); err != nil {
+			log.Printf("[watcher] failed to reconcile punch-out for issue #%d: %v", issue.Number, err)
+			continue
+		}
+		if err := w.resetRetryCount(issue.Number); err != nil {
+			log.Printf("[watcher] failed to reset retry count for issue #%d: %v", issue.Number, err)
+		}
+	}
+}
+
+// untrackAbsent drops tracked entries for issues that are not in the eligible
+// list. A punched-out issue carries the fail-state label and so is absent from
+// a successful poll; once a human clears the label it is eligible again and,
+// no longer tracked, is picked up as a fresh run. Call it only after a
+// successful poll.
+func (w *Watcher) untrackAbsent(eligible []github.Issue) {
+	present := make(map[int]struct{}, len(eligible))
+	for _, issue := range eligible {
+		present[issue.Number] = struct{}{}
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	for n := range w.tracked {
+		if _, ok := present[n]; !ok {
+			delete(w.tracked, n)
+		}
+	}
+}
+
+// resetRetryCount removes the issue's persisted global retry count. A missing
+// file is not an error.
+func (w *Watcher) resetRetryCount(issueNumber int) error {
+	retryFile := fmt.Sprintf(".kairon/retries/issue-%d.count", issueNumber)
+	if err := os.Remove(retryFile); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
 }
 
 func (w *Watcher) Start() {
@@ -87,13 +148,17 @@ func (w *Watcher) checkIssues() {
 	w.backoffTracker.IncrementRound()
 
 	log.Printf("[watcher] polling for issues...")
-	issues, err := github.ListIssues(w.config.Repo, w.config.Label, w.user)
+	sel, err := w.selectIssues(w.config.Repo, w.config.Label, w.user)
 	if err != nil {
+		// Leave tracked untouched: an error says nothing about which issues exist.
 		log.Printf("[watcher] error fetching issues: %v", err)
 		return
 	}
 
-	for _, issue := range issues {
+	w.reconcilePending(sel.TerminalPending)
+	w.untrackAbsent(sel.Eligible)
+
+	for _, issue := range sel.Eligible {
 		w.mu.RLock()
 		tracked := w.tracked[issue.Number]
 		w.mu.RUnlock()

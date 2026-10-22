@@ -70,46 +70,11 @@ func GetIssueDetails(repo string, number int) (*IssueDetails, error) {
 	return &details, nil
 }
 
+// ListIssues returns the open issues with label that may be processed: issues
+// labeled <label>-done or <label>-failed, and issues awaiting a completed
+// punch-out, are excluded. See SelectIssues to also get the latter.
 func ListIssues(repo, label, assignee string) ([]Issue, error) {
-	args := []string{"issue", "list", "--repo", repo, "--label", label, "--state", "open", "--json", "number,title,body,labels"}
-
-	// Add assignee filter if specified
-	if assignee != "" {
-		args = append(args, "--assignee", assignee)
-	}
-
-	cmd := exec.Command("gh", args...)
-	output, err := cmd.Output()
-	if err != nil {
-		if isRateLimited(err) {
-			return nil, ErrRateLimited
-		}
-		return nil, fmt.Errorf("gh issue list failed: %w", err)
-	}
-
-	var issues []Issue
-	if err := json.Unmarshal(output, &issues); err != nil {
-		return nil, fmt.Errorf("failed to parse gh output: %w", err)
-	}
-
-	doneLabel := label + "-done"
-	failedLabel := label + "-failed"
-
-	var filtered []Issue
-	for _, issue := range issues {
-		hasExcluded := false
-		for _, l := range issue.Labels {
-			if l.Name == doneLabel || l.Name == failedLabel {
-				hasExcluded = true
-				break
-			}
-		}
-		if !hasExcluded {
-			filtered = append(filtered, issue)
-		}
-	}
-
-	return filtered, nil
+	return listIssues(execGH, repo, label, assignee)
 }
 
 func AddLabel(repo string, issueNumber int, label string) error {
@@ -127,29 +92,6 @@ func PRExistsForIssue(repo string, issueNumber int) (bool, error) {
 	var prs []struct {
 		Number int `json:"number"`
 	}
-	if err := json.Unmarshal(output, &prs); err != nil {
-		return false, fmt.Errorf("failed to parse gh output: %w", err)
-	}
-
-	return len(prs) > 0, nil
-}
-
-type PullRequest struct {
-	Number      int    `json:"number"`
-	HeadRefName string `json:"headRefName"`
-}
-
-// VerifyPRExists checks if a PR exists with the expected branch name pattern
-func VerifyPRExists(repo string, issueNumber, pid int) (bool, error) {
-	expectedBranch := fmt.Sprintf("spec/issue-%d-%d", issueNumber, pid)
-
-	cmd := exec.Command("gh", "pr", "list", "--repo", repo, "--head", expectedBranch, "--json", "number,headRefName")
-	output, err := cmd.Output()
-	if err != nil {
-		return false, fmt.Errorf("gh pr list failed: %w", err)
-	}
-
-	var prs []PullRequest
 	if err := json.Unmarshal(output, &prs); err != nil {
 		return false, fmt.Errorf("failed to parse gh output: %w", err)
 	}
