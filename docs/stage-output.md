@@ -1,6 +1,6 @@
 # Stage-output document
 
-The stage-output document is the value a pipeline stage returns. It is a YAML mapping with a small metadata
+The stage-output document is the value a workflow stage returns. It is a YAML mapping with a small metadata
 envelope and a body, parsed under a strict schema. The Go type, parser and serializer live in
 [`internal/stageoutput`](../internal/stageoutput). The package imports only the standard library and
 `gopkg.in/yaml.v3`, so stages and guards can import it without creating an import cycle.

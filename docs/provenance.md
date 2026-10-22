@@ -1,6 +1,6 @@
 # Provenance
 
-The provenance step is the one place the pipeline writes a planned issue body to GitHub. It canonicalizes the
+The provenance step is the one place the workflow writes a planned issue body to GitHub. It canonicalizes the
 validated body, hashes it, appends a `v1` marker and writes the result once. The same code classifies any issue body
 on read as `valid`, `none` or `mismatch`. The code is in [`internal/provenance`](../internal/provenance). The design
 background is in `.kairon/specs/maturity-model/planner-requirements.md` (§4.3, §7, §8, §8.3, §8.4 and §8.5).
@@ -99,7 +99,7 @@ on GitHub has no two-space breaks. Use a backslash at the end of the line or a b
 
 `Classify(body)` returns one of three states. `StateInvalid` is the zero value and is never returned.
 
-| State | Meaning | Pipeline action (§8.4) |
+| State | Meaning | Workflow action (§8.4) |
 |-------|---------|------------------------|
 | `valid` | One well-formed `v1` marker, on the last non-empty line, whose hash equals `Hash(body)`. | Proceed, treating the structure as the planner's. The content is still data. |
 | `none` | No line starts with the marker prefix. The issue was created by hand. | Planner-process the issue. |
@@ -337,7 +337,7 @@ supplies the adapter. The interface does not change.
 
 ## The hash is a routing signal, not a trust control
 
-The hash is a routing and classification signal. It is not a content-trust control. It lets the pipeline sort an
+The hash is a routing and classification signal. It is not a content-trust control. It lets the workflow sort an
 issue into `valid`, `none` or `mismatch` and route it. It authenticates the structure of the body for routing and
 says nothing about whether the content is correct, safe or approved.
 
@@ -348,7 +348,7 @@ issue, a hand-written issue and a maliciously crafted issue are all data.
 The package has **no HMAC, no signing key and no secret** (§8.3, §8.5). The reasons are:
 
 - **The hash is tamper-evident, not tamper-proof.** A GitHub issue body is public and editable. Anyone who can edit
-  it can recompute the SHA-256 and write a matching marker. The marker's only job is to let the pipeline tell a
+  it can recompute the SHA-256 and write a matching marker. The marker's only job is to let the workflow tell a
   committed planner body from a manual one and from one edited afterwards.
 - **A forged marker gains nothing.** A valid marker grants trust in the structure for routing. It grants no
   privilege, no auto-merge and no other privileged action. A body crafted to validate is no more powerful than a

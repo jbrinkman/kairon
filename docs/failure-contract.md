@@ -1,7 +1,7 @@
 # Failure Contract
 
-When a pipeline stage fails, it ends in one of two ways. Either the stage is re-run automatically within a fixed
-budget (Tier 1), or the pipeline stops and tells a human why (Tier 2). This page describes that contract and the code
+When a workflow stage fails, it ends in one of two ways. Either the stage is re-run automatically within a fixed
+budget (Tier 1), or the workflow stops and tells a human why (Tier 2). This page describes that contract and the code
 that enforces it in `internal/failure`.
 
 The design background is `.kairon/specs/maturity-model/planner-requirements.md` §14 (failure contract), §4.1
@@ -17,7 +17,7 @@ CLI.
 | Tier | Name | What happens | GitHub writes |
 |------|------|--------------|---------------|
 | Tier 1 | Bounded retry | The stage runs again while attempts remain. | None |
-| Tier 2 | Punch-out | The pipeline stops, posts a comment that says why, then adds the `kairon-failed` label. | One comment, then one label |
+| Tier 2 | Punch-out | The workflow stops, posts a comment that says why, then adds the `kairon-failed` label. | One comment, then one label |
 
 A failure goes to Tier 2 when either condition holds:
 
@@ -170,7 +170,7 @@ krew-lead exited with code 1
 
 Read the agent log at .kairon/logs/issue-379.log to see why the run failed, fix the cause, then remove the `kairon-failed` label.
 
-To restart this issue, fix the cause and remove the `kairon-failed` label. The pipeline picks the issue up again with a fresh retry budget.
+To restart this issue, fix the cause and remove the `kairon-failed` label. The workflow picks the issue up again with a fresh retry budget.
 ````
 
 If the caller supplies no remedy, the default is "Make this true, then remove the label" followed by the expected

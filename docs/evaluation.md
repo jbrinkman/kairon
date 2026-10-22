@@ -2232,7 +2232,7 @@ If `<evals-dir>/agents/<agent>.json` exists, the agent under test is run with th
 
 ## Evaluating a candidate prompt (`--prompt-file`)
 
-Iterating on a prompt used to mean editing `.kiro/agents/<agent>-prompt.md`. That edit is live: krew-lead spawns the builder and validator from the worktree's `.kiro/agents/`, so a mid-iteration edit changes the pipeline that is building your PR, and an edited planner prompt degrades the planner you use day to day. `--prompt-file` scores a candidate prompt while the live agent stays untouched.
+Iterating on a prompt used to mean editing `.kiro/agents/<agent>-prompt.md`. That edit is live: krew-lead spawns the builder and validator from the worktree's `.kiro/agents/`, so a mid-iteration edit changes the workflow that is building your PR, and an edited planner prompt degrades the planner you use day to day. `--prompt-file` scores a candidate prompt while the live agent stays untouched.
 
 ```bash
 kairon eval architect --prompt-file .kairon/iterations/architect/v2.md
@@ -2953,7 +2953,7 @@ The same value is sent to the backend as the request timeout, so a host-side and
 
 ## Self-Test
 
-The harness has a self-test that exercises the full pipeline (rubric and case loading, prompt assembly, agent call, deterministic and judged scoring, cost accounting, result files) with no model calls and no `kiro-cli`:
+The harness has a self-test that exercises the full workflow (rubric and case loading, prompt assembly, agent call, deterministic and judged scoring, cost accounting, result files) with no model calls and no `kiro-cli`:
 
 ```bash
 task eval:selftest
@@ -3277,7 +3277,7 @@ The test does not call a model and does not touch `.kairon/evals/results/`.
 
 The evaluation framework serves as unit testing for prompt engineering. Follow this workflow when modifying agent prompts or configurations.
 
-**Iterate on a candidate, not on the live prompt.** Do not edit `.kiro/agents/<agent>-prompt.md` to try an idea. That file is live: krew-lead spawns the builder and validator from the worktree's `.kiro/agents/`, so an edit made mid-iteration changes the pipeline that is building your PR (and an edited planner prompt changes the planner you use every day). Write each candidate to its own file, conventionally `.kairon/iterations/<agent>/vN.md`, and score it with `--prompt-file` (see [Evaluating a candidate prompt](#evaluating-a-candidate-prompt---prompt-file)). The candidate is used only in the per-case eval workspaces, so the live agent is never modified. Copy the winning candidate over the live prompt only once, when you are done iterating.
+**Iterate on a candidate, not on the live prompt.** Do not edit `.kiro/agents/<agent>-prompt.md` to try an idea. That file is live: krew-lead spawns the builder and validator from the worktree's `.kiro/agents/`, so an edit made mid-iteration changes the workflow that is building your PR (and an edited planner prompt changes the planner you use every day). Write each candidate to its own file, conventionally `.kairon/iterations/<agent>/vN.md`, and score it with `--prompt-file` (see [Evaluating a candidate prompt](#evaluating-a-candidate-prompt---prompt-file)). The candidate is used only in the per-case eval workspaces, so the live agent is never modified. Copy the winning candidate over the live prompt only once, when you are done iterating.
 
 ### Before Making Changes (Baseline)
 
