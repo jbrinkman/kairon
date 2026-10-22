@@ -372,6 +372,73 @@ func TestIssueState_ByViewerAndLabels(t *testing.T) {
 	}
 }
 
+// nonMarkerComments returns n comments, none of which is a punch-out marker,
+// so an issue built from them looks eligible from `gh issue list` alone.
+func nonMarkerComments(n int) []string {
+	out := make([]string, n)
+	for i := range out {
+		out[i] = fmt.Sprintf(`{"author":{"login":"someone"},"body":"c%d","createdAt":"2026-01-01T00:00:00Z"}`, i)
+	}
+	return out
+}
+
+// TestSelectIssues_RereadsIssueAtCommentCap pins that an issue whose `gh issue
+// list` comment page is at the cap is re-read in full (via CLI.State) so a
+// punch-out marker posted beyond the first 100 comments is not missed. Without
+// the re-read the issue misclassifies as Eligible and the watcher re-spawns a
+// terminal-pending run.
+func TestSelectIssues_RereadsIssueAtCommentCap(t *testing.T) {
+	// Issue 2's list page holds 100 non-marker comments (the marker is newer,
+	// past the cap). Its full view carries the trusted marker, so State sees a
+	// terminal-pending issue.
+	view := `{"labels":[{"name":"kairon"}],"comments":[` +
+		markerComment(testViewer, "run1", "2026-01-02T10:00:00Z") + `]}`
+	g := &fakeGH{
+		viewer: testViewer,
+		list: listOf(
+			issueJSON(1, []string{"kairon"}),
+			issueJSON(2, []string{"kairon"}, nonMarkerComments(100)...),
+		),
+		view:   map[int]string{2: view},
+		events: map[int]string{2: ""},
+	}
+
+	sel, err := selectIssues(g.run, testRepo, "kairon", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := numbers(sel.Eligible); !eqInts(got, []int{1}) {
+		t.Errorf("Eligible = %v, want [1] (issue 2 must not be eligible)", got)
+	}
+	if got := numbers(sel.TerminalPending); !eqInts(got, []int{2}) {
+		t.Errorf("TerminalPending = %v, want [2] (marker is past the list cap)", got)
+	}
+}
+
+// TestSelectIssues_CommentCapRereadFailsClosed pins that if the full re-read
+// errors for a capped issue, the issue is skipped this poll rather than spawned.
+func TestSelectIssues_CommentCapRereadFailsClosed(t *testing.T) {
+	g := &fakeGH{
+		viewer: testViewer,
+		list: listOf(
+			issueJSON(2, []string{"kairon"}, nonMarkerComments(100)...),
+		),
+		// No view output for issue 2: the re-read fails to parse, so State errors.
+		view: map[int]string{},
+	}
+
+	sel, err := selectIssues(g.run, testRepo, "kairon", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sel.Eligible) != 0 {
+		t.Errorf("Eligible = %v, want empty (a failed re-read must fail closed)", numbers(sel.Eligible))
+	}
+	if len(sel.TerminalPending) != 0 {
+		t.Errorf("TerminalPending = %v, want empty", numbers(sel.TerminalPending))
+	}
+}
+
 func TestCLI_State(t *testing.T) {
 	view := `{"labels":[{"name":"kairon"}],"comments":[` +
 		markerComment(testViewer, "run1", "2026-01-01T10:00:00Z") + `]}`

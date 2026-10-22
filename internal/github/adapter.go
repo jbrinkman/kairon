@@ -53,6 +53,11 @@ type rawIssue struct {
 	Comments []rawComment `json:"comments"`
 }
 
+// listCommentCap is the number of comments `gh issue list --json comments`
+// returns per issue at most (oldest first). An issue whose list page is at the
+// cap is re-read in full so a newer punch-out marker is not missed.
+const listCommentCap = 100
+
 // issueState converts decoded gh JSON into the failure contract's view of an
 // issue. It is pure. A comment is ByViewer only when viewer is non-empty and
 // equals the comment author's login. FailLabelRemovedAt is left zero.
@@ -294,6 +299,25 @@ func selectIssues(run ghFunc, repo, label, assignee string) (Selection, error) {
 
 	var sel Selection
 	for _, ri := range issues {
+		if len(ri.Comments) >= listCommentCap {
+			// `gh issue list --json comments` returns only the oldest 100
+			// comments, so a punch-out marker (always one of the newest) can be
+			// hidden on a long thread. Re-read the issue in full and classify
+			// from that. Fail closed: skip this poll on error rather than
+			// re-spawning what may be a terminal-pending issue.
+			st, err := CLI{run: run}.State(repo, ri.Number, failed)
+			if err != nil {
+				log.Printf("[github] issue #%d: full state lookup failed, skipping this poll: %v", ri.Number, err)
+				continue
+			}
+			switch st.Classify(done, failed) {
+			case failure.SelectEligible:
+				sel.Eligible = append(sel.Eligible, ri.Issue)
+			case failure.SelectTerminalPending:
+				sel.TerminalPending = append(sel.TerminalPending, ri.Issue)
+			}
+			continue
+		}
 		who := ""
 		if hasMarkerComment(ri.Comments) {
 			if who, err = lookupViewer(); err != nil {
