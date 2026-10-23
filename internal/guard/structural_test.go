@@ -199,6 +199,19 @@ func TestStructural_Admit(t *testing.T) {
 			wantPass: true,
 		},
 		{
+			// The planner-shared skill teaches the single-line
+			// "Dependencies: none" form with no "## Dependencies" heading, and
+			// forbids the heading. A body in that exact shape must satisfy the
+			// required Dependencies section, or every skill-conformant document
+			// is rejected.
+			name: "single-line Dependencies form satisfies the section without a heading",
+			raw: func(t *testing.T) string {
+				body := strings.Replace(wellFormedBody, "## Dependencies\nNone.\n", "Dependencies: none\n", 1)
+				return canonicalRaw(t, stageoutput.StagePlanner, body)
+			},
+			wantPass: true,
+		},
+		{
 			name:     "punch_out passes",
 			raw:      punchOutRaw,
 			wantPass: true,
