@@ -1,0 +1,14 @@
+{
+  "name": "planner-automated",
+  "description": "Unattended intake agent that canonicalizes an existing issue into a stage-output document or a punch-out. Never asks questions. Does NOT implement or fix code.",
+  "prompt": "file://./planner-automated-prompt.md",
+  "resources": ["skill://.kiro/skills/planner-conventions/SKILL.md", "skill://.kiro/skills/planner-shared/SKILL.md"],
+  "tools": ["read", "shell"],
+  "allowedTools": ["read", "shell"],
+  "toolsSettings": {
+    "shell": {
+      "autoAllowReadonly": true
+    }
+  },
+  "model": "claude-sonnet-5.5"
+}
