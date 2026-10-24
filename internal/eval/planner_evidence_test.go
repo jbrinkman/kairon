@@ -38,10 +38,6 @@ import (
 // run.
 const evidenceCaseName = "automated-best-effort-fill"
 
-// evidenceFabricatedReply is the recorded reply that cites evidence absent
-// from the fixtures, relative to this package.
-var evidenceFabricatedReply = filepath.Join("testdata", "planner-fabricated", evidenceCaseName+".txt")
-
 // evidenceQuestion selects the judge checks that verify evidence against a
 // source: the question asks whether something is real, grounded or evidenced.
 var evidenceQuestion = regexp.MustCompile(`(?i)\bevidence\b|\bgrounded\b|\breal (quote|file)`)
@@ -320,61 +316,91 @@ func plannerFixtureText(t *testing.T) string {
 	return sb.String()
 }
 
+// fabricatedSample is one recorded planner reply whose evidence is wrong, and
+// the invented path:line token the judge must name when it rejects the reply.
+type fabricatedSample struct {
+	// name is the sub-test name and the sample file stem under
+	// testdata/planner-fabricated.
+	name string
+	// cited is the invented token the judge must report missing. For the
+	// isolated samples it is the single bad citation; for the combined sample
+	// it is the first bad citation in document order, which the judge reaches
+	// first.
+	cited string
+}
+
+// evidenceFabricatedSamples are the fabricated-reply samples. Each isolated
+// sample carries exactly one invented path:line citation and valid citations
+// everywhere else, so its named token is the only thing that can make the
+// judge reject it. groundingJudge returns at the first missing citation, so
+// without isolation a later bad citation is never exercised; one sample per
+// bad citation exercises each failure cause independently. The combined sample
+// keeps all three bad citations in one reply and pins that the judge still
+// rejects, naming the first one it reaches.
+var evidenceFabricatedSamples = []fabricatedSample{
+	{name: "bad-path", cited: "internal/export/ndjson.go:12"},
+	{name: "bad-line", cited: "internal/export/csv.go:99"},
+	{name: "bad-quote-citation", cited: "docs/exporters.md:7"},
+	{name: evidenceCaseName, cited: "internal/export/ndjson.go:12"},
+}
+
 func TestPlannerEvidenceFabricatedReplyFails(t *testing.T) {
-	data, err := os.ReadFile(evidenceFabricatedReply)
-	if err != nil {
-		t.Fatal(err)
-	}
-	fabricated := string(data)
-
-	// The sample must be a well-formed planner document, so that only its
-	// evidence is wrong.
-	doc, err := stageoutput.Parse(data)
-	if err != nil {
-		t.Fatalf("the fabricated sample does not parse: %v", err)
-	}
-	if err := doc.Validate(); err != nil {
-		t.Fatalf("the fabricated sample does not validate: %v", err)
-	}
-	if doc.Stage != stageoutput.StagePlanner || doc.Result != stageoutput.ResultCanonical {
-		t.Fatalf("the fabricated sample is %s/%s, want planner/canonical", doc.Stage, doc.Result)
+	// The unmodified reference reply passes, so every failure below is
+	// attributable to a sample's fabricated citation only.
+	if ref := runEvidenceCheck(t, nil); !ref.result.Passed {
+		t.Fatalf("the unmodified reference reply fails the evidence check: %s", ref.result.Detail)
 	}
 
-	// It cites a file, a line and a quote that the fixtures do not have.
 	fixtures := plannerFixtureText(t)
 	if fixtures == "" {
-		t.Fatal("found no planner fixtures to compare the fabricated sample against")
-	}
-	for _, invented := range []string{
-		"internal/export/ndjson.go:12",
-		"internal/export/csv.go:99",
-		"every exporter must be covered by a table-driven test with a golden file",
-	} {
-		if !strings.Contains(fabricated, invented) {
-			t.Errorf("the fabricated sample does not cite %q", invented)
-		}
-		if strings.Contains(fixtures, invented) {
-			t.Errorf("%q is present in the fixtures, so it is not fabricated", invented)
-		}
+		t.Fatal("found no planner fixtures to compare the fabricated samples against")
 	}
 
-	// The unmodified reference reply passes, so the failure below is
-	// attributable to the fabricated citations only.
-	if ref := runEvidenceCheck(t, nil); !ref.result.Passed {
-		t.Errorf("the unmodified reference reply fails the evidence check: %s", ref.result.Detail)
-	}
+	for _, s := range evidenceFabricatedSamples {
+		t.Run(s.name, func(t *testing.T) {
+			path := filepath.Join("testdata", "planner-fabricated", s.name+".txt")
+			data, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			fabricated := string(data)
 
-	run := runEvidenceCheck(t, &fabricated)
-	if run.result.Passed {
-		t.Errorf("the fabricated reply passes the evidence check: %s", run.result.Detail)
-	}
-	for _, want := range []string{"judge answered no", evidenceMissing, "internal/export/ndjson.go:12"} {
-		if !strings.Contains(run.result.Detail, want) {
-			t.Errorf("check detail does not contain %q: %s", want, run.result.Detail)
-		}
-	}
-	if strings.Contains(run.result.Detail, "no source files") {
-		t.Errorf("the judge was given no sources, so it did not reject the reply on its citations: %s", run.result.Detail)
+			// The sample must be a well-formed planner document, so that only
+			// its evidence is wrong.
+			doc, err := stageoutput.Parse(data)
+			if err != nil {
+				t.Fatalf("the fabricated sample does not parse: %v", err)
+			}
+			if err := doc.Validate(); err != nil {
+				t.Fatalf("the fabricated sample does not validate: %v", err)
+			}
+			if doc.Stage != stageoutput.StagePlanner || doc.Result != stageoutput.ResultCanonical {
+				t.Fatalf("the fabricated sample is %s/%s, want planner/canonical", doc.Stage, doc.Result)
+			}
+
+			// The token the judge must name is present in this sample and
+			// absent from the fixtures, so the rejection is about a real
+			// fabrication.
+			if !strings.Contains(fabricated, s.cited) {
+				t.Errorf("the fabricated sample does not cite %q", s.cited)
+			}
+			if strings.Contains(fixtures, s.cited) {
+				t.Errorf("%q is present in the fixtures, so it is not fabricated", s.cited)
+			}
+
+			run := runEvidenceCheck(t, &fabricated)
+			if run.result.Passed {
+				t.Fatalf("the fabricated reply passes the evidence check: %s", run.result.Detail)
+			}
+			for _, want := range []string{"judge answered no", evidenceMissing, s.cited} {
+				if !strings.Contains(run.result.Detail, want) {
+					t.Errorf("check detail does not contain %q: %s", want, run.result.Detail)
+				}
+			}
+			if strings.Contains(run.result.Detail, "no source files") {
+				t.Errorf("the judge was given no sources, so it did not reject the reply on its citations: %s", run.result.Detail)
+			}
+		})
 	}
 }
 
