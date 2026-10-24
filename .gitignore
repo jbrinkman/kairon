@@ -13,6 +13,7 @@ test-results/
 cmd/kairon/kairon
 /specs/
 .kairon/retries/
+.kairon/inputs/
 **/.kairon/evals/tmp/
 internal/eval/testdata/evals/results/
 internal/eval/testdata/checks-only-invalid/results/
