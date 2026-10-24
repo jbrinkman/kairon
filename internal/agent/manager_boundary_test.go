@@ -406,13 +406,14 @@ func TestRetryAgent_ReadmitsAndRewritesDocument(t *testing.T) {
 
 func TestRetryAgent_NotAdmittedFailsAgentRemovesWorktreeStartsNothing(t *testing.T) {
 	cases := map[string]struct {
-		res       boundary.Result
-		err       error
-		wantWrite []string
+		res         boundary.Result
+		err         error
+		wantWrite   []string
+		wantUntrack bool
 	}{
 		"punch-out":   {res: punchOutResult(), wantWrite: []string{"PostComment", "AddLabel kairon-failed"}},
-		"skipped":     {res: boundary.Result{Outcome: boundary.OutcomeSkipped, SkipReason: boundary.SkipFailed}},
-		"unavailable": {err: errors.New("gh down")},
+		"skipped":     {res: boundary.Result{Outcome: boundary.OutcomeSkipped, SkipReason: boundary.SkipFailed}, wantUntrack: true},
+		"unavailable": {err: errors.New("gh down"), wantUntrack: true},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -437,6 +438,18 @@ func TestRetryAgent_NotAdmittedFailsAgentRemovesWorktreeStartsNothing(t *testing
 			case <-b.removed:
 			default:
 				t.Error("worktree not removed")
+			}
+			gotUntrack := false
+			select {
+			case got := <-b.untracked:
+				gotUntrack = true
+				if got != a.IssueNumber {
+					t.Errorf("untrack issue = %d, want %d", got, a.IssueNumber)
+				}
+			default:
+			}
+			if gotUntrack != tc.wantUntrack {
+				t.Errorf("untrack called = %v, want %v (issue must be reconsidered by a later poll)", gotUntrack, tc.wantUntrack)
 			}
 			if got := b.issues.writes(); !slices.Equal(got, tc.wantWrite) {
 				t.Errorf("writes = %v, want %v", got, tc.wantWrite)

@@ -113,12 +113,13 @@ func (f *fakeIssues) orderedCalls() []string {
 
 // harness wires a Manager to fakes. No test using it can reach gh, kiro-cli or git.
 type harness struct {
-	m       *Manager
-	issues  *fakeIssues
-	agent   *Agent
-	retried chan *Agent
-	cleaned chan int
-	removed chan int
+	m         *Manager
+	issues    *fakeIssues
+	agent     *Agent
+	retried   chan *Agent
+	cleaned   chan int
+	removed   chan int
+	untracked chan int
 }
 
 func newHarness(t *testing.T, maxRetries, retryCount int, prExists bool) *harness {
@@ -128,17 +129,19 @@ func newHarness(t *testing.T, maxRetries, retryCount int, prExists bool) *harnes
 	cfg := &config.Config{Repo: testRepo, Label: testLabel, MaxRetries: maxRetries}
 
 	h := &harness{
-		m:       NewManager(cfg),
-		issues:  newFakeIssues(),
-		retried: make(chan *Agent, 32),
-		cleaned: make(chan int, 32),
-		removed: make(chan int, 32),
+		m:         NewManager(cfg),
+		issues:    newFakeIssues(),
+		retried:   make(chan *Agent, 32),
+		cleaned:   make(chan int, 32),
+		removed:   make(chan int, 32),
+		untracked: make(chan int, 32),
 	}
 	h.issues.mgr = h.m
 	h.m.issues = h.issues
 	h.m.prExists = func(repo string, issue int) (bool, error) { return prExists, nil }
 	h.m.retry = func(a *Agent) { h.retried <- a }
 	h.m.cleanup = func(issue, pid int) { h.cleaned <- issue }
+	h.m.untrack = func(issue int) { h.untracked <- issue }
 	h.m.removeWorktree = func(issue, pid int) error {
 		// Record ordering against the GitHub writes so a test can prove the
 		// worktree is removed before the fail label is applied.

@@ -76,6 +76,12 @@ type Manager struct {
 	removeWorktree func(issue, pid int) error
 	// admit runs the watcher boundary: read the issue from GitHub and verify it.
 	admit func(repo string, issue int) (boundary.Result, error)
+	// untrack hands an issue back to the watcher so a later poll reconsiders it,
+	// refunding the attempt. retryAgent calls it when a retry cannot even start
+	// for a non-terminal reason (a transient admission failure), so the issue
+	// does not stay wedged in the watcher's tracked set forever. NewManager
+	// leaves it a no-op; the watcher wires the real untrack-and-refund.
+	untrack func(issue int)
 	// createWorktree creates the issue worktree and returns its path.
 	createWorktree func(name string) (string, error)
 	// writeInput writes the verified input document and returns its absolute path.
@@ -98,11 +104,22 @@ func NewManager(cfg *config.Config) *Manager {
 	m.cleanup = m.performCleanup
 	m.removeWorktree = m.cleanupWorktree
 	m.admit = boundary.Boundary{Reader: github.CLI{}, Label: cfg.Label}.Admit
+	m.untrack = func(int) {}
 	m.createWorktree = runWorktreeCreate
 	m.writeInput = writeInputDocument
 	m.start = func(cmd *exec.Cmd) error { return cmd.Start() }
 	m.monitor = m.monitorAgent
 	return m
+}
+
+// SetUntrack wires the callback retryAgent invokes when a retry cannot start
+// for a non-terminal reason, so the watcher (which owns the tracked set and the
+// retry budget) can drop the issue and refund the attempt, letting a later poll
+// reconsider it. Called once at wiring time, before the manager is used.
+func (m *Manager) SetUntrack(fn func(issue int)) {
+	if fn != nil {
+		m.untrack = fn
+	}
 }
 
 type prefixedWriter struct {
@@ -655,6 +672,11 @@ func (m *Manager) retryAgent(agent *Agent) {
 			log.Printf("[agent] failed to remove worktree for issue #%d after refused retry: %v", agent.IssueNumber, rmErr)
 		}
 		m.removeInputFile(agent.IssueNumber)
+		// No agent ran and this is not a terminal punch-out (a transient
+		// admission failure or a skip). Hand the issue back to the watcher so a
+		// later poll reconsiders it and the attempt is refunded; otherwise it
+		// stays wedged in the tracked set forever even after GitHub recovers.
+		m.untrack(agent.IssueNumber)
 		return
 	}
 	inputPath, err := m.writeInput(agent.IssueNumber, res.Document)

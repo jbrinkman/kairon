@@ -36,7 +36,7 @@ type Watcher struct {
 }
 
 func New(cfg *config.Config, mgr *agent.Manager, user string) *Watcher {
-	return &Watcher{
+	w := &Watcher{
 		config:              cfg,
 		manager:             mgr,
 		user:                user,
@@ -49,6 +49,18 @@ func New(cfg *config.Config, mgr *agent.Manager, user string) *Watcher {
 			return mgr.Spawn(issue, repo)
 		},
 	}
+	// A retry that cannot start for a non-terminal reason hands the issue back
+	// here so a later poll reconsiders it: drop it from tracked and refund the
+	// attempt, the same recovery the initial-spawn not-admitted path performs.
+	if mgr != nil {
+		mgr.SetUntrack(func(issue int) {
+			w.mu.Lock()
+			delete(w.tracked, issue)
+			w.mu.Unlock()
+			w.decrementGlobalRetryCount(issue)
+		})
+	}
+	return w
 }
 
 // reconcileWithGitHub is the production reconcile: it finishes a half-done
