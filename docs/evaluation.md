@@ -25,7 +25,7 @@ Kairon's evaluation framework measures agent quality and cost, enabling data-dri
     ...
   fixtures/          # Files referenced by cases
     mock-cli.sh      # Reusable stand-in for any CLI (aws, npm, curl, ...); see Preventing Production Side Effects
-    workspaces/      # Optional per-case workspace fixtures: workspaces/<name>/ (see Case Workspaces)
+    workspaces/      # Optional per-case workspace fixtures: workspaces/<name>/ (see Case Workspaces); one a shipped case names is mirrored in the templates (see Workspace fixtures)
     hidden/          # Optional files a `command` check injects while it runs; the agent never sees them (see Checks)
   results/           # One directory per run: <timestamp>-<git-short-hash>
     <timestamp>-<git-short-hash>/
@@ -343,6 +343,23 @@ checks:
 - **Turn out of range.** A `turn` greater than the case's number of turns is a load error naming the case file, the 1-based check number and the type (`turn 9 is beyond the case's 2 turn(s)`), like on the other types that take `turn` (see [The `turn` field](#the-turn-field)). For a simulated-user case the load-time bound is `max_turns` plus the scripted turns, which may be more than the run actually performed (`stop_when` ends the simulated phase early). A turn beyond the turns that actually ran, and a hand-built case that bypasses the loader, **fails** the check at run time with `turn 9 is out of range: the case has 2 turn(s)`. The turn is checked before any listed file is read and before any model call, so an out-of-range `turn` costs no tokens and is never a silent pass. `turn: 0` or a negative value is a load error.
 
 - **`files`.** Optional. Entries are workspace-relative literal paths (no globs): no absolute path, no `..`, nothing inside `.git`, no duplicates. `.eval/` is allowed, which is where an agent typically leaves an issue body. At run time only a regular, non-symlink file is read, and a symlink in any directory component is refused. A missing file, a symlink or a file below a symlinked directory fails the check with `file does not exist: <path>` (or a similar message) **before** any model call, so an agent that did not produce the artifact is not rescued by the judge and no tokens are spent. Files are read as the agent left the workspace, before any `command` check runs or injects.
+- **Setup files versus workspace files.** `files` names files in the **case workspace**, and nothing else. A `setup` entry of `type: file` is read from disk by the harness and concatenated into the **agent prompt**; it is never written into the workspace. So a file that is only in `setup` reaches the agent but not the judge, and listing it in `files` fails the check with `file does not exist` before any model call. A judge that is asked whether the agent's citations are real, and is shown none of the sources, can only judge plausibility.
+- **Giving a judge sources: one file for `setup` and `files`.** Put the source file in a [workspace fixture](#workspace-fixtures), set `workspace:` on the case, list the file in the check's `files`, and point the `setup` entry at **that same fixture file**. The harness copies the fixture into the case workspace, so the agent reads the bytes through its prompt and the judge reads the same bytes from the workspace copy. There is one file in the repository and no second copy to drift. Do not use a symlink to share the file: the fixture copy skips symlinks.
+
+```yaml
+workspace: planner-evidence          # => fixtures/workspaces/planner-evidence/
+setup:
+  - type: file
+    label: "Repository Context"
+    path: ".kairon/evals/fixtures/workspaces/planner-evidence/planner-repo-context.md"   # the agent reads it here
+checks:
+  - criterion: requirements_boundary
+    type: judge
+    question: "Is every requirement grounded in something the requester chose or in repository evidence quoted earlier in the conversation, with no invented constraint?"
+    files: [planner-repo-context.md]   # the judge reads the same file from the workspace
+```
+
+The `path` of a `setup` entry is relative to the repository root and the `files` entry is relative to the workspace root, which is the fixture directory. The shipped planner suite uses this pattern for its evidence checks (see [Evidence sources for the judge](#evidence-sources-for-the-judge)). Keep a fixture to the files the judge needs: under the `kiro-cli` backend the workspace is also the agent's working directory, so the agent can read every file in it.
 - **Caps.** Each file is capped at 64 KiB and the files together at 256 KiB. Excess is cut, the prompt carries an explicit `[truncated: showing first N of M bytes]` marker and the file's header says `[truncated]`. Non-UTF-8 bytes are replaced.
 - **Judge model.** The call runs on the host through the inference backend, pinned to `evals.judge_model` (see [Model Pinning and Run Provenance](#model-pinning-and-run-provenance)), with a 2-minute timeout. This holds under `--sandbox` too: judge calls never run in the container.
 - **Fail closed.** A `judge` check never passes by default and is never skipped. An unparseable answer (`judge parse error: …`), a backend error (`judge call failed: …`), a missing or unreadable file, and a check evaluated with no judge configured (`no judge configured`) all **fail** the check. This differs from the legacy 1–5 judge, whose parse failures mark the criterion *skipped* (see [Skipped Criteria](#skipped-criteria)). The reply is parsed from the **last** `===JSON_START===` to the next `===JSON_END===`, so a judge that quotes the delimiters while explaining cannot confuse the parse.
@@ -404,7 +421,7 @@ checks:
 - Each entry is a path relative to `<evals-dir>/fixtures/hidden/`. It must be a relative, non-escaping path to an existing regular file; symlinks are rejected. The file is copied to the same relative path in the workspace.
 - Injection happens only **after** the agent has finished, immediately before the command runs, and the workspace is restored right after it. Files that did not exist are removed again (and directories the injection created); a file the agent had already written at that path is overwritten for the run and put back afterwards. The agent therefore never sees an injected file, and later checks and `--keep-workspaces` see the workspace as the agent left it.
 - The destination must not be under `.git`, `.eval` or `.kiro`.
-- `fixtures/hidden/` is excluded from the `task sync:check` comparison with the shipped templates, like `fixtures/workspaces/`.
+- `fixtures/hidden/` is live-only: it is excluded from the `task sync:check` comparison with the shipped templates, and `sync:check` never looks at it. (Workspace fixtures are handled differently: one that a shipped case names must be mirrored in the templates. See [Workspace fixtures](#workspace-fixtures).)
 
 ### Command checks run on the host
 
@@ -2916,7 +2933,12 @@ stub:
 
 The name must match `^[A-Za-z0-9._-]+$` and not be `.` or `..`, and the directory must exist. Both are checked when cases are loaded. After this case runs, `git status --porcelain` in the kept workspace is ` M README.md`.
 
-Fixtures under `fixtures/workspaces/` and `fixtures/hidden/` are excluded from the `task sync:check` comparison of `.kairon/evals` against the shipped templates.
+**Syncing with the shipped templates.** `kairon init` and `kairon update` extract the whole `cmd/kairon/templates` tree, and a case that sets `workspace:` fails to load (`workspace fixture … not found`, which fails loading every case of that agent) when its fixture directory is absent. So a workspace fixture that a shipped case names has to ship too:
+
+- `fixtures/hidden/` is live-only and `task sync:check` ignores it.
+- `task sync:check` leaves `fixtures/workspaces/` out of its bulk comparison of `.kairon/evals` against `cmd/kairon/templates/kairon/evals`, so a workspace that no shipped case uses stays live-only. It then runs a loop that diffs every workspace directory **present under** `cmd/kairon/templates/kairon/evals/fixtures/workspaces/` against its live counterpart in `.kairon/evals/fixtures/workspaces/`, and fails on any difference, including a file that exists on only one side.
+- To ship a workspace fixture, copy it into the templates: `cp -r .kairon/evals/fixtures/workspaces/<name> cmd/kairon/templates/kairon/evals/fixtures/workspaces/`. Do this whenever a case that sets `workspace: <name>` is copied into the templates.
+- The Go test `TestShippedCaseWorkspacesAreMirroredInTemplates` (`internal/eval/planner_evidence_test.go`) checks the same rule from the other side: for every `workspace:` named by a case under `.kairon/evals/cases/`, the directory exists in the templates and has the same files with the same bytes as the live one, with no extra files. The loop in `sync:check` cannot see a workspace that is missing from the templates, because it only walks the template side, so this test is what catches a missing mirror.
 
 ### Keeping workspaces and `workspace_dir`
 
@@ -3259,7 +3281,55 @@ The planner does not write to GitHub or add a provenance marker. The suite only 
 | `automated-bug-classification.yaml` | automated | output_document_validity, best_effort_then_punch_out, issue_quality, two_mode_behavior, gate_compliance |
 | `multi-issue-split.yaml` | interactive | dependency_split, issue_quality, output_document_validity, conversation_protocol, two_mode_behavior, gate_compliance |
 
-`cost_efficiency` (`type: cost`) applies to every case. Fixtures are `fixtures/planner-*.md` and are synced to the templates like the rest of the evals tree.
+`cost_efficiency` (`type: cost`) applies to every case. The evidence sources that two cases share live in the workspace fixture `fixtures/workspaces/planner-evidence/` (see [Evidence sources for the judge](#evidence-sources-for-the-judge)). The other fixtures are `fixtures/planner-*.md`. Both kinds are synced to the templates: the `planner-*.md` files by the bulk `task sync:check` comparison, and the `planner-evidence` workspace by the per-workspace loop in `sync:check` (see [Workspace fixtures](#workspace-fixtures)).
+
+### Evidence sources for the judge
+
+Two judge checks ask whether the planner's evidence is real:
+
+| Case | Criterion | Question (abridged) | `files` |
+|------|-----------|---------------------|---------|
+| `automated-best-effort-fill` | `best_effort_then_punch_out` | Does every entry in the inferences list cite a real quote or a real file reference from the issue or the repository context? | `planner-intake-feature-issue.md`, `planner-repo-context.md` |
+| `interactive-return-document` | `requirements_boundary` | Is every requirement grounded in something the requester chose or in repository evidence quoted earlier in the conversation, with no invented constraint? | `planner-repo-context.md` |
+
+A judge that is shown no source can only judge whether a citation is plausible, so a fabricated `internal/export/ndjson.go:12` would pass. These two checks therefore list `files`, and the two source files are held in the workspace fixture `.kairon/evals/fixtures/workspaces/planner-evidence/`:
+
+- `planner-intake-feature-issue.md`
+- `planner-repo-context.md`
+
+Both cases set `workspace: planner-evidence`. Their `setup` entries point at the fixture files, for example `.kairon/evals/fixtures/workspaces/planner-evidence/planner-repo-context.md`, so the agent prompt and the judge read the **same file**, with no second copy under `fixtures/` (see [`files` in the `judge` check](#the-judge-check)). The files are mirrored byte for byte in `cmd/kairon/templates/kairon/evals/fixtures/workspaces/planner-evidence/`. The other judge checks of the suite (no question asked, both decisions inferred, bug-report shape, option recommendation, Verify lines, dependency order) do not verify evidence against a source and have no `files`.
+
+To add an evidence-verification judge check to a planner case, give it `files`, set the case's `workspace:` and keep the source in `fixtures/workspaces/planner-evidence/`; `TestPlannerEvidenceChecksHaveSources` fails otherwise.
+
+#### Tests: `TestPlannerEvidence*`
+
+The tests are in `internal/eval/planner_evidence_test.go`. They load the real shipped cases and run the real judge check through `newCaseWorkspace` and `EvaluateChecks`, so file resolution, the size caps and the fencing are the production code path.
+
+| Test | What it pins |
+|------|--------------|
+| `TestPlannerEvidenceChecksHaveSources` | Every planner judge check whose question is about evidence (it mentions `evidence`, `grounded` or a `real quote`/`real file`) lists `files`. It requires at least two such checks, in `automated-best-effort-fill` and `interactive-return-document`, so it cannot pass vacuously. |
+| `TestPlannerEvidenceSourcesAreTheSetupBytes` | For each such check the case sets `workspace`, each `files` entry exists in `fixtures/workspaces/<workspace>/`, a `setup` entry points at exactly that fixture file, and the assembled agent prompt contains the file's exact bytes. The agent and the judge therefore read one file. |
+| `TestPlannerEvidenceJudgeLoadsSources` | Staging the `automated-best-effort-fill` workspace and running its evidence check on the reference reply passes, with no `file does not exist`. The judge is asked once and is shown `planner-intake-feature-issue.md` then `planner-repo-context.md`, each with the same content as its `setup` file. |
+| `TestPlannerEvidenceFabricatedReplyFails` | The recorded fabricated reply fails the same check with `judge answered no` and `not found in the provided sources`, naming `internal/export/ndjson.go:12`. The unmodified reference reply passes in the same test, so the failure is due to the fabricated citations only. |
+| `TestShippedCaseWorkspacesAreMirroredInTemplates` | Every `workspace:` named by a shipped case exists in `cmd/kairon/templates/kairon/evals/fixtures/workspaces/` with the same files and bytes as the live fixture (see [Workspace fixtures](#workspace-fixtures)). |
+
+Run them with:
+
+```bash
+go test ./internal/eval -run 'TestPlannerEvidence|TestShippedCaseWorkspacesAreMirroredInTemplates' -count=1
+```
+
+**The recorded fabricated sample.** `internal/eval/testdata/planner-fabricated/automated-best-effort-fill.txt` is the reference reply of `automated-best-effort-fill` with its evidence changed. It still parses and validates as a planner `canonical` stage-output document, so only the evidence is wrong. It cites a file that is not in the fixtures (`internal/export/ndjson.go:12`), a real file at a line that does not exist (`internal/export/csv.go:99`), and a quote that is in no fixture (`every exporter must be covered by a table-driven test with a golden file`, attributed to `docs/exporters.md:7`). The test checks that none of the three strings occurs in any `planner-*.md` fixture.
+
+**The judge in these tests is a deterministic stand-in.** A scripted `stub.judge` answer cannot prove that sources reach the judge or that fabricated evidence is rejected, because it answers yes or no whatever it is shown. The runtime tests therefore use a citation-grounding judge: it takes every `path:line` token on the reply's `evidence:` lines and answers yes only if each one appears in the content of the files it was given. With no files it answers no with `no source files were provided to verify the evidence`, and for a missing citation it answers no with `citation <c> not found in the provided sources`. The test asserts the specific reason, so it fails for the right cause and not vacuously.
+
+This proves the plumbing and the discrimination: the sources reach the judge, they are the bytes the agent was given, and a judge that reads them can tell a fabricated citation from a real one. It does **not** prove how the real LLM judge behaves when it is shown them, and that cannot be tested offline. Judge verdicts are evidence, not proof (see [The `judge` check](#the-judge-check)).
+
+#### Known limitations
+
+- Under the `kiro-cli` backend the workspace is the agent's working directory, so a real agent could read the two fixture files there. They hold exactly what is already in its prompt, so this adds no information.
+- `interactive-return-document` shares the fixture with `automated-best-effort-fill`, so its workspace holds a feature-issue file it does not use. This avoids keeping a second copy of `planner-repo-context.md`.
+- `automated-bug-classification` records inferences with evidence but has no evidence-verification judge check, so nothing yet compares its citations to a source.
 
 ### Running it
 

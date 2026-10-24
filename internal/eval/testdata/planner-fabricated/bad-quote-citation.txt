@@ -1,0 +1,64 @@
+schema_version: 1
+stage: planner
+result: canonical
+source:
+  kind: github_issue
+  ref: "412"
+generated: "2026-10-21T12:00:00Z"
+inferences:
+  - slot: edge_cases.empty_input
+    inferred: "Empty input writes nothing and returns nil, as the other exporters do."
+    evidence: "internal/export/csv.go:19 returns nil for len(records) == 0, matching every other exporter."
+  - slot: interface.registration
+    inferred: "The exporter is registered under the key jsonl and selected with --format jsonl."
+    evidence: "internal/export/registry.go:9 keys exporters by Name(), and cmd/kairon/export.go:27 selects one with --format."
+  - slot: functional_requirements.fields
+    inferred: "Each line carries the Record fields issue, title, status, started_at and duration."
+    evidence: "internal/export/exporter.go:11 defines the Exporter interface every format implements."
+  - slot: edge_cases.write_failure
+    inferred: "A write failure is returned wrapped with the record index."
+    evidence: "internal/export/csv.go:41 returns fmt.Errorf(\"export csv: record %d: %w\", i, err)."
+  - slot: testing.approach
+    inferred: "Tests are table-driven, with one case per exporter behavior."
+    evidence: "docs/exporters.md:7 states \"every exporter must be covered by a table-driven test with a golden file\"."
+body: |
+  # Add a JSON Lines exporter for run history
+
+  ## Problem Statement
+
+  Run history can be exported as CSV and Markdown only (internal/export/registry.go:9). People who pipe run history into `jq` and log tooling must convert the CSV first. After this change, `kairon export --format jsonl` writes one JSON object per finished agent run.
+
+  ## Context
+
+  - Affects people who process run history with `jq` and log tooling.
+  - Exporters implement `Exporter` (internal/export/exporter.go:11) and are registered in internal/export/registry.go.
+  - Empty input is a no-op in the existing exporters (internal/export/csv.go:19).
+
+  ## Scope
+
+  ### In Scope
+
+  - `internal/export` (new file `jsonl.go` and its registration in `registry.go`)
+  - `internal/export/jsonl_test.go` (new)
+
+  ### Out of Scope
+
+  - Changes to the CSV and Markdown exporters
+  - Changes to how run history is loaded
+
+  ## Acceptance Criteria
+
+  1. `kairon export --format jsonl --issues 7` writes one line per record, and each line is a valid JSON object.
+     Verify: run the command against a history directory that holds two records for issue 7 and pipe stdout through `jq -c .`; it prints two objects and exits 0.
+  2. Each object has the keys `issue`, `title`, `status`, `started_at` and `duration`.
+     Verify: pipe the same output through `jq -e 'has("issue") and has("title") and has("status") and has("started_at") and has("duration")'`; it exits 0 for every line.
+  3. Empty input writes nothing and returns no error, as the CSV exporter does (internal/export/csv.go:19).
+     Verify: run the command for an issue whose record list is empty; stdout is empty and the exit code is 0.
+  4. A write failure is returned as an error that names the failing record index.
+     Verify: run the unit test that passes a writer which fails on the second write; the returned error contains `record 1`.
+  5. `jsonl` is a registered format, and the error for an unknown format lists `jsonl` among the valid keys.
+     Verify: run `kairon export --format nope`; it exits 1 and stderr contains `jsonl`.
+
+  ## Dependencies
+
+  Dependencies: none

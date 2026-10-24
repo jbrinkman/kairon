@@ -12,7 +12,7 @@ setup:
     path: ".kairon/evals/fixtures/planner-intake-punchout-issue.md"
   - type: file
     label: "Repository Context"
-    path: ".kairon/evals/fixtures/planner-repo-context.md"
+    path: ".kairon/evals/fixtures/workspaces/planner-evidence/planner-repo-context.md"
 context:
   - "The issue asks for a faster export but gives no measurable target, and a materially different acceptance criterion follows from each plausible target"
   - "The issue asks for v2 client support without saying what the v2 export returns. That is an external-contract decision the repository cannot settle"

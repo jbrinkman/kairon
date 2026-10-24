@@ -22,6 +22,7 @@ Sync is **one-way** (live → template). CI enforces this via `task sync:check` 
 | `.kairon/scripts/*.sh` | `cmd/kairon/templates/kairon/scripts/` |
 | `.kairon/themes/*.yaml` | `cmd/kairon/templates/kairon/themes/` |
 | `.kairon/evals/fixtures/*` (files only; not `workspaces/` or `hidden/`) | `cmd/kairon/templates/kairon/evals/fixtures/` |
+| `.kairon/evals/fixtures/workspaces/<name>/` (only workspaces named by a shipped case's `workspace:`; any other workspace stays live-only) | `cmd/kairon/templates/kairon/evals/fixtures/workspaces/<name>/` |
 | `.kairon/evals/rubrics/*` | `cmd/kairon/templates/kairon/evals/rubrics/` |
 | `.kairon/evals/cases/**/*` | `cmd/kairon/templates/kairon/evals/cases/` |
 | `.kiro/skills/sentinel-protocol/*` | `cmd/kairon/templates/kiro/skills/sentinel-protocol/` |
@@ -48,9 +49,17 @@ cp .kairon/themes/*.yaml cmd/kairon/templates/kairon/themes/
 
 # Evals (excluding results directory)
 # Fixtures: copy regular files only. Subdirectories (fixtures/workspaces/,
-# fixtures/hidden/) are live-only eval inputs, excluded by sync:check, and
+# fixtures/hidden/) are excluded from the bulk comparison, and
 # `cp .kairon/evals/fixtures/*` would fail on them.
 find .kairon/evals/fixtures -maxdepth 1 -type f -exec cp {} cmd/kairon/templates/kairon/evals/fixtures/ \;
+# Mirrored workspaces: a workspace named by a shipped case's `workspace:` must
+# ship in the templates (the case fails to load without it). sync:check diffs
+# each workspace present in the templates against its live counterpart, and
+# TestShippedCaseWorkspacesAreMirroredInTemplates checks every one a case names.
+# Replace <name> (e.g. planner-evidence); rm first so deleted files do not linger.
+rm -rf cmd/kairon/templates/kairon/evals/fixtures/workspaces/<name>
+mkdir -p cmd/kairon/templates/kairon/evals/fixtures/workspaces
+cp -r .kairon/evals/fixtures/workspaces/<name> cmd/kairon/templates/kairon/evals/fixtures/workspaces/<name>
 cp .kairon/evals/rubrics/* cmd/kairon/templates/kairon/evals/rubrics/
 mkdir -p cmd/kairon/templates/kairon/evals/cases/
 cp -r .kairon/evals/cases/* cmd/kairon/templates/kairon/evals/cases/

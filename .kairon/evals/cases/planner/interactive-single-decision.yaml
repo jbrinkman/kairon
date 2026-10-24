@@ -5,7 +5,7 @@ input: "I want to add a JSON Lines exporter for run history."
 setup:
   - type: file
     label: "Repository Context"
-    path: ".kairon/evals/fixtures/planner-repo-context.md"
+    path: ".kairon/evals/fixtures/workspaces/planner-evidence/planner-repo-context.md"
 simulated_user:
   facts:
     - id: duration_format
