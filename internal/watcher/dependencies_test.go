@@ -280,6 +280,21 @@ func TestParseDependenciesFencedCode(t *testing.T) {
 			),
 			expected: []int{2},
 		},
+		{
+			// Regression: a "dependencies:"-labeled line above a fence must
+			// not let dependenciesRe span the blanked fence region and consume
+			// the real declaration that follows it. The blanked fence lines
+			// need a non-whitespace boundary so \s* and (.+?) cannot cross.
+			name: "labeled line above fence does not swallow real dependency below",
+			input: fenceBody(
+				"Example dependencies:",
+				"```text",
+				"sample",
+				"```",
+				"Dependencies: #5",
+			),
+			expected: []int{5},
+		},
 	}
 
 	for _, tt := range tests {
@@ -310,9 +325,10 @@ func TestStripFencedCode(t *testing.T) {
 		}
 	})
 
-	t.Run("fenced lines blanked and delimiters included", func(t *testing.T) {
+	t.Run("fenced lines replaced with sentinel and delimiters included", func(t *testing.T) {
 		in := fenceBody("before", "```go", "x := 1", "```", "after")
-		want := fenceBody("before", "", "", "", "after")
+		s := fenceSentinel
+		want := fenceBody("before", s, s, s, "after")
 		if got := stripFencedCode(in); got != want {
 			t.Errorf("stripFencedCode() = %q, want %q", got, want)
 		}
@@ -324,7 +340,8 @@ func TestStripFencedCode(t *testing.T) {
 		if strings.Count(got, "\n") != strings.Count(in, "\n") {
 			t.Errorf("newline count changed: got %q from %q", got, in)
 		}
-		if want := fenceBody("a", "", "", "", "", "d", "", ""); got != want {
+		s := fenceSentinel
+		if want := fenceBody("a", s, s, s, s, "d", s, s); got != want {
 			t.Errorf("stripFencedCode() = %q, want %q", got, want)
 		}
 	})
@@ -342,7 +359,8 @@ func TestStripFencedCode(t *testing.T) {
 
 	t.Run("unclosed fence blanks to end", func(t *testing.T) {
 		in := fenceBody("keep", "```", "gone", "gone too")
-		want := fenceBody("keep", "", "", "")
+		s := fenceSentinel
+		want := fenceBody("keep", s, s, s)
 		if got := stripFencedCode(in); got != want {
 			t.Errorf("stripFencedCode() = %q, want %q", got, want)
 		}

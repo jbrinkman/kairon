@@ -45,9 +45,18 @@ func (dp *DependencyParser) ParseDependencies(issueBody string) []int {
 // scanLines in internal/guard/structural.go; keep the three aligned.
 var fenceRE = regexp.MustCompile("^ {0,3}(`{3,}|~{3,})")
 
+// fenceSentinel replaces each line inside a fenced code block. It must be
+// non-whitespace so the dependency regexes (notably dependenciesRe, whose
+// "dependencies:\s*(.+?)" can otherwise span consecutive blank lines) cannot
+// match across a stripped fence and swallow a real declaration that follows
+// it. NUL never appears in GitHub issue bodies and contains no digit or
+// dependency keyword, so it is inert to every parse path.
+const fenceSentinel = "\x00"
+
 // stripFencedCode returns text with every line inside a fenced code block
-// (delimiters included) replaced by an empty line, so dependency examples in
-// code fences are not parsed as real declarations.
+// (delimiters included) replaced by a single-character sentinel line, so
+// dependency examples in code fences are not parsed as real declarations and
+// cannot bridge a label above the fence to a real declaration below it.
 //
 // A closing line must use the same character as the opener, be at least as
 // long, and carry only whitespace after the run; an unclosed fence runs to the
@@ -74,12 +83,12 @@ func stripFencedCode(text string) string {
 		switch {
 		case m != nil && mark == "":
 			mark = m[1]
-			lines[i] = ""
+			lines[i] = fenceSentinel
 		case m != nil && m[1][0] == mark[0] && len(m[1]) >= len(mark) && strings.TrimSpace(line[len(m[0]):]) == "":
 			mark = ""
-			lines[i] = ""
+			lines[i] = fenceSentinel
 		case mark != "":
-			lines[i] = ""
+			lines[i] = fenceSentinel
 		}
 	}
 	return strings.Join(lines, "\n")
