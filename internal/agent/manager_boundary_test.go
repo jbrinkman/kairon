@@ -278,6 +278,43 @@ func TestSpawn_AdmitErrorIsUnavailableAndWritesNothing(t *testing.T) {
 	}
 }
 
+// TestSpawn_PreStartFailureIsUnavailable: a failure after admission succeeds
+// but before the agent starts (write input, create worktree, start process) is
+// recoverable, not a deliberate non-admission. Spawn must return
+// ErrAdmissionUnavailable so the watcher untracks the issue and refunds the
+// attempt, letting a later poll try again once the transient problem clears.
+func TestSpawn_PreStartFailureIsUnavailable(t *testing.T) {
+	boom := errors.New("disk full")
+	cases := map[string]func(b *boundaryHarness){
+		"writeInput fails": func(b *boundaryHarness) {
+			b.writeInputFn = func(int, *boundary.InputDocument) (string, error) { return "", boom }
+		},
+		"createWorktree fails": func(b *boundaryHarness) { b.createErr = boom },
+		"start fails": func(b *boundaryHarness) {
+			b.m.start = func(*exec.Cmd) error { b.record("start"); return boom }
+		},
+	}
+	for name, inject := range cases {
+		t.Run(name, func(t *testing.T) {
+			b := newBoundaryHarness(t, admitted(testIssue))
+			inject(b)
+			_, err := b.m.Spawn(testIssue, testRepo)
+			if err == nil {
+				t.Fatal("Spawn returned nil error on a pre-start failure")
+			}
+			if !errors.Is(err, ErrAdmissionUnavailable) {
+				t.Fatalf("err = %v, want ErrAdmissionUnavailable so the watcher reconsiders the issue", err)
+			}
+			if errors.Is(err, ErrNotAdmitted) {
+				t.Error("a recoverable pre-start failure must not look like a deliberate non-admission")
+			}
+			if w := b.issues.writes(); len(w) != 0 {
+				t.Errorf("GitHub writes on a pre-start failure: %v", w)
+			}
+		})
+	}
+}
+
 func TestSpawn_PunchOutCommentsThenLabelsWithBoundaryRemedy(t *testing.T) {
 	b := newBoundaryHarness(t, punchOutResult())
 	_, err := b.m.Spawn(testIssue, testRepo)

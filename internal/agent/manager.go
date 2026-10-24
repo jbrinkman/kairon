@@ -322,7 +322,7 @@ func (m *Manager) Spawn(issueNumber int, repo string) (*Agent, error) {
 	inputPath, err := m.writeInput(issueNumber, res.Document)
 	if err != nil {
 		log.Printf("[agent] failed to write input document for issue #%d: %v", issueNumber, err)
-		return nil, fmt.Errorf("failed to write input document: %w", err)
+		return nil, fmt.Errorf("%w: failed to write input document: %v", ErrAdmissionUnavailable, err)
 	}
 
 	m.mu.Lock()
@@ -337,7 +337,7 @@ func (m *Manager) Spawn(issueNumber int, repo string) (*Agent, error) {
 	if err != nil {
 		m.removeInputFile(issueNumber)
 		log.Printf("[agent] failed to create worktree for issue #%d: %v", issueNumber, err)
-		return nil, fmt.Errorf("failed to create worktree: %w", err)
+		return nil, fmt.Errorf("%w: failed to create worktree: %v", ErrAdmissionUnavailable, err)
 	}
 	log.Printf("[agent] created worktree at %s", worktreePath)
 
@@ -349,7 +349,7 @@ func (m *Manager) Spawn(issueNumber int, repo string) (*Agent, error) {
 	if err != nil {
 		m.removeInputFile(issueNumber)
 		log.Printf("[agent] failed to create log file for issue #%d: %v", issueNumber, err)
-		return nil, fmt.Errorf("failed to create agent log file: %w", err)
+		return nil, fmt.Errorf("%w: failed to create agent log file: %v", ErrAdmissionUnavailable, err)
 	}
 
 	cmd := m.agentCommand(issueNumber, repo, worktreeName, worktreePath, inputPath, agentLogFile)
@@ -358,7 +358,7 @@ func (m *Manager) Spawn(issueNumber int, repo string) (*Agent, error) {
 		agentLogFile.Close()
 		m.removeInputFile(issueNumber)
 		log.Printf("[agent] failed to spawn agent %s for issue #%d: %v", id, issueNumber, err)
-		return nil, fmt.Errorf("failed to start agent: %w", err)
+		return nil, fmt.Errorf("%w: failed to start agent: %v", ErrAdmissionUnavailable, err)
 	}
 
 	agent := &Agent{
