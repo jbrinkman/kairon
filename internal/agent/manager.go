@@ -656,6 +656,21 @@ func (m *Manager) retryAgent(agent *Agent) {
 		m.mu.Unlock()
 	}
 
+	// recoverRetry marks the agent failed, then (like the refused-retry path
+	// below) removes the worktree, removes the input file and untracks the
+	// issue so a later poll reconsiders it. Without this a pre-start retry
+	// failure leaves the issue in the tracked set forever while its leftover
+	// worktree dir (issue-N-<watcher-pid>, watcher PID long-lived) keeps
+	// hasActiveWorktree reporting it active.
+	recoverRetry := func() {
+		failRetry()
+		if rmErr := m.removeWorktree(agent.IssueNumber, os.Getpid()); rmErr != nil {
+			log.Printf("[agent] failed to remove worktree for issue #%d after failed retry: %v", agent.IssueNumber, rmErr)
+		}
+		m.removeInputFile(agent.IssueNumber)
+		m.untrack(agent.IssueNumber)
+	}
+
 	// Re-verify before restarting: a human edit or a label applied mid-run must
 	// be noticed. No lock is held; a punch-out writes to GitHub.
 	res, err := m.admitIssue(agent.IssueNumber, m.config.Repo)
@@ -688,7 +703,7 @@ func (m *Manager) retryAgent(agent *Agent) {
 	inputPath, err := m.writeInput(agent.IssueNumber, res.Document)
 	if err != nil {
 		log.Printf("[agent] retry failed to write input document for issue #%d: %v", agent.IssueNumber, err)
-		failRetry()
+		recoverRetry()
 		return
 	}
 
@@ -700,7 +715,7 @@ func (m *Manager) retryAgent(agent *Agent) {
 		created, err := m.createWorktree(worktreeName)
 		if err != nil {
 			log.Printf("[agent] retry failed to create worktree for issue #%d: %v", agent.IssueNumber, err)
-			failRetry()
+			recoverRetry()
 			return
 		}
 		worktreePath = created
@@ -718,7 +733,7 @@ func (m *Manager) retryAgent(agent *Agent) {
 	agentLogFile, err := os.OpenFile(agentLogPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 	if err != nil {
 		log.Printf("[agent] retry failed to open log file for issue #%d: %v", agent.IssueNumber, err)
-		failRetry()
+		recoverRetry()
 		return
 	}
 
@@ -727,7 +742,7 @@ func (m *Manager) retryAgent(agent *Agent) {
 	if err := m.start(cmd); err != nil {
 		agentLogFile.Close()
 		log.Printf("[agent] retry failed for issue #%d: %v", agent.IssueNumber, err)
-		failRetry()
+		recoverRetry()
 		return
 	}
 

@@ -543,3 +543,75 @@ func TestRetryAgent_NotAdmittedFailsAgentRemovesWorktreeStartsNothing(t *testing
 		})
 	}
 }
+
+// TestRetryAgent_PreStartFailureRecoversAndReconsiders: once admission has
+// re-succeeded on a retry, any later pre-start failure (writeInput, create
+// worktree, log-file open, process start) must clean up and hand the issue
+// back to the watcher. Leaving only failRetry() wedges the issue forever: it
+// stays in the tracked set (later polls skip it) while its worktree dir, named
+// issue-N-<watcher-pid>, keeps hasActiveWorktree reporting it active. Mirror
+// the refused-retry path: remove the worktree, remove the input file, untrack.
+func TestRetryAgent_PreStartFailureRecoversAndReconsiders(t *testing.T) {
+	boom := errors.New("disk full")
+	// For every case except the createWorktree failure, the worktree is
+	// expected to already exist from the initial spawn, so plant it and let the
+	// os.Stat branch take the "exists" path.
+	plantWorktree := func(b *boundaryHarness) {
+		dir := filepath.Join(".worktrees", "issue-"+strconv.Itoa(testIssue)+"-"+strconv.Itoa(os.Getpid()))
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cases := map[string]func(b *boundaryHarness){
+		"writeInput fails": func(b *boundaryHarness) {
+			plantWorktree(b)
+			b.writeInputFn = func(int, *boundary.InputDocument) (string, error) { return "", boom }
+		},
+		"createWorktree fails": func(b *boundaryHarness) {
+			// No planted worktree: retryAgent must call createWorktree, which fails.
+			b.createErr = boom
+		},
+		"log file open fails": func(b *boundaryHarness) {
+			plantWorktree(b)
+			logPath := filepath.Join(".kairon", "logs", "issue-"+strconv.Itoa(testIssue)+".log")
+			if err := os.MkdirAll(logPath, 0o755); err != nil {
+				t.Fatal(err)
+			}
+		},
+		"start fails": func(b *boundaryHarness) {
+			plantWorktree(b)
+			b.m.start = func(*exec.Cmd) error { b.record("start"); return boom }
+		},
+	}
+	for name, inject := range cases {
+		t.Run(name, func(t *testing.T) {
+			b := newBoundaryHarness(t, admitted(testIssue))
+			inject(b)
+			a := retryAgentFixture(b)
+			b.m.retryAgent(a)
+
+			if a.Status != StatusFailed {
+				t.Errorf("status = %v, want failed", a.Status)
+			}
+			select {
+			case issue := <-b.removed:
+				if issue != testIssue {
+					t.Errorf("removed worktree for issue %d, want %d", issue, testIssue)
+				}
+			default:
+				t.Error("worktree not removed after a pre-start retry failure; it would wedge the issue on later polls")
+			}
+			select {
+			case issue := <-b.untracked:
+				if issue != testIssue {
+					t.Errorf("untracked issue %d, want %d", issue, testIssue)
+				}
+			default:
+				t.Error("issue not untracked after a pre-start retry failure; a later poll must reconsider it")
+			}
+			if exists(inputDocumentPath(testIssue)) {
+				t.Error("input document left behind after a pre-start retry failure")
+			}
+		})
+	}
+}
