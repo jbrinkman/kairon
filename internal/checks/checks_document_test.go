@@ -56,6 +56,7 @@ func TestDocumentCheckWellFormedPasses(t *testing.T) {
 		"punch_out":                          punchOutDoc,
 		"fenced":                             "```yaml\n" + canonicalDoc + "```\n",
 		"fenced yml, surrounding whitespace": "\n  ```yml\n" + punchOutDoc + "```\n\n",
+		"fenced, CRLF line endings":          strings.ReplaceAll("```yaml\n"+canonicalDoc+"```\n", "\n", "\r\n"),
 	} {
 		t.Run(name, func(t *testing.T) {
 			r := evalOne(t, docCheck(), Input{Output: doc})

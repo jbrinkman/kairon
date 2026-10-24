@@ -9,7 +9,7 @@ import (
 // wrappingYAMLFence matches a reply that is, in its entirety, one ```yaml (or
 // ```yml) fenced block. Surrounding whitespace is tolerated. A fence that does
 // not wrap the whole reply, or a fence inside the document body, does not match.
-var wrappingYAMLFence = regexp.MustCompile("(?s)\\A\\s*```ya?ml[ \\t]*\\n(.*?)\\n```\\s*\\z")
+var wrappingYAMLFence = regexp.MustCompile("(?s)\\A\\s*```ya?ml[ \\t]*\\r?\\n(.*?)\\r?\\n```\\s*\\z")
 
 // unwrapYAMLFence removes exactly one wrapping yaml fence, if the whole text is
 // that fence. This is transport tolerance, not document grammar: the document
