@@ -15,6 +15,7 @@ import (
 	"github.com/jbrinkman/kairon/internal/config"
 	"github.com/jbrinkman/kairon/internal/github"
 	"github.com/jbrinkman/kairon/internal/incidents"
+	"github.com/jbrinkman/kairon/internal/planner"
 	"github.com/jbrinkman/kairon/internal/session"
 )
 
@@ -358,7 +359,7 @@ func (m model) handlePlanSubprocess(description string) (model, tea.Cmd) {
 	m.input.Blur()
 
 	// Execute the kiro-cli subprocess for classic planning with shell wrapper
-	args := []string{"chat", "--classic", "--agent", "planner"}
+	args := []string{"chat", "--classic", "--agent", planner.AgentInteractive}
 	if description != "" {
 		args = append(args, description)
 	}

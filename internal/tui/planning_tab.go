@@ -16,6 +16,7 @@ import (
 
 	"github.com/jbrinkman/kairon/internal/acp"
 	"github.com/jbrinkman/kairon/internal/logging"
+	"github.com/jbrinkman/kairon/internal/planner"
 	"github.com/jbrinkman/kairon/internal/session"
 )
 
@@ -221,7 +222,7 @@ func NewPlanningTabWithSession(id, title string, styles *Styles, contextTracker 
 		logging.Debug("initializing ACP client with working directory", "tab_id", id, "cwd", cwd)
 
 		config := acp.DefaultConnectionConfig()
-		config.Agent = "planner"
+		config.Agent = planner.AgentInteractive
 		config.Cwd = cwd
 		acpClient = acp.NewClient(config)
 	} else {
@@ -541,7 +542,7 @@ func (pt *PlanningTab) sendMessage(message string) tea.Cmd {
 			Timeout:        60 * time.Second,
 		}
 
-		logging.Debug("creating ACP stream", "tab_id", pt.id, "agent", "planner")
+		logging.Debug("creating ACP stream", "tab_id", pt.id, "agent", planner.AgentInteractive)
 
 		// Send streaming request
 		streamChan, err := pt.acpClient.StreamMessage(ctx, req)

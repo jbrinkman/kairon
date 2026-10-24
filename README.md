@@ -185,6 +185,8 @@ The guards that check a stage-output document between stages, and the ordered ch
 
 The provenance step that runs after a guard chain passes (canonicalize, hash, classify as `valid`, `none` or `mismatch`, and write an issue body once with a `v1` marker) is described in [docs/provenance.md](docs/provenance.md).
 
+The planner is two single-mode agents (`planner` for interactive use, `planner-automated` for unattended intake) that share the Kairon-managed `planner-shared` skill, with a deterministic output boundary that is the only writer to GitHub. The agents, the skill's ownership tier, the boundary and its outcomes, the eval driver and the known gaps are described in [docs/planner.md](docs/planner.md).
+
 ## Architecture
 
 ### Agent Workflow
@@ -267,6 +269,8 @@ The `Dependencies:` form must be a **single line** — the numbers have to follo
 ## Dependencies
 Dependencies: #314, #317
 ```
+
+Dependency declarations inside fenced code blocks (backtick or tilde fences, including fences indented up to three spaces) are ignored, matching the planner dependencies guard.
 
 A dependency is satisfied only once the referenced issue is **closed**. Any dependency that is still open — or that cannot be fetched — marks the dependent issue as blocked, so it stays out of the processing queue until every prerequisite closes.
 

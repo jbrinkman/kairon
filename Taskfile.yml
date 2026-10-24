@@ -61,6 +61,11 @@ tasks:
       - KAIRON_EVAL_SANDBOX_SELFTEST=1 go test ./internal/eval/sandbox -run '^(TestBaseImage_ToolsOnlyNoMounts|TestEnsureBaseImage_ReusesExistingImage)$' -count=1 -v
       - KAIRON_EVAL_SANDBOX_SELFTEST=1 go test ./internal/eval -run '^(TestSelftestSandbox|TestSandboxWorkspace|TestContainmentSandbox|TestContainmentContainerGH|TestProvenanceParitySandbox)$' -count=1 -v
 
+  eval:planner:
+    desc: Run the planner eval suite against both agents in the sandbox (interactive cases on planner, automated cases on planner-automated); needs kairon on PATH, a model backend and a container runtime. Pass -- --dry-run to print the commands only
+    cmds:
+      - bash scripts/eval-planner.sh {{.CLI_ARGS}}
+
   sync:check:
     desc: Verify template-synchronized files match their live counterparts
     cmds:
@@ -74,6 +79,7 @@ tasks:
         # are diffed one by one in the loop below. hidden/ stays live-only.
         diff -rq --exclude=results --exclude=.DS_Store --exclude=tmp --exclude=workspaces --exclude=hidden .kairon/evals/ cmd/kairon/templates/kairon/evals/ || error=1
         diff -rq .kiro/skills/sentinel-protocol/ cmd/kairon/templates/kiro/skills/sentinel-protocol/ || error=1
+        diff -rq .kiro/skills/planner-shared/ cmd/kairon/templates/kiro/skills/planner-shared/ || error=1
         # Workspace fixtures that ship with the templates must match the live ones:
         # a shipped case that sets `workspace:` fails to load without its fixture.
         # A workspace absent from the templates stays live-only.

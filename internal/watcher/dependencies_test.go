@@ -4,6 +4,7 @@ import (
 	"errors"
 	"reflect"
 	"sort"
+	"strings"
 	"testing"
 
 	"github.com/jbrinkman/kairon/internal/github"
@@ -85,6 +86,285 @@ func TestParseDependencies(t *testing.T) {
 			}
 		})
 	}
+}
+
+// fenceBody joins lines with "\n". Test bodies are built from lines so the
+// fence characters appear as ordinary Go string content.
+func fenceBody(lines ...string) string {
+	return strings.Join(lines, "\n")
+}
+
+func TestParseDependenciesFencedCode(t *testing.T) {
+	parser := &DependencyParser{}
+
+	tests := []struct {
+		name     string
+		input    string
+		expected []int
+	}{
+		{
+			name: "AC1 none outside, fenced dependency ignored",
+			input: fenceBody(
+				"Dependencies: none",
+				"",
+				"```",
+				"Dependencies: #397",
+				"```",
+			),
+			expected: nil,
+		},
+		{
+			name:     "AC2 unfenced comma list",
+			input:    fenceBody("Dependencies: #380, #379"),
+			expected: []int{380, 379},
+		},
+		{
+			name:     "AC3a fenced depends on issue ignored",
+			input:    fenceBody("```", "depends on issue #397", "```"),
+			expected: nil,
+		},
+		{
+			name:     "AC3b fenced blocked by ignored",
+			input:    fenceBody("```", "blocked by: #392", "```"),
+			expected: nil,
+		},
+		{
+			name:     "AC3c same declarations unfenced still parsed",
+			input:    fenceBody("depends on issue #397", "", "blocked by: #392"),
+			expected: []int{397, 392},
+		},
+		{
+			name:     "AC3d both declarations fenced ignored",
+			input:    fenceBody("```", "depends on issue #397", "blocked by: #392", "```"),
+			expected: nil,
+		},
+		{
+			name: "mixed real dependency before fenced one",
+			input: fenceBody(
+				"Depends on Issue #5",
+				"",
+				"```",
+				"Dependencies: #397",
+				"```",
+			),
+			expected: []int{5},
+		},
+		{
+			name: "mixed fenced then real dependency after",
+			input: fenceBody(
+				"```",
+				"Dependencies: #397",
+				"```",
+				"",
+				"Depends on Issue #5",
+			),
+			expected: []int{5},
+		},
+		{
+			name:     "tilde fence",
+			input:    fenceBody("~~~", "Dependencies: #397", "~~~"),
+			expected: nil,
+		},
+		{
+			name:     "info string on opener",
+			input:    fenceBody("```markdown", "Dependencies: #397", "```"),
+			expected: nil,
+		},
+		{
+			name:     "fence indented one space",
+			input:    fenceBody(" ```", " Dependencies: #397", " ```"),
+			expected: nil,
+		},
+		{
+			name:     "fence indented three spaces",
+			input:    fenceBody("   ```", "   Dependencies: #397", "   ```"),
+			expected: nil,
+		},
+		{
+			name:     "four-space indent is not a fence",
+			input:    fenceBody("    ```", "Dependencies: #397", "    ```"),
+			expected: []int{397},
+		},
+		{
+			name: "longer opener not closed by shorter run",
+			input: fenceBody(
+				"````",
+				"```",
+				"Dependencies: #397",
+				"````",
+			),
+			expected: nil,
+		},
+		{
+			name: "longer closer closes",
+			input: fenceBody(
+				"```",
+				"Dependencies: #397",
+				"`````",
+				"",
+				"Depends on Issue #6",
+			),
+			expected: []int{6},
+		},
+		{
+			name: "mismatched char does not close",
+			input: fenceBody(
+				"```",
+				"~~~",
+				"Dependencies: #397",
+			),
+			expected: nil,
+		},
+		{
+			name: "closer with trailing text does not close",
+			input: fenceBody(
+				"```",
+				"``` not a closer",
+				"Dependencies: #397",
+			),
+			expected: nil,
+		},
+		{
+			name: "closer with trailing whitespace closes",
+			input: fenceBody(
+				"```",
+				"Dependencies: #397",
+				"```   ",
+				"Depends on Issue #7",
+			),
+			expected: []int{7},
+		},
+		{
+			name: "unclosed fence runs to end of body",
+			input: fenceBody(
+				"```",
+				"intro",
+				"Dependencies: #397",
+			),
+			expected: nil,
+		},
+		{
+			name: "dependency before unclosed fence is kept",
+			input: fenceBody(
+				"Depends on Issue #8",
+				"```",
+				"Dependencies: #397",
+			),
+			expected: []int{8},
+		},
+		{
+			name:     "markdown link form fenced",
+			input:    fenceBody("```", "Depends on [Issue #88]", "```"),
+			expected: nil,
+		},
+		{
+			name:     "CRLF fenced block",
+			input:    "Dependencies: none\r\n\r\n```\r\nDependencies: #397\r\n```\r\n",
+			expected: nil,
+		},
+		{
+			name:     "CRLF unfenced still parsed",
+			input:    "Dependencies: #380, #379\r\n",
+			expected: []int{380, 379},
+		},
+		{
+			name: "two separate fences with real dependency between",
+			input: fenceBody(
+				"```",
+				"Dependencies: #1",
+				"```",
+				"Blocked by: #2",
+				"~~~",
+				"Dependencies: #3",
+				"~~~",
+			),
+			expected: []int{2},
+		},
+		{
+			// Regression: a "dependencies:"-labeled line above a fence must
+			// not let dependenciesRe span the blanked fence region and consume
+			// the real declaration that follows it. The blanked fence lines
+			// need a non-whitespace boundary so \s* and (.+?) cannot cross.
+			name: "labeled line above fence does not swallow real dependency below",
+			input: fenceBody(
+				"Example dependencies:",
+				"```text",
+				"sample",
+				"```",
+				"Dependencies: #5",
+			),
+			expected: []int{5},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := parser.ParseDependencies(tt.input)
+			if len(got) == 0 && len(tt.expected) == 0 {
+				return
+			}
+			if !reflect.DeepEqual(got, tt.expected) {
+				t.Errorf("ParseDependencies() = %v, want %v", got, tt.expected)
+			}
+		})
+	}
+}
+
+func TestStripFencedCode(t *testing.T) {
+	t.Run("no fence returns input unchanged", func(t *testing.T) {
+		for _, in := range []string{
+			"",
+			"Dependencies: #1",
+			"line one\n\nline two\r\nline three\n",
+			"    ```\nindented four spaces\n",
+			"inline ``` backticks mid-line",
+		} {
+			if got := stripFencedCode(in); got != in {
+				t.Errorf("stripFencedCode(%q) = %q, want unchanged", in, got)
+			}
+		}
+	})
+
+	t.Run("fenced lines replaced with sentinel and delimiters included", func(t *testing.T) {
+		in := fenceBody("before", "```go", "x := 1", "```", "after")
+		s := fenceSentinel
+		want := fenceBody("before", s, s, s, "after")
+		if got := stripFencedCode(in); got != want {
+			t.Errorf("stripFencedCode() = %q, want %q", got, want)
+		}
+	})
+
+	t.Run("line count preserved", func(t *testing.T) {
+		in := fenceBody("a", "~~~", "b", "c", "~~~", "d", "```", "e")
+		got := stripFencedCode(in)
+		if strings.Count(got, "\n") != strings.Count(in, "\n") {
+			t.Errorf("newline count changed: got %q from %q", got, in)
+		}
+		s := fenceSentinel
+		if want := fenceBody("a", s, s, s, s, "d", s, s); got != want {
+			t.Errorf("stripFencedCode() = %q, want %q", got, want)
+		}
+	})
+
+	t.Run("unfenced text around fence is byte-identical", func(t *testing.T) {
+		in := "keep\r\n```\r\nDependencies: #9\r\n```\r\nkeep too\r\n"
+		got := stripFencedCode(in)
+		if strings.Contains(got, "#9") || strings.Contains(got, "```") {
+			t.Errorf("fenced content survived: %q", got)
+		}
+		if !strings.HasPrefix(got, "keep\r\n") || !strings.HasSuffix(got, "keep too\r\n") {
+			t.Errorf("unfenced text altered: %q", got)
+		}
+	})
+
+	t.Run("unclosed fence blanks to end", func(t *testing.T) {
+		in := fenceBody("keep", "```", "gone", "gone too")
+		s := fenceSentinel
+		want := fenceBody("keep", s, s, s)
+		if got := stripFencedCode(in); got != want {
+			t.Errorf("stripFencedCode() = %q, want %q", got, want)
+		}
+	})
 }
 
 func TestBackoffTracker(t *testing.T) {
@@ -356,4 +636,72 @@ func TestValidateIssueCyclicDependencyDoesNotFetchChain(t *testing.T) {
 			t.Errorf("CircularDependencies = %v, expected empty", result.CircularDependencies)
 		}
 	})
+}
+
+// fencedBody builds an issue body whose declaration line sits inside a
+// backtick fenced code block, preceded by "Dependencies: none" outside it.
+func fencedBody(declaration string) string {
+	fence := strings.Repeat("`", 3)
+	return strings.Join([]string{"Dependencies: none", "", fence, declaration, fence}, "\n")
+}
+
+func TestCheckCircularDependenciesFencedCode(t *testing.T) {
+	const selfRef = "Dependencies: #10"
+	details := map[int]*github.IssueDetails{
+		10: {State: "open", Body: selfRef},
+	}
+
+	t.Run("fenced self reference yields no edge", func(t *testing.T) {
+		var calls []int
+		dv := NewDependencyValidator()
+		dv.getIssueDetails = fakeIssueLookup(&calls, details, nil)
+
+		got := dv.checkCircularDependencies("owner/repo", 10, fencedBody(selfRef), map[int]bool{})
+
+		if len(got) != 0 {
+			t.Errorf("checkCircularDependencies() = %v, expected empty (fenced line is not an edge)", got)
+		}
+		if len(calls) != 0 {
+			t.Errorf("lookups = %v, expected none", calls)
+		}
+	})
+
+	t.Run("unfenced self reference reports a cycle", func(t *testing.T) {
+		var calls []int
+		dv := NewDependencyValidator()
+		dv.getIssueDetails = fakeIssueLookup(&calls, details, nil)
+
+		got := dv.checkCircularDependencies("owner/repo", 10, selfRef, map[int]bool{})
+
+		if len(got) == 0 {
+			t.Error("checkCircularDependencies() = empty, expected a cycle for an unfenced self reference")
+		}
+		if !reflect.DeepEqual(calls, []int{10}) {
+			t.Errorf("lookups = %v, expected [10]", calls)
+		}
+	})
+}
+
+func TestValidateIssueFencedOnlyDependency(t *testing.T) {
+	var calls []int
+	dv := NewDependencyValidator()
+	dv.getIssueDetails = fakeIssueLookup(&calls, nil, nil)
+
+	result, err := dv.ValidateIssue("owner/repo", 10, fencedBody("Dependencies: #10"))
+	if err != nil {
+		t.Fatalf("ValidateIssue() returned unexpected error: %v", err)
+	}
+
+	if len(calls) != 0 {
+		t.Errorf("lookups = %v, expected none", calls)
+	}
+	if !result.IsValid {
+		t.Errorf("IsValid = false, expected true (only dependency is inside a fence)")
+	}
+	if len(result.UnresolvedDependencies) != 0 {
+		t.Errorf("UnresolvedDependencies = %v, expected empty", result.UnresolvedDependencies)
+	}
+	if len(result.CircularDependencies) != 0 {
+		t.Errorf("CircularDependencies = %v, expected empty", result.CircularDependencies)
+	}
 }

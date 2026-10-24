@@ -72,7 +72,7 @@ func (s *Structural) Admit(in Input) AdmissionResult {
 	}
 	var missing []string
 	for _, name := range required {
-		if _, ok := findSection(lines, name); !ok {
+		if !sectionPresent(lines, name) {
 			missing = append(missing, name)
 		}
 	}
@@ -194,6 +194,30 @@ func findSection(lines []bodyLine, name string) (int, bool) {
 		}
 	}
 	return 0, false
+}
+
+// depsLineRE matches the single-line "Dependencies:" form the planner-shared
+// skill teaches (for example "Dependencies: none" or "Dependencies: #12").
+var depsLineRE = regexp.MustCompile(`(?i)^[ \t]*dependencies:`)
+
+// sectionPresent reports whether the required section named name is present.
+// A markdown heading always counts. The Dependencies section additionally
+// counts when the body carries the single-line "Dependencies:" form outside a
+// fenced code block, because the planner-shared skill teaches that single line
+// and forbids a "## Dependencies" heading; without this, every
+// skill-conformant body would be rejected as missing Dependencies.
+func sectionPresent(lines []bodyLine, name string) bool {
+	if _, ok := findSection(lines, name); ok {
+		return true
+	}
+	if strings.EqualFold(strings.TrimSpace(name), "Dependencies") {
+		for _, l := range lines {
+			if !l.inFence && depsLineRE.MatchString(l.text) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // findSections returns the indexes of every heading line that names the

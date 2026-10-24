@@ -26,6 +26,7 @@ Sync is **one-way** (live → template). CI enforces this via `task sync:check` 
 | `.kairon/evals/rubrics/*` | `cmd/kairon/templates/kairon/evals/rubrics/` |
 | `.kairon/evals/cases/**/*` | `cmd/kairon/templates/kairon/evals/cases/` |
 | `.kiro/skills/sentinel-protocol/*` | `cmd/kairon/templates/kiro/skills/sentinel-protocol/` |
+| `.kiro/skills/planner-shared/*` | `cmd/kairon/templates/kiro/skills/planner-shared/` |
 
 ### Exclusion Patterns
 
@@ -62,6 +63,10 @@ cp -r .kairon/evals/fixtures/workspaces/<name> cmd/kairon/templates/kairon/evals
 cp .kairon/evals/rubrics/* cmd/kairon/templates/kairon/evals/rubrics/
 mkdir -p cmd/kairon/templates/kairon/evals/cases/
 cp -r .kairon/evals/cases/* cmd/kairon/templates/kairon/evals/cases/
+
+# Kairon-managed planner skill (planner-conventions is project-owned: never sync it)
+mkdir -p cmd/kairon/templates/kiro/skills/planner-shared/
+cp .kiro/skills/planner-shared/* cmd/kairon/templates/kiro/skills/planner-shared/
 ```
 
 ### Verification

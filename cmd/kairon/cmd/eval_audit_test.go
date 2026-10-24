@@ -337,16 +337,19 @@ func TestAuditRealBuilderListsSkillsAndHooks(t *testing.T) {
 	}
 }
 
-func TestAuditRealPlannerNamesMissingHeadings(t *testing.T) {
+// The interactive planner prompt carries the RTCC headings in order, so the
+// audit reports no structure problem for it. Whether the audit passes overall
+// depends on the load-bearing table, which this test does not assert on.
+func TestAuditRealPlannerHasRTCCHeadings(t *testing.T) {
 	useShippedSkills(t)
 	t.Chdir("../../..")
 	_, err := runAudit(t, "planner", "", "", "")
 	if err == nil {
-		t.Fatal("planner: expected audit failure")
+		return
 	}
-	for _, h := range []string{"## Role", "## Task", "## Context", "## Constraints"} {
-		if !strings.Contains(err.Error(), h) {
-			t.Errorf("error does not name missing heading %q:\n%s", h, err)
+	for _, problem := range []string{"missing required heading", "required headings out of order"} {
+		if strings.Contains(err.Error(), problem) {
+			t.Errorf("planner prompt has an RTCC structure problem (%q):\n%s", problem, err)
 		}
 	}
 }
