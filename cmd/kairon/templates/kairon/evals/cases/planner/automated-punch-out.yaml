@@ -19,6 +19,9 @@ context:
   - "The planner must not guess and must not emit a partial canonical document. It returns a punch_out document that names each unresolved slot and the reason"
 checks:
   # Envelope: the reply is the document, from its first line
+  # Runs the real stage-output parser (internal/stageoutput.Parse), which the regex envelope below cannot do
+  - criterion: output_document_validity
+    type: output_document_valid
   - criterion: output_document_validity
     type: output_contains
     pattern: '\A\s*(\x60{3}ya?ml\s*\n)?schema_version: 1\s*\n'

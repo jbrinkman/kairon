@@ -28,6 +28,7 @@ var allCheckTypes = []CheckType{
 	CheckJudge,
 	CheckFactAsked,
 	CheckFactNotAsked,
+	CheckOutputDocumentValid,
 }
 
 var yamlFence = regexp.MustCompile("(?s)```yaml\n(.*?)\n```")

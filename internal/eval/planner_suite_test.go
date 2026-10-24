@@ -499,3 +499,157 @@ func TestPlannerSuiteRegexesCompile(t *testing.T) {
 		t.Error("no output_contains/output_not_contains pattern found in the planner suite")
 	}
 }
+
+// plannerValidityCriterion is the criterion the parse-backed check belongs to.
+const plannerValidityCriterion = "output_document_validity"
+
+// plannerCasesByName loads the shipped planner cases keyed by name.
+func plannerCasesByName(t *testing.T, p plannerPaths) map[string]TestCase {
+	t.Helper()
+	if err := configure(RunOptions{Backend: "stub", EvalsDir: p.evals}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(resetConfig)
+	cases, err := loadCases("planner")
+	if err != nil {
+		t.Fatal(err)
+	}
+	byName := make(map[string]TestCase, len(cases))
+	for _, tc := range cases {
+		byName[tc.Name] = tc
+	}
+	return byName
+}
+
+// countValidityChecks counts the checks of type typ on the
+// output_document_validity criterion.
+func countValidityChecks(tc TestCase, typ checks.CheckType) int {
+	n := 0
+	for _, c := range tc.Checks {
+		if c.Criterion == plannerValidityCriterion && c.Type == typ {
+			n++
+		}
+	}
+	return n
+}
+
+// TestPlannerSuiteDocumentCasesUseParseBackedCheck enforces that every case
+// whose stub returns a stage-output document scores output_document_validity
+// with the parse-backed output_document_valid check, and that a case that
+// returns no document carries none. The set of document-returning cases is
+// derived from the stub replies, not listed a second time here.
+func TestPlannerSuiteDocumentCasesUseParseBackedCheck(t *testing.T) {
+	p := plannerSuitePaths(t)
+	docs := stubDocuments(t, p)
+	byName := plannerCasesByName(t, p)
+
+	var withDoc int
+	for _, name := range plannerCaseNames {
+		tc, ok := byName[name]
+		if !ok {
+			t.Errorf("%s: case not loaded", name)
+			continue
+		}
+		got := countValidityChecks(tc, checks.CheckOutputDocumentValid)
+		if len(docs[name]) > 0 {
+			withDoc++
+			if got < 1 {
+				t.Errorf("%s returns a document but has no %s check on criterion %s",
+					name, checks.CheckOutputDocumentValid, plannerValidityCriterion)
+			}
+			continue
+		}
+		if got != 0 {
+			t.Errorf("%s returns no document but has %d %s check(s) on criterion %s",
+				name, got, checks.CheckOutputDocumentValid, plannerValidityCriterion)
+		}
+	}
+	if withDoc == 0 {
+		t.Error("no planner case returns a document; the test would prove nothing")
+	}
+}
+
+// plannerGeneratedLine matches the generated: line of a stage-output document.
+var plannerGeneratedLine = regexp.MustCompile(`(?m)^generated:.*$`)
+
+// malformedGenerated is a timestamp the regex envelope accepts (it is shaped
+// like one) but the parser rejects (month 99 is not RFC 3339).
+const malformedGenerated = `generated: "2026-99-21T12:00:00Z"`
+
+// TestPlannerSuiteMalformedDocumentFailsParseBackedCheck is the proof that the
+// parse-backed check closes the gap the regex envelope leaves: with a
+// malformed generated timestamp in the stub document, every regex check of the
+// output_document_validity criterion still passes, while output_document_valid
+// fails with the parser's reason. The unmodified document passes them all.
+func TestPlannerSuiteMalformedDocumentFailsParseBackedCheck(t *testing.T) {
+	p := plannerSuitePaths(t)
+	docs := stubDocuments(t, p)
+	byName := plannerCasesByName(t, p)
+
+	var proved int
+	for _, name := range plannerCaseNames {
+		replies := docs[name]
+		if len(replies) == 0 {
+			continue
+		}
+		tc := byName[name]
+
+		// Judge checks need a model; keep only the deterministic ones.
+		var selected []checks.Check
+		for _, c := range tc.Checks {
+			if c.Criterion != plannerValidityCriterion {
+				continue
+			}
+			switch c.Type {
+			case checks.CheckOutputContains, checks.CheckOutputNotContains, checks.CheckOutputDocumentValid:
+				selected = append(selected, c)
+			}
+		}
+		if countValidityChecks(tc, checks.CheckOutputDocumentValid) == 0 {
+			t.Errorf("%s: no %s check to exercise", name, checks.CheckOutputDocumentValid)
+			continue
+		}
+
+		for i, original := range replies {
+			t.Run(name, func(t *testing.T) {
+				mutated := plannerGeneratedLine.ReplaceAllLiteralString(original, malformedGenerated)
+				if mutated == original {
+					t.Fatalf("reply %d: rewriting generated: changed nothing; the sample is not malformed", i)
+				}
+
+				// Unmodified document: everything passes.
+				for _, r := range checks.Evaluate(selected, checks.Input{Output: original}) {
+					if !r.Passed {
+						t.Errorf("reply %d unmodified: %s failed: %s", i, r.Label, r.Detail)
+					}
+				}
+
+				// Malformed document: regexes pass, the parse-backed check fails.
+				var parseFailed int
+				for _, r := range checks.Evaluate(selected, checks.Input{Output: mutated}) {
+					if r.Type == checks.CheckOutputDocumentValid {
+						if r.Passed {
+							t.Errorf("reply %d malformed: %s passed, want a failure", i, r.Label)
+							continue
+						}
+						if !strings.Contains(r.Detail, "RFC 3339") {
+							t.Errorf("reply %d malformed: %s detail = %q, want the parser's RFC 3339 reason", i, r.Label, r.Detail)
+						}
+						parseFailed++
+						continue
+					}
+					if !r.Passed {
+						t.Errorf("reply %d malformed: regex check %s failed (%s); the sample must pass the regex envelope", i, r.Label, r.Detail)
+					}
+				}
+				if parseFailed == 0 {
+					t.Errorf("reply %d malformed: no %s result was produced", i, checks.CheckOutputDocumentValid)
+				}
+			})
+			proved++
+		}
+	}
+	if proved == 0 {
+		t.Error("no document-returning planner case was exercised")
+	}
+}

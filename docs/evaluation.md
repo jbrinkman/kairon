@@ -170,7 +170,7 @@ A case can declare `checks`: small, deterministic assertions about what the agen
 ```yaml
 checks:
   - criterion: structural_completeness   # required: a non-cost criterion of the agent's rubric
-    type: command                         # required: one of the thirteen types below
+    type: command                         # required: one of the fourteen types below
     run: "go test ./..."
 ```
 
@@ -186,15 +186,16 @@ Every check has `criterion` and `type`. The other fields depend on the type, and
 | `changed_files` | `allow` (list of globs; `[]` is valid) | | no path was added, modified or deleted outside `allow` |
 | `output_contains` | `pattern` | `turn` | the agent's output (default: the last turn's) matches the regex |
 | `output_not_contains` | `pattern` | `turn` | the agent's output (default: the last turn's) does not match the regex |
+| `output_document_valid` | | `turn` | the agent's output (default: the last turn's), with one wrapping `yaml` fence removed, parses with `internal/stageoutput.Parse`, the same parser the runtime guard uses |
 | `gh_log_contains` | `pattern` | `turn` | the fake `gh` log (default: the final log) matches the regex |
 | `gh_log_not_contains` | `pattern` | `turn` | the fake `gh` log (default: the final log) does not match the regex |
 | `judge` | `question` | `files`, `turn` | the judge model answers the yes/no `question` with `yes`; with `turn` it is shown the conversation up to that turn and judges that turn's reply |
 | `fact_asked` | `fact` | | the simulated-user log (`.eval/sim-log.jsonl`) has at least one decision routed to fact id `fact` |
 | `fact_not_asked` | `fact` | | the simulated-user log has no decision routed to fact id `fact` |
 
-`turn` is only accepted by the four `output_*` / `gh_log_*` types and by `judge`; see [The `turn` field](#the-turn-field) and, for what a judge check does with it, [The `judge` check](#the-judge-check).
+`turn` is only accepted by the `output_*` and `gh_log_*` types and by `judge`; see [The `turn` field](#the-turn-field) and, for what a judge check does with it, [The `judge` check](#the-judge-check).
 
-### The thirteen check types
+### The fourteen check types
 
 `command` runs a shell command in the workspace root and compares its exit status. `expect_exit` (0–255, default `0`) lets a case assert a specific non-zero status. `inject` copies files from `fixtures/hidden/` into the workspace for the duration of the command (see [Hidden files and `inject`](#hidden-files-and-inject)).
 
@@ -269,6 +270,17 @@ checks:
     pattern: '(?i)as an ai'
 ```
 
+`output_document_valid` runs the real stage-output parser over the agent's output (default: the last turn's; `turn: N` selects turn N). It takes no `pattern`: a regex can match the shape of a document that the parser rejects (`generated: "2026-99-21T12:00:00Z"` looks like a timestamp but is not an RFC 3339 one), so this check calls `internal/stageoutput.Parse`, the parser the [runtime guard](guards.md) uses, and re-implements none of the grammar. If the whole reply is one ```` ```yaml ```` fence, that single fence is removed first; anything else around the document (prose, a second document, a second fence) is left in place and makes the parse fail. On failure the detail is the parser's own message, for example `output is not a valid stage-output document: ... generated: "2026-99-21T12:00:00Z" is not an RFC 3339 timestamp`, not a pattern mismatch. The check certifies that the document is well-formed; keep `output_contains` checks for case-specific expectations such as the `stage` or `result` value. See [Stage-output document](stage-output.md) for the schema.
+
+```yaml
+checks:
+  - criterion: output_document_validity
+    type: output_document_valid
+  - criterion: output_document_validity
+    type: output_document_valid
+    turn: 2
+```
+
 `gh_log_contains` and `gh_log_not_contains` look at the fake `gh` log, `.eval/gh.log`, one line per call such as `gh issue create --title t` (see [The fake `gh`](#the-fake-gh)). By default they read the final log; with `turn: N` they read the log as it stood at the end of turn N.
 
 ```yaml
@@ -315,7 +327,7 @@ checks:
     turn: 2
 ```
 
-- **Allowed types.** `turn` is accepted only by `output_contains`, `output_not_contains`, `gh_log_contains`, `gh_log_not_contains` and `judge`. On any other type it is a load error (`turn is not valid for type file_exists`).
+- **Allowed types.** `turn` is accepted only by `output_contains`, `output_not_contains`, `output_document_valid`, `gh_log_contains`, `gh_log_not_contains` and `judge`. On any other type it is a load error (`turn is not valid for type file_exists`).
 - **Why workspace checks cannot take it.** The workspace is inspected once, at the end of the case, so a `file_*`, `changed_files` or `command` check cannot honestly be pinned to an earlier turn. A `turn: 1` on such a check would silently test the final workspace, so it is rejected loudly instead.
 - **1-based.** `turn` counts from 1, the same numbering as the position in `turns`. `turn: 0` (or a negative value) is a load error.
 - **Default: the last turn.** A check without `turn` reads the last turn's output and the final gh log (a `judge` check judges the last turn's reply and sees the whole conversation, see [The `judge` check](#the-judge-check)), which is exactly what a single-turn case has always done.
@@ -531,7 +543,7 @@ kairon check --checks <file> --dir <dir> [--output <file>] [--gh-log <file>] [--
 |------|---------|-------------|
 | `--checks` | *required* | YAML file holding the list of checks to run (see [Checks file format](#checks-file-format)). |
 | `--dir` | *required* | Directory the `file_*`, `changed_files`, `command`, `judge` (`files`) and `fact_*` checks look at. It must be an existing directory. |
-| `--output` | none | File whose text `output_contains` / `output_not_contains` (and the text a `judge` check is shown as the output) read. Omitted means empty text. |
+| `--output` | none | File whose text `output_contains` / `output_not_contains` / `output_document_valid` (and the text a `judge` check is shown as the output) read. Omitted means empty text. |
 | `--gh-log` | none | File whose text `gh_log_contains` / `gh_log_not_contains` read. Capped at 10 MiB: a larger file sets the same oversized flag as in eval, so `gh_log_*` checks fail explicitly. Omitted means empty text. |
 | `--hidden-dir` | none | Directory that `inject` entries are resolved against and copied from. Without it, a check that uses `inject` is invalid. |
 | `--backend` | `kiro-cli` | Inference backend that answers `judge` checks. Valid values are the same as for `kairon eval --backend`: `kiro-cli`, `stub`. An unknown value fails before any check runs. |
@@ -813,7 +825,7 @@ If it does not, the `--resume` call is not reaching the same conversation. The `
 
 ## Simulated user (elicitation cases)
 
-Some agents, the planner above all, must draw out every requirement the user holds without filling the gaps with assumptions. Scripted [`turns`](#multi-turn-cases) cannot measure that: the agent's questions vary from run to run, so fixed replies stop matching them. A case with `simulated_user` answers **whatever the agent asks** from a fixed **bank of facts**, and the [`fact_asked` / `fact_not_asked`](#the-thirteen-check-types) checks then say which facts the agent asked for.
+Some agents, the planner above all, must draw out every requirement the user holds without filling the gaps with assumptions. Scripted [`turns`](#multi-turn-cases) cannot measure that: the agent's questions vary from run to run, so fixed replies stop matching them. A case with `simulated_user` answers **whatever the agent asks** from a fixed **bank of facts**, and the [`fact_asked` / `fact_not_asked`](#the-fourteen-check-types) checks then say which facts the agent asked for.
 
 ```yaml
 name: csv-export-elicitation
@@ -948,7 +960,7 @@ The reply text is not logged: it is a function of `fact` (see `user_turns`). The
 
 ### Fact checks
 
-`fact_asked: <id>` passes when at least one decision has that fact; `fact_not_asked: <id>` passes when none has. They require a `simulated_user` case and a `fact` that names one of its facts (see [Checks](#the-thirteen-check-types)). A missing, unreadable or malformed log fails the check with a detail, for `fact_not_asked` too; it is never a silent pass.
+`fact_asked: <id>` passes when at least one decision has that fact; `fact_not_asked: <id>` passes when none has. They require a `simulated_user` case and a `fact` that names one of its facts (see [Checks](#the-fourteen-check-types)). A missing, unreadable or malformed log fails the check with a detail, for `fact_not_asked` too; it is never a silent pass.
 
 ### Stub backend: `stub.routes`
 
@@ -3364,8 +3376,9 @@ That preamble is now only input text that makes the case read like an unattended
 `go test ./internal/eval -run TestPlannerSuite` reproduces the RED/GREEN claim without a model:
 
 - The suite registers all seven cases, and each case file declares `agent: planner`.
-- **GREEN.** The shipped reference transcripts score a passing agent verdict, every YAML document in them parses and validates with `internal/stageoutput`, and every `output_contains`/`output_not_contains` pattern compiles.
+- **GREEN.** The shipped reference transcripts score a passing agent verdict, every YAML document in them parses and validates with `internal/stageoutput`, every `output_document_valid` check (the parse-backed check on `output_document_validity`) accepts the document its case returns, and every `output_contains`/`output_not_contains` pattern compiles. `TestPlannerSuiteDocumentCasesUseParseBackedCheck` fails if a document-returning case, derived from its stub replies, lacks that check, or if a case that returns no document carries one.
 - **RED.** Legacy transcripts in `internal/eval/testdata/planner-legacy/` reproduce what the pre-#381 prompt produces (User Story drafts, several questions in one reply, `gh issue create`, questions in automated mode, no document). They must fail the agent verdict, with `output_document_validity` and `two_mode_behavior` below the 60% floor.
+- **Malformed timestamp.** `TestPlannerSuiteMalformedDocumentFailsParseBackedCheck` rewrites each stub document's `generated:` to `2026-99-21T12:00:00Z` (shaped like a timestamp, but month 99 is not RFC 3339) and evaluates the case's deterministic `output_document_validity` checks. Every `output_contains`/`output_not_contains` regex still passes, while `output_document_valid` fails with the parser's RFC 3339 reason. The unmodified document passes all of them. The test fails if the rewrite changes nothing.
 
 The test does not call a model and does not touch `.kairon/evals/results/`.
 

@@ -221,7 +221,7 @@ func readCheckGHLog(path string) (text string, oversized bool, err error) {
 func init() {
 	checkCmd.Flags().StringVar(&checkChecks, "checks", "", "YAML file holding the list of checks to run (required)")
 	checkCmd.Flags().StringVar(&checkDir, "dir", "", "Directory the checks look at; must exist (required)")
-	checkCmd.Flags().StringVar(&checkOutput, "output", "", "File whose text output_contains / output_not_contains checks read (default: empty text)")
+	checkCmd.Flags().StringVar(&checkOutput, "output", "", "File whose text output_contains / output_not_contains / output_document_valid checks read (default: empty text)")
 	checkCmd.Flags().StringVar(&checkGHLog, "gh-log", "", "File whose text gh_log_contains / gh_log_not_contains checks read, capped at 10 MiB (default: empty text)")
 	checkCmd.Flags().StringVar(&checkHiddenDir, "hidden-dir", "", "Directory inject entries are resolved against; without it a check using inject is invalid")
 	checkCmd.Flags().StringVar(&checkBackend, "backend", inference.NameKiroCLI,
