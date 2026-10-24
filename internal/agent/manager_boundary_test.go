@@ -399,6 +399,47 @@ func TestSpawn_WorktreeFailureRemovesInputDocument(t *testing.T) {
 	}
 }
 
+// TestSpawn_PreStartFailureAfterWorktreeRemovesWorktree: once createWorktree
+// has succeeded, any later pre-start failure (log-file open, process start)
+// must remove the worktree. The worktree dir is named issue-N-<watcher-pid>,
+// and the watcher process is long-lived, so a leftover dir makes
+// hasActiveWorktree report the issue as active on every later poll and the
+// watcher skips it forever. The earlier failures (writeInput, createWorktree)
+// are covered elsewhere and must NOT call removeWorktree: no worktree exists.
+func TestSpawn_PreStartFailureAfterWorktreeRemovesWorktree(t *testing.T) {
+	boom := errors.New("disk full")
+	cases := map[string]func(b *boundaryHarness){
+		"log file open fails": func(b *boundaryHarness) {
+			// Make the per-issue log path un-openable by planting a directory
+			// where Spawn will try to create the log file.
+			logPath := filepath.Join(".kairon", "logs", "issue-"+strconv.Itoa(testIssue)+".log")
+			if err := os.MkdirAll(logPath, 0o755); err != nil {
+				t.Fatal(err)
+			}
+		},
+		"start fails": func(b *boundaryHarness) {
+			b.m.start = func(*exec.Cmd) error { b.record("start"); return boom }
+		},
+	}
+	for name, inject := range cases {
+		t.Run(name, func(t *testing.T) {
+			b := newBoundaryHarness(t, admitted(testIssue))
+			inject(b)
+			if _, err := b.m.Spawn(testIssue, testRepo); err == nil {
+				t.Fatal("Spawn returned nil error on a pre-start failure")
+			}
+			select {
+			case issue := <-b.removed:
+				if issue != testIssue {
+					t.Errorf("removed worktree for issue %d, want %d", issue, testIssue)
+				}
+			default:
+				t.Error("worktree was not removed after a post-worktree pre-start failure; it would wedge the issue on later polls")
+			}
+		})
+	}
+}
+
 // retry path
 
 func retryAgentFixture(b *boundaryHarness) *Agent {

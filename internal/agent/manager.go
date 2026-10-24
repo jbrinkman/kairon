@@ -347,6 +347,9 @@ func (m *Manager) Spawn(issueNumber int, repo string) (*Agent, error) {
 	agentLogPath := filepath.Join(agentLogDir, fmt.Sprintf("issue-%d.log", issueNumber))
 	agentLogFile, err := os.OpenFile(agentLogPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
 	if err != nil {
+		if rmErr := m.removeWorktree(issueNumber, os.Getpid()); rmErr != nil {
+			log.Printf("[agent] failed to remove worktree for issue #%d: %v", issueNumber, rmErr)
+		}
 		m.removeInputFile(issueNumber)
 		log.Printf("[agent] failed to create log file for issue #%d: %v", issueNumber, err)
 		return nil, fmt.Errorf("%w: failed to create agent log file: %v", ErrAdmissionUnavailable, err)
@@ -356,6 +359,9 @@ func (m *Manager) Spawn(issueNumber int, repo string) (*Agent, error) {
 
 	if err := m.start(cmd); err != nil {
 		agentLogFile.Close()
+		if rmErr := m.removeWorktree(issueNumber, os.Getpid()); rmErr != nil {
+			log.Printf("[agent] failed to remove worktree for issue #%d: %v", issueNumber, rmErr)
+		}
 		m.removeInputFile(issueNumber)
 		log.Printf("[agent] failed to spawn agent %s for issue #%d: %v", id, issueNumber, err)
 		return nil, fmt.Errorf("%w: failed to start agent: %v", ErrAdmissionUnavailable, err)
