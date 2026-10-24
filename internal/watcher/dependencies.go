@@ -40,8 +40,55 @@ func (dp *DependencyParser) ParseDependencies(issueBody string) []int {
 	return dp.extractIssueNumbers(issueBody)
 }
 
+// fenceRE matches the opening or closing line of a fenced code block. It is
+// the same rule used by depsFenceRE in internal/planner/deps_guard.go and by
+// scanLines in internal/guard/structural.go; keep the three aligned.
+var fenceRE = regexp.MustCompile("^ {0,3}(`{3,}|~{3,})")
+
+// stripFencedCode returns text with every line inside a fenced code block
+// (delimiters included) replaced by an empty line, so dependency examples in
+// code fences are not parsed as real declarations.
+//
+// A closing line must use the same character as the opener, be at least as
+// long, and carry only whitespace after the run; an unclosed fence runs to the
+// end of text. Text is split on "\n" only (a trailing "\r" is tolerated by the
+// regex and by TrimSpace), so unfenced text is byte-identical and the line
+// count is preserved. If no line looks like a fence, text is returned as is.
+func stripFencedCode(text string) string {
+	lines := strings.Split(text, "\n")
+
+	hasFence := false
+	for _, line := range lines {
+		if fenceRE.MatchString(line) {
+			hasFence = true
+			break
+		}
+	}
+	if !hasFence {
+		return text
+	}
+
+	var mark string // opening run of the current fence; "" when outside one
+	for i, line := range lines {
+		m := fenceRE.FindStringSubmatch(line)
+		switch {
+		case m != nil && mark == "":
+			mark = m[1]
+			lines[i] = ""
+		case m != nil && m[1][0] == mark[0] && len(m[1]) >= len(mark) && strings.TrimSpace(line[len(m[0]):]) == "":
+			mark = ""
+			lines[i] = ""
+		case mark != "":
+			lines[i] = ""
+		}
+	}
+	return strings.Join(lines, "\n")
+}
+
 // extractIssueNumbers finds issue numbers in text using various dependency formats
 func (dp *DependencyParser) extractIssueNumbers(text string) []int {
+	text = stripFencedCode(text)
+
 	var issues []int
 	seen := make(map[int]bool)
 
@@ -216,7 +263,7 @@ func (dv *DependencyValidator) checkCircularDependencies(repo string, issueNumbe
 	dependencies := dv.parser.ParseDependencies(issueBody)
 	for _, dep := range dependencies {
 		// Fetch dependency body for recursive check
-		depDetails, err := github.GetIssueDetails(repo, dep)
+		depDetails, err := dv.getIssueDetails(repo, dep)
 		if err != nil {
 			continue
 		}

@@ -270,6 +270,8 @@ The `Dependencies:` form must be a **single line** — the numbers have to follo
 Dependencies: #314, #317
 ```
 
+Dependency declarations inside fenced code blocks (backtick or tilde fences, including fences indented up to three spaces) are ignored, matching the planner dependencies guard.
+
 A dependency is satisfied only once the referenced issue is **closed**. Any dependency that is still open — or that cannot be fetched — marks the dependent issue as blocked, so it stays out of the processing queue until every prerequisite closes.
 
 ### Retry Logic
