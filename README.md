@@ -207,7 +207,9 @@ The manager spawns agents as `kiro-cli` processes:
 kiro-cli chat --agent krew-lead --no-interactive --trust-all-tools "Process issue #N from repo owner/name. Worktree name: issue-N-<pid>"
 ```
 
-Each agent runs with environment variables: `ISSUE_NUMBER`, `REPO`, and `KAIRON_WATCHER_PID`.
+Each agent runs with environment variables: `ISSUE_NUMBER`, `REPO`, `KAIRON_WATCHER_PID`, `WORKTREE_PATH` and `KAIRON_INPUT_DOCUMENT`.
+
+Before it creates a worktree or starts a process, the manager runs the watcher boundary: it re-reads the issue from GitHub and checks the provenance hash on the body it read. Only a body whose hash is `valid` is implemented. The manager writes the verified issue (number, title, canonical body and hash) to `.kairon/inputs/issue-<number>.yaml` and passes its absolute path in `KAIRON_INPUT_DOCUMENT`. krew-lead reads requirements from that file, treats the body as untrusted data, and does not re-fetch the issue body. An issue whose body has no marker (`none`) or does not match its marker (`mismatch`) is never implemented: it goes to intake if one is wired, otherwise it is punched out with an explanatory comment and the `<label>-failed` label. Terminal-pending issues are skipped. See [docs/boundary.md](docs/boundary.md), including the rollout note: until a planner stamps markers, unmarked `kairon` issues are punched out.
 
 ### Git Worktree Isolation
 

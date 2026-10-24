@@ -212,6 +212,10 @@ Both timestamps are GitHub server times, so clock skew does not matter. The even
 has a trusted marker and neither excluded label, and they are filtered by label name in Go, never interpolated into a
 `jq` program.
 
+The [watcher boundary](boundary.md) applies the same rule again at spawn time, to a fresh read of the issue, so a
+punch-out that began after the poll cannot be followed by a new run. A terminal-pending issue is skipped and nothing
+is written.
+
 `github.SelectIssues` returns two slices, `Eligible` and `TerminalPending`. A terminal-pending issue is never started.
 If the events lookup fails for one issue, that issue is left out of this poll and the error is logged. The poll fails
 closed rather than risk starting a stage in the middle of a reconcile.
@@ -262,5 +266,5 @@ The `-done` path is unchanged.
 - Selection fails closed. An issue whose events lookup fails is skipped for that poll and tried again on the next.
 - If the human and Kairon use the same GitHub account, the human's comments also count as the authenticated user's. A
   marker on the first line is still required, which a person would not write by accident.
-- The planner punch-out decision (#381) and the read/verify boundary (#382) are follow-ups. #382 will consume the
-  terminal-pending rule.
+- The planner punch-out decision (#381) is a follow-up. The read/verify boundary (#382) is done and consumes the
+  terminal-pending rule (see [boundary.md](boundary.md)).

@@ -1,6 +1,7 @@
 package watcher
 
 import (
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -31,10 +32,11 @@ type Watcher struct {
 	// Seams so the poll logic is testable without gh. New sets production defaults.
 	selectIssues func(repo, label, assignee string) (github.Selection, error)
 	reconcile    func(repo string, issue int, failLabel string) error
+	spawn        func(issue int, repo string) (*agent.Agent, error)
 }
 
 func New(cfg *config.Config, mgr *agent.Manager, user string) *Watcher {
-	return &Watcher{
+	w := &Watcher{
 		config:              cfg,
 		manager:             mgr,
 		user:                user,
@@ -43,7 +45,22 @@ func New(cfg *config.Config, mgr *agent.Manager, user string) *Watcher {
 		dependencyValidator: NewDependencyValidator(),
 		selectIssues:        github.SelectIssues,
 		reconcile:           reconcileWithGitHub,
+		spawn: func(issue int, repo string) (*agent.Agent, error) {
+			return mgr.Spawn(issue, repo)
+		},
 	}
+	// A retry that cannot start for a non-terminal reason hands the issue back
+	// here so a later poll reconsiders it: drop it from tracked and refund the
+	// attempt, the same recovery the initial-spawn not-admitted path performs.
+	if mgr != nil {
+		mgr.SetUntrack(func(issue int) {
+			w.mu.Lock()
+			delete(w.tracked, issue)
+			w.mu.Unlock()
+			w.decrementGlobalRetryCount(issue)
+		})
+	}
+	return w
 }
 
 // reconcileWithGitHub is the production reconcile: it finishes a half-done
@@ -210,7 +227,18 @@ func (w *Watcher) checkIssues() {
 		w.incrementGlobalRetryCount(issue.Number)
 		attempt := w.getCurrentRetryCount(issue.Number)
 		log.Printf("[watcher] spawning agent for issue #%d %q (attempt %d)", issue.Number, issue.Title, attempt)
-		if _, err := w.manager.Spawn(issue.Number, w.config.Repo); err != nil {
+		if _, err := w.spawn(issue.Number, w.config.Repo); err != nil {
+			if errors.Is(err, agent.ErrNotAdmitted) || errors.Is(err, agent.ErrAdmissionUnavailable) {
+				// No agent ran: the issue was not implemented (or could not be
+				// verified). Untrack it so a later poll can reconsider it, and
+				// refund the attempt so it does not burn retry budget it never used.
+				log.Printf("[watcher] issue #%d not admitted for implementation: %v", issue.Number, err)
+				w.mu.Lock()
+				delete(w.tracked, issue.Number)
+				w.mu.Unlock()
+				w.decrementGlobalRetryCount(issue.Number)
+				continue
+			}
 			log.Printf("[watcher] failed to spawn agent for issue #%d: %v", issue.Number, err)
 		}
 	}
@@ -323,6 +351,29 @@ func (w *Watcher) incrementGlobalRetryCount(issueNumber int) {
 
 	count++
 	os.WriteFile(retryFile, []byte(fmt.Sprintf("%d\n", count)), 0644)
+}
+
+// decrementGlobalRetryCount refunds one attempt from the persisted retry count.
+// The count floors at zero and the file is removed when it reaches zero. A
+// missing file is not an error and is not created.
+func (w *Watcher) decrementGlobalRetryCount(issueNumber int) {
+	retryFile := fmt.Sprintf(".kairon/retries/issue-%d.count", issueNumber)
+	data, err := os.ReadFile(retryFile)
+	if err != nil {
+		return
+	}
+
+	count, err := strconv.Atoi(strings.TrimSpace(string(data)))
+	if err != nil || count <= 1 {
+		if rmErr := os.Remove(retryFile); rmErr != nil && !os.IsNotExist(rmErr) {
+			log.Printf("[watcher] failed to remove retry count for issue #%d: %v", issueNumber, rmErr)
+		}
+		return
+	}
+
+	if err := os.WriteFile(retryFile, []byte(fmt.Sprintf("%d\n", count-1)), 0644); err != nil {
+		log.Printf("[watcher] failed to refund retry count for issue #%d: %v", issueNumber, err)
+	}
 }
 
 func (w *Watcher) getCurrentRetryCount(issueNumber int) int {
