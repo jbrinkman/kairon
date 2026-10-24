@@ -221,7 +221,10 @@ func provenancePunchOut(state provenance.State, failedLabel, actual string) Resu
 func screenPunchOut(what string, err error, failedLabel string) Result {
 	return punchOut(guardScreen, expectedScreen,
 		fmt.Sprintf("the screen rejected the issue %s: %s", what, truncate(err.Error())),
-		fmt.Sprintf("Remove the offending content from the issue body, then remove the `%s` label.", failedLabel))
+		fmt.Sprintf("The issue %s did not pass the content screen. Fix the %s, then re-run the "+
+			"planner on the issue so it is re-canonicalized and stamped (a hand edit to the hashed "+
+			"body would fail provenance on the next run), then remove the `%s` label.",
+			what, what, failedLabel))
 }
 
 // punchOut builds a terminal result: attempt 1 of 1, because no retry can fix a

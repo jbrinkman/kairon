@@ -458,8 +458,17 @@ func TestAdmit_ScreenFailurePunchesOutWithScreenGuard(t *testing.T) {
 		if err := res.Failure.Validate(); err != nil {
 			t.Errorf("FailureContext does not validate: %v", err)
 		}
-		if !strings.Contains(res.Remedy, "offending content") || !strings.Contains(res.Remedy, failure.FailedLabel(testLabel)) {
-			t.Errorf("Remedy = %q", res.Remedy)
+		// The screen runs only after provenance already verified the body hash,
+		// so the remedy must route the user through the planner (which re-stamps
+		// the hash) rather than telling them to hand-edit the hashed body, and it
+		// must name the field that failed.
+		for _, want := range []string{"body", "re-run the planner", failure.FailedLabel(testLabel)} {
+			if !strings.Contains(res.Remedy, want) {
+				t.Errorf("Remedy = %q, want it to contain %q", res.Remedy, want)
+			}
+		}
+		if strings.Contains(res.Remedy, "offending content") {
+			t.Errorf("Remedy still tells the user to hand-edit the hashed body: %q", res.Remedy)
 		}
 		if res.Failure.Attempt != (guard.Attempt{Current: 1, Max: 1}) || res.Failure.Stage != stageoutput.StageKrewLead {
 			t.Errorf("Failure = %+v", res.Failure)
@@ -471,6 +480,16 @@ func TestAdmit_ScreenFailurePunchesOutWithScreenGuard(t *testing.T) {
 		res := mustAdmit(t, newBoundary(&fakeReader{snapshots: []Snapshot{snap}}, nil))
 		if res.Outcome != OutcomePunchOut || res.Failure.Guard != "screen" {
 			t.Fatalf("result = %+v, want screen punch-out", res)
+		}
+		// A title failure must name the title, not misdirect the user to the body.
+		if !strings.Contains(res.Remedy, "title") {
+			t.Errorf("Remedy = %q, want it to name the title", res.Remedy)
+		}
+		if strings.Contains(res.Remedy, "issue body") {
+			t.Errorf("Remedy misdirects a title failure to the body: %q", res.Remedy)
+		}
+		if !strings.Contains(res.Remedy, "re-run the planner") {
+			t.Errorf("Remedy = %q, want it to route through the planner", res.Remedy)
 		}
 	})
 	t.Run("custom screen seam", func(t *testing.T) {
