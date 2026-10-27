@@ -45,6 +45,7 @@ const (
 	overlayHelp
 	overlayAbout
 	overlayLogs
+	overlayPlanningRejection
 
 	maxOverlayLines = 1000 // Prevent memory growth from very large overlay content
 
@@ -98,6 +99,10 @@ type model struct {
 	// Agent lifecycle tracking
 	knownAgents         map[string]bool
 	statusRunningAgents []*agent.Agent // Snapshot for deterministic number key selection
+
+	// planningRejection is the state behind overlayPlanningRejection. It is
+	// nil unless that overlay is open.
+	planningRejection *planningRejection
 
 	// About dialog state
 	aboutDialog *AboutDialog
@@ -497,6 +502,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Handle hotkey detection first
 		if hotkeyCmd := hotkey.HandleKeyMsg(msg); hotkeyCmd != nil {
 			return m, hotkeyCmd
+		}
+
+		// The planning-rejection dialog owns its keys: resume or dismiss.
+		if next, cmd, handled := m.handlePlanningRejectionKey(msg.String()); handled {
+			return next, cmd
 		}
 
 		// Priority handling for overlay dismissal
