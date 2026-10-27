@@ -143,6 +143,10 @@ func (m *Manager) IntakeActive(issue int) bool {
 func (m *Manager) OwnsIntake(issue int) bool {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
+	return m.ownsIntakeLocked(issue)
+}
+
+func (m *Manager) ownsIntakeLocked(issue int) bool {
 	for _, a := range m.agents {
 		if a.IssueNumber == issue && a.Kind == KindIntake && a.Status == StatusRunning {
 			return true
@@ -160,6 +164,13 @@ func (m *Manager) activeRunLocked(issue int) bool {
 		}
 	}
 	return livePIDMarker(issue)
+}
+
+// intakeOwnsIssueLocked reports whether intake holds issue: a run is going,
+// here or in a previous process, or one committed since the issue was last
+// admitted (admission clears the record). m.mu must be held.
+func (m *Manager) intakeOwnsIssueLocked(issue int) bool {
+	return m.ownsIntakeLocked(issue) || livePIDMarker(issue) || m.hasCommitted(issue)
 }
 
 // startIntake starts an intake run for issue and returns without waiting for

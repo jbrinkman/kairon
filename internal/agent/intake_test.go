@@ -598,3 +598,66 @@ func TestSpawn_FailedPunchOutKeepsCommitRecord(t *testing.T) {
 		t.Errorf("%d comments, want 1", len(c))
 	}
 }
+
+// stubKrewLead replaces krew-lead's worktree, process start and monitor, and
+// counts the starts.
+func (h *intakeHarness) stubKrewLead() *int {
+	starts := 0
+	h.m.createWorktree = func(name string) (string, error) { return filepath.Join(h.dir, name), nil }
+	h.m.removeWorktree = func(int, int) error { return nil }
+	h.m.start = func(*exec.Cmd) error { starts++; return nil }
+	h.m.monitor = func(*Agent, *exec.Cmd) {}
+	return &starts
+}
+
+// startIntakeOnRead makes the boundary's issue read look like a validate run
+// starting between admission and krew-lead's start.
+func (h *intakeHarness) startIntakeOnRead() {
+	h.gh.OnCall = func(op string) {
+		if op == "ReadIssue" {
+			if err := writePIDMarker(testIssue, os.Getpid()); err != nil {
+				h.t.Error(err)
+			}
+		}
+	}
+}
+
+// An intake run that starts while Spawn admits the issue keeps krew-lead from
+// starting on the document read before it.
+func TestSpawn_IntakeStartedDuringAdmissionIsPending(t *testing.T) {
+	h := newIntakeHarness(t, 1)
+	starts := h.stubKrewLead()
+	h.gh.Put(testIssue, "t", provenance.Mark(plannertest.ValidBody("Dependencies: none"), time.Now()), testLabel)
+	h.startIntakeOnRead()
+
+	if _, err := h.m.Spawn(testIssue, testRepo); !errors.Is(err, ErrIntakePending) {
+		t.Fatalf("Spawn err = %v, want ErrIntakePending", err)
+	}
+	if *starts != 0 {
+		t.Errorf("krew-lead started %d times, want 0", *starts)
+	}
+	if exists(inputDocumentPath(testIssue)) {
+		t.Error("input document left behind")
+	}
+}
+
+// The same holds for a krew-lead retry, which re-admits the issue first.
+func TestRetry_IntakeStartedDuringAdmissionStartsNothing(t *testing.T) {
+	h := newIntakeHarness(t, 1)
+	starts := h.stubKrewLead()
+	untracked := 0
+	h.m.untrack = func(int) { untracked++ }
+	h.gh.Put(testIssue, "t", provenance.Mark(plannertest.ValidBody("Dependencies: none"), time.Now()), testLabel)
+	a := &Agent{ID: "agent-retry", IssueNumber: testIssue, Kind: KindImplementation, Status: StatusFailed}
+	h.m.agents[a.ID] = a
+	h.startIntakeOnRead()
+
+	h.m.retryAgent(a)
+
+	if *starts != 0 {
+		t.Errorf("krew-lead started %d times, want 0", *starts)
+	}
+	if a.Status != StatusFailed || untracked != 1 {
+		t.Errorf("status = %v, untracked = %d; want failed and handed back once", a.Status, untracked)
+	}
+}

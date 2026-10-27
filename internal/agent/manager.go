@@ -445,6 +445,14 @@ func (m *Manager) Spawn(issueNumber int, repo string) (*Agent, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
+	// An intake run may have started (or finished) while admission ran
+	// unlocked. Checked under the lock startIntake takes, so the two runs
+	// never share the issue.
+	if m.intakeOwnsIssueLocked(issueNumber) {
+		m.removeInputFile(issueNumber)
+		return nil, fmt.Errorf("%w: %s", ErrIntakePending, boundary.SkipIntakeRunning)
+	}
+
 	id := fmt.Sprintf("agent-%d-%d", issueNumber, time.Now().Unix())
 
 	worktreeName := fmt.Sprintf("issue-%d-%d", issueNumber, os.Getpid())
@@ -882,6 +890,20 @@ func (m *Manager) retryAgent(agent *Agent) {
 	}
 
 	cmd := m.agentCommand(agent.IssueNumber, m.config.Repo, worktreeName, worktreePath, inputPath, agentLogFile)
+
+	// As in Spawn: refuse if an intake run took the issue during admission,
+	// otherwise reserve it (a running agent) before the process starts.
+	m.mu.Lock()
+	if m.intakeOwnsIssueLocked(agent.IssueNumber) {
+		m.mu.Unlock()
+		agentLogFile.Close()
+		log.Printf("[agent] retry for issue #%d not started: %s", agent.IssueNumber, boundary.SkipIntakeRunning)
+		recoverRetry()
+		return
+	}
+	agent.Status = StatusRunning
+	m.statusGen.Add(1)
+	m.mu.Unlock()
 
 	if err := m.start(cmd); err != nil {
 		agentLogFile.Close()
