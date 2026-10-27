@@ -544,11 +544,12 @@ func (m *Manager) Stop(id string) error {
 	log.Printf("[agent] stopping %s (issue #%d)", id, agent.IssueNumber)
 	if agent.intake != nil {
 		// A stopped intake run ends with no retry, no write and no punch-out.
-		// Between attempts there is no process: the pending retry sees the flag.
-		m.mu.Lock()
-		agent.intake.stopped = true
+		// Between attempts there is no process: the pending retry sees the
+		// cancelled context. A GitHub write already in flight completes.
+		agent.intake.cancel()
+		m.mu.RLock()
 		proc := agent.Process
-		m.mu.Unlock()
+		m.mu.RUnlock()
 		if proc != nil {
 			if err := proc.Signal(syscall.SIGTERM); err != nil && !errors.Is(err, os.ErrProcessDone) {
 				return err
@@ -575,7 +576,7 @@ func (m *Manager) StopAll() {
 	m.mu.Lock()
 	for _, agent := range agents {
 		if agent.intake != nil {
-			agent.intake.stopped = true // no retry while shutting down
+			agent.intake.cancel() // no retry or write while shutting down
 		}
 	}
 	m.mu.Unlock()

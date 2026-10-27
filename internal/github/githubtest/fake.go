@@ -40,6 +40,10 @@ type Fake struct {
 	// Fail makes the named operation (for example "Update" or "RemoveLabel")
 	// return the error.
 	Fail map[string]error
+	// OnCall, when set, runs with the operation's name after the call is
+	// recorded and before it takes effect. f.mu is held, so it must not call
+	// the Fake.
+	OnCall func(op string)
 }
 
 var (
@@ -290,6 +294,9 @@ func (f *Fake) op(name string, number int, arg string) error {
 		c += " " + arg
 	}
 	f.calls = append(f.calls, c)
+	if f.OnCall != nil {
+		f.OnCall(name)
+	}
 	return f.Fail[name]
 }
 

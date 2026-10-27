@@ -400,6 +400,58 @@ func TestIntake_StopEndsWithoutRetryOrWrite(t *testing.T) {
 	}
 }
 
+// A stop that lands while the commit reads the revision prevents the body
+// write that would follow it.
+func TestIntake_StopDuringCommitWritesNothing(t *testing.T) {
+	h := newIntakeHarness(t, 1)
+	h.gh.Put(testIssue, "t", handWritten, testLabel)
+	revisions := 0
+	h.gh.OnCall = func(op string) {
+		if op != "Revision" {
+			return
+		}
+		// The first read is the run's own; the second is the commit's check.
+		if revisions++; revisions == 2 {
+			if err := h.m.Stop(h.intakeAgent(testIssue).ID); err != nil {
+				t.Errorf("Stop: %v", err)
+			}
+		}
+	}
+
+	res := h.m.Validate(context.Background(), testIssue)
+
+	if res.Intake.Outcome != IntakeStopped {
+		t.Fatalf("Validate = %+v, want stopped", res)
+	}
+	if w := h.gh.Writes(); len(w) != 0 {
+		t.Errorf("writes = %q, want none", w)
+	}
+}
+
+// A stop that lands while the final punch-out reads the issue prevents the
+// comment and the label.
+func TestIntake_StopDuringPunchOutWritesNothing(t *testing.T) {
+	h := newIntakeHarness(t, 0)
+	h.gh.Put(testIssue, "t", handWritten, testLabel)
+	h.replyAlways(plannertest.CanonicalReply(testRepo, testIssue, plannertest.RejectedBody()))
+	h.gh.OnCall = func(op string) {
+		if op == "State" {
+			if err := h.m.Stop(h.intakeAgent(testIssue).ID); err != nil {
+				t.Errorf("Stop: %v", err)
+			}
+		}
+	}
+
+	res := h.m.Validate(context.Background(), testIssue)
+
+	if res.Intake.Outcome != IntakeStopped {
+		t.Fatalf("Validate = %+v, want stopped", res)
+	}
+	if w := h.gh.Writes(); len(w) != 0 {
+		t.Errorf("writes = %q, want none", w)
+	}
+}
+
 // The watcher's intake reports a running run, starts at most one, and refuses
 // to loop after a commit.
 func TestWatcherIntake_RunningSpentAndStarted(t *testing.T) {

@@ -82,10 +82,13 @@ type intakeRun struct {
 	attempt  int    // the current attempt, 1-based
 	policy   failure.Policy
 	last     *guard.FailureContext // the previous attempt's failure
-	stopped  bool
-	logFile  *os.File
-	done     chan struct{} // closed when the run ends
-	result   IntakeResult  // set before done is closed
+	// ctx is cancelled when the run is stopped. Every GitHub write the run
+	// makes checks it first; see stoppable.
+	ctx     context.Context
+	cancel  context.CancelFunc
+	logFile *os.File
+	done    chan struct{} // closed when the run ends
+	result  IntakeResult  // set before done is closed
 }
 
 // Paths an intake run keeps under the working directory. The PID marker lets a
@@ -174,6 +177,7 @@ func (m *Manager) startIntake(issue int) (run *intakeRun, started bool, err erro
 		policy:  failure.PolicyFor(m.config, failure.BoundaryImplementation),
 		done:    make(chan struct{}),
 	}
+	run.ctx, run.cancel = context.WithCancel(context.Background())
 	a := &Agent{
 		ID:          fmt.Sprintf("intake-%d-%d", issue, time.Now().UnixNano()),
 		IssueNumber: issue,
@@ -253,12 +257,11 @@ func (m *Manager) monitorIntake(a *Agent, cmd interface{ Wait() error }, reply *
 	removePIDMarker(run.issue)
 
 	m.mu.RLock()
-	stopped := run.stopped
 	attempt := run.policy.Attempt(run.attempt)
 	revision := run.revision
 	m.mu.RUnlock()
 
-	if stopped {
+	if run.ctx.Err() != nil {
 		m.endIntake(a, IntakeResult{Outcome: IntakeStopped})
 		return
 	}
@@ -268,12 +271,16 @@ func (m *Manager) monitorIntake(a *Agent, cmd interface{ Wait() error }, reply *
 		return
 	}
 
-	out, err := m.plannerBoundary(run.issue).Process(context.Background(), planner.Request{
+	out, err := m.plannerBoundary(run).Process(run.ctx, planner.Request{
 		Reply:   planner.StripANSI(reply.String()),
 		Attempt: attempt,
 		Target:  provenance.Target{Number: run.issue, ObservedRevision: revision},
 	})
 	if err != nil {
+		if run.ctx.Err() != nil {
+			m.endIntake(a, IntakeResult{Outcome: IntakeStopped})
+			return
+		}
 		m.endIntake(a, IntakeResult{Outcome: IntakeFailed, Err: err})
 		return
 	}
@@ -309,10 +316,7 @@ func (m *Manager) intakeAttemptFailed(a *Agent, fc guard.FailureContext, d failu
 		log.Printf("[intake] attempt %d for issue #%d failed (%s); retrying", next-1, run.issue, fc.Guard)
 		go func() {
 			time.Sleep(m.intakeDelay(next))
-			m.mu.RLock()
-			stopped := run.stopped
-			m.mu.RUnlock()
-			if stopped {
+			if run.ctx.Err() != nil {
 				m.endIntake(a, IntakeResult{Outcome: IntakeStopped})
 				return
 			}
@@ -326,7 +330,11 @@ func (m *Manager) intakeAttemptFailed(a *Agent, fc guard.FailureContext, d failu
 	target := failure.Target{Repo: m.config.Repo, Issue: run.issue, FailLabel: failure.FailedLabel(m.config.Label)}
 	remedy := fmt.Sprintf("Read the intake log at %s to see why planning failed, fix the cause (the issue text, "+
 		"or the kiro-cli login), then run `validate %d` in the Kairon TUI.", intakeLogPath(run.issue), run.issue)
-	if err := failure.PunchOut(m.github, target, runID, fc, remedy); err != nil {
+	if err := failure.PunchOut(stoppable{m.github, run.ctx}, target, runID, fc, remedy); err != nil {
+		if run.ctx.Err() != nil {
+			m.endIntake(a, IntakeResult{Outcome: IntakeStopped})
+			return
+		}
 		m.endIntake(a, IntakeResult{Outcome: IntakeFailed, Err: fmt.Errorf("punch out issue #%d: %w", run.issue, err)})
 		return
 	}
@@ -362,22 +370,62 @@ func (m *Manager) endIntake(a *Agent, res IntakeResult) {
 	} else {
 		log.Printf("[intake] issue #%d: %s after %d attempt(s)", run.issue, res.Outcome, res.Attempts)
 	}
+	run.cancel()
 	close(run.done)
 	m.release(run.issue)
 }
 
-// plannerBoundary is the planner output boundary for one existing issue. It is
-// the only writer of the issue body.
-func (m *Manager) plannerBoundary(issue int) *planner.Boundary {
-	target := failure.Target{Repo: m.config.Repo, Issue: issue, FailLabel: failure.FailedLabel(m.config.Label)}
+// plannerBoundary is the planner output boundary for the run's issue. It is
+// the only writer of the issue body, and it writes nothing once the run is
+// stopped.
+func (m *Manager) plannerBoundary(run *intakeRun) *planner.Boundary {
+	gh := stoppable{m.github, run.ctx}
+	target := failure.Target{Repo: m.config.Repo, Issue: run.issue, FailLabel: failure.FailedLabel(m.config.Label)}
 	return &planner.Boundary{
 		Committer: &provenance.Committer{
-			Store:  m.github,
-			Router: &planner.ConflictRouter{Issues: m.github, Target: target},
+			Store:  gh,
+			Router: &planner.ConflictRouter{Issues: gh, Target: target},
 		},
-		Issues: m.github,
+		Issues: gh,
 		Target: target,
 	}
+}
+
+// stoppable is the GitHub an intake run writes through. Once ctx is cancelled
+// (the run was stopped), a write that has not started returns ctx's error and
+// writes nothing. A write already in flight cannot be recalled and runs to
+// completion.
+type stoppable struct {
+	GitHub
+	ctx context.Context
+}
+
+func (s stoppable) PostComment(repo string, issue int, body string) error {
+	if err := s.ctx.Err(); err != nil {
+		return err
+	}
+	return s.GitHub.PostComment(repo, issue, body)
+}
+
+func (s stoppable) AddLabel(repo string, issue int, label string) error {
+	if err := s.ctx.Err(); err != nil {
+		return err
+	}
+	return s.GitHub.AddLabel(repo, issue, label)
+}
+
+func (s stoppable) Create(ctx context.Context, title, body string) (int, error) {
+	if err := s.ctx.Err(); err != nil {
+		return 0, err
+	}
+	return s.GitHub.Create(ctx, title, body)
+}
+
+func (s stoppable) Update(ctx context.Context, number int, body string) error {
+	if err := s.ctx.Err(); err != nil {
+		return err
+	}
+	return s.GitHub.Update(ctx, number, body)
 }
 
 // ValidateStatus is how a validate request ended.
