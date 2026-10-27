@@ -388,7 +388,7 @@ func (m *Manager) admitIssue(issueNumber int, repo string) (boundary.Result, err
 		if res.Document == nil {
 			return boundary.Result{}, fmt.Errorf("%w: boundary admitted issue #%d without a document", ErrAdmissionUnavailable, issueNumber)
 		}
-		m.clearCommitted(issueNumber)
+		m.clearIntakeRecords(issueNumber)
 		return res, nil
 	case boundary.OutcomeSkipped:
 		if res.SkipReason == boundary.SkipIntakeStarted || res.SkipReason == boundary.SkipIntakeRunning {
@@ -573,10 +573,12 @@ func (m *Manager) Stop(id string) error {
 		// A stopped intake run ends with no retry, no write and no punch-out.
 		// Between attempts there is no process: the pending retry sees the
 		// cancelled context. A GitHub write already in flight completes.
-		agent.intake.cancel()
-		m.mu.RLock()
+		// A human stop is final: the watcher does not start intake again.
+		m.mu.Lock()
+		agent.intake.final = true
 		proc := agent.Process
-		m.mu.RUnlock()
+		m.mu.Unlock()
+		agent.intake.cancel()
 		if proc != nil {
 			if err := proc.Signal(syscall.SIGTERM); err != nil && !errors.Is(err, os.ErrProcessDone) {
 				return err
@@ -603,7 +605,7 @@ func (m *Manager) StopAll() {
 	m.mu.Lock()
 	for _, agent := range agents {
 		if agent.intake != nil {
-			agent.intake.cancel() // no retry or write while shutting down
+			agent.intake.cancel() // no retry or write while shutting down; not final
 		}
 	}
 	m.mu.Unlock()
@@ -760,7 +762,7 @@ func (m *Manager) punchOutWithRemedy(id string, issueNumber int, runID string, f
 	}
 	// Only a punch-out that succeeded releases the intake loop guard. Clearing it
 	// earlier lets a failed punch-out's next poll start intake again.
-	m.clearCommitted(issueNumber)
+	m.clearIntakeRecords(issueNumber)
 }
 
 // removeInputFile deletes the issue's input document. A missing file is not an error.

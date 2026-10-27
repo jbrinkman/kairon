@@ -25,9 +25,9 @@ type Snapshot struct {
 
 // Intake starts planner intake for an issue whose body is not verified. Start
 // does not wait for the planner: it reports whether a run was started, one is
-// already running, or intake has already committed this issue since it was
-// last admitted (IntakeSpent). A non-nil error means intake could not be
-// started; nothing was written.
+// already running, intake has already committed this issue since it was last
+// admitted (IntakeSpent), or intake may not start again (IntakeExhausted). A
+// non-nil error means intake could not be started; nothing was written.
 type Intake interface {
 	Start(repo string, issue int) (IntakeStatus, error)
 }
@@ -44,6 +44,10 @@ const (
 	// IntakeSpent: intake already committed this issue and the body is still
 	// not valid, so another run would loop. The boundary punches out.
 	IntakeSpent
+	// IntakeExhausted: a human stopped intake for this issue, or its runs
+	// failed on every start allowed, so another run must wait for a human. The
+	// boundary punches out.
+	IntakeExhausted
 )
 
 // Guard names carried in the FailureContext.
@@ -186,6 +190,9 @@ func (b Boundary) startIntake(repo string, issue int, state provenance.State, fa
 	case IntakeSpent:
 		return provenancePunchOut(issue, state, failedLabel,
 			fmt.Sprintf("%s; the body changed after intake committed it", describe(state))), nil
+	case IntakeExhausted:
+		return provenancePunchOut(issue, state, failedLabel,
+			fmt.Sprintf("%s; intake was stopped, or failed on every start allowed", describe(state))), nil
 	}
 	return Result{}, fmt.Errorf("%w: boundary: unknown intake status %d for issue #%d", guard.ErrInvalid, status, issue)
 }

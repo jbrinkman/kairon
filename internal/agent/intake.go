@@ -86,6 +86,7 @@ type intakeRun struct {
 	// makes checks it first; see stoppable.
 	ctx     context.Context
 	cancel  context.CancelFunc
+	final   bool // stopped by a human, so the watcher does not start intake again
 	logFile *os.File
 	done    chan struct{} // closed when the run ends
 	result  IntakeResult  // set before done is closed
@@ -97,6 +98,13 @@ type intakeRun struct {
 // the issue has not been admitted or punched out since.
 func intakeLogPath(issue int) string {
 	return filepath.Join(".kairon", "logs", fmt.Sprintf("issue-%d-intake.log", issue))
+}
+
+// intakeHaltsPath is the intake bound: the number of runs since the issue was
+// last admitted that ended failed, or more than max_retries once a human stopped
+// one.
+func intakeHaltsPath(issue int) string {
+	return filepath.Join(".kairon", "intake", fmt.Sprintf("issue-%d.halts", issue))
 }
 
 func intakePIDPath(issue int) string {
@@ -120,6 +128,9 @@ func (w watcherIntake) Start(_ string, issue int) (boundary.IntakeStatus, error)
 	}
 	if w.m.hasCommitted(issue) {
 		return boundary.IntakeSpent, nil
+	}
+	if readHalts(issue) > w.m.config.MaxRetries {
+		return boundary.IntakeExhausted, nil
 	}
 	_, started, err := w.m.startIntake(issue)
 	if err != nil {
@@ -370,7 +381,16 @@ func (m *Manager) endIntake(a *Agent, res IntakeResult) {
 	run.result = res
 	m.statusGen.Add(1)
 	logFile := run.logFile
+	final := run.final
 	m.mu.Unlock()
+
+	// Bound the watcher's intake starts before the issue is handed back.
+	switch {
+	case res.Outcome == IntakeStopped && final:
+		writeHalts(run.issue, m.config.MaxRetries+1)
+	case res.Outcome == IntakeFailed:
+		writeHalts(run.issue, readHalts(run.issue)+1)
+	}
 
 	if logFile != nil {
 		fmt.Fprintf(logFile, "=== intake %s ===\n", res.Outcome)
@@ -501,7 +521,7 @@ func (m *Manager) Validate(ctx context.Context, issue int) ValidateResult {
 	}
 
 	// An explicit request starts fresh: it is not a loop.
-	m.clearCommitted(issue)
+	m.clearIntakeRecords(issue)
 	run, started, err := m.startIntake(issue)
 	if err != nil {
 		return ValidateResult{Status: ValidateError, Issue: issue, Err: err}
@@ -589,6 +609,36 @@ func writeCommitted(issue int, hash string) error {
 func (m *Manager) hasCommitted(issue int) bool {
 	_, err := os.Stat(intakeCommittedPath(issue))
 	return err == nil
+}
+
+// readHalts returns the issue's intake bound count; a missing or unreadable
+// record is 0.
+func readHalts(issue int) int {
+	data, err := os.ReadFile(intakeHaltsPath(issue))
+	if err != nil {
+		return 0
+	}
+	n, _ := strconv.Atoi(strings.TrimSpace(string(data)))
+	return n
+}
+
+func writeHalts(issue, n int) {
+	err := os.MkdirAll(filepath.Dir(intakeHaltsPath(issue)), 0o755)
+	if err == nil {
+		err = os.WriteFile(intakeHaltsPath(issue), []byte(strconv.Itoa(n)+"\n"), 0o644)
+	}
+	if err != nil {
+		log.Printf("[intake] failed to record the intake bound for issue #%d: %v", issue, err)
+	}
+}
+
+// clearIntakeRecords removes the loop guard and the intake bound. It runs when
+// the issue is admitted or punched out, and when a human runs validate.
+func (m *Manager) clearIntakeRecords(issue int) {
+	m.clearCommitted(issue)
+	if err := os.Remove(intakeHaltsPath(issue)); err != nil && !os.IsNotExist(err) {
+		log.Printf("[intake] failed to clear the intake bound for issue #%d: %v", issue, err)
+	}
 }
 
 func (m *Manager) clearCommitted(issue int) {

@@ -34,6 +34,7 @@ Manager.Spawn / retryAgent
             none / mismatch -> Intake.Start (does not wait)
                                  started / running -> skipped (intake-started, intake-running)
                                  spent             -> punch out (intake already committed it)
+                                 exhausted         -> punch out (intake was stopped, or kept failing)
                                no intake wired    -> punch out
   -> admitted:  write the document file, start krew-lead with KAIRON_INPUT_DOCUMENT
   -> punch out: the existing comment-then-label path (Tier 2, terminal)
@@ -64,8 +65,8 @@ run out, the issue is punched out once. The code is in `internal/agent/intake.go
 
 1. A poll finds an unmarked issue. `Admit` starts intake and returns `skipped` (`intake-started`). The watcher keeps the
    issue tracked, so no later poll starts a second run, and refunds the attempt, because no implementation ran.
-2. The run ends: committed, punched out, the issue changed during the run (nothing written), or stopped. The manager then
-   hands the issue back to the watcher (it is no longer tracked).
+2. The run ends: committed, punched out, the issue changed during the run (nothing written), stopped, or failed. The
+   manager then hands the issue back to the watcher (it is no longer tracked).
 3. The next poll runs every pre-check on the current body again, dependency validation included. A stamped body is
    `valid` and is admitted. A body that intake rewrote with an open dependency waits like any other issue.
 
@@ -80,6 +81,11 @@ Duplicate runs are prevented in three ways:
   next admission (someone edited it right after the commit), intake reports `spent` and the boundary punches out
   instead of starting intake again. The record is removed when the issue is admitted or punched out, and when a human
   runs `validate`.
+- **Bounded restarts.** A run that ends failed (a GitHub call or a punch-out failed) adds one to a count
+  (`.kairon/intake/issue-<n>.halts`). After `max_retries` + 1 failed runs, intake reports `exhausted` and the boundary
+  punches out instead of starting another run. A run that a human ends with `stop <issue>` is final: intake reports
+  `exhausted` at the next poll. Stopping the watcher is not a human stop, so its runs start again after a restart. The
+  count is removed at the same times as the commit record.
 
 The commit itself still checks the revision the run read before its first attempt. An issue edited during the run is
 not overwritten.
@@ -87,9 +93,10 @@ not overwritten.
 ## Validate an issue by hand
 
 `validate <issue>` in the Kairon TUI runs the same intake on one issue and prints the result in the console. The run
-shows in `status` and has an agent tab, and `stop <issue>` ends it with nothing written. Unlike the watcher, `validate`
-runs on an issue that carries the `<label>-failed` label, and removes that label after a commit, so the watcher picks
-the issue up on its next poll. It refuses a closed issue or one with the done label. On a body that is already `valid`
+shows in `status` and has an agent tab, and `stop <issue>` ends it with nothing written that had not already started.
+A stopped run is final for the watcher too (see bounded restarts above); run `validate` again to restart it. Unlike the
+watcher, `validate` runs on an issue that carries the `<label>-failed` label, and removes that label after a commit, so
+the watcher picks the issue up on its next poll. It refuses a closed issue or one with the done label. On a body that is already `valid`
 it prints the hash and starts nothing; it does not remove the failed label, because that label may be there for a
 krew-lead failure.
 

@@ -661,3 +661,70 @@ func TestRetry_IntakeStartedDuringAdmissionStartsNothing(t *testing.T) {
 		t.Errorf("status = %v, untracked = %d; want failed and handed back once", a.Status, untracked)
 	}
 }
+
+// A human stop of a watcher intake run is final: the next poll punches the
+// issue out instead of starting intake again.
+func TestWatcherIntake_StopIsFinal(t *testing.T) {
+	h := newIntakeHarness(t, 3)
+	h.gh.Put(testIssue, "t", handWritten, testLabel)
+	h.next = func(int, int, string) *exec.Cmd { return exec.Command("sleep", "30") }
+	in := watcherIntake{h.m}
+
+	if st, err := in.Start(testRepo, testIssue); st != boundary.IntakeStarted || err != nil {
+		t.Fatalf("Start = %v, %v; want started", st, err)
+	}
+	if err := h.m.Stop(h.intakeAgent(testIssue).ID); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	h.waitIdle(testIssue)
+
+	if st, err := in.Start(testRepo, testIssue); st != boundary.IntakeExhausted || err != nil {
+		t.Errorf("Start after a stop = %v, %v; want exhausted", st, err)
+	}
+	if n := len(h.prompts()); n != 1 {
+		t.Errorf("%d attempts, want 1", n)
+	}
+}
+
+// Shutting the watcher down stops intake without making the stop final.
+func TestWatcherIntake_StopAllIsNotFinal(t *testing.T) {
+	h := newIntakeHarness(t, 3)
+	h.gh.Put(testIssue, "t", handWritten, testLabel)
+	h.next = func(int, int, string) *exec.Cmd { return exec.Command("sleep", "30") }
+	in := watcherIntake{h.m}
+
+	if st, err := in.Start(testRepo, testIssue); st != boundary.IntakeStarted || err != nil {
+		t.Fatalf("Start = %v, %v; want started", st, err)
+	}
+	h.m.StopAll()
+	h.waitIdle(testIssue)
+
+	h.replyAlways(plannertest.CanonicalReply(testRepo, testIssue, plannertest.ValidBody("Dependencies: none")))
+	if st, err := in.Start(testRepo, testIssue); st != boundary.IntakeStarted || err != nil {
+		t.Errorf("Start after StopAll = %v, %v; want started", st, err)
+	}
+	h.waitIdle(testIssue)
+}
+
+// Intake runs that fail are bounded: after max_retries + 1 failed starts the
+// next poll punches out. Validate starts fresh.
+func TestWatcherIntake_FailuresAreBounded(t *testing.T) {
+	h := newIntakeHarness(t, 1)
+	h.gh.Put(testIssue, "t", handWritten, testLabel)
+	h.gh.Fail["Revision"] = errors.New("gh: rate limited")
+	in := watcherIntake{h.m}
+
+	for i := range 2 {
+		if _, err := in.Start(testRepo, testIssue); err == nil {
+			t.Fatalf("start %d succeeded without a revision", i+1)
+		}
+	}
+	if st, err := in.Start(testRepo, testIssue); st != boundary.IntakeExhausted || err != nil {
+		t.Fatalf("Start after 2 failed runs = %v, %v; want exhausted", st, err)
+	}
+
+	delete(h.gh.Fail, "Revision")
+	if res := h.m.Validate(context.Background(), testIssue); res.Intake.Outcome != IntakeCommitted {
+		t.Errorf("Validate = %+v, want a fresh run that commits", res)
+	}
+}

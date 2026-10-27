@@ -250,6 +250,26 @@ func TestAdmit_IntakeSpentPunchesOut(t *testing.T) {
 	}
 }
 
+func TestAdmit_IntakeExhaustedPunchesOut(t *testing.T) {
+	r := &fakeReader{snapshots: []Snapshot{openSnapshot(validRaw)}}
+	in := &fakeIntake{status: IntakeExhausted}
+
+	res := mustAdmit(t, newBoundary(r, in))
+
+	if res.Outcome != OutcomePunchOut {
+		t.Fatalf("Outcome = %v, want OutcomePunchOut", res.Outcome)
+	}
+	if !strings.Contains(res.Failure.Actual, "intake was stopped, or failed on every start allowed") {
+		t.Errorf("Actual = %q, want it to say intake was stopped or kept failing", res.Failure.Actual)
+	}
+	if !strings.Contains(res.Remedy, fmt.Sprintf("validate %d", testIssue)) {
+		t.Errorf("Remedy = %q, want it to name `validate %d`", res.Remedy, testIssue)
+	}
+	if err := res.Failure.Validate(); err != nil {
+		t.Errorf("FailureContext does not validate: %v", err)
+	}
+}
+
 func TestAdmit_IntakeStartErrorFailsClosed(t *testing.T) {
 	boom := errors.New("gh: revision read failed")
 	r := &fakeReader{snapshots: []Snapshot{openSnapshot(validRaw)}}
