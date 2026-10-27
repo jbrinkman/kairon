@@ -20,7 +20,7 @@ name, and neither prompt branches on mode. There is no "if you are running inter
 | Used when | A person is present and plans a new issue. | The run is unattended and canonicalizes an existing issue. |
 | Manifest | `.kiro/agents/planner.json` | `.kiro/agents/planner-automated.json` |
 | Prompt | `.kiro/agents/planner-prompt.md` | `.kiro/agents/planner-automated-prompt.md` |
-| Tools | `read`, `write` (limited to `.worktrees/planning-*`), `shell`, `web_search`, `web_fetch` | `read`, `shell` only |
+| Tools | `read`, `write` (limited to `.worktrees/planning-*` and the per-session document files `.kairon/sessions/*.document.yaml`), `shell`, `web_search`, `web_fetch` | `read`, `shell` only |
 | Asks questions | Yes: one decision per turn, lettered options with one recommendation. | Never. |
 | Fills a gap by | Asking the person, or a default the person accepted. | Grounded inference with the evidence recorded in `inferences`. |
 | May return | `result: canonical` only. | `result: canonical` or `result: punch_out`. |
@@ -192,6 +192,79 @@ watcher avoids duplicate runs and loops.
 The `gh`-backed `provenance.IssueStore` is `github.IssueStore` in `internal/github`. Bodies travel on stdin, never in
 argv.
 
+## Committing an interactive session
+
+A terminal session's output cannot be captured, so an interactive session hands its document to the boundary through a
+file. The handoff is `finishPlanning` in `internal/tui/planning_handoff.go`.
+
+### The per-session file and the prompt line
+
+When a planning session starts or resumes, Kairon picks one path for it, `.kairon/sessions/<session-id>.document.yaml`,
+keyed by the planning session ID. A session ID that is empty, contains a path separator or contains `..` has no path.
+
+The first line of the agent's initial prompt is `Document path: <path>`. A resumed session adds one sentence saying the
+file may already hold the last document and should be read first. The person's own request follows after a blank line.
+The interactive `planner` writes the approved document to that path with its `write` tool, after the label turn and
+before it returns the document, and still returns the same document as its reply. The `planner.json` manifest allows
+that write; it allows no other write outside `.worktrees/planning-*`. If a prompt has no `Document path:` line, the
+agent only returns the document.
+
+### When the handoff runs
+
+Both front ends call the same function. It does not branch on which front end ran the session.
+
+| Front end | The handoff runs when | Document path announced |
+|-----------|-----------------------|-------------------------|
+| Classic (`plan classic`) | The `kiro-cli chat --classic` process exits, including a non-zero exit, because the person may quit after approving. | In the argv prompt of every launch, new or resumed. |
+| ACP planning tab (`plan`) | An agent turn ends: the stream `done` event, or a completed response that is not an error. A turn that leaves no file does nothing. | With the first message sent over each ACP connection. A tab restored with earlier messages, or a new connection, announces it again. The tab shows the person's own text. |
+
+Classic reuses only sessions created for classic. A session that belongs to an ACP tab names a tab, not a terminal
+session, so `plan classic` creates a new one. If it cannot create a session, it stops with an error line, because a
+session without an ID would lose its document.
+
+### Results
+
+If the file does not exist, nothing happens: no console line, no dialog and no GitHub call. If it exists, its contents
+go to `Boundary.Process` on the create path (`Target.Number` is 0), off the UI goroutine, with a 2-minute timeout.
+`Request.Title` stays empty, so the boundary takes the first `# ` heading of the body. Four results are possible:
+
+| Result | What the console shows | The file |
+|--------|------------------------|----------|
+| `OutcomeCommitted` | A success line with the new issue number and `https://github.com/<repo>/issues/<n>`. | Deleted. |
+| `OutcomeRejected` (including an empty file or text that is not valid YAML, which fails the `extract` guard) | A line naming the failing guard and the kept file path, and the rejection dialog. Nothing is written to GitHub. | Kept. |
+| A `Process` error (a failed `gh` call, a cancelled or timed-out context, or a `punch_out` document, which returns `ErrNoPunchOutTarget` on the create path) | An error line naming the cause. | Kept. |
+| No file | Nothing. | Not applicable. |
+
+An unreadable file, or a session with no configured repository, also gives an error line and keeps the file.
+
+The rejection dialog, titled "Planning document rejected", shows the guard name, the expected and actual text from the
+failure, and the kept file path. It offers two choices:
+
+- **Resume planning** (`R` or Enter) reopens the session the document came from, in the same front end, and gives the
+  agent the failure: the guard, what was expected and what was found, and the path. The agent revises the document
+  with the person if needed, rewrites the file and returns it. Classic launches `kiro-cli chat --classic` again for the
+  same session. ACP makes the originating tab active and sends the failure as a message. If that tab is closed, busy or
+  read-only, the console shows an error line and the file stays.
+- **Dismiss** (`D` or Esc) closes the dialog and leaves the file for a later resume.
+
+The dialog never touches the file. Neither choice writes anything to GitHub.
+
+### The duplicate-issue guard
+
+Only a commit deletes the file, so a later session end cannot create a second issue from the same approved document.
+While a send for a session is in flight, a second session end for it does nothing. If the file cannot be removed after
+a commit, the console says the issue exists and that the file must be deleted by hand to avoid a duplicate.
+
+Because rejected and errored documents are kept, the next session end for the same session sends the file again. A
+document the person revised and rewrote is therefore picked up without further steps.
+
+### Removing `plan classic`
+
+The handoff is front-end-agnostic. Each front end passes a session ID and its own Resume function, and `internal/tui`
+has one call to `Boundary.Process`. Removing `plan classic` deletes only its launch site: `handlePlanSubprocess`,
+`launchClassicPlanning`, `classicPlanningCmd`, `classicResume` and the `execDoneMsg` case. `finishPlanning` is not
+touched.
+
 ## Eval driver
 
 The planner eval suite from #380 (`.kairon/evals/rubrics/planner.yaml` and `.kairon/evals/cases/planner/*.yaml`) has
@@ -235,9 +308,6 @@ against fakes). The RED to GREEN log is `.kairon/iterations/planner/ITERATIONS.m
 - **The label answer is not carried.** `planner` asks whether to add the project's trigger label, but schema v1 is
   closed (adding a key is a `schema_version` bump) and the boundary applies no label. The answer is discarded. A
   follow-up must decide how it reaches the boundary. Tracked in #405.
-- **The interactive reply is not captured.** Interactive sessions are TTY sessions (`kiro-cli chat --classic`, or the
-  ACP client in the planning tab), so their reply is not fed to `Boundary.Process`. The boundary is ready for it and is
-  covered by tests. Wiring it is tracked in #404.
 - **The split case is one document.** The shipped `multi-issue-split` eval case returns one document (the first issue)
   and keeps later issues as one-line summaries, so it cannot assert resolved `#{key}` placeholders. `ProcessChain`
   proves the resolved form in unit tests.
