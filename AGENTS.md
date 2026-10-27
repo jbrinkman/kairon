@@ -72,8 +72,9 @@ planners, the architect, builders, the validator, krew-lead, KiroCrew, Copilot a
   acceptance criterion to the plan tasks that deliver it, then `## Deferred work` with `none`. Every PR description
   says `Deferred work: none`.
 - **Work split out by the maintainer is an issue.** It gets its own GitHub issue, and the original issue lists it
-  under Out of Scope by number. Any mention of it in specs, docs or code comments cites that number. A reference to
-  deferred work with no issue number is a defect, and the validator fails it.
+  under Out of Scope by number, or by its split `key` when the planner created both issues in the same split. Any
+  mention of it in specs, docs or code comments cites the real issue number. A reference to deferred work with no
+  issue number is a defect, and the validator fails it.
 - **Known gaps in docs need an issue.** An entry under "Known gaps", "Limitations" or similar in `docs/` must cite the
   issue that closes it.
 
