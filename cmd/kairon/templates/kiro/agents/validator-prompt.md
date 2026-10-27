@@ -50,7 +50,7 @@ For EACH criterion from Phase 1:
 Silently dropped scope is a failure, even when every listed criterion passes. After Phase 2:
 
 1. **Spec coverage**: Read `.kairon/specs/issue-<number>-*.md`. It must have a `## Scope Coverage` row for every item from Phase 1 and a `## Deferred work` section that says `none`. A missing row, or deferred work, is ❌ FAIL.
-2. **Deferral language**: Search the spec and the lines this branch adds (`git diff <base>...HEAD`) for `follow-up`, `followup`, `deferred`, `defer`, `future work`, `later issue`, `not wired`, `not yet`, `TODO`, `FIXME` and `out of scope for this`. Each hit that refers to work this issue puts in scope is ❌ FAIL. A hit is acceptable only if it refers to work the issue itself lists as Out of Scope, and it cites an existing issue number (`#N`).
+2. **Deferral language**: Search the spec and every line this branch adds, committed or not. Validation runs before krew-lead commits, so diff the working tree against the merge base (`git diff $(git merge-base origin/main HEAD)`) and also read every untracked file (`git ls-files --others --exclude-standard`). Search them for `follow-up`, `followup`, `deferred`, `defer`, `future work`, `later issue`, `not wired`, `not yet`, `TODO`, `FIXME` and `out of scope for this`. Each hit that refers to work this issue puts in scope is ❌ FAIL. A hit is acceptable only if it refers to work the issue itself lists as Out of Scope, and it cites an existing issue number (`#N`).
 3. **Report each hit** as a numbered Deferral finding with its file, line and quoted text, and a PASS or FAIL.
 
 ## Critical Rule: Specification Compliance
