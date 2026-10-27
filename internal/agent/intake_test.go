@@ -161,6 +161,34 @@ func TestValidate_CommitRemovesFailedLabelAfterUpdate(t *testing.T) {
 	}
 }
 
+// A punch-out that posted its comment but not its label leaves the issue
+// terminal-pending. A commit by validate releases it, so the watcher admits the
+// stamped issue instead of finishing the old punch-out.
+func TestValidate_CommitReleasesTerminalPendingIssue(t *testing.T) {
+	h := newIntakeHarness(t, 1)
+	failed := failure.FailedLabel(testLabel)
+	h.gh.Put(testIssue, "Export is slow", handWritten, testLabel)
+	if err := h.gh.PostComment(testRepo, testIssue, failure.Marker(failure.NewRunID())+"\n\nPlanning failed."); err != nil {
+		t.Fatal(err)
+	}
+
+	res := h.m.Validate(context.Background(), testIssue)
+
+	if res.Intake.Outcome != IntakeCommitted || !res.LabelRemoved || res.LabelErr != nil {
+		t.Fatalf("Validate = %+v, want committed with the issue released", res)
+	}
+	st, err := h.gh.State(testRepo, testIssue, failed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sel := st.Classify(failure.DoneLabel(testLabel), failed); sel != failure.SelectEligible {
+		t.Errorf("selection = %v, want eligible", sel)
+	}
+	if got := h.admit(testIssue); got.Outcome != boundary.OutcomeAdmitted {
+		t.Errorf("admit = %+v, want admitted", got)
+	}
+}
+
 // AC 8: punch-out, changed-during-run and error outcomes keep the fail label.
 func TestValidate_OtherOutcomesKeepFailedLabel(t *testing.T) {
 	failed := failure.FailedLabel(testLabel)

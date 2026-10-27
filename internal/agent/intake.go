@@ -457,16 +457,17 @@ type ValidateResult struct {
 	HadFailedLabel bool
 	// Intake is how the run ended (ValidateFinished).
 	Intake IntakeResult
-	// LabelRemoved says the fail label was removed after a commit; LabelErr
-	// says why that removal failed.
+	// LabelRemoved says the fail label was removed after a commit, releasing
+	// the issue; LabelErr says why that release failed.
 	LabelRemoved bool
 	LabelErr     error
 	Err          error
 }
 
 // Validate runs intake on issue at a user's request and waits for the run to
-// end. Unlike the watcher, it runs on an issue that carries the fail label,
-// and removes that label after a commit so the watcher picks the issue up.
+// end. Unlike the watcher, it runs on an issue that carries the fail label or
+// is terminal-pending, and releases it after a commit (see releaseFailed) so
+// the watcher picks the issue up.
 // Callers run it off the UI goroutine.
 func (m *Manager) Validate(ctx context.Context, issue int) ValidateResult {
 	failedLabel, doneLabel := failure.FailedLabel(m.config.Label), failure.DoneLabel(m.config.Label)
@@ -481,6 +482,9 @@ func (m *Manager) Validate(ctx context.Context, issue int) ValidateResult {
 		return ValidateResult{Status: ValidateRefused, Issue: issue, Reason: fmt.Sprintf("the issue is done (`%s`)", doneLabel)}
 	}
 	hadFailed := slices.Contains(snap.State.Labels, failedLabel)
+	// A punch-out that posted its comment but not its label leaves the issue
+	// terminal-pending; only a later removal of the fail label releases it.
+	pending := snap.State.Classify(doneLabel, failedLabel) == failure.SelectTerminalPending
 	if provenance.Classify(snap.Body) == provenance.StateValid {
 		return ValidateResult{Status: ValidateAlreadyValid, Issue: issue, Hash: provenance.Hash(snap.Body), HadFailedLabel: hadFailed}
 	}
@@ -504,14 +508,25 @@ func (m *Manager) Validate(ctx context.Context, issue int) ValidateResult {
 	m.mu.RUnlock()
 
 	out := ValidateResult{Status: ValidateFinished, Issue: issue, HadFailedLabel: hadFailed, Intake: res}
-	if res.Outcome == IntakeCommitted && hadFailed {
-		if err := m.github.RemoveLabel(m.config.Repo, issue, failedLabel); err != nil {
-			out.LabelErr = err
-		} else {
-			out.LabelRemoved = true
-		}
+	if res.Outcome == IntakeCommitted && (hadFailed || pending) {
+		out.LabelRemoved, out.LabelErr = m.releaseFailed(issue, failedLabel, pending)
 	}
 	return out
+}
+
+// releaseFailed removes the fail label so the watcher picks the issue up. For
+// a terminal-pending issue it first applies the label the punch-out could not,
+// so the removal is recorded after the punch-out's comment.
+func (m *Manager) releaseFailed(issue int, failedLabel string, pending bool) (bool, error) {
+	if pending {
+		if err := m.github.AddLabel(m.config.Repo, issue, failedLabel); err != nil {
+			return false, err
+		}
+	}
+	if err := m.github.RemoveLabel(m.config.Repo, issue, failedLabel); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 // writePIDMarker records the intake process for issue.
