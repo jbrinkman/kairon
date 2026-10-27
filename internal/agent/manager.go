@@ -332,6 +332,24 @@ func (m *Manager) GetOutputGeneration() uint64 {
 	return m.outputCapture.Generation() + m.statusGen.Load()
 }
 
+// OutputPrefix is the prefix of a's captured output lines; the TUI selects a
+// run's lines by it. An intake run's prefix names the run, so its lines never
+// show in the issue's krew-lead tab or in another intake run's.
+func OutputPrefix(a *Agent) string {
+	if a.Kind == KindIntake {
+		return fmt.Sprintf("[intake %s] ", a.ID)
+	}
+	return fmt.Sprintf("[agent issue-%d] ", a.IssueNumber)
+}
+
+// CaptureAgentLine stores a single output line for the run a.
+func (m *Manager) CaptureAgentLine(a *Agent, line string) {
+	if m.outputCapture == nil {
+		return
+	}
+	m.outputCapture.AddLine(OutputPrefix(a) + line)
+}
+
 // CaptureOutputLine stores a single output line for an issue.
 func (m *Manager) CaptureOutputLine(issueNumber int, line string) {
 	if m.outputCapture == nil {

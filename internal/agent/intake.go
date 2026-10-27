@@ -241,7 +241,7 @@ func (m *Manager) launchIntakeAttempt(a *Agent) {
 
 	cmd := m.intakeCommand(prompt)
 	var reply bytes.Buffer
-	capture := NewCaptureWriter(nil, m.outputCapture, fmt.Sprintf("[agent issue-%d] intake: ", run.issue))
+	capture := NewCaptureWriter(nil, m.outputCapture, OutputPrefix(a))
 	fmt.Fprintf(run.logFile, "=== intake attempt %d of %d ===\n", attempt.Current, attempt.Max)
 	cmd.Stdout = io.MultiWriter(&reply, run.logFile, capture)
 	cmd.Stderr = io.MultiWriter(run.logFile, capture)
