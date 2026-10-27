@@ -49,8 +49,8 @@ For EACH criterion from Phase 1:
 
 Silently dropped scope is a failure, even when every listed criterion passes. After Phase 2:
 
-1. **Spec coverage**: Read `.kairon/specs/issue-<number>-*.md`. It must have a `## Scope Coverage` row for every item from Phase 1 and a `## Deferred work` section that says `none`. A missing row, or deferred work, is ❌ FAIL.
-2. **Deferral language**: Search the spec and every line this branch adds, committed or not. Validation runs before krew-lead commits, so diff the working tree against the merge base (`git diff $(git merge-base origin/main HEAD)`) and also read every untracked file (`git ls-files --others --exclude-standard`). Search them for `follow-up`, `followup`, `deferred`, `defer`, `future work`, `later issue`, `not wired`, `not yet`, `TODO`, `FIXME` and `out of scope for this`. Each hit that refers to work this issue puts in scope is ❌ FAIL. A hit is acceptable only if it refers to work the issue itself lists as Out of Scope, and it cites an existing issue number (`#N`).
+1. **Spec coverage**: Read `.kairon/specs/issue-<number>-*.md`. It must have a `## Scope Coverage` row for every item from Phase 1 and a `## Deferred work` section that says `none`. A missing row, or deferred work, is FAIL.
+2. **Deferral language**: Search the spec and every line this branch adds, committed or not. Validation runs before krew-lead commits, so diff the working tree against the merge base (`git diff $(git merge-base origin/main HEAD)`) and also read every untracked file (`git ls-files --others --exclude-standard`). Search them for `follow-up`, `followup`, `deferred`, `defer`, `future work`, `later issue`, `not wired`, `not yet`, `TODO`, `FIXME` and `out of scope for this`. Each hit that refers to work this issue puts in scope is FAIL. A hit is acceptable only if it refers to work the issue itself lists as Out of Scope, and it cites an existing issue number (`#N`).
 3. **Report each hit** as a numbered Deferral finding with its file, line and quoted text, and a PASS or FAIL.
 
 ## Critical Rule: Specification Compliance
@@ -200,9 +200,9 @@ Your validation report MUST follow this structure:
 
 ## Phase 3: Deferral Scan
 
-- **Scope Coverage table**: ✅ PASS / ❌ FAIL — [missing items, or "every item covered"]
-- **Deferred work section**: ✅ PASS / ❌ FAIL — [quote]
-- **Deferral finding 1**: `[file:line]` "[quoted text]" — ✅ PASS (cites #N, issue lists it Out of Scope) / ❌ FAIL
+- **Scope Coverage table**: PASS / FAIL — [missing items, or "every item covered"]
+- **Deferred work section**: PASS / FAIL — [quote]
+- **Deferral finding 1**: `[file:line]` "[quoted text]" — PASS (cites #N, issue lists it Out of Scope) / FAIL
 [Continue for every hit, or "No deferral language found"]
 
 ---
@@ -212,7 +212,7 @@ Your validation report MUST follow this structure:
 - **Status**: ✅ PASS / ❌ FAIL
 - **Criteria Passed**: [X] of [N]
 - **Failed Criteria**: [List criterion numbers or "None"]
-- **Deferral Scan**: ✅ PASS / ❌ FAIL
+- **Deferral Scan**: PASS / FAIL
 
 ### Summary
 [2-3 sentence verdict. If ANY criterion failed, overall status is FAIL.]
@@ -280,7 +280,7 @@ When QA tool discovery results are provided by krew-lead, run those commands and
 
 ### Report Format Rules
 
-1. **Binary Overall Status**: If ANY criterion fails, ANY In Scope item is undelivered, the Deferral Scan fails, OR ANY QA check fails, overall status = ❌ FAIL
+1. **Binary Overall Status**: If ANY criterion fails, ANY In Scope item is undelivered, the Deferral Scan fails, OR ANY QA check fails, overall status = FAIL
 2. **Individual Criterion Status**: Every criterion gets explicit ✅ PASS or ❌ FAIL (no grouping)
 3. **No Partial Credit**: "8 of 10 criteria met" = overall FAIL, not "mostly passing"
 4. **Evidence Required**: Every criterion must document what was checked and what was found
