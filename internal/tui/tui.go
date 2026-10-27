@@ -8,6 +8,7 @@ import (
 	"io"
 	"log"
 	"os"
+	"os/exec"
 	"strconv"
 	"strings"
 	"time"
@@ -112,6 +113,11 @@ type model struct {
 	// sent, so a second session end cannot send the same document again.
 	planningHandoffs map[string]bool
 
+	// execPlanning starts the classic planning process and returns the
+	// command that reports its exit. newModel wraps tea.ExecProcess; tests
+	// replace it to record the command without starting a process.
+	execPlanning func(cmd *exec.Cmd, sessionID string) tea.Cmd
+
 	// About dialog state
 	aboutDialog *AboutDialog
 
@@ -182,6 +188,7 @@ func newModel(w *watcher.Watcher, m *agent.Manager, cfg *config.Config, logFile 
 		tabFocusStates: make(map[string]FocusTarget),
 
 		planBoundary:     newPlanningBoundary(cfg),
+		execPlanning:     execPlanningProcess,
 		planningHandoffs: make(map[string]bool),
 	}
 }
@@ -307,7 +314,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		m = m.restoreConsoleState()
 		m.input.Focus()
-		return m, tea.Batch(m.input.Focus(), tea.ClearScreen)
+
+		// Hand the session's document to the planning boundary. This runs
+		// whether or not the process exited with an error: the user may have
+		// approved a document and then quit.
+		m, handoff := m.finishPlanning(planningEnd{SessionID: msg.sessionID, Resume: classicResume(msg.sessionID)})
+		return m, tea.Batch(m.input.Focus(), tea.ClearScreen, handoff)
 
 	case focusTransferMsg:
 		// Handle focus coordination between planning tab and footer input
