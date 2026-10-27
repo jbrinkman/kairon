@@ -59,6 +59,13 @@ func New(cfg *config.Config, mgr *agent.Manager, user string) *Watcher {
 			w.mu.Unlock()
 			w.decrementGlobalRetryCount(issue)
 		})
+		// An intake run that ends hands the issue back with no refund: the
+		// attempt was refunded when intake started.
+		mgr.SetRelease(func(issue int) {
+			w.mu.Lock()
+			delete(w.tracked, issue)
+			w.mu.Unlock()
+		})
 	}
 	return w
 }
@@ -189,6 +196,11 @@ func (w *Watcher) checkIssues() {
 			continue
 		}
 
+		if w.intakeActive(issue.Number) {
+			log.Printf("[watcher] issue #%d has an intake run in progress, skipping", issue.Number)
+			continue
+		}
+
 		if w.hasExceededGlobalRetries(issue.Number) {
 			log.Printf("[watcher] issue #%d exceeded retry limit (%d attempts), skipping", issue.Number, w.config.MaxRetries)
 			continue
@@ -228,6 +240,23 @@ func (w *Watcher) checkIssues() {
 		attempt := w.getCurrentRetryCount(issue.Number)
 		log.Printf("[watcher] spawning agent for issue #%d %q (attempt %d)", issue.Number, issue.Title, attempt)
 		if _, err := w.spawn(issue.Number, w.config.Repo); err != nil {
+			if errors.Is(err, agent.ErrIntakePending) {
+				// Intake is canonicalizing the issue. Keep it tracked so no
+				// poll starts a second run, and refund the attempt: no
+				// implementation ran. The run's release callback untracks it
+				// when it ends, and the next poll checks the stamped body.
+				log.Printf("[watcher] issue #%d is not verified yet: %v", issue.Number, err)
+				w.decrementGlobalRetryCount(issue.Number)
+				if w.manager == nil || !w.manager.OwnsIntake(issue.Number) {
+					// The run is not this manager's (a previous watcher's
+					// process) or already ended: no release will come, so
+					// untrack now. The intake pre-check keeps skipping it.
+					w.mu.Lock()
+					delete(w.tracked, issue.Number)
+					w.mu.Unlock()
+				}
+				continue
+			}
 			if errors.Is(err, agent.ErrNotAdmitted) || errors.Is(err, agent.ErrAdmissionUnavailable) {
 				// No agent ran: the issue was not implemented (or could not be
 				// verified). Untrack it so a later poll can reconsider it, and
@@ -310,6 +339,12 @@ func (w *Watcher) hasActiveWorktree(issueNumber int) bool {
 		}
 	}
 	return false
+}
+
+// intakeActive reports whether the manager has an intake run going for the
+// issue, including one a previous watcher started whose process still runs.
+func (w *Watcher) intakeActive(issueNumber int) bool {
+	return w.manager != nil && w.manager.IntakeActive(issueNumber)
 }
 
 func (w *Watcher) isProcessRunning(pid int) bool {

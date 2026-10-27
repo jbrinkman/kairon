@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -111,6 +112,10 @@ type model struct {
 
 	// Focus state tracking per tab
 	tabFocusStates map[string]FocusTarget
+
+	// validate runs `validate <issue>` and waits for it. newModel sets it to
+	// the manager's Validate; tests replace it.
+	validate func(ctx context.Context, issue int) agent.ValidateResult
 }
 
 func newModel(w *watcher.Watcher, m *agent.Manager, cfg *config.Config, logFile *os.File, logReader *os.File) model {
@@ -133,9 +138,15 @@ func newModel(w *watcher.Watcher, m *agent.Manager, cfg *config.Config, logFile 
 	// Initialize footer system
 	footerManager := NewFooterManager(styles, cfg, autocompleteInput, tabManager)
 
+	var validate func(context.Context, int) agent.ValidateResult
+	if m != nil {
+		validate = m.Validate
+	}
+
 	return model{
 		watcher:          w,
 		manager:          m,
+		validate:         validate,
 		sessionManager:   session.NewSessionManager(),
 		config:           cfg,
 		styles:           styles,
@@ -304,6 +315,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					return m, pt.RestoreFocus()
 				}
 			}
+		}
+		return m, nil
+
+	case validateDoneMsg:
+		for _, line := range m.validateLines(msg.res) {
+			m = m.appendActivity(line)
 		}
 		return m, nil
 
@@ -1239,6 +1256,8 @@ func (m model) executeCommand(input string) (model, tea.Cmd) {
 			description = strings.Join(parts[1:], " ")
 		}
 		return m.handlePlan(description)
+	case "validate":
+		return m.handleValidate(parts[1:])
 	case "exit":
 		return m.tryExit()
 	case "about":

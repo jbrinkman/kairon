@@ -29,7 +29,7 @@ func TestDocs_NamesRequiredTerms(t *testing.T) {
 	terms := []string{
 		"transport", "load-and-verify", "valid", "none", "mismatch",
 		"terminal-pending", "untrusted", "KAIRON_INPUT_DOCUMENT",
-		"#378", "#379", "#381", "#397",
+		"#378", "#379", "#381", "#397", "#409", "validate <issue>",
 	}
 	for _, term := range terms {
 		if !strings.Contains(doc, term) {

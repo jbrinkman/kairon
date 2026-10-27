@@ -130,8 +130,8 @@ func (m model) handleStatus() (model, tea.Cmd) {
 				break
 			}
 			elapsed := time.Since(a.StartTime).Truncate(time.Second)
-			line := fmt.Sprintf("  %d. Issue #%d: %s (%s, %s)",
-				i+1, a.IssueNumber, truncate(a.IssueTitle, titleMax), string(a.Status), elapsed)
+			line := fmt.Sprintf("  %d. Issue #%d: %s (%s%s, %s)",
+				i+1, a.IssueNumber, truncate(a.IssueTitle, titleMax), kindPrefix(a), string(a.Status), elapsed)
 			content = append(content, line)
 		}
 
@@ -148,8 +148,8 @@ func (m model) handleStatus() (model, tea.Cmd) {
 		}
 		for _, a := range stoppedAgents {
 			elapsed := time.Since(a.StartTime).Truncate(time.Second)
-			line := fmt.Sprintf("   Issue #%d: %s (%s, %s)",
-				a.IssueNumber, truncate(a.IssueTitle, titleMax), string(a.Status), elapsed)
+			line := fmt.Sprintf("   Issue #%d: %s (%s%s, %s)",
+				a.IssueNumber, truncate(a.IssueTitle, titleMax), kindPrefix(a), string(a.Status), elapsed)
 			content = append(content, line)
 		}
 	}
@@ -162,6 +162,14 @@ func (m model) handleStatus() (model, tea.Cmd) {
 	return m, nil
 }
 
+// kindPrefix labels a run's kind in status lines: "intake, " or "krew-lead, ".
+func kindPrefix(a *agent.Agent) string {
+	if a.Kind == "" {
+		return ""
+	}
+	return a.Kind + ", "
+}
+
 func (m model) handleStop(issueStr string) (model, tea.Cmd) {
 	issueNum, err := strconv.Atoi(issueStr)
 	if err != nil {
@@ -171,7 +179,8 @@ func (m model) handleStop(issueStr string) (model, tea.Cmd) {
 
 	agents := m.manager.List()
 	for _, a := range agents {
-		if a.IssueNumber == issueNum {
+		// Finished runs stay listed; stop the one that is running.
+		if a.IssueNumber == issueNum && a.Status == agent.StatusRunning {
 			if err := m.manager.Stop(a.ID); err != nil {
 				m = m.appendActivity(m.styles.Error.Render(fmt.Sprintf("Error stopping agent: %v", err)))
 			} else {
@@ -193,6 +202,7 @@ func (m model) handleHelp() (model, tea.Cmd) {
 		"  stop <issue>   - Stop agent for specific issue number",
 		"  plan [desc]    - Create new ACP-based Planning tab",
 		"  plan classic [desc] - Start legacy subprocess planning session",
+		"  validate <issue> - Canonicalize and stamp an issue with the automated planner",
 		"  log [level] [size] - Open log viewer (level: debug/info/warn/error, size: buffer lines)",
 		"  logs           - View incident logs",
 		"  theme          - Show current theme",

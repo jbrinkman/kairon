@@ -75,19 +75,26 @@ func (r *fakeReader) ReadIssue(repo string, issue int, failLabel string) (Snapsh
 	return r.snapshots[i], nil
 }
 
-// fakeIntake counts calls and returns err.
+// fakeIntake counts calls and returns status (IntakeStarted when unset) and err.
 type fakeIntake struct {
-	log   *callLog
-	err   error
-	calls int
+	log    *callLog
+	status IntakeStatus
+	err    error
+	calls  int
 }
 
-func (f *fakeIntake) Route(repo string, issue int) error {
+func (f *fakeIntake) Start(repo string, issue int) (IntakeStatus, error) {
 	f.calls++
 	if f.log != nil {
 		f.log.add("Intake")
 	}
-	return f.err
+	if f.err != nil {
+		return 0, f.err
+	}
+	if f.status == 0 {
+		return IntakeStarted, nil
+	}
+	return f.status, nil
 }
 
 // fakeStore is an in-memory provenance.IssueStore that records written bodies.

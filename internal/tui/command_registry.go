@@ -60,6 +60,13 @@ func NewCommandRegistry(agentManager *agent.Manager) *CommandRegistry {
 	})
 
 	registry.register(&Command{
+		Name:        "validate",
+		Description: "Canonicalize and stamp an issue with the automated planner",
+		HasArgs:     true,
+		ArgPattern:  "<issue>",
+	})
+
+	registry.register(&Command{
 		Name:        "theme",
 		Description: "Show current theme or switch to new theme",
 		HasArgs:     true,

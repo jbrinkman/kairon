@@ -7,9 +7,10 @@ RED='\033[0;31m'
 YELLOW='\033[0;33m'
 NC='\033[0m' # No Color
 
-# Generate unique planning worktree name with timestamp
+# Generate unique planning worktree name with timestamp. The shell's PID keeps
+# two planners that start in the same second (parallel intake runs) apart.
 TIMESTAMP=$(date +%Y%m%d-%H%M%S)
-PLANNING_NAME="planning-${TIMESTAMP}"
+PLANNING_NAME="planning-${TIMESTAMP}-$$"
 WORKTREE_PATH=".worktrees/${PLANNING_NAME}"
 BRANCH_NAME="planning/${PLANNING_NAME}"
 

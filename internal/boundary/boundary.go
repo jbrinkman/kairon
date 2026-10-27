@@ -1,7 +1,6 @@
 package boundary
 
 import (
-	"errors"
 	"fmt"
 	"strings"
 
@@ -24,17 +23,28 @@ type Snapshot struct {
 	State failure.IssueState // labels, comments, FailLabelRemovedAt
 }
 
-// Intake routes an unverified issue back through the planner. It is
-// synchronous: it returns nil only after the issue body has been re-committed
-// with a provenance marker. It returns ErrIntakePunchedOut if intake itself
-// punched the issue out. Any other error means intake failed.
+// Intake starts planner intake for an issue whose body is not verified. Start
+// does not wait for the planner: it reports whether a run was started, one is
+// already running, or intake has already committed this issue since it was
+// last admitted (IntakeSpent). A non-nil error means intake could not be
+// started; nothing was written.
 type Intake interface {
-	Route(repo string, issue int) error
+	Start(repo string, issue int) (IntakeStatus, error)
 }
 
-// ErrIntakePunchedOut means intake punched the issue out (Tier 2 already
-// enacted), so the boundary must not spawn and must not punch out again.
-var ErrIntakePunchedOut = errors.New("boundary: intake punched the issue out")
+// IntakeStatus is what Intake.Start reports. The zero value is not a status.
+type IntakeStatus int
+
+// Intake statuses.
+const (
+	// IntakeStarted: a new intake run is going. A later poll sees its result.
+	IntakeStarted IntakeStatus = iota + 1
+	// IntakeRunning: a run for this issue was already going; none was started.
+	IntakeRunning
+	// IntakeSpent: intake already committed this issue and the body is still
+	// not valid, so another run would loop. The boundary punches out.
+	IntakeSpent
+)
 
 // Guard names carried in the FailureContext.
 const (
@@ -49,11 +59,12 @@ const (
 
 // Skip reasons reported in Result.SkipReason.
 const (
-	SkipDone             = "done"
-	SkipFailed           = "failed"
-	SkipClosed           = "closed"
-	SkipTerminalPending  = "terminal-pending"
-	SkipIntakePunchedOut = "intake-punched-out"
+	SkipDone            = "done"
+	SkipFailed          = "failed"
+	SkipClosed          = "closed"
+	SkipTerminalPending = "terminal-pending"
+	SkipIntakeStarted   = "intake-started"
+	SkipIntakeRunning   = "intake-running"
 )
 
 // Boundary loads and verifies an issue before implementation. It never writes
@@ -61,7 +72,7 @@ const (
 type Boundary struct {
 	Reader Reader
 	// Intake is nil when no automated intake is wired; non-valid issues then
-	// punch out.
+	// punch out. Otherwise a non-valid issue starts intake and is skipped.
 	Intake Intake
 	// Label is the trigger label; the done and failed labels derive from it.
 	Label string
@@ -88,7 +99,6 @@ const (
 type Result struct {
 	Outcome    Outcome
 	Document   *InputDocument        // OutcomeAdmitted only
-	ViaIntake  bool                  // OutcomeAdmitted only: verified after an intake pass
 	SkipReason string                // OutcomeSkipped only
 	Failure    *guard.FailureContext // OutcomePunchOut only
 	Remedy     string                // OutcomePunchOut only
@@ -98,8 +108,9 @@ type Result struct {
 // It takes no body: the body always comes from a fresh read.
 //
 // It returns a non-nil error, and a zero Result, only when it cannot decide:
-// invalid arguments (matching guard.ErrInvalid) or a failed read. It fails
-// closed: an error means do not spawn and write nothing.
+// invalid arguments (matching guard.ErrInvalid), a failed read, or intake that
+// could not be started. It fails closed: an error means do not spawn and write
+// nothing.
 func (b Boundary) Admit(repo string, issue int) (Result, error) {
 	switch {
 	case repo == "":
@@ -121,51 +132,27 @@ func (b Boundary) Admit(repo string, issue int) (Result, error) {
 	}
 	doneLabel, failedLabel := failure.DoneLabel(b.Label), failure.FailedLabel(b.Label)
 
-	var snap Snapshot
-	viaIntake := false
-	for {
-		var err error
-		snap, err = b.Reader.ReadIssue(repo, issue, failedLabel)
-		if err != nil {
-			return Result{}, fmt.Errorf("boundary: read issue #%d in %s: %w", issue, repo, err)
-		}
-		if reason := skipReason(snap, doneLabel, failedLabel); reason != "" {
-			return Result{Outcome: OutcomeSkipped, SkipReason: reason}, nil
-		}
-
-		state := classify(snap.Body)
-		if state == provenance.StateValid {
-			break
-		}
-		if viaIntake {
-			return provenancePunchOut(state, failedLabel,
-				fmt.Sprintf("intake reported success but the body is still %s", describe(state))), nil
-		}
-		if b.Intake == nil {
-			return provenancePunchOut(state, failedLabel,
-				fmt.Sprintf("%s; no automated intake is configured", describe(state))), nil
-		}
-		if err := b.Intake.Route(repo, issue); err != nil {
-			if errors.Is(err, ErrIntakePunchedOut) {
-				return Result{Outcome: OutcomeSkipped, SkipReason: SkipIntakePunchedOut}, nil
-			}
-			return provenancePunchOut(state, failedLabel,
-				fmt.Sprintf("%s; intake failed: %s", describe(state), truncate(err.Error()))), nil
-		}
-		viaIntake = true // re-read and re-verify exactly once
+	snap, err := b.Reader.ReadIssue(repo, issue, failedLabel)
+	if err != nil {
+		return Result{}, fmt.Errorf("boundary: read issue #%d in %s: %w", issue, repo, err)
+	}
+	if reason := skipReason(snap, doneLabel, failedLabel); reason != "" {
+		return Result{Outcome: OutcomeSkipped, SkipReason: reason}, nil
+	}
+	if state := classify(snap.Body); state != provenance.StateValid {
+		return b.startIntake(repo, issue, state, failedLabel)
 	}
 
 	canonical := provenance.Canonicalize(snap.Body)
 	if err := screen(canonical); err != nil {
-		return screenPunchOut("body", err, failedLabel), nil
+		return screenPunchOut(issue, "body", err, failedLabel), nil
 	}
 	if err := screen(snap.Title); err != nil {
-		return screenPunchOut("title", err, failedLabel), nil
+		return screenPunchOut(issue, "title", err, failedLabel), nil
 	}
 
 	return Result{
-		Outcome:   OutcomeAdmitted,
-		ViaIntake: viaIntake,
+		Outcome: OutcomeAdmitted,
 		Document: &InputDocument{
 			SchemaVersion: SchemaVersion,
 			Repo:          repo,
@@ -175,6 +162,32 @@ func (b Boundary) Admit(repo string, issue int) (Result, error) {
 			Body:          canonical,
 		},
 	}, nil
+}
+
+// startIntake handles a body that is not valid. With no intake wired the issue
+// punches out. Otherwise intake is started (or found running) and the issue is
+// skipped: a later poll re-reads the stamped body and runs every pre-check on
+// it again. IntakeSpent means a commit already happened and the body is still
+// not valid, so it punches out instead of looping.
+func (b Boundary) startIntake(repo string, issue int, state provenance.State, failedLabel string) (Result, error) {
+	if b.Intake == nil {
+		return provenancePunchOut(issue, state, failedLabel,
+			fmt.Sprintf("%s; no automated intake is configured", describe(state))), nil
+	}
+	status, err := b.Intake.Start(repo, issue)
+	if err != nil {
+		return Result{}, fmt.Errorf("boundary: start intake for issue #%d: %w", issue, err)
+	}
+	switch status {
+	case IntakeStarted:
+		return Result{Outcome: OutcomeSkipped, SkipReason: SkipIntakeStarted}, nil
+	case IntakeRunning:
+		return Result{Outcome: OutcomeSkipped, SkipReason: SkipIntakeRunning}, nil
+	case IntakeSpent:
+		return provenancePunchOut(issue, state, failedLabel,
+			fmt.Sprintf("%s; the body changed after intake committed it", describe(state))), nil
+	}
+	return Result{}, fmt.Errorf("%w: boundary: unknown intake status %d for issue #%d", guard.ErrInvalid, status, issue)
 }
 
 // skipReason reports why the issue must not be spawned, or "" if it is eligible.
@@ -208,23 +221,30 @@ func describe(s provenance.State) string {
 	}
 }
 
-func provenancePunchOut(state provenance.State, failedLabel, actual string) Result {
-	remedy := fmt.Sprintf("The body changed after it was planned. Re-run the planner on the issue "+
-		"(or restore the planned text), then remove the `%s` label.", failedLabel)
+// provenancePunchOut builds the punch-out for a body that is not valid. The
+// remedy names the TUI command `validate <issue>` with the real number: it
+// canonicalizes and stamps the issue and removes the failed label on commit.
+func provenancePunchOut(issue int, state provenance.State, failedLabel, actual string) Result {
+	remedy := fmt.Sprintf("The body changed after it was planned. Run `validate %d` in the Kairon TUI to plan and "+
+		"stamp it again (or restore the planned text and remove the `%s` label). Validate removes the `%s` label "+
+		"when it commits.", issue, failedLabel, failedLabel)
 	if state == provenance.StateNone {
-		remedy = fmt.Sprintf("Run the planner on this issue so it is canonicalized and stamped, "+
-			"then remove the `%s` label.", failedLabel)
+		remedy = fmt.Sprintf("Run `validate %d` in the Kairon TUI so the issue is canonicalized and stamped. "+
+			"Validate removes the `%s` label when it commits.", issue, failedLabel)
 	}
 	return punchOut(guardProvenance, expectedMarker, actual, remedy)
 }
 
-func screenPunchOut(what string, err error, failedLabel string) Result {
+func screenPunchOut(issue int, what string, err error, failedLabel string) Result {
+	remedy := fmt.Sprintf("The issue title did not pass the content screen. Fix the title, then remove the `%s` "+
+		"label. The title is not hashed, so it does not need planning again.", failedLabel)
+	if what == "body" {
+		remedy = fmt.Sprintf("The issue body did not pass the content screen. Fix the body, then run `validate %d` "+
+			"in the Kairon TUI so it is re-canonicalized and stamped (a hand edit to the hashed body fails "+
+			"provenance otherwise). Validate removes the `%s` label when it commits.", issue, failedLabel)
+	}
 	return punchOut(guardScreen, expectedScreen,
-		fmt.Sprintf("the screen rejected the issue %s: %s", what, truncate(err.Error())),
-		fmt.Sprintf("The issue %s did not pass the content screen. Fix the %s, then re-run the "+
-			"planner on the issue so it is re-canonicalized and stamped (a hand edit to the hashed "+
-			"body would fail provenance on the next run), then remove the `%s` label.",
-			what, what, failedLabel))
+		fmt.Sprintf("the screen rejected the issue %s: %s", what, truncate(err.Error())), remedy)
 }
 
 // punchOut builds a terminal result: attempt 1 of 1, because no retry can fix a
