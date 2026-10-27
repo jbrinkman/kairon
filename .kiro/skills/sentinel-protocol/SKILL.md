@@ -52,6 +52,10 @@ the stale-read this protocol prevents).
 3. Include a brief summary of what you produced so krew-lead can recover your
    result from the file if your response is otherwise empty.
 4. A sentinel's presence with a success summary signals successful completion.
+5. If you could not deliver all of your assigned work, write the sentinel with
+   `**Status**: BLOCKED`, quote each item you could not deliver, and say why.
+   Never write a success summary for partial work. krew-lead treats BLOCKED as
+   a failure and escalates it to a human.
 
 ## Read Rules (krew-lead)
 
@@ -62,6 +66,7 @@ the stale-read this protocol prevents).
    exists, read it to recover the summary and continue; if missing, proceed
    with normal retry escalation.
 3. Never accept a task-less sentinel as proof a specific plan task completed.
+4. A sentinel with `**Status**: BLOCKED` is a failure, never a completion.
 
 ## Examples (issue 42, plan task `implement-api` handled by builder)
 

@@ -22,6 +22,15 @@ Create design spec at `.kairon/specs/issue-<number>-<slug>.md` (relative to curr
 - **Validation Commands**: Commands to verify the implementation works correctly
 - **Machine-Readable Execution Plan**: YAML-formatted plan embedded as fenced code block (see Plan Artifact Requirements below)
 
+## Scope Fidelity
+
+**CRITICAL**: The issue's In Scope list and Acceptance Criteria are a contract. Your spec delivers all of it. You do not decide that part of the issue will not be done.
+
+- The spec starts with a `## Scope Coverage` table. It has one row for every In Scope item and every acceptance criterion in the issue, quoted from the issue, and the plan task IDs that deliver it. Every row names at least one task.
+- Directly after the table, write `## Deferred work` followed by `none`. A spec never defers part of its issue. Words like "follow-up", "deferred", "future work", "later issue", "not wired yet" or "out of scope for this issue" must not describe anything the issue puts in scope.
+- Never narrow an item to something easier than the issue says. If an acceptance criterion's `Verify:` line covers less than its In Scope item, deliver the In Scope item.
+- **If you cannot deliver an item** (it is impossible, contradicts another item, depends on something that does not exist, or needs a decision only a person can make), do not write around it. Write your sentinel per the **sentinel-protocol** skill with `**Status**: BLOCKED`, quote each item you cannot deliver, and explain why and what a person must decide. Do not write a plan. krew-lead halts the issue for a human.
+
 ## Plan Artifact Requirements
 
 **CRITICAL**: Every design specification MUST include a machine-readable execution plan. This plan enables automated orchestration, task assignment, and validation.
@@ -151,6 +160,7 @@ Before finalizing your specification, verify your plan:
 5. **Completeness**: Plan covers all work described in the Step-by-Step Task Breakdown
 6. **Validation commands**: All commands are project-appropriate and runnable from project root
 7. **Acceptance criteria**: Each task has specific, measurable, testable criteria
+8. **Scope coverage**: Every In Scope item and acceptance criterion of the issue has a `## Scope Coverage` row naming at least one task, and `## Deferred work` says `none`
 
 ### Plan Integration with Human-Readable Sections
 

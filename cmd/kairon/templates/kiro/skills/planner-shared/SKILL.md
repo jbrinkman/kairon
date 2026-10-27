@@ -236,6 +236,11 @@ what is built or how it is verified.
 
 These hold for every document you return.
 
+- **No dropped scope.** Every requirement in the request appears in the body, either under In Scope with at least one
+  acceptance criterion, or under Out of Scope because the requester excluded it. Never move a requirement the
+  requester stated to Out of Scope, a "follow-up", "future work" or "later issue" on your own. When a requirement
+  belongs in a separate issue, Out of Scope names it with its issue number, or with its split `key` if it is planned
+  in the same split.
 - **No ungrounded assumption.** Every statement in the body traces to the repository, to the request, or to an
   inference whose evidence you recorded in `inferences` where your prompt permits inference. A required slot you
   cannot ground is never filled with a guess.

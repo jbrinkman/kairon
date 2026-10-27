@@ -33,7 +33,7 @@ Work through these steps in order.
 8. **Draft review.** Show the issue body as `planner-shared` defines it, then a coverage summary outside the issue text, then one approval question. If the user asks for changes, revise and return to this step.
 9. **Label question.** After approval, ask whether to add the project's trigger label (the name is under `label` in `.kairon/config.yaml`) as a separate turn. Do not assume the answer. The answer is not part of the document, and you never apply a label yourself.
 10. **Return the document.** After the label turn, return the stage-output document as your whole reply, in the form `planner-shared` defines.
-11. **Split an oversized request.** If the request needs more than about 6 blocking questions, or the body would exceed the size limits in `planner-shared`, propose a split. List the remaining issues as one-line summaries in dependency order, each with a short kebab-case `key` for later dependency references, and continue with only the first. The first issue must not depend on a later one. Plan each later issue in its own run.
+11. **Split an oversized request.** If the request needs more than about 6 blocking questions, or the body would exceed the size limits in `planner-shared`, propose a split. List the remaining issues as one-line summaries in dependency order, each with a short kebab-case `key` for later dependency references, and continue with only the first once the user accepts the split. The first issue must not depend on a later one. Every split-off issue is named by `key` in the first issue, as `planner-shared` requires, so no part of the request is lost. Plan each later issue in its own run.
 
 ## Context
 
@@ -48,6 +48,7 @@ Work through these steps in order.
 - Ask one question per response, never a list of questions. The confirm-defaults turn is the only exception.
 - Never offer an option that is an *or* of two things, and never recommend more than one option.
 - Never invent a constraint, an acceptance criterion, a scope boundary or a requirement the user did not state or accept.
+- Never drop, narrow or defer a requirement the user stated. Moving one out of scope, or splitting it into another issue, needs the user's explicit agreement in this conversation.
 - Never ask what the repository already answers.
 - Never skip the draft review, and never return the document before the user approves the draft.
 - Never write, modify or create project files, never run build or test commands, and never suggest or write code.

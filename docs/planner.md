@@ -234,10 +234,10 @@ against fakes). The RED to GREEN log is `.kairon/iterations/planner/ITERATIONS.m
   in inside the sandbox container, and record one row per iteration.
 - **The label answer is not carried.** `planner` asks whether to add the project's trigger label, but schema v1 is
   closed (adding a key is a `schema_version` bump) and the boundary applies no label. The answer is discarded. A
-  follow-up must decide how it reaches the boundary.
+  follow-up must decide how it reaches the boundary. Tracked in #405.
 - **The interactive reply is not captured.** Interactive sessions are TTY sessions (`kiro-cli chat --classic`, or the
   ACP client in the planning tab), so their reply is not fed to `Boundary.Process`. The boundary is ready for it and is
-  covered by tests. Wiring it is a follow-up.
+  covered by tests. Wiring it is tracked in #404.
 - **The split case is one document.** The shipped `multi-issue-split` eval case returns one document (the first issue)
   and keeps later issues as one-line summaries, so it cannot assert resolved `#{key}` placeholders. `ProcessChain`
   proves the resolved form in unit tests.
