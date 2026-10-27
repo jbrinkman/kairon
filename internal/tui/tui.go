@@ -347,7 +347,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case planningHandoffDoneMsg:
-		return m.handlePlanningHandoffDone(msg), nil
+		return m.handlePlanningHandoffDone(msg)
 
 	// Stream events and turn ends belong to the planning tab that sent them,
 	// not to whichever tab or input is active.

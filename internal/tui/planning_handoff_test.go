@@ -9,6 +9,8 @@ import (
 	"sync"
 	"testing"
 
+	tea "charm.land/bubbletea/v2"
+
 	"github.com/jbrinkman/kairon/internal/failure"
 	"github.com/jbrinkman/kairon/internal/guard"
 	"github.com/jbrinkman/kairon/internal/planner"
@@ -288,6 +290,83 @@ func TestHandoffInFlightGuardSendsOnce(t *testing.T) {
 	m = next.(model)
 	if _, again := m.finishPlanning(s1End()); again == nil {
 		t.Error("after the first handoff finished with the file kept, a new end must run again")
+	}
+}
+
+// rewriteDuringSend ends session "s1", writes newer to the document file
+// before the send's done message is applied, and returns the model after that
+// message plus the command it returned.
+func rewriteDuringSend(t *testing.T, m model, path, newer string) (model, tea.Cmd) {
+	t.Helper()
+	m, cmd := m.finishPlanning(s1End())
+	if cmd == nil {
+		t.Fatal("finishPlanning returned no command for a present document")
+	}
+	done := cmd().(planningHandoffDoneMsg)
+	writeDocument(t, path, newer)
+	next, follow := m.Update(done)
+	return next.(model), follow
+}
+
+func TestHandoffCommitKeepsAndSendsNewerDocument(t *testing.T) {
+	fb := &fakeBoundary{res: committedResult(5)}
+	m, path := handoffFixture(t, fb)
+	writeDocument(t, path, "first\n")
+
+	m, follow := rewriteDuringSend(t, m, path, "second\n")
+
+	if !fileExists(path) {
+		t.Fatal("a commit of the earlier document deleted the newer one")
+	}
+	if !strings.Contains(activityText(m), "#5") {
+		t.Errorf("console = %q, want the commit of the earlier document reported", activityText(m))
+	}
+	if follow == nil {
+		t.Fatal("the newer document was not sent")
+	}
+	done := follow().(planningHandoffDoneMsg)
+	if fb.calls() != 2 || fb.reqs[1].Reply != "second\n" {
+		t.Fatalf("requests = %+v, want a second send of the newer document", fb.reqs)
+	}
+	next, _ := m.Update(done)
+	m = next.(model)
+	if fileExists(path) {
+		t.Error("the newer document must be deleted once it is committed")
+	}
+}
+
+func TestHandoffStaleRejectionSendsNewerDocumentWithoutDialog(t *testing.T) {
+	fb := &fakeBoundary{res: planner.Result{Outcome: planner.OutcomeRejected}}
+	m, path := handoffFixture(t, fb)
+	writeDocument(t, path, "first\n")
+
+	m, follow := rewriteDuringSend(t, m, path, "second\n")
+
+	if m.activeOverlay != overlayNone {
+		t.Errorf("activeOverlay = %v, want overlayNone for a rejection of a replaced document", m.activeOverlay)
+	}
+	if follow == nil {
+		t.Fatal("the newer document was not sent")
+	}
+	follow()
+	if fb.calls() != 2 || fb.reqs[1].Reply != "second\n" {
+		t.Fatalf("requests = %+v, want a second send of the newer document", fb.reqs)
+	}
+}
+
+func TestHandoffErrorSendsNewerDocument(t *testing.T) {
+	fb := &fakeBoundary{err: errors.New("gh failed")}
+	m, path := handoffFixture(t, fb)
+	writeDocument(t, path, "first\n")
+
+	_, follow := rewriteDuringSend(t, m, path, "second\n")
+
+	if follow == nil {
+		t.Fatal("the newer document was not sent")
+	}
+	follow()
+	if fb.calls() != 2 || fb.reqs[1].Reply != "second\n" {
+		t.Fatalf("requests = %+v, want a second send of the newer document", fb.reqs)
 	}
 }
 

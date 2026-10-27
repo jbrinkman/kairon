@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -44,8 +45,11 @@ var _ planningBoundary = (*planner.Boundary)(nil)
 
 // planningHandoffDoneMsg reports the end of one send to the planning boundary.
 type planningHandoffDoneMsg struct {
-	end    planningEnd
-	path   string
+	end  planningEnd
+	path string
+	// sent is the document that was sent. The file may hold a newer one by
+	// the time the send ends.
+	sent   []byte
 	result planner.Result
 	err    error
 }
@@ -160,17 +164,32 @@ func (m model) finishPlanning(end planningEnd) (model, tea.Cmd) {
 		ctx, cancel := context.WithTimeout(context.Background(), planningHandoffTimeout)
 		defer cancel()
 		res, err := boundary.Process(ctx, req)
-		return planningHandoffDoneMsg{end: end, path: docPath, result: res, err: err}
+		return planningHandoffDoneMsg{end: end, path: docPath, sent: contents, result: res, err: err}
 	}
 }
 
 // handlePlanningHandoffDone applies the outcome of one send. The document file
-// is deleted only after a commit; every other outcome keeps it.
-func (m model) handlePlanningHandoffDone(msg planningHandoffDoneMsg) model {
+// is deleted only after a commit, and only if it still holds the document that
+// was sent; every other outcome keeps it. The agent can write a newer document
+// while a send is in flight, and the in-flight guard drops that turn's end, so
+// a newer document is sent now instead of being deleted or ignored.
+func (m model) handlePlanningHandoffDone(msg planningHandoffDoneMsg) (model, tea.Cmd) {
 	delete(m.planningHandoffs, msg.end.SessionID)
 
+	current, readErr := os.ReadFile(msg.path)
+	newer := readErr == nil && !bytes.Equal(current, msg.sent)
+	sendNewer := func(m model) (model, tea.Cmd) {
+		m = m.appendActivity(fmt.Sprintf(
+			"A newer planning document was written to %s while the last one was being sent. Sending it now.", msg.path))
+		return m.finishPlanning(msg.end)
+	}
+
 	if msg.err != nil {
-		return m.handoffError(fmt.Sprintf("Planning document %s was not sent: %v. The file was kept.", msg.path, msg.err))
+		m = m.handoffError(fmt.Sprintf("Planning document %s was not sent: %v. The file was kept.", msg.path, msg.err))
+		if newer {
+			return sendNewer(m)
+		}
+		return m, nil
 	}
 
 	switch msg.result.Outcome {
@@ -182,23 +201,34 @@ func (m model) handlePlanningHandoffDone(msg planningHandoffDoneMsg) model {
 		}
 		m = m.appendActivity(m.styles.Success.Render(fmt.Sprintf(
 			"Created issue #%d from the planning session: https://github.com/%s/issues/%d", n, repo, n)))
+		if newer {
+			return sendNewer(m)
+		}
 		if err := os.Remove(msg.path); err != nil && !errors.Is(err, os.ErrNotExist) {
 			m = m.handoffError(fmt.Sprintf(
 				"Issue #%d exists, but the planning document %s could not be removed (%v). To avoid a duplicate issue, delete the file by hand.",
 				n, msg.path, err))
 		}
-		return m
+		return m, nil
 
 	case planner.OutcomeRejected:
 		fc := planner.RejectionFailure(msg.result, guard.Attempt{Current: 1, Max: 1})
 		// The console line stays even if a later rejection replaces the dialog.
 		m = m.appendActivity(m.styles.Error.Render(fmt.Sprintf(
 			"Planning document rejected by the %s check. Nothing was written to GitHub. The file was kept at %s", fc.Guard, msg.path)))
-		return m.openPlanningRejection(msg.end, fc, msg.path)
+		if newer {
+			// The rejection is for a document the agent has already replaced.
+			return sendNewer(m)
+		}
+		return m.openPlanningRejection(msg.end, fc, msg.path), nil
 	}
 
-	return m.handoffError(fmt.Sprintf("Planning document %s got an unexpected outcome (%s). The file was kept.",
+	m = m.handoffError(fmt.Sprintf("Planning document %s got an unexpected outcome (%s). The file was kept.",
 		msg.path, msg.result.Outcome))
+	if newer {
+		return sendNewer(m)
+	}
+	return m, nil
 }
 
 func (m model) handoffError(line string) model {
