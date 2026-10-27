@@ -546,6 +546,16 @@ func TestCLI_AddLabel(t *testing.T) {
 	}
 }
 
+func TestCLI_RemoveLabel(t *testing.T) {
+	g := &fakeGH{}
+	if err := (CLI{run: g.run}).RemoveLabel(testRepo, 12, "kairon-failed"); err != nil {
+		t.Fatal(err)
+	}
+	if want := "issue edit 12 --repo o/r --remove-label kairon-failed"; len(g.calls) != 1 || g.calls[0].joined() != want {
+		t.Errorf("calls = %v, want one call %q", g.calls, want)
+	}
+}
+
 func TestCLI_RejectsInvalidArguments(t *testing.T) {
 	g := &fakeGH{}
 	c := CLI{run: g.run}
@@ -557,6 +567,9 @@ func TestCLI_RejectsInvalidArguments(t *testing.T) {
 	}
 	if err := c.AddLabel(testRepo, 1, ""); err == nil {
 		t.Error("empty label accepted")
+	}
+	if err := c.RemoveLabel(testRepo, 1, " "); err == nil {
+		t.Error("empty label accepted for removal")
 	}
 	if _, err := c.State(testRepo, -1, "l"); err == nil {
 		t.Error("negative issue accepted")

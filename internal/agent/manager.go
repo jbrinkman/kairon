@@ -19,6 +19,8 @@ import (
 	"github.com/jbrinkman/kairon/internal/failure"
 	"github.com/jbrinkman/kairon/internal/github"
 	"github.com/jbrinkman/kairon/internal/guard"
+	"github.com/jbrinkman/kairon/internal/planner"
+	"github.com/jbrinkman/kairon/internal/provenance"
 	"github.com/jbrinkman/kairon/internal/stageoutput"
 )
 
@@ -30,18 +32,31 @@ const (
 	StatusFailed    Status = "failed"
 )
 
+// Run kinds reported in Agent.Kind.
+const (
+	// KindImplementation is a krew-lead run that implements an admitted issue.
+	KindImplementation = "krew-lead"
+	// KindIntake is a planner-automated run that canonicalizes and stamps an
+	// issue whose body is not verified.
+	KindIntake = "intake"
+)
+
 type Agent struct {
 	ID          string
 	IssueNumber int
-	IssueTitle  string
-	Process     *os.Process
-	LogFile     *os.File
-	Status      Status
-	RetryCount  int
-	StartTime   time.Time
+	// Kind is KindImplementation or KindIntake.
+	Kind       string
+	IssueTitle string
+	Process    *os.Process
+	LogFile    *os.File
+	Status     Status
+	RetryCount int
+	StartTime  time.Time
 	// RunID scopes the punch-out comment marker to this terminal run. It is set
 	// once at Spawn and reused by every retry of the same run.
 	RunID string
+
+	intake *intakeRun // set for KindIntake only
 }
 
 // Sentinel errors returned by Spawn when the boundary does not admit an issue.
@@ -53,7 +68,47 @@ var (
 	// ErrAdmissionUnavailable means the boundary could not decide (for example
 	// the GitHub read failed). It fails closed: nothing was spawned or written.
 	ErrAdmissionUnavailable = errors.New("agent: could not verify issue before implementation")
+	// ErrIntakePending means the issue's body is not verified and an intake run
+	// for it was started or is already running. Nothing was spawned. The run
+	// ends on its own and calls the release callback; a later poll sees the
+	// stamped body.
+	ErrIntakePending = errors.New("agent: intake is running for the issue")
 )
+
+// GitHub is every GitHub port the manager uses: the boundary's read, the
+// commit step's revision and body writes, the failure contract's comment and
+// label, and label removal.
+type GitHub interface {
+	failure.Issues
+	boundary.Reader
+	provenance.IssueStore
+	RemoveLabel(repo string, issue int, label string) error
+}
+
+// ghPorts is the production GitHub: the gh CLI.
+type ghPorts struct {
+	github.CLI
+	github.IssueStore
+}
+
+// Options replaces the manager's external collaborators. A nil field keeps the
+// production default. Tests use it so that no test reaches gh, git or kiro-cli
+// while the real boundary, intake, commit and failure code still runs.
+type Options struct {
+	// GitHub serves every GitHub port. Nil means the gh CLI.
+	GitHub GitHub
+	// IntakeCommand builds the command for one intake attempt. Nil means
+	// planner.AutomatedCommand in the current directory.
+	IntakeCommand func(prompt string) *exec.Cmd
+	// RetryDelay is the wait before intake attempt n (n >= 2). Nil means n-1
+	// seconds, as krew-lead retries wait.
+	RetryDelay func(attempt int) time.Duration
+	// CreateWorktree, StartAgent and MonitorAgent replace krew-lead's worktree
+	// creation, process start and process monitor.
+	CreateWorktree func(name string) (string, error)
+	StartAgent     func(*exec.Cmd) error
+	MonitorAgent   func(*Agent, *exec.Cmd)
+}
 
 type Manager struct {
 	mu                   sync.RWMutex
@@ -76,6 +131,17 @@ type Manager struct {
 	removeWorktree func(issue, pid int) error
 	// admit runs the watcher boundary: read the issue from GitHub and verify it.
 	admit func(repo string, issue int) (boundary.Result, error)
+	// release drops an issue from the watcher's tracked set without refunding
+	// anything. An intake run calls it when it ends, so the next poll
+	// reconsiders the issue. NewManager leaves it a no-op.
+	release func(issue int)
+	// github is every GitHub port; intake reads, commits, punches out and
+	// removes labels through it.
+	github GitHub
+	// intakeCommand builds one intake attempt's command; intakeDelay is the
+	// wait before attempt n.
+	intakeCommand func(prompt string) *exec.Cmd
+	intakeDelay   func(attempt int) time.Duration
 	// untrack hands an issue back to the watcher so a later poll reconsiders it,
 	// refunding the attempt. retryAgent calls it when a retry cannot even start
 	// for a non-terminal reason (a transient admission failure), so the issue
@@ -93,22 +159,52 @@ type Manager struct {
 }
 
 func NewManager(cfg *config.Config) *Manager {
+	return NewManagerWithOptions(cfg, Options{})
+}
+
+// NewManagerWithOptions is NewManager with collaborators replaced by opts.
+func NewManagerWithOptions(cfg *config.Config, opts Options) *Manager {
+	gh := opts.GitHub
+	if gh == nil {
+		gh = ghPorts{CLI: github.CLI{}, IssueStore: github.NewIssueStore(cfg.Repo)}
+	}
 	m := &Manager{
 		agents:        make(map[string]*Agent),
 		config:        cfg,
 		outputCapture: NewOutputCapture(1000), // Buffer 1000 lines
-		issues:        github.CLI{},
+		issues:        gh,
+		github:        gh,
 		prExists:      github.PRExistsForIssue,
 	}
 	m.retry = m.retryAgent
 	m.cleanup = m.performCleanup
 	m.removeWorktree = m.cleanupWorktree
-	m.admit = boundary.Boundary{Reader: github.CLI{}, Label: cfg.Label}.Admit
+	// Intake is the manager itself: a non-valid issue starts an asynchronous
+	// planner-automated run instead of punching out.
+	m.admit = boundary.Boundary{Reader: gh, Intake: watcherIntake{m}, Label: cfg.Label}.Admit
 	m.untrack = func(int) {}
+	m.release = func(int) {}
 	m.createWorktree = runWorktreeCreate
 	m.writeInput = writeInputDocument
 	m.start = func(cmd *exec.Cmd) error { return cmd.Start() }
 	m.monitor = m.monitorAgent
+	m.intakeCommand = func(prompt string) *exec.Cmd { return planner.AutomatedCommand(prompt, "") }
+	m.intakeDelay = func(n int) time.Duration { return time.Duration(n-1) * time.Second }
+	if opts.IntakeCommand != nil {
+		m.intakeCommand = opts.IntakeCommand
+	}
+	if opts.RetryDelay != nil {
+		m.intakeDelay = opts.RetryDelay
+	}
+	if opts.CreateWorktree != nil {
+		m.createWorktree = opts.CreateWorktree
+	}
+	if opts.StartAgent != nil {
+		m.start = opts.StartAgent
+	}
+	if opts.MonitorAgent != nil {
+		m.monitor = opts.MonitorAgent
+	}
 	return m
 }
 
@@ -119,6 +215,16 @@ func NewManager(cfg *config.Config) *Manager {
 func (m *Manager) SetUntrack(fn func(issue int)) {
 	if fn != nil {
 		m.untrack = fn
+	}
+}
+
+// SetRelease wires the callback an intake run invokes when it ends, so the
+// watcher drops the issue from its tracked set (with no refund: the watcher
+// refunded the attempt when intake started) and the next poll reconsiders it.
+// Called once at wiring time, before the manager is used.
+func (m *Manager) SetRelease(fn func(issue int)) {
+	if fn != nil {
+		m.release = fn
 	}
 }
 
@@ -226,6 +332,24 @@ func (m *Manager) GetOutputGeneration() uint64 {
 	return m.outputCapture.Generation() + m.statusGen.Load()
 }
 
+// OutputPrefix is the prefix of a's captured output lines; the TUI selects a
+// run's lines by it. An intake run's prefix names the run, so its lines never
+// show in the issue's krew-lead tab or in another intake run's.
+func OutputPrefix(a *Agent) string {
+	if a.Kind == KindIntake {
+		return fmt.Sprintf("[intake %s] ", a.ID)
+	}
+	return fmt.Sprintf("[agent issue-%d] ", a.IssueNumber)
+}
+
+// CaptureAgentLine stores a single output line for the run a.
+func (m *Manager) CaptureAgentLine(a *Agent, line string) {
+	if m.outputCapture == nil {
+		return
+	}
+	m.outputCapture.AddLine(OutputPrefix(a) + line)
+}
+
 // CaptureOutputLine stores a single output line for an issue.
 func (m *Manager) CaptureOutputLine(issueNumber int, line string) {
 	if m.outputCapture == nil {
@@ -264,14 +388,21 @@ func (m *Manager) admitIssue(issueNumber int, repo string) (boundary.Result, err
 		if res.Document == nil {
 			return boundary.Result{}, fmt.Errorf("%w: boundary admitted issue #%d without a document", ErrAdmissionUnavailable, issueNumber)
 		}
+		m.clearIntakeRecords(issueNumber)
 		return res, nil
 	case boundary.OutcomeSkipped:
+		if res.SkipReason == boundary.SkipIntakeStarted || res.SkipReason == boundary.SkipIntakeRunning {
+			log.Printf("[agent] not implementing issue #%d yet: %s", issueNumber, res.SkipReason)
+			return res, fmt.Errorf("%w: %s", ErrIntakePending, res.SkipReason)
+		}
 		log.Printf("[agent] not implementing issue #%d: %s", issueNumber, res.SkipReason)
 		return res, fmt.Errorf("%w: skipped (%s)", ErrNotAdmitted, res.SkipReason)
 	case boundary.OutcomePunchOut:
 		if res.Failure == nil {
 			return boundary.Result{}, fmt.Errorf("%w: boundary punched out issue #%d without a failure context", ErrAdmissionUnavailable, issueNumber)
 		}
+		// The commit record stays until the punch-out succeeds; see
+		// punchOutWithRemedy.
 		return res, fmt.Errorf("%w: punched out (%s)", ErrNotAdmitted, res.Failure.Guard)
 	default:
 		return boundary.Result{}, fmt.Errorf("%w: unknown boundary outcome %d for issue #%d", ErrAdmissionUnavailable, res.Outcome, issueNumber)
@@ -309,6 +440,10 @@ func (m *Manager) agentCommand(issueNumber int, repo, worktreeName, worktreePath
 }
 
 func (m *Manager) Spawn(issueNumber int, repo string) (*Agent, error) {
+	// An intake run for the issue is still going: nothing to admit yet.
+	if m.IntakeActive(issueNumber) {
+		return nil, fmt.Errorf("%w: %s", ErrIntakePending, boundary.SkipIntakeRunning)
+	}
 	// Admission does GitHub I/O and may punch the issue out, so it runs before
 	// m.mu is taken and before anything (worktree, file, process) is created.
 	res, err := m.admitIssue(issueNumber, repo)
@@ -327,6 +462,14 @@ func (m *Manager) Spawn(issueNumber int, repo string) (*Agent, error) {
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
+
+	// An intake run may have started (or finished) while admission ran
+	// unlocked. Checked under the lock startIntake takes, so the two runs
+	// never share the issue.
+	if m.intakeOwnsIssueLocked(issueNumber) {
+		m.removeInputFile(issueNumber)
+		return nil, fmt.Errorf("%w: %s", ErrIntakePending, boundary.SkipIntakeRunning)
+	}
 
 	id := fmt.Sprintf("agent-%d-%d", issueNumber, time.Now().Unix())
 
@@ -370,6 +513,7 @@ func (m *Manager) Spawn(issueNumber int, repo string) (*Agent, error) {
 	agent := &Agent{
 		ID:          id,
 		IssueNumber: issueNumber,
+		Kind:        KindImplementation,
 		IssueTitle:  fmt.Sprintf("Issue #%d", issueNumber),
 		Process:     cmd.Process,
 		LogFile:     agentLogFile,
@@ -425,6 +569,27 @@ func (m *Manager) Stop(id string) error {
 	}
 
 	log.Printf("[agent] stopping %s (issue #%d)", id, agent.IssueNumber)
+	if agent.intake != nil {
+		// A stopped intake run ends with no retry, no write and no punch-out,
+		// and a human stop is final: the watcher does not start intake again.
+		// A GitHub write already in flight completes. Cancel before reading the
+		// process: with no process yet (the revision read, between attempts, or
+		// mid-start) the launch sees the cancellation and either starts nothing
+		// or signals the process itself.
+		m.mu.Lock()
+		agent.intake.final = true
+		m.mu.Unlock()
+		agent.intake.cancel()
+		m.mu.RLock()
+		proc := agent.Process
+		m.mu.RUnlock()
+		if proc != nil {
+			if err := proc.Signal(syscall.SIGTERM); err != nil && !errors.Is(err, os.ErrProcessDone) {
+				return err
+			}
+		}
+		return nil
+	}
 	if agent.Process != nil {
 		return agent.Process.Signal(syscall.SIGTERM)
 	}
@@ -440,6 +605,14 @@ func (m *Manager) StopAll() {
 		}
 	}
 	m.mu.RUnlock()
+
+	m.mu.Lock()
+	for _, agent := range agents {
+		if agent.intake != nil {
+			agent.intake.cancel() // no retry or write while shutting down; not final
+		}
+	}
+	m.mu.Unlock()
 
 	for _, agent := range agents {
 		if agent.Process != nil {
@@ -591,6 +764,9 @@ func (m *Manager) punchOutWithRemedy(id string, issueNumber int, runID string, f
 	if err := m.cleanupRetryFile(issueNumber); err != nil {
 		log.Printf("[agent] failed to clear retry count for issue #%d: %v", issueNumber, err)
 	}
+	// Only a punch-out that succeeded releases the intake loop guard. Clearing it
+	// earlier lets a failed punch-out's next poll start intake again.
+	m.clearIntakeRecords(issueNumber)
 }
 
 // removeInputFile deletes the issue's input document. A missing file is not an error.
@@ -738,6 +914,20 @@ func (m *Manager) retryAgent(agent *Agent) {
 	}
 
 	cmd := m.agentCommand(agent.IssueNumber, m.config.Repo, worktreeName, worktreePath, inputPath, agentLogFile)
+
+	// As in Spawn: refuse if an intake run took the issue during admission,
+	// otherwise reserve it (a running agent) before the process starts.
+	m.mu.Lock()
+	if m.intakeOwnsIssueLocked(agent.IssueNumber) {
+		m.mu.Unlock()
+		agentLogFile.Close()
+		log.Printf("[agent] retry for issue #%d not started: %s", agent.IssueNumber, boundary.SkipIntakeRunning)
+		recoverRetry()
+		return
+	}
+	agent.Status = StatusRunning
+	m.statusGen.Add(1)
+	m.mu.Unlock()
 
 	if err := m.start(cmd); err != nil {
 		agentLogFile.Close()

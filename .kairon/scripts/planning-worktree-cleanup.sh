@@ -10,7 +10,7 @@ NC='\033[0m' # No Color
 if [ $# -eq 0 ]; then
     echo -e "${RED}Error: Planning worktree path required${NC}" >&2
     echo "Usage: $0 <worktree-path>" >&2
-    echo "Example: $0 .worktrees/planning-20240628-141549" >&2
+    echo "Example: $0 .worktrees/planning-20240628-141549-12345" >&2
     exit 1
 fi
 
@@ -21,9 +21,9 @@ BRANCH_NAME="planning/${PLANNING_NAME}"
 echo -e "${BLUE}Cleaning up planning worktree ${PLANNING_NAME}...${NC}" >&2
 
 # Validate this is actually a planning worktree
-if [[ ! "$PLANNING_NAME" =~ ^planning-[0-9]{8}-[0-9]{6}$ ]]; then
+if [[ ! "$PLANNING_NAME" =~ ^planning-[0-9]{8}-[0-9]{6}(-[0-9]+)?$ ]]; then
     echo -e "${RED}Error: Not a valid planning worktree name: ${PLANNING_NAME}${NC}" >&2
-    echo -e "${RED}Expected format: planning-YYYYMMDD-HHMMSS${NC}" >&2
+    echo -e "${RED}Expected format: planning-YYYYMMDD-HHMMSS[-PID]${NC}" >&2
     exit 1
 fi
 

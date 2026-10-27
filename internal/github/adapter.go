@@ -292,6 +292,20 @@ func (c CLI) AddLabel(repo string, issue int, label string) error {
 	return nil
 }
 
+// RemoveLabel removes label from the issue.
+func (c CLI) RemoveLabel(repo string, issue int, label string) error {
+	if err := validateTarget(repo, issue); err != nil {
+		return err
+	}
+	if strings.TrimSpace(label) == "" {
+		return errors.New("label must not be empty")
+	}
+	if _, err := c.gh()("", "issue", "edit", fmt.Sprintf("%d", issue), "--repo", repo, "--remove-label", label); err != nil {
+		return fmt.Errorf("gh issue edit failed: %w", err)
+	}
+	return nil
+}
+
 // Selection is the result of SelectIssues.
 type Selection struct {
 	// Eligible issues may be processed.

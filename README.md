@@ -147,6 +147,7 @@ kairon
 | `status` | Show all agents with issue, status, and elapsed time |
 | `stop <issue>` | Stop the agent working on a specific issue number |
 | `plan [desc]` | Start interactive planning session |
+| `validate <issue>` | Canonicalize and stamp an existing issue with the automated planner, so the watcher can implement it ([details](docs/boundary.md#validate-an-issue-by-hand)) |
 | `theme` | Show current theme |
 | `theme <name>` | Switch to theme |
 | `about` | Show version information and check for updates |

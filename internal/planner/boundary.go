@@ -52,9 +52,6 @@ const (
 	// OutcomePunchedOut: a human was told why the pipeline stopped (a comment,
 	// then the fail-state label). Nothing was written to the issue body.
 	OutcomePunchedOut
-	// OutcomeHalted: RunAutomated did not call the agent because the issue
-	// already carries a done or failed label. Nothing was written.
-	OutcomeHalted
 )
 
 // String returns a short name for o.
@@ -68,8 +65,6 @@ func (o Outcome) String() string {
 		return "routed_to_intake"
 	case OutcomePunchedOut:
 		return "punched_out"
-	case OutcomeHalted:
-		return "halted"
 	}
 	return "invalid"
 }

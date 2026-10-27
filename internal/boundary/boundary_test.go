@@ -66,7 +66,7 @@ func TestAdmit_ValidBodyYieldsInputDocument(t *testing.T) {
 	if res.Outcome != OutcomeAdmitted {
 		t.Fatalf("Outcome = %v, want OutcomeAdmitted", res.Outcome)
 	}
-	if res.Failure != nil || res.Remedy != "" || res.SkipReason != "" || res.ViaIntake {
+	if res.Failure != nil || res.Remedy != "" || res.SkipReason != "" {
 		t.Errorf("admitted result carries stray fields: %+v", res)
 	}
 	d := res.Document
@@ -102,8 +102,8 @@ func TestAdmit_NonValidBodiesNeverAdmitted(t *testing.T) {
 		wantState  string
 		wantRemedy string
 	}{
-		{"no marker", validRaw, "none", "Run the planner"},
-		{"empty body", "", "none", "Run the planner"},
+		{"no marker", validRaw, "none", "canonicalized and stamped"},
+		{"empty body", "", "none", "canonicalized and stamped"},
 		{"edited after marking", strings.Replace(good, "Do the thing.", "Do another thing.", 1), "mismatch", "changed after"},
 		{"duplicated marker", good + "\n" + marker, "mismatch", "changed after"},
 		{"marker not last", marker + "\n" + canonical, "mismatch", "changed after"},
@@ -151,6 +151,9 @@ func TestAdmit_NonValidBodiesNeverAdmitted(t *testing.T) {
 			if !strings.Contains(res.Remedy, failure.FailedLabel(testLabel)) {
 				t.Errorf("Remedy = %q, want it to name the %s label", res.Remedy, failure.FailedLabel(testLabel))
 			}
+			if want := fmt.Sprintf("`validate %d`", testIssue); !strings.Contains(res.Remedy, want) {
+				t.Errorf("Remedy = %q, want it to name the TUI command %s", res.Remedy, want)
+			}
 		})
 	}
 }
@@ -183,11 +186,10 @@ func TestAdmit_WithoutIntakeActualSaysSo(t *testing.T) {
 	}
 }
 
-func TestAdmit_RoutesToIntakeThenReverifies(t *testing.T) {
-	for _, first := range []string{validRaw, strings.Replace(markedValid(), "Do the thing.", "Edited.", 1)} {
+func TestAdmit_NonValidStartsIntakeAndSkips(t *testing.T) {
+	for _, body := range []string{validRaw, strings.Replace(markedValid(), "Do the thing.", "Edited.", 1)} {
 		log := &callLog{}
-		fixed := markedValid()
-		r := &fakeReader{log: log, snapshots: []Snapshot{openSnapshot(first), openSnapshot(fixed)}}
+		r := &fakeReader{log: log, snapshots: []Snapshot{openSnapshot(body)}}
 		in := &fakeIntake{log: log}
 		b := newBoundary(r, in)
 		b.Classify = func(body string) provenance.State {
@@ -197,25 +199,37 @@ func TestAdmit_RoutesToIntakeThenReverifies(t *testing.T) {
 
 		res := mustAdmit(t, b)
 
-		if res.Outcome != OutcomeAdmitted {
-			t.Fatalf("Outcome = %v, want OutcomeAdmitted", res.Outcome)
+		if res.Outcome != OutcomeSkipped || res.SkipReason != SkipIntakeStarted {
+			t.Fatalf("result = %+v, want Skipped %s", res, SkipIntakeStarted)
 		}
-		if !res.ViaIntake {
-			t.Error("ViaIntake = false, want true")
+		if res.Document != nil || res.Failure != nil {
+			t.Errorf("result = %+v, want no document and no failure", res)
 		}
-		want := []string{"ReadIssue", "Classify", "Intake", "ReadIssue", "Classify"}
+		// Intake is asynchronous: the boundary does not wait for it or re-read.
+		want := []string{"ReadIssue", "Classify", "Intake"}
 		if got := log.all(); fmt.Sprint(got) != fmt.Sprint(want) {
 			t.Errorf("call order = %q, want %q", got, want)
-		}
-		if res.Document == nil || res.Document.Body != provenance.Canonicalize(fixed) {
-			t.Errorf("Document body is not the re-read body: %+v", res.Document)
 		}
 	}
 }
 
-func TestAdmit_IntakeSuccessButStillInvalidPunchesOut(t *testing.T) {
-	r := &fakeReader{snapshots: []Snapshot{openSnapshot(validRaw)}} // never gets stamped
-	in := &fakeIntake{}
+func TestAdmit_IntakeRunningIsSkipped(t *testing.T) {
+	r := &fakeReader{snapshots: []Snapshot{openSnapshot(validRaw)}}
+	in := &fakeIntake{status: IntakeRunning}
+
+	res := mustAdmit(t, newBoundary(r, in))
+
+	if res.Outcome != OutcomeSkipped || res.SkipReason != SkipIntakeRunning {
+		t.Fatalf("result = %+v, want Skipped %s", res, SkipIntakeRunning)
+	}
+	if in.calls != 1 || r.calls != 1 {
+		t.Errorf("intake calls = %d, reads = %d, want 1 and 1", in.calls, r.calls)
+	}
+}
+
+func TestAdmit_IntakeSpentPunchesOut(t *testing.T) {
+	r := &fakeReader{snapshots: []Snapshot{openSnapshot(strings.Replace(markedValid(), "Do the thing.", "Edited.", 1))}}
+	in := &fakeIntake{status: IntakeSpent}
 
 	res := mustAdmit(t, newBoundary(r, in))
 
@@ -223,69 +237,60 @@ func TestAdmit_IntakeSuccessButStillInvalidPunchesOut(t *testing.T) {
 		t.Fatalf("Outcome = %v, want OutcomePunchOut", res.Outcome)
 	}
 	if in.calls != 1 {
-		t.Errorf("intake calls = %d, want exactly 1 (no loop)", in.calls)
+		t.Errorf("intake calls = %d, want 1", in.calls)
 	}
-	if r.calls != 2 {
-		t.Errorf("ReadIssue calls = %d, want 2", r.calls)
+	if !strings.Contains(res.Failure.Actual, "the body changed after intake committed it") {
+		t.Errorf("Actual = %q, want it to say the body changed after intake committed it", res.Failure.Actual)
 	}
-	if !strings.Contains(res.Failure.Actual, "intake reported success") {
-		t.Errorf("Actual = %q, want it to say intake reported success", res.Failure.Actual)
+	if !strings.Contains(res.Remedy, fmt.Sprintf("validate %d", testIssue)) {
+		t.Errorf("Remedy = %q, want it to name `validate %d`", res.Remedy, testIssue)
 	}
 	if err := res.Failure.Validate(); err != nil {
 		t.Errorf("FailureContext does not validate: %v", err)
 	}
 }
 
-func TestAdmit_IntakeErrorPunchesOut(t *testing.T) {
+func TestAdmit_IntakeExhaustedPunchesOut(t *testing.T) {
 	r := &fakeReader{snapshots: []Snapshot{openSnapshot(validRaw)}}
-	in := &fakeIntake{err: errors.New("planner exploded")}
+	in := &fakeIntake{status: IntakeExhausted}
 
 	res := mustAdmit(t, newBoundary(r, in))
 
 	if res.Outcome != OutcomePunchOut {
 		t.Fatalf("Outcome = %v, want OutcomePunchOut", res.Outcome)
 	}
-	if !strings.Contains(res.Failure.Actual, "planner exploded") {
-		t.Errorf("Actual = %q, want it to include the intake error", res.Failure.Actual)
+	if !strings.Contains(res.Failure.Actual, "intake was stopped, or failed on every start allowed") {
+		t.Errorf("Actual = %q, want it to say intake was stopped or kept failing", res.Failure.Actual)
 	}
-	if r.calls != 1 {
-		t.Errorf("ReadIssue calls = %d, want 1 (no re-read after a failed intake)", r.calls)
+	if !strings.Contains(res.Remedy, fmt.Sprintf("validate %d", testIssue)) {
+		t.Errorf("Remedy = %q, want it to name `validate %d`", res.Remedy, testIssue)
 	}
 	if err := res.Failure.Validate(); err != nil {
 		t.Errorf("FailureContext does not validate: %v", err)
 	}
 }
 
-func TestAdmit_LongIntakeErrorIsTruncated(t *testing.T) {
+func TestAdmit_IntakeStartErrorFailsClosed(t *testing.T) {
+	boom := errors.New("gh: revision read failed")
 	r := &fakeReader{snapshots: []Snapshot{openSnapshot(validRaw)}}
-	in := &fakeIntake{err: errors.New(strings.Repeat("x", 5000))}
 
-	res := mustAdmit(t, newBoundary(r, in))
+	res, err := newBoundary(r, &fakeIntake{err: boom}).Admit(testRepo, testIssue)
 
-	if len(res.Failure.Actual) > 1000 {
-		t.Errorf("Actual is %d bytes; the intake error should be truncated", len(res.Failure.Actual))
+	if !errors.Is(err, boom) {
+		t.Fatalf("err = %v, want it to wrap the intake error", err)
+	}
+	if res != (Result{}) {
+		t.Errorf("result = %+v, want zero: a failed start writes nothing and decides nothing", res)
 	}
 }
 
-func TestAdmit_IntakePunchedOutIsSkipped(t *testing.T) {
-	for _, err := range []error{ErrIntakePunchedOut, fmt.Errorf("wrapped: %w", ErrIntakePunchedOut)} {
-		r := &fakeReader{snapshots: []Snapshot{openSnapshot(validRaw)}}
-		res := mustAdmit(t, newBoundary(r, &fakeIntake{err: err}))
-		if res.Outcome != OutcomeSkipped || res.SkipReason != "intake-punched-out" {
-			t.Errorf("err %v: result = %+v, want Skipped intake-punched-out", err, res)
-		}
-	}
-}
+func TestAdmit_UnknownIntakeStatusFailsClosed(t *testing.T) {
+	r := &fakeReader{snapshots: []Snapshot{openSnapshot(validRaw)}}
 
-func TestAdmit_RereadAfterIntakeIsAlsoGated(t *testing.T) {
-	closed := openSnapshot(markedValid())
-	closed.Open = false
-	r := &fakeReader{snapshots: []Snapshot{openSnapshot(validRaw), closed}}
+	res, err := newBoundary(r, &fakeIntake{status: IntakeStatus(99)}).Admit(testRepo, testIssue)
 
-	res := mustAdmit(t, newBoundary(r, &fakeIntake{}))
-
-	if res.Outcome != OutcomeSkipped || res.SkipReason != "closed" {
-		t.Errorf("result = %+v, want Skipped closed", res)
+	if !errors.Is(err, guard.ErrInvalid) || res != (Result{}) {
+		t.Fatalf("got (%+v, %v), want zero result and guard.ErrInvalid", res, err)
 	}
 }
 
@@ -421,30 +426,6 @@ func TestAdmit_ReadErrorFailsClosed(t *testing.T) {
 	}
 }
 
-func TestAdmit_ReadErrorAfterIntakeFailsClosed(t *testing.T) {
-	boom := errors.New("gh: network down")
-	r := &fakeReader{snapshots: []Snapshot{openSnapshot(validRaw)}}
-	b := newBoundary(&errAfterFirstReader{inner: r, err: boom}, &fakeIntake{})
-
-	res, err := b.Admit(testRepo, testIssue)
-
-	if !errors.Is(err, boom) || res != (Result{}) {
-		t.Fatalf("got (%+v, %v), want zero result and the read error", res, err)
-	}
-}
-
-type errAfterFirstReader struct {
-	inner *fakeReader
-	err   error
-}
-
-func (e *errAfterFirstReader) ReadIssue(repo string, issue int, fl string) (Snapshot, error) {
-	if e.inner.calls >= 1 {
-		return Snapshot{}, e.err
-	}
-	return e.inner.ReadIssue(repo, issue, fl)
-}
-
 func TestAdmit_ScreenFailurePunchesOutWithScreenGuard(t *testing.T) {
 	t.Run("default screen on body", func(t *testing.T) {
 		raw := provenance.Mark("Do it.\x00 now", fixedTime)
@@ -462,7 +443,7 @@ func TestAdmit_ScreenFailurePunchesOutWithScreenGuard(t *testing.T) {
 		// so the remedy must route the user through the planner (which re-stamps
 		// the hash) rather than telling them to hand-edit the hashed body, and it
 		// must name the field that failed.
-		for _, want := range []string{"body", "re-run the planner", failure.FailedLabel(testLabel)} {
+		for _, want := range []string{"body", fmt.Sprintf("`validate %d`", testIssue), failure.FailedLabel(testLabel)} {
 			if !strings.Contains(res.Remedy, want) {
 				t.Errorf("Remedy = %q, want it to contain %q", res.Remedy, want)
 			}
@@ -488,8 +469,9 @@ func TestAdmit_ScreenFailurePunchesOutWithScreenGuard(t *testing.T) {
 		if strings.Contains(res.Remedy, "issue body") {
 			t.Errorf("Remedy misdirects a title failure to the body: %q", res.Remedy)
 		}
-		if !strings.Contains(res.Remedy, "re-run the planner") {
-			t.Errorf("Remedy = %q, want it to route through the planner", res.Remedy)
+		// The title is not hashed: fixing it needs no planning, only the label cleared.
+		if !strings.Contains(res.Remedy, failure.FailedLabel(testLabel)) || strings.Contains(res.Remedy, "validate") {
+			t.Errorf("Remedy = %q, want it to name the fail label and not send the user to validate", res.Remedy)
 		}
 	})
 	t.Run("custom screen seam", func(t *testing.T) {

@@ -99,7 +99,7 @@ const (
 
 - The interactive launch sites in `internal/tui` (the planning tab's ACP client and the `kiro-cli chat --classic`
   planning command) pass `planner.AgentInteractive`.
-- `planner.RunAutomated` is the unattended invocation site. It always selects `planner.AgentAutomated`.
+- `planner.AutomatedCommand` is the unattended invocation site. It always selects `planner.AgentAutomated`.
 
 There is no function that maps a mode to an agent, and no separate mode-routing component. The boundary itself is
 mode-agnostic.
@@ -125,7 +125,7 @@ to the commit step or to the failure contract. The only writers in the pipeline 
 | `result` | Path | Outcome |
 |----------|------|---------|
 | `canonical` | The guard chain runs: `guard.DefaultChain`, then `DependenciesForm`. On a pass, `Committer.Commit` writes the body with its `v1` provenance marker, once. | `OutcomeCommitted`, `OutcomeRoutedToIntake` or `OutcomePunchedOut` |
-| `canonical` (a guard fails) | Nothing is written. The `FailureContext` is returned with a `Recoverable` disposition so a `failure.Runner` can retry. | `OutcomeRejected` |
+| `canonical` (a guard fails) | Nothing is written. The `FailureContext` is returned with a `Recoverable` disposition so the caller can retry. | `OutcomeRejected` |
 | `punch_out` | The `unresolved` list becomes the `FailureContext` (guard `intake`, attempt 1 of 1), and `failure.PunchOut` posts the explanatory comment, then adds the fail-state label. The issue body is never written. | `OutcomePunchedOut`, `Unrecoverable` |
 
 A `punch_out` document needs `Target.Issue > 0`. On the create path there is no issue to comment on, so it returns
@@ -139,7 +139,6 @@ A `punch_out` document needs `Target.Issue > 0`. On the create path there is no 
 | `OutcomeRejected` | The reply failed extraction or a guard. `Result.Failure` says why. | Nothing |
 | `OutcomeRoutedToIntake` | The issue changed under the planner (its revision no longer matches `ObservedRevision`). | Nothing |
 | `OutcomePunchedOut` | A human was told why the pipeline stopped: a comment, then the label. Also reported for a revision conflict the committer had to punch out. | A comment, then a label |
-| `OutcomeHalted` | `RunAutomated` did not call the agent because the issue already carries a done or failed label. | Nothing |
 
 A non-nil error means `Process` could not run at all (an invalid attempt, a missing collaborator, or a GitHub call that
 failed). The `Result` is then the zero value.
@@ -170,22 +169,25 @@ A reply that is not exactly one `canonical` document fails the call with `guard.
 
 ### Unattended runs
 
-`planner.RunAutomated(ctx, boundary, invoker, AutomatedRequest)` is the unattended invocation site. Each attempt
-invokes `planner-automated`, strips terminal escape sequences from the reply, and calls `Process`. The attempts run
-under `failure.Runner`:
+Unattended runs are intake: the watcher boundary starts one for a `kairon` issue whose body has no valid provenance
+marker, and the TUI command `validate <issue>` starts one by hand (#409). Both go through the agent manager
+(`internal/agent/intake.go`), which runs each attempt like a krew-lead run: one process, started without waiting, with
+its own log at `.kairon/logs/issue-<n>-intake.log`, and a monitor goroutine that acts on the exit. The planner package
+supplies the pieces of an attempt:
 
-- A recoverable rejection, or a failed invocation, is retried as a new attempt up to `MaxRetries` more times. The
-  retry prompt includes the previous guard, what was expected and what was found. After the budget is used, the runner
-  punches out with a comment and then the label.
-- A `punch_out` reply is terminal. `Process` has already commented and labeled, so it is not retried and not punched out
-  a second time.
-- A commit or a routed-to-intake conflict ends the run.
-- An issue already labeled done or failed is not run at all (`OutcomeHalted`).
+- `planner.AutomatedCommand(prompt, dir)` builds `kiro-cli chat --agent planner-automated --no-interactive <prompt>`.
+  It never passes `--trust-all-tools`: the manifest's `allowedTools` bound what an unattended run can do.
+- `planner.AutomatedPrompt(repo, issue, attempt, previous)` names the issue and the attempt and, on a retry, the
+  previous guard, what was expected and what was found.
+- The reply goes through `planner.StripANSI` and then `Boundary.Process`, with the issue revision the run read before its
+  first attempt, so the commit step detects a concurrent edit.
+- `planner.RejectionFailure` and `planner.InvokeFailure` turn a rejected reply or a failed process into the
+  `FailureContext` to retry on.
 
-The production `Invoker` is `planner.KiroInvoker`, which runs `kiro-cli chat --agent planner-automated
---no-interactive <prompt>`. It never passes `--trust-all-tools`: the manifest's `allowedTools` bound what an unattended
-run can do. `AutomatedRequest` requires a repo, an issue number, a fail label and the observed revision, because the
-commit step uses the revision to detect a concurrent edit.
+The manager retries a recoverable rejection or a failed process up to `max_retries` more times, then punches out once
+with a comment and the label. A `punch_out` reply is terminal: `Process` has already commented and labeled. A commit,
+or a revision conflict (nothing written), ends the run. See [Watcher boundary: intake](boundary.md#intake) for how the
+watcher avoids duplicate runs and loops.
 
 The `gh`-backed `provenance.IssueStore` is `github.IssueStore` in `internal/github`. Bodies travel on stdin, never in
 argv.
@@ -236,8 +238,6 @@ against fakes). The RED to GREEN log is `.kairon/iterations/planner/ITERATIONS.m
 - **The interactive reply is not captured.** Interactive sessions are TTY sessions (`kiro-cli chat --classic`, or the
   ACP client in the planning tab), so their reply is not fed to `Boundary.Process`. The boundary is ready for it and is
   covered by tests. Wiring it is tracked in #404.
-- **The watcher is not wired.** Nothing in the watcher calls `RunAutomated` yet. That is #382. Until then the
-  automated path runs only from tests and the eval driver.
 - **The split case is one document.** The shipped `multi-issue-split` eval case returns one document (the first issue)
   and keeps later issues as one-line summaries, so it cannot assert resolved `#{key}` placeholders. `ProcessChain`
   proves the resolved form in unit tests.

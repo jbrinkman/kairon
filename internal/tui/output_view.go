@@ -166,7 +166,7 @@ func (ov *OutputView) refreshContent() {
 
 		output = append(output, header)
 
-		agentPrefix := fmt.Sprintf("[agent issue-%d] ", agentItem.IssueNumber)
+		agentPrefix := agent.OutputPrefix(agentItem)
 		agentOutput := make([]string, 0)
 		for _, line := range capturedLines {
 			if strings.HasPrefix(line, agentPrefix) {
