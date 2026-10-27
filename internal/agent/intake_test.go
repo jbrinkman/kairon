@@ -536,3 +536,37 @@ func TestSpawn_IntakeRunningIsPending(t *testing.T) {
 		t.Errorf("Spawn read the issue %d times, want 0", n)
 	}
 }
+
+// A punch-out that fails before its comment keeps the commit record, so the
+// next poll punches out again rather than starting intake on an issue intake
+// already committed.
+func TestSpawn_FailedPunchOutKeepsCommitRecord(t *testing.T) {
+	h := newIntakeHarness(t, 1)
+	stamped := provenance.Mark(plannertest.ValidBody("Dependencies: none"), time.Now())
+	h.gh.Put(testIssue, "t", stamped+"\n\nEdited after the commit.", testLabel)
+	if err := writeCommitted(testIssue, "hash"); err != nil {
+		t.Fatal(err)
+	}
+	h.gh.Fail["PostComment"] = errors.New("gh: rate limited")
+
+	if _, err := h.m.Spawn(testIssue, testRepo); !errors.Is(err, ErrNotAdmitted) {
+		t.Fatalf("Spawn = %v, want not admitted", err)
+	}
+	if !h.m.hasCommitted(testIssue) {
+		t.Fatal("commit record cleared by a punch-out that failed")
+	}
+
+	delete(h.gh.Fail, "PostComment")
+	if _, err := h.m.Spawn(testIssue, testRepo); !errors.Is(err, ErrNotAdmitted) {
+		t.Fatalf("second Spawn = %v, want not admitted", err)
+	}
+	if n := len(h.prompts()); n != 0 {
+		t.Errorf("%d intake attempts, want none", n)
+	}
+	if h.m.hasCommitted(testIssue) {
+		t.Error("commit record kept after the punch-out succeeded")
+	}
+	if c := h.gh.Get(testIssue).Comments; len(c) != 1 {
+		t.Errorf("%d comments, want 1", len(c))
+	}
+}

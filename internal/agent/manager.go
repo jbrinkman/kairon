@@ -383,7 +383,8 @@ func (m *Manager) admitIssue(issueNumber int, repo string) (boundary.Result, err
 		if res.Failure == nil {
 			return boundary.Result{}, fmt.Errorf("%w: boundary punched out issue #%d without a failure context", ErrAdmissionUnavailable, issueNumber)
 		}
-		m.clearCommitted(issueNumber)
+		// The commit record stays until the punch-out succeeds; see
+		// punchOutWithRemedy.
 		return res, fmt.Errorf("%w: punched out (%s)", ErrNotAdmitted, res.Failure.Guard)
 	default:
 		return boundary.Result{}, fmt.Errorf("%w: unknown boundary outcome %d for issue #%d", ErrAdmissionUnavailable, res.Outcome, issueNumber)
@@ -731,6 +732,9 @@ func (m *Manager) punchOutWithRemedy(id string, issueNumber int, runID string, f
 	if err := m.cleanupRetryFile(issueNumber); err != nil {
 		log.Printf("[agent] failed to clear retry count for issue #%d: %v", issueNumber, err)
 	}
+	// Only a punch-out that succeeded releases the intake loop guard. Clearing it
+	// earlier lets a failed punch-out's next poll start intake again.
+	m.clearCommitted(issueNumber)
 }
 
 // removeInputFile deletes the issue's input document. A missing file is not an error.
