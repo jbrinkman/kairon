@@ -104,6 +104,14 @@ type model struct {
 	// nil unless that overlay is open.
 	planningRejection *planningRejection
 
+	// planBoundary is the planning boundary the handoff sends a finished
+	// planning document to. newModel builds it from the config; tests replace
+	// it. It is nil when no repository is configured.
+	planBoundary planningBoundary
+	// planningHandoffs marks the planning sessions whose document is being
+	// sent, so a second session end cannot send the same document again.
+	planningHandoffs map[string]bool
+
 	// About dialog state
 	aboutDialog *AboutDialog
 
@@ -172,6 +180,9 @@ func newModel(w *watcher.Watcher, m *agent.Manager, cfg *config.Config, logFile 
 		aboutDialog:    NewAboutDialog(),
 		footerManager:  footerManager,
 		tabFocusStates: make(map[string]FocusTarget),
+
+		planBoundary:     newPlanningBoundary(cfg),
+		planningHandoffs: make(map[string]bool),
 	}
 }
 
@@ -322,6 +333,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		return m, nil
+
+	case planningHandoffDoneMsg:
+		return m.handlePlanningHandoffDone(msg), nil
 
 	case validateDoneMsg:
 		for _, line := range m.validateLines(msg.res) {
