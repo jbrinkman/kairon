@@ -245,6 +245,11 @@ func (m *Manager) startIntake(issue int) (run *intakeRun, started bool, err erro
 // process that cannot start is a failed attempt, retried like any other.
 func (m *Manager) launchIntakeAttempt(a *Agent) {
 	run := a.intake
+	// A stop before the process exists found nothing to signal: start nothing.
+	if run.ctx.Err() != nil {
+		m.endIntake(a, IntakeResult{Outcome: IntakeStopped})
+		return
+	}
 	m.mu.RLock()
 	attempt := run.policy.Attempt(run.attempt)
 	prompt := planner.AutomatedPrompt(m.config.Repo, run.issue, attempt, run.last)
@@ -268,6 +273,13 @@ func (m *Manager) launchIntakeAttempt(a *Agent) {
 	a.Process = cmd.Process
 	m.statusGen.Add(1)
 	m.mu.Unlock()
+	// Stop cancels before it reads a.Process, so a stop that read no process
+	// is seen here. The monitor then reports the run stopped.
+	if run.ctx.Err() != nil {
+		if err := cmd.Process.Signal(syscall.SIGTERM); err != nil && !errors.Is(err, os.ErrProcessDone) {
+			log.Printf("[intake] failed to stop the process for issue #%d: %v", run.issue, err)
+		}
+	}
 
 	go m.monitorIntake(a, cmd, &reply)
 }

@@ -728,3 +728,29 @@ func TestWatcherIntake_FailuresAreBounded(t *testing.T) {
 		t.Errorf("Validate = %+v, want a fresh run that commits", res)
 	}
 }
+
+// A stop that lands while the run reads the revision, before any process
+// exists, launches nothing.
+func TestIntake_StopDuringStartLaunchesNothing(t *testing.T) {
+	h := newIntakeHarness(t, 3)
+	h.gh.Put(testIssue, "t", handWritten, testLabel)
+	h.gh.OnCall = func(op string) {
+		if op == "Revision" {
+			if err := h.m.Stop(h.intakeAgent(testIssue).ID); err != nil {
+				t.Errorf("Stop: %v", err)
+			}
+		}
+	}
+
+	res := h.m.Validate(context.Background(), testIssue)
+
+	if res.Intake.Outcome != IntakeStopped {
+		t.Fatalf("Validate = %+v, want stopped", res)
+	}
+	if n := len(h.prompts()); n != 0 {
+		t.Errorf("%d attempts launched, want 0", n)
+	}
+	if w := h.gh.Writes(); len(w) != 0 {
+		t.Errorf("writes = %q, want none", w)
+	}
+}
