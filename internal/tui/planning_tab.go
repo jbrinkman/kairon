@@ -15,6 +15,7 @@ import (
 	"charm.land/lipgloss/v2"
 
 	"github.com/jbrinkman/kairon/internal/acp"
+	"github.com/jbrinkman/kairon/internal/guard"
 	"github.com/jbrinkman/kairon/internal/logging"
 	"github.com/jbrinkman/kairon/internal/planner"
 	"github.com/jbrinkman/kairon/internal/session"
@@ -64,6 +65,10 @@ type PlanningTab struct {
 	// Session management
 	sessionManager *session.SessionManager
 	sessionID      string
+
+	// pathAnnounced is true once the document path has been sent over the
+	// current ACP connection.
+	pathAnnounced bool
 }
 
 // sanitizeErrorMessage parses and formats error messages into user-friendly text.
@@ -136,18 +141,28 @@ func sanitizeErrorMessage(rawError string) string {
 
 // Planning tab messages
 type planningResponseMsg struct {
+	tabID      string
 	content    string
 	isError    bool
 	isComplete bool
 }
 
 type planningStreamMsg struct {
+	tabID    string
 	response *acp.StreamingResponse
 }
 
 type planningStreamStartMsg struct {
+	tabID        string
 	streamChan   <-chan *acp.StreamingResponse
 	streamCancel context.CancelFunc
+}
+
+// planningTurnEndedMsg reports that an agent turn in a planning tab has ended.
+// The model hands the session to the planning handoff.
+type planningTurnEndedMsg struct {
+	tabID     string
+	sessionID string
 }
 
 // Focus transfer message for coordinating between message input and footer input
@@ -525,6 +540,7 @@ func (pt *PlanningTab) sendMessage(message string) tea.Cmd {
 				cancel()
 				logging.Error("failed to connect to planner agent via ACP", "tab_id", pt.id, "error", err)
 				return planningResponseMsg{
+					tabID:      pt.id,
 					content:    fmt.Sprintf("Failed to connect to planner agent: %v", err),
 					isError:    true,
 					isComplete: true,
@@ -550,6 +566,7 @@ func (pt *PlanningTab) sendMessage(message string) tea.Cmd {
 			cancel()
 			logging.Error("failed to send ACP message", "tab_id", pt.id, "error", err)
 			return planningResponseMsg{
+				tabID:      pt.id,
 				content:    fmt.Sprintf("Failed to send message: %v", err),
 				isError:    true,
 				isComplete: true,
@@ -560,9 +577,103 @@ func (pt *PlanningTab) sendMessage(message string) tea.Cmd {
 
 		// Return streaming start message instead of storing directly
 		return planningStreamStartMsg{
+			tabID:        pt.id,
 			streamChan:   streamChan,
 			streamCancel: cancel,
 		}
+	}
+}
+
+// hasConversation reports whether the tab holds earlier user or assistant
+// messages. The system notes a new tab starts with do not count.
+func (pt *PlanningTab) hasConversation() bool {
+	for _, msg := range pt.messages {
+		if msg.Role != "system" {
+			return true
+		}
+	}
+	return false
+}
+
+// outgoingPrompt returns the text to send to the agent for the user's message.
+// The first message over each ACP connection carries the document path, so a
+// restored tab on a new connection announces it again. A tab with no session
+// has no document path and sends the message unchanged.
+func (pt *PlanningTab) outgoingPrompt(message string, resumed bool) string {
+	if pt.acpClient == nil || !pt.acpClient.IsConnected() {
+		pt.pathAnnounced = false
+	}
+	if pt.pathAnnounced || pt.sessionID == "" {
+		return message
+	}
+	pt.pathAnnounced = true
+	return planningPrompt(pt.sessionID, message, resumed)
+}
+
+// startTurn marks the tab active and sends prompt to the agent.
+func (pt *PlanningTab) startTurn(prompt string) tea.Cmd {
+	oldState := pt.state
+	pt.state = session.PlanningStateActive
+	pt.streamingResponse = true
+	pt.currentResponse.Reset()
+
+	logging.Info("state transition", "tab_id", pt.id, "from", oldState, "to", pt.state)
+
+	// Save state change
+	pt.saveSessionState()
+
+	return pt.sendMessage(prompt)
+}
+
+// turnEnded returns the command that tells the model an agent turn ended.
+func (pt *PlanningTab) turnEnded() tea.Cmd {
+	msg := planningTurnEndedMsg{tabID: pt.id, sessionID: pt.sessionID}
+	return func() tea.Msg { return msg }
+}
+
+// ResumeAfterRejection reopens the conversation after the planning boundary
+// rejected the tab's document. It adds a system note to the tab, then sends the
+// resume prompt, which carries the document path and the failure, to the agent.
+// It refuses when the tab cannot take a message now.
+func (pt *PlanningTab) ResumeAfterRejection(fc guard.FailureContext) (tea.Cmd, error) {
+	switch pt.state {
+	case session.PlanningStateActive:
+		return nil, fmt.Errorf("planning tab %s is busy with another message", pt.id)
+	case session.PlanningStateReadOnly:
+		return nil, fmt.Errorf("planning tab %s is read-only", pt.id)
+	}
+	pt.AddMessage("system", fmt.Sprintf(
+		"The planning boundary rejected the document (%s check). Nothing was written to GitHub. Asking the planner to revise it.", fc.Guard))
+	prompt := planningResumePrompt(pt.sessionID, fc)
+	// The resume prompt carries the path, so the connection has announced it.
+	pt.pathAnnounced = pt.sessionID != ""
+	return pt.startTurn(prompt), nil
+}
+
+// acpResume returns the Resume function for the planning tab tabID: it makes
+// the tab active and sends it the failure. If the tab is closed, or cannot
+// take a message, the console shows an error line and the document stays.
+func acpResume(tabID string) func(model, guard.FailureContext) (model, tea.Cmd) {
+	return func(m model, fc guard.FailureContext) (model, tea.Cmd) {
+		fail := func(why string) (model, tea.Cmd) {
+			return m.handoffError(fmt.Sprintf("Cannot resume planning in tab %s: %s. The document file was kept.", tabID, why)), nil
+		}
+		tab := m.tabManager.GetPlanningTabByID(tabID)
+		if tab == nil {
+			return fail("the tab is closed")
+		}
+		sendCmd, err := tab.ResumeAfterRejection(fc)
+		if err != nil {
+			return fail(err.Error())
+		}
+		var focusCmd tea.Cmd
+		for i, t := range m.tabManager.GetTabs() {
+			if t.ID() == tabID {
+				m, focusCmd = m.switchActiveTab(i)
+				break
+			}
+		}
+		return m, tea.Batch(focusCmd, sendCmd)
 	}
 }
 
@@ -574,6 +685,7 @@ func (pt *PlanningTab) listenToStream() tea.Cmd {
 	return func() tea.Msg {
 		if ch == nil {
 			return planningResponseMsg{
+				tabID:      pt.id,
 				content:    "",
 				isError:    false,
 				isComplete: true,
@@ -583,12 +695,13 @@ func (pt *PlanningTab) listenToStream() tea.Cmd {
 		if !ok {
 			// Channel closed — stream ended without explicit done signal
 			return planningResponseMsg{
+				tabID:      pt.id,
 				content:    "",
 				isError:    false,
 				isComplete: true,
 			}
 		}
-		return planningStreamMsg{response: response}
+		return planningStreamMsg{tabID: pt.id, response: response}
 	}
 }
 
@@ -695,25 +808,17 @@ func (pt *PlanningTab) Update(msg tea.Msg) (Tab, tea.Cmd) {
 				if message != "" {
 					logging.Info("user message submitted", "tab_id", pt.id, "message_length", len(message))
 
-					// Add user message
+					// Decide what the agent receives before the user message is
+					// added: a tab with earlier conversation is a resumed one.
+					prompt := pt.outgoingPrompt(message, pt.hasConversation())
+
+					// Add user message (the tab shows the user's own text)
 					pt.AddMessage("user", message)
 
 					// Clear input
 					pt.textinput.SetValue("")
 
-					// Start streaming response
-					oldState := pt.state
-					pt.state = session.PlanningStateActive
-					pt.streamingResponse = true
-					pt.currentResponse.Reset()
-
-					logging.Info("state transition", "tab_id", pt.id, "from", oldState, "to", pt.state)
-
-					// Save state change
-					pt.saveSessionState()
-
-					// Send message to agent
-					cmds = append(cmds, pt.sendMessage(message))
+					cmds = append(cmds, pt.startTurn(prompt))
 				}
 			}
 		case "up":
@@ -835,6 +940,9 @@ func (pt *PlanningTab) Update(msg tea.Msg) (Tab, tea.Cmd) {
 				pt.AddMessage("assistant", pt.currentResponse.String())
 				pt.currentResponse.Reset()
 			}
+
+			// The agent turn is over: let the model check for a document.
+			cmds = append(cmds, pt.turnEnded())
 		}
 
 	case planningResponseMsg:
@@ -853,6 +961,10 @@ func (pt *PlanningTab) Update(msg tea.Msg) (Tab, tea.Cmd) {
 			pt.state = session.PlanningStateIdle
 			logging.Info("state transition on error response", "tab_id", pt.id, "from", oldState, "to", pt.state)
 
+			// The message may not have reached the agent, so the next one
+			// carries the document path again.
+			pt.pathAnnounced = false
+
 			// Add sanitized error message
 			pt.AddMessage("assistant", errorMessage)
 
@@ -862,6 +974,9 @@ func (pt *PlanningTab) Update(msg tea.Msg) (Tab, tea.Cmd) {
 			oldState := pt.state
 			pt.state = session.PlanningStateCompleted
 			logging.Info("state transition on completion", "tab_id", pt.id, "from", oldState, "to", pt.state)
+
+			// The agent turn is over: let the model check for a document.
+			cmds = append(cmds, pt.turnEnded())
 		} else {
 			pt.AddMessage("assistant", msg.content)
 		}

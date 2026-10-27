@@ -349,6 +349,17 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case planningHandoffDoneMsg:
 		return m.handlePlanningHandoffDone(msg), nil
 
+	// Stream events and turn ends belong to the planning tab that sent them,
+	// not to whichever tab or input is active.
+	case planningStreamStartMsg:
+		return m.routeToPlanningTab(msg.tabID, msg)
+	case planningStreamMsg:
+		return m.routeToPlanningTab(msg.tabID, msg)
+	case planningResponseMsg:
+		return m.routeToPlanningTab(msg.tabID, msg)
+	case planningTurnEndedMsg:
+		return m.finishPlanning(planningEnd{SessionID: msg.sessionID, Resume: acpResume(msg.tabID)})
+
 	case validateDoneMsg:
 		for _, line := range m.validateLines(msg.res) {
 			m = m.appendActivity(line)
@@ -765,6 +776,17 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	return m, nil
+}
+
+// routeToPlanningTab delivers a planning message to the planning tab that
+// owns it. A message for a tab that has been closed is dropped.
+func (m model) routeToPlanningTab(tabID string, msg tea.Msg) (model, tea.Cmd) {
+	tab := m.tabManager.GetPlanningTabByID(tabID)
+	if tab == nil {
+		return m, nil
+	}
+	_, cmd := tab.Update(msg)
+	return m, cmd
 }
 
 func (m model) activateOverlay(overlay overlayType, title string, content []string) model {
