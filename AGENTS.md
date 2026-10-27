@@ -54,6 +54,29 @@ to review comments:
 Template-synchronized files (see `.kiro/skills/builder-conventions/SKILL.md`) must be re-synced into
 `cmd/kairon/templates/` after editing and verified with `task sync:check`.
 
+## No silent deferral
+
+An issue's In Scope list and acceptance criteria are a commitment. The automation delivers all of it, or it stops
+and hands the issue to a human. It never delivers part of an issue and marks the rest "a follow-up", "deferred",
+"future work" or "not wired yet".
+
+These rules apply to every agent and tool that plans, designs, builds, validates or documents work here (the
+planners, the architect, builders, the validator, krew-lead, KiroCrew, Copilot and any other).
+
+- **Do not narrow scope on your own.** A requirements document, spec, task list or PR may not drop or shrink an In
+  Scope item or acceptance criterion of the issue it implements. Only the maintainer can move work out of an issue.
+- **Fail loudly.** If an item turns out to be impossible, contradictory or out of reach, stop instead of writing
+  around it. Pipeline agents report `**Status**: BLOCKED` in their sentinel (see the `sentinel-protocol` skill), and
+  krew-lead halts the issue with an incident report and the `<label>-failed` label.
+- **Specs defer nothing.** Every spec opens with a `## Scope Coverage` table mapping each In Scope item and
+  acceptance criterion to the plan tasks that deliver it, then `## Deferred work` with `none`. Every PR description
+  says `Deferred work: none`.
+- **Work split out by the maintainer is an issue.** It gets its own GitHub issue, and the original issue lists it
+  under Out of Scope by number. Any mention of it in specs, docs or code comments cites that number. A reference to
+  deferred work with no issue number is a defect, and the validator fails it.
+- **Known gaps in docs need an issue.** An entry under "Known gaps", "Limitations" or similar in `docs/` must cite the
+  issue that closes it.
+
 ## Test-driven development
 
 These rules apply to every agent and tool that changes code in this repository (the Kairon pipeline, KiroCrew,
