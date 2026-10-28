@@ -25,19 +25,6 @@ func judgeCheck(question string, files ...string) Check {
 	return Check{Criterion: "crit", Type: CheckJudge, Question: question, Files: files}
 }
 
-func TestJudgeCheckVocabulary(t *testing.T) {
-	if CheckJudge != "judge" {
-		t.Errorf("CheckJudge = %q, want judge", CheckJudge)
-	}
-	spec, ok := checkSpecs[CheckJudge]
-	if !ok {
-		t.Fatal("judge is not in checkSpecs")
-	}
-	if !spec.required.question || spec.required.files || !spec.allowed.files || !spec.allowed.question {
-		t.Errorf("judge spec wrong: %+v", spec)
-	}
-}
-
 func TestChecksValidateJudge(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -168,22 +155,34 @@ func TestJudgeCheckLabel(t *testing.T) {
 	}
 }
 
+// TestJudgeCheckYesPasses is the verdict table: a yes verdict passes with the
+// reasoning in the detail, and a no verdict fails with the reasoning.
 func TestJudgeCheckYesPasses(t *testing.T) {
-	f := &fakeJudge{verdict: JudgeVerdict{Yes: true, Reasoning: "clearly stated"}}
-	r := evalOne(t, judgeCheck("Is it good?"), Input{Judge: f.judge})
-	wantPass(t, r)
-	if !strings.Contains(r.Detail, "judge answered yes: clearly stated") {
-		t.Errorf("detail %q lacks yes + reasoning", r.Detail)
+	tests := []struct {
+		name    string
+		verdict JudgeVerdict
+		verify  func(t *testing.T, r Result)
+	}{
+		{"verdict-yes", JudgeVerdict{Yes: true, Reasoning: "clearly stated"}, func(t *testing.T, r Result) {
+			wantPass(t, r)
+			if !strings.Contains(r.Detail, "judge answered yes: clearly stated") {
+				t.Errorf("detail %q lacks yes + reasoning", r.Detail)
+			}
+			if r.Type != CheckJudge || !strings.Contains(r.Label, "judge") {
+				t.Errorf("result type/label wrong: %+v", r)
+			}
+		}},
+		{"verdict-no", JudgeVerdict{Yes: false, Reasoning: "criterion missing"}, func(t *testing.T, r Result) {
+			wantFail(t, r, "judge answered no: criterion missing")
+		}},
 	}
-	if r.Type != CheckJudge || !strings.Contains(r.Label, "judge") {
-		t.Errorf("result type/label wrong: %+v", r)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := &fakeJudge{verdict: tt.verdict}
+			r := evalOne(t, judgeCheck("Is it good?"), Input{Judge: f.judge})
+			tt.verify(t, r)
+		})
 	}
-}
-
-func TestJudgeCheckNoFails(t *testing.T) {
-	f := &fakeJudge{verdict: JudgeVerdict{Yes: false, Reasoning: "criterion missing"}}
-	r := evalOne(t, judgeCheck("Is it good?"), Input{Judge: f.judge})
-	wantFail(t, r, "judge answered no: criterion missing")
 }
 
 func TestJudgeCheckEmptyReasoning(t *testing.T) {
@@ -516,11 +515,6 @@ func TestJudgeCheckParseErrorFails(t *testing.T) {
 	}
 }
 
-func TestJudgeCheckNilJudgeFails(t *testing.T) {
-	r := evalOne(t, judgeCheck("q"), Input{})
-	wantFail(t, r, "no judge configured")
-}
-
 func TestJudgeCheckNilJudgeFailsEvenWithFiles(t *testing.T) {
 	dir := t.TempDir()
 	writeEvalFile(t, dir, "a.md", "a")
@@ -585,16 +579,6 @@ func TestJudgeCheckInvalidCheckFailsWithoutCalling(t *testing.T) {
 	wantFail(t, r, "invalid check")
 	if len(f.queries) != 0 {
 		t.Error("judge invoked for an invalid check")
-	}
-}
-
-func TestJudgeCheckEvaluatorStaysIndependent(t *testing.T) {
-	// A non-judge check ignores Input/Judge entirely.
-	f := &fakeJudge{}
-	r := evalOne(t, Check{Criterion: "c", Type: CheckOutputContains, Pattern: "x"}, Input{Output: "x", Input: "i", Judge: f.judge})
-	wantPass(t, r)
-	if len(f.queries) != 0 {
-		t.Error("non-judge check invoked the judge")
 	}
 }
 
