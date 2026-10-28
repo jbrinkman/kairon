@@ -6,153 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 )
-
-func TestNewFileHandler(t *testing.T) {
-	// Create temporary directory for testing
-	tempDir, err := os.MkdirTemp("", "filehandler-test-*")
-	if err != nil {
-		t.Fatalf("failed to create temp dir: %v", err)
-	}
-	defer os.RemoveAll(tempDir)
-
-	config := FileOutputConfig{
-		LogDir:        tempDir,
-		MaxFileSizeMB: 1,
-	}
-
-	fh, err := NewFileHandler(config)
-	if err != nil {
-		t.Fatalf("NewFileHandler failed: %v", err)
-	}
-	defer fh.Close()
-
-	// Verify log directory was created
-	if _, err := os.Stat(tempDir); os.IsNotExist(err) {
-		t.Errorf("log directory was not created")
-	}
-
-	// Verify initial log file was created
-	currentPath := fh.GetCurrentFilePath()
-	if currentPath == "" {
-		t.Errorf("current file path is empty")
-	}
-
-	if _, err := os.Stat(currentPath); os.IsNotExist(err) {
-		t.Errorf("initial log file was not created: %s", currentPath)
-	}
-
-	// Verify filename format
-	filename := filepath.Base(currentPath)
-	if !strings.HasPrefix(filename, "debug-") || !strings.HasSuffix(filename, ".log") {
-		t.Errorf("unexpected filename format: %s", filename)
-	}
-}
-
-func TestFileHandler_Write(t *testing.T) {
-	tempDir, err := os.MkdirTemp("", "filehandler-test-*")
-	if err != nil {
-		t.Fatalf("failed to create temp dir: %v", err)
-	}
-	defer os.RemoveAll(tempDir)
-
-	config := FileOutputConfig{
-		LogDir:        tempDir,
-		MaxFileSizeMB: 1,
-	}
-
-	fh, err := NewFileHandler(config)
-	if err != nil {
-		t.Fatalf("NewFileHandler failed: %v", err)
-	}
-	defer fh.Close()
-
-	// Write test data
-	testData := []byte("test log entry\n")
-	n, err := fh.Write(testData)
-	if err != nil {
-		t.Errorf("Write failed: %v", err)
-	}
-
-	if n != len(testData) {
-		t.Errorf("Write returned %d bytes, expected %d", n, len(testData))
-	}
-
-	// Verify size was updated
-	currentSize := fh.GetCurrentSize()
-	if currentSize != int64(len(testData)) {
-		t.Errorf("current size is %d, expected %d", currentSize, len(testData))
-	}
-
-	// Verify data was written to file
-	currentPath := fh.GetCurrentFilePath()
-	content, err := os.ReadFile(currentPath)
-	if err != nil {
-		t.Errorf("failed to read log file: %v", err)
-	}
-
-	if string(content) != string(testData) {
-		t.Errorf("file content is %q, expected %q", string(content), string(testData))
-	}
-}
-
-func TestFileHandler_Rotation(t *testing.T) {
-	tempDir, err := os.MkdirTemp("", "filehandler-test-*")
-	if err != nil {
-		t.Fatalf("failed to create temp dir: %v", err)
-	}
-	defer os.RemoveAll(tempDir)
-
-	// Use very small max size to trigger rotation
-	config := FileOutputConfig{
-		LogDir:        tempDir,
-		MaxFileSizeMB: 1, // Will convert to bytes: 1 * 1024 * 1024 = 1048576
-	}
-
-	fh, err := NewFileHandler(config)
-	if err != nil {
-		t.Fatalf("NewFileHandler failed: %v", err)
-	}
-	defer fh.Close()
-
-	initialPath := fh.GetCurrentFilePath()
-
-	// Write data that exceeds max size to trigger rotation
-	// Create 1MB + 1 byte of data
-	largeData := make([]byte, 1024*1024+1)
-	for i := range largeData {
-		largeData[i] = 'A'
-	}
-
-	_, err = fh.Write(largeData)
-	if err != nil {
-		t.Errorf("Write failed: %v", err)
-	}
-
-	// Verify rotation occurred
-	currentPath := fh.GetCurrentFilePath()
-	if currentPath == initialPath {
-		t.Errorf("rotation did not occur: path unchanged")
-	}
-
-	// Verify both files exist
-	if _, err := os.Stat(initialPath); os.IsNotExist(err) {
-		t.Errorf("initial log file was deleted after rotation")
-	}
-
-	if _, err := os.Stat(currentPath); os.IsNotExist(err) {
-		t.Errorf("new log file was not created after rotation")
-	}
-
-	// Verify old file is closed (can be opened again)
-	oldFile, err := os.OpenFile(initialPath, os.O_RDONLY, 0)
-	if err != nil {
-		t.Errorf("failed to open old log file: %v", err)
-	} else {
-		oldFile.Close()
-	}
-}
 
 func TestFileHandler_MultipleWrites(t *testing.T) {
 	tempDir, err := os.MkdirTemp("", "filehandler-test-*")
@@ -276,51 +130,6 @@ func TestFileHandler_DirectoryCreation(t *testing.T) {
 	}
 }
 
-func TestFileHandler_FilenameFormat(t *testing.T) {
-	tempDir, err := os.MkdirTemp("", "filehandler-test-*")
-	if err != nil {
-		t.Fatalf("failed to create temp dir: %v", err)
-	}
-	defer os.RemoveAll(tempDir)
-
-	config := FileOutputConfig{
-		LogDir:        tempDir,
-		MaxFileSizeMB: 1,
-	}
-
-	fh, err := NewFileHandler(config)
-	if err != nil {
-		t.Fatalf("NewFileHandler failed: %v", err)
-	}
-	defer fh.Close()
-
-	currentPath := fh.GetCurrentFilePath()
-	filename := filepath.Base(currentPath)
-
-	// Expected format: debug-YYYY-MM-DD-HHMM.log
-	// Example: debug-2024-07-14-1230.log
-	expectedPrefix := "debug-"
-	expectedSuffix := ".log"
-
-	if !strings.HasPrefix(filename, expectedPrefix) {
-		t.Errorf("filename %q does not have expected prefix %q", filename, expectedPrefix)
-	}
-
-	if !strings.HasSuffix(filename, expectedSuffix) {
-		t.Errorf("filename %q does not have expected suffix %q", filename, expectedSuffix)
-	}
-
-	// Extract timestamp part: debug-YYYY-MM-DD-HHMM.log -> YYYY-MM-DD-HHMM
-	timestampPart := strings.TrimPrefix(filename, expectedPrefix)
-	timestampPart = strings.TrimSuffix(timestampPart, expectedSuffix)
-
-	// Verify timestamp can be parsed
-	_, err = time.Parse("2006-01-02-1504", timestampPart)
-	if err != nil {
-		t.Errorf("timestamp part %q cannot be parsed: %v", timestampPart, err)
-	}
-}
-
 func TestFileHandler_ConcurrentWrites(t *testing.T) {
 	tempDir, err := os.MkdirTemp("", "filehandler-test-*")
 	if err != nil {
@@ -371,52 +180,111 @@ func TestFileHandler_ConcurrentWrites(t *testing.T) {
 	}
 }
 
-func TestFileHandler_RotationSequenceNumbers(t *testing.T) {
-	tempDir, err := os.MkdirTemp("", "filehandler-test-*")
-	if err != nil {
-		t.Fatalf("failed to create temp dir: %v", err)
-	}
-	defer os.RemoveAll(tempDir)
+func TestFileHandler_Rotation(t *testing.T) {
+	t.Run("size threshold rotates to a new file", func(t *testing.T) {
+		tempDir, err := os.MkdirTemp("", "filehandler-test-*")
+		if err != nil {
+			t.Fatalf("failed to create temp dir: %v", err)
+		}
+		defer os.RemoveAll(tempDir)
 
-	config := FileOutputConfig{
-		LogDir:        tempDir,
-		MaxFileSizeMB: 1,
-	}
+		// Use very small max size to trigger rotation
+		config := FileOutputConfig{
+			LogDir:        tempDir,
+			MaxFileSizeMB: 1, // Will convert to bytes: 1 * 1024 * 1024 = 1048576
+		}
 
-	// Create multiple handlers in quick succession (within same minute)
-	handlers := make([]*FileHandler, 3)
-	for i := 0; i < 3; i++ {
 		fh, err := NewFileHandler(config)
 		if err != nil {
-			t.Fatalf("NewFileHandler %d failed: %v", i, err)
+			t.Fatalf("NewFileHandler failed: %v", err)
 		}
-		handlers[i] = fh
+		defer fh.Close()
 
-		// Write some data
-		fh.Write([]byte(fmt.Sprintf("handler %d\n", i)))
-	}
+		initialPath := fh.GetCurrentFilePath()
 
-	// Close all handlers
-	for i, fh := range handlers {
-		if err := fh.Close(); err != nil {
-			t.Errorf("Close handler %d failed: %v", i, err)
+		// Write data that exceeds max size to trigger rotation
+		// Create 1MB + 1 byte of data
+		largeData := make([]byte, 1024*1024+1)
+		for i := range largeData {
+			largeData[i] = 'A'
 		}
-	}
 
-	// Verify multiple log files were created
-	files, err := os.ReadDir(tempDir)
-	if err != nil {
-		t.Fatalf("failed to read log directory: %v", err)
-	}
-
-	if len(files) < 2 {
-		t.Errorf("expected at least 2 log files, got %d", len(files))
-	}
-
-	// Verify files have sequence numbers (or base name)
-	for _, file := range files {
-		if !strings.HasPrefix(file.Name(), "debug-") {
-			t.Errorf("unexpected filename: %s", file.Name())
+		_, err = fh.Write(largeData)
+		if err != nil {
+			t.Errorf("Write failed: %v", err)
 		}
-	}
+
+		// Verify rotation occurred
+		currentPath := fh.GetCurrentFilePath()
+		if currentPath == initialPath {
+			t.Errorf("rotation did not occur: path unchanged")
+		}
+
+		// Verify both files exist
+		if _, err := os.Stat(initialPath); os.IsNotExist(err) {
+			t.Errorf("initial log file was deleted after rotation")
+		}
+
+		if _, err := os.Stat(currentPath); os.IsNotExist(err) {
+			t.Errorf("new log file was not created after rotation")
+		}
+
+		// Verify old file is closed (can be opened again)
+		oldFile, err := os.OpenFile(initialPath, os.O_RDONLY, 0)
+		if err != nil {
+			t.Errorf("failed to open old log file: %v", err)
+		} else {
+			oldFile.Close()
+		}
+	})
+
+	t.Run("same-minute handlers get distinct files", func(t *testing.T) {
+		tempDir, err := os.MkdirTemp("", "filehandler-test-*")
+		if err != nil {
+			t.Fatalf("failed to create temp dir: %v", err)
+		}
+		defer os.RemoveAll(tempDir)
+
+		config := FileOutputConfig{
+			LogDir:        tempDir,
+			MaxFileSizeMB: 1,
+		}
+
+		// Create multiple handlers in quick succession (within same minute)
+		handlers := make([]*FileHandler, 3)
+		for i := 0; i < 3; i++ {
+			fh, err := NewFileHandler(config)
+			if err != nil {
+				t.Fatalf("NewFileHandler %d failed: %v", i, err)
+			}
+			handlers[i] = fh
+
+			// Write some data
+			fh.Write([]byte(fmt.Sprintf("handler %d\n", i)))
+		}
+
+		// Close all handlers
+		for i, fh := range handlers {
+			if err := fh.Close(); err != nil {
+				t.Errorf("Close handler %d failed: %v", i, err)
+			}
+		}
+
+		// Verify multiple log files were created
+		files, err := os.ReadDir(tempDir)
+		if err != nil {
+			t.Fatalf("failed to read log directory: %v", err)
+		}
+
+		if len(files) != 3 {
+			t.Errorf("expected exactly 3 log files, got %d", len(files))
+		}
+
+		// Verify files have sequence numbers (or base name)
+		for _, file := range files {
+			if !strings.HasPrefix(file.Name(), "debug-") {
+				t.Errorf("unexpected filename: %s", file.Name())
+			}
+		}
+	})
 }

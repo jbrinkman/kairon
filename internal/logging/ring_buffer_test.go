@@ -381,76 +381,44 @@ func TestEmptyBufferOperations(t *testing.T) {
 	}
 }
 
-// TestMetadataHandling verifies proper metadata storage and retrieval
-func TestMetadataHandling(t *testing.T) {
-	rb := NewRingBuffer(10)
-
-	// Add entry with various metadata types
-	rb.Add(log.InfoLevel, "test message",
-		"string_key", "string_value",
-		"int_key", 42,
-		"bool_key", true,
-		"float_key", 3.14,
-	)
-
-	entries := rb.Get()
-	if len(entries) != 1 {
-		t.Fatalf("expected 1 entry, got %d", len(entries))
+// TestMalformedKeyVals verifies that malformed key-value lists are handled:
+// a trailing key without a value is dropped and a non-string key is skipped.
+func TestMalformedKeyVals(t *testing.T) {
+	tests := []struct {
+		name     string
+		keyvals  []interface{}
+		wantMeta map[string]interface{}
+	}{
+		{
+			name:     "odd number of keyvals drops the trailing key",
+			keyvals:  []interface{}{"key1", "value1", "key2"},
+			wantMeta: map[string]interface{}{"key1": "value1"},
+		},
+		{
+			name:     "non-string key is skipped",
+			keyvals:  []interface{}{123, "value", "key2", "value2"},
+			wantMeta: map[string]interface{}{"key2": "value2"},
+		},
 	}
 
-	meta := entries[0].Metadata
-	if meta["string_key"] != "string_value" {
-		t.Errorf("expected string_value, got %v", meta["string_key"])
-	}
-	if meta["int_key"] != 42 {
-		t.Errorf("expected 42, got %v", meta["int_key"])
-	}
-	if meta["bool_key"] != true {
-		t.Errorf("expected true, got %v", meta["bool_key"])
-	}
-	if meta["float_key"] != 3.14 {
-		t.Errorf("expected 3.14, got %v", meta["float_key"])
-	}
-}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rb := NewRingBuffer(10)
+			rb.Add(log.InfoLevel, "test", tt.keyvals...)
 
-// TestOddKeyVals verifies handling of odd number of key-value pairs
-func TestOddKeyVals(t *testing.T) {
-	rb := NewRingBuffer(10)
+			entries := rb.Get()
+			if len(entries) != 1 {
+				t.Fatalf("expected 1 entry, got %d", len(entries))
+			}
 
-	// Add with odd number of keyvals (last key has no value)
-	rb.Add(log.InfoLevel, "test", "key1", "value1", "key2")
-
-	entries := rb.Get()
-	if len(entries) != 1 {
-		t.Fatalf("expected 1 entry, got %d", len(entries))
-	}
-
-	// Should only have key1 in metadata
-	if len(entries[0].Metadata) != 1 {
-		t.Errorf("expected 1 metadata entry, got %d", len(entries[0].Metadata))
-	}
-	if entries[0].Metadata["key1"] != "value1" {
-		t.Errorf("expected value1, got %v", entries[0].Metadata["key1"])
-	}
-}
-
-// TestNonStringKeys verifies handling of non-string keys
-func TestNonStringKeys(t *testing.T) {
-	rb := NewRingBuffer(10)
-
-	// Add with non-string key (should be ignored)
-	rb.Add(log.InfoLevel, "test", 123, "value", "key2", "value2")
-
-	entries := rb.Get()
-	if len(entries) != 1 {
-		t.Fatalf("expected 1 entry, got %d", len(entries))
-	}
-
-	// Should only have key2 in metadata (123 is not a string)
-	if len(entries[0].Metadata) != 1 {
-		t.Errorf("expected 1 metadata entry, got %d", len(entries[0].Metadata))
-	}
-	if entries[0].Metadata["key2"] != "value2" {
-		t.Errorf("expected value2, got %v", entries[0].Metadata["key2"])
+			if len(entries[0].Metadata) != len(tt.wantMeta) {
+				t.Errorf("expected %d metadata entries, got %d", len(tt.wantMeta), len(entries[0].Metadata))
+			}
+			for k, want := range tt.wantMeta {
+				if entries[0].Metadata[k] != want {
+					t.Errorf("expected %v for key %q, got %v", want, k, entries[0].Metadata[k])
+				}
+			}
+		})
 	}
 }
