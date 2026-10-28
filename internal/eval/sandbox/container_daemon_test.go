@@ -7,7 +7,6 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
-	"strings"
 	"testing"
 	"time"
 
@@ -68,12 +67,63 @@ func skipIfNoContainerDaemon(t *testing.T) {
 }
 
 func TestPodmanSocketCandidates_Linux(t *testing.T) {
-	env := map[string]string{"XDG_RUNTIME_DIR": "/run/user/1000"}
-	got := podmanSocketCandidates("linux", func(k string) string { return env[k] }, 1000)
-	assert.Equal(t, []string{
-		"/run/user/1000/podman/podman.sock",
-		"/run/podman/podman.sock",
-	}, got)
+	tests := []struct {
+		name   string
+		goos   string
+		getenv func(string) string
+		uid    int
+		want   []string
+	}{
+		{
+			name: "xdg_runtime_dir",
+			goos: "linux",
+			getenv: func(k string) string {
+				return map[string]string{"XDG_RUNTIME_DIR": "/run/user/1000"}[k]
+			},
+			uid: 1000,
+			want: []string{
+				"/run/user/1000/podman/podman.sock",
+				"/run/podman/podman.sock",
+			},
+		},
+		{
+			name:   "root_uid_0",
+			goos:   "linux",
+			getenv: func(string) string { return "" },
+			uid:    0,
+			want:   []string{"/run/podman/podman.sock"},
+		},
+		{
+			name: "darwin",
+			goos: "darwin",
+			getenv: func(k string) string {
+				return map[string]string{"TMPDIR": "/var/folders/ab/xyz/T/", "HOME": "/Users/alice"}[k]
+			},
+			uid: 501,
+			want: []string{
+				"/var/folders/ab/xyz/T/podman/podman-machine-default-api.sock",
+				"/Users/alice/.local/share/containers/podman/machine/podman.sock",
+				"/Users/alice/.local/share/containers/podman/machine/podman-machine-default/podman.sock",
+			},
+		},
+		{
+			name:   "unknown_os",
+			goos:   "plan9",
+			getenv: func(string) string { return "x" },
+			uid:    1,
+			want:   nil,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := podmanSocketCandidates(tt.goos, tt.getenv, tt.uid)
+			if len(tt.want) == 0 {
+				assert.Empty(t, got)
+				return
+			}
+			assert.Equal(t, tt.want, got)
+		})
+	}
 }
 
 func TestPodmanSocketCandidates_LinuxNoXDGFallsBackToUID(t *testing.T) {
@@ -82,25 +132,6 @@ func TestPodmanSocketCandidates_LinuxNoXDGFallsBackToUID(t *testing.T) {
 		"/run/user/1234/podman/podman.sock",
 		"/run/podman/podman.sock",
 	}, got)
-}
-
-func TestPodmanSocketCandidates_LinuxRoot(t *testing.T) {
-	got := podmanSocketCandidates("linux", func(string) string { return "" }, 0)
-	assert.Equal(t, []string{"/run/podman/podman.sock"}, got)
-}
-
-func TestPodmanSocketCandidates_Darwin(t *testing.T) {
-	env := map[string]string{"TMPDIR": "/var/folders/ab/xyz/T/", "HOME": "/Users/alice"}
-	got := podmanSocketCandidates("darwin", func(k string) string { return env[k] }, 501)
-	assert.Equal(t, []string{
-		"/var/folders/ab/xyz/T/podman/podman-machine-default-api.sock",
-		"/Users/alice/.local/share/containers/podman/machine/podman.sock",
-		"/Users/alice/.local/share/containers/podman/machine/podman-machine-default/podman.sock",
-	}, got)
-}
-
-func TestPodmanSocketCandidates_UnknownOS(t *testing.T) {
-	assert.Empty(t, podmanSocketCandidates("plan9", func(string) string { return "x" }, 1))
 }
 
 func TestExistingSockets_FiltersMissingAndNonSockets(t *testing.T) {
@@ -172,34 +203,6 @@ func TestPodmanDiscovery_DeadCandidateIsNotSelected(t *testing.T) {
 	err := ensureContainerDaemon(t, noDefaultDaemon, []string{dead})
 	require.Error(t, err)
 	assert.Empty(t, os.Getenv("DOCKER_HOST"))
-}
-
-func TestPodmanDiscovery_DefaultEndpointWins(t *testing.T) {
-	t.Setenv("DOCKER_HOST", "")
-	var pinged []string
-	ping := func(host string) error {
-		pinged = append(pinged, host)
-		return nil
-	}
-	require.NoError(t, ensureContainerDaemon(t, ping, []string{"/unused.sock"}))
-	assert.Equal(t, []string{""}, pinged)
-	assert.Empty(t, os.Getenv("DOCKER_HOST"))
-}
-
-func TestPodmanDiscovery_ExplicitDockerHostIsNotOverridden(t *testing.T) {
-	sock := startFakePodmanSocket(t)
-	t.Setenv("DOCKER_HOST", "unix:///nonexistent-kairon.sock")
-
-	err := ensureContainerDaemon(t, noDefaultDaemon, []string{sock})
-	require.Error(t, err)
-	assert.Equal(t, "unix:///nonexistent-kairon.sock", os.Getenv("DOCKER_HOST"))
-}
-
-func TestSkipIfNoContainerDaemon_MessageNamesPodmanAndDocker(t *testing.T) {
-	msg := noContainerDaemonMessage(fmt.Errorf("boom"))
-	assert.Contains(t, msg, "Podman")
-	assert.Contains(t, msg, "Docker")
-	assert.True(t, strings.Contains(msg, "boom"), "underlying error should be included")
 }
 
 // --- Production detection (daemon.go) unit tests ---

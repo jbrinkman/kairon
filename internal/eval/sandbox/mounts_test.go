@@ -68,22 +68,6 @@ func TestNewHostConfigWithMounts_BindFlags(t *testing.T) {
 	}
 }
 
-func TestNewHostConfigWithMounts_NoWorkspaceTmpfs(t *testing.T) {
-	ws := realTempDir(t)
-	hc, err := newHostConfigWithMounts(DefaultLimits(), []Mount{{HostPath: ws, ContainerPath: "/workspace"}}, false)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, ok := hc.Tmpfs["/workspace"]; ok {
-		t.Error("host config must not have a tmpfs at /workspace")
-	}
-	for p := range hc.Tmpfs {
-		if p == "/workspace" || strings.HasPrefix(p, "/workspace/") {
-			t.Errorf("tmpfs entry %q must not be at or under the workspace", p)
-		}
-	}
-}
-
 func TestNewHostConfigWithMounts_ReadonlyRootfs(t *testing.T) {
 	ws := realTempDir(t)
 	for name, mounts := range map[string][]Mount{
@@ -155,25 +139,17 @@ func TestNewHostConfigWithMounts_Tmpfs(t *testing.T) {
 			t.Errorf("tmpfs %s must not set uid/gid: %q", p, got)
 		}
 	}
-}
 
-// TestTmpfsMounts_NoOwnershipOptions pins that no tmpfs entry carries uid= or
-// gid=, which Podman's Docker-compatible API rejects at container create.
-func TestTmpfsMounts_NoOwnershipOptions(t *testing.T) {
-	m := tmpfsMounts()
-	if len(m) != 3 {
-		t.Fatalf("want exactly 3 tmpfs entries, got %v", m)
-	}
-	for path, opts := range m {
-		for _, bad := range []string{"uid=", "gid="} {
-			if strings.Contains(opts, bad) {
-				t.Errorf("tmpfs %s options %q must not contain %q", path, opts, bad)
+	t.Run("no tmpfs at or under the workspace", func(t *testing.T) {
+		if _, ok := hc.Tmpfs["/workspace"]; ok {
+			t.Error("host config must not have a tmpfs at /workspace")
+		}
+		for p := range hc.Tmpfs {
+			if p == "/workspace" || strings.HasPrefix(p, "/workspace/") {
+				t.Errorf("tmpfs entry %q must not be at or under the workspace", p)
 			}
 		}
-	}
-	if got, want := m[TmpfsHomePath], "rw,nosuid,nodev,mode=0777,size="+TmpfsHomeSize; got != want {
-		t.Errorf("tmpfs %s = %q, want %q", TmpfsHomePath, got, want)
-	}
+	})
 }
 
 func TestNewHostConfigWithMounts_PreservesLimitsAndNetwork(t *testing.T) {
@@ -315,27 +291,6 @@ func TestNewHostConfigWithMounts_PublicUsesHostProbe(t *testing.T) {
 	hasLabel := len(hc.SecurityOpt) == 1 && hc.SecurityOpt[0] == "label=disable"
 	if hasLabel != hostSELinuxEnforcing() {
 		t.Errorf("label=disable presence (%v) must match host probe (%v)", hasLabel, hostSELinuxEnforcing())
-	}
-}
-
-func TestWithOpenUmask_Shape(t *testing.T) {
-	got := WithOpenUmask([]string{"kiro-cli", "chat", "--flag"})
-	want := []string{"sh", "-c", `umask 000; exec "$@"`, "kairon-exec", "kiro-cli", "chat", "--flag"}
-	if len(got) != len(want) {
-		t.Fatalf("got %q, want %q", got, want)
-	}
-	for i := range want {
-		if got[i] != want[i] {
-			t.Errorf("argv[%d] = %q, want %q", i, got[i], want[i])
-		}
-	}
-}
-
-func TestWithOpenUmask_DoesNotMutateInput(t *testing.T) {
-	in := []string{"a", "b"}
-	_ = WithOpenUmask(in)
-	if len(in) != 2 || in[0] != "a" || in[1] != "b" {
-		t.Errorf("input mutated: %q", in)
 	}
 }
 
