@@ -55,7 +55,7 @@ Silently dropped scope is a failure, even when every listed criterion passes. Af
 
 ### Phase 4: Spec Deviation Review
 
-The spec is assumed correct. A builder may depart from it only with reasoning recorded both in a code comment at the point of departure (citing the spec section) and in the `**Spec deviations**` entry of its sentinel (`.kairon/artifacts/builder-<number>-*.md`). After Phase 3:
+The spec is assumed correct. A builder may depart from it only with reasoning recorded both in a code comment at the point of departure (citing the spec section) and in the `**Spec deviations**` entry of its sentinel (`.kairon/artifacts/builder-<number>-*.md`, or `.kairon/artifacts/builder-<number>.md` for a build with no plan). After Phase 3:
 
 1. **Find every deviation**: Compare the branch's changes (the same working-tree diff and untracked files as Phase 3) against each section of the spec: files, functions, types, data formats, behavior and approach. List every place the implementation differs from what the spec says.
 2. **Match each to its record**: For each difference, find its `**Spec deviations**` entry in a builder sentinel and its code comment.

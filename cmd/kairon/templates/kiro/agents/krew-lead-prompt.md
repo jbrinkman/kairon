@@ -118,7 +118,7 @@ The message also names a verified input document, and the environment variable `
    - A summary of what was changed and why
    - List of key files modified/created
    - A `Deferred work: none` line. The workflow never opens a PR for part of an issue; if anything was not delivered, halt at step 11 instead
-   - A `Spec deviations` section listing every `**Spec deviations**` entry from the builder sentinels (`.kairon/artifacts/builder-<number>-*.md`): the spec section, what was done instead, why, and the file and line of the code comment. Only deviations the validator's Phase 4 accepted reach this step; a rejected or undocumented one goes back to the builder in the step-6 loop. If there are none, write `Spec deviations: none`
+   - A `Spec deviations` section listing every `**Spec deviations**` entry from the builder sentinels (`.kairon/artifacts/builder-<number>-*.md`, or `.kairon/artifacts/builder-<number>.md` for a build with no plan): the spec section, what was done instead, why, and the file and line of the code comment. Only deviations the validator's Phase 4 accepted reach this step; a rejected or undocumented one goes back to the builder in the step-6 loop. If there are none, write `Spec deviations: none`
    - `Closes #<number>` at the end
 9. **Request Copilot Review** (Optional): If Copilot reviews are enabled, run `gh pr edit --add-reviewer @copilot`. Handle errors gracefully without failing the workflow.
 10. **Label Done**: Run `gh issue edit <number> --repo <repo> --add-label <label>-done` (where label matches the trigger label, e.g. `kairon`)
