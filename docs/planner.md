@@ -20,7 +20,7 @@ name, and neither prompt branches on mode. There is no "if you are running inter
 | Used when | A person is present and plans a new issue. | The run is unattended and canonicalizes an existing issue. |
 | Manifest | `.kiro/agents/planner.json` | `.kiro/agents/planner-automated.json` |
 | Prompt | `.kiro/agents/planner-prompt.md` | `.kiro/agents/planner-automated-prompt.md` |
-| Tools | `read`, `write` (limited to `.worktrees/planning-*` and the per-session document files `.kairon/sessions/*.document.yaml`), `shell`, `web_search`, `web_fetch` | `read`, `shell` only |
+| Tools | `read`, `write` (limited to `.worktrees/planning-*` and the per-session files `.kairon/sessions/*.document.yaml` and `.kairon/sessions/*.label`), `shell`, `web_search`, `web_fetch` | `read`, `shell` only |
 | Asks questions | Yes: one decision per turn, lettered options with one recommendation. | Never. |
 | Fills a gap by | Asking the person, or a default the person accepted. | Grounded inference with the evidence recorded in `inferences`. |
 | May return | `result: canonical` only. | `result: canonical` or `result: punch_out`. |
@@ -197,17 +197,27 @@ argv.
 A terminal session's output cannot be captured, so an interactive session hands its document to the boundary through a
 file. The handoff is `finishPlanning` in `internal/tui/planning_handoff.go`.
 
-### The per-session file and the prompt line
+### The per-session files and the prompt lines
 
-When a planning session starts or resumes, Kairon picks one path for it, `.kairon/sessions/<session-id>.document.yaml`,
-keyed by the planning session ID. A session ID that is empty, contains a path separator or contains `..` has no path.
+When a planning session starts or resumes, Kairon picks two paths for it, both keyed by the planning session ID:
 
-The first line of the agent's initial prompt is `Document path: <path>`. A resumed session adds one sentence saying the
-file may already hold the last document and should be read first. The person's own request follows after a blank line.
-The interactive `planner` writes the approved document to that path with its `write` tool, after the label turn and
-before it returns the document, and still returns the same document as its reply. The `planner.json` manifest allows
-that write; it allows no other write outside `.worktrees/planning-*`. If a prompt has no `Document path:` line, the
-agent only returns the document.
+- `.kairon/sessions/<session-id>.document.yaml`, the approved document.
+- `.kairon/sessions/<session-id>.label`, the person's answer to the trigger-label question.
+
+A session ID that is empty, contains a path separator or contains `..` has no paths.
+
+The first two lines of the agent's initial prompt are `Document path: <path>` and
+`Label answer path: .kairon/sessions/<session-id>.label`. A resumed session adds one sentence saying the document file
+may already hold the last document and should be read first. The person's own request follows after a blank line.
+
+After the label turn, the interactive `planner` writes the label file first, then the document file, both with its
+`write` tool, and still returns the same document as its reply. The label file holds the single word `yes` or `no` and
+nothing else. The `planner.json` manifest allows these two writes; it allows no other write outside
+`.worktrees/planning-*`. If a prompt has no `Document path:` line, the agent writes nothing and only returns the
+document.
+
+The answer is not a field of the document. It travels in the label file, outside the document, so the stage-output
+schema is unchanged and `schema_version` stays 1.
 
 ### When the handoff runs
 
@@ -235,6 +245,9 @@ go to `Boundary.Process` on the create path (`Target.Number` is 0), off the UI g
 | A `Process` error (a failed `gh` call, a cancelled or timed-out context, or a `punch_out` document, which returns `ErrNoPunchOutTarget` on the create path) | An error line naming the cause. | Kept. |
 | No file | Nothing. | Not applicable. |
 
+A committed issue also reports the label outcome, described in [The trigger label](#the-trigger-label). The label
+file is deleted together with the document file.
+
 An unreadable file, or a session with no configured repository, also gives an error line and keeps the file.
 
 The rejection dialog, titled "Planning document rejected", shows the guard name, the expected and actual text from the
@@ -248,6 +261,35 @@ failure, and the kept file path. It offers two choices:
 - **Dismiss** (`D` or Esc) closes the dialog and leaves the file for a later resume.
 
 The dialog never touches the file. Neither choice writes anything to GitHub.
+
+### The trigger label
+
+The watcher only picks up issues that carry the trigger label, so the planner asks the person whether to add it. The
+agent never applies it. Kairon's handoff makes the one GitHub label call, after the boundary has committed the issue.
+The boundary is unchanged and the automated `planner-automated` path never asks the question.
+
+The handoff reads the label file at the same moment it reads the document, so a rewrite while a send is in flight
+cannot change what that send does. The label is applied when all of these hold:
+
+- the outcome is `OutcomeCommitted`
+- the label file says `yes` (case and surrounding whitespace do not matter)
+
+Then the handoff makes one `AddLabel` call on the committed issue number, using the `label` value from
+`.kairon/config.yaml`. It is never applied, and no label call is made, when the answer is `no`, when there is no label
+file, when the boundary rejects the document, when `Process` returns an error, or for any other outcome.
+
+What the console shows for a committed issue:
+
+| Case | Console |
+|------|---------|
+| `yes` and the call succeeds | A success line: ``Added the label `<label>` to issue #<n>.`` |
+| `yes` and the call fails, or no GitHub connection or no label name is configured | An error line with the issue number, the label name and the error. The issue is not created again. Add the label by hand for the watcher to pick it up. |
+| The file is not a regular file, cannot be read, is longer than 16 bytes, or says anything other than `yes` or `no` | An error line with the issue number and the problem. No label is applied. |
+| `no`, or no file | Nothing. |
+
+After a commit the handoff deletes the label file with the document file, so a stale `yes` cannot label the next issue
+of the same session. If the label file cannot be removed, the console says so. If the agent wrote a newer document while
+the send was in flight, the label file is kept for that document's send.
 
 ### The duplicate-issue guard
 
@@ -305,9 +347,6 @@ against fakes). The RED to GREEN log is `.kairon/iterations/planner/ITERATIONS.m
   0.0% the harness reports for those runs is an infrastructure failure, not a measurement of any prompt, and is not
   recorded as a score. `ITERATIONS.md` says NOT GREEN. To finish it, run `task eval:planner` where `kiro-cli` is logged
   in inside the sandbox container, and record one row per iteration.
-- **The label answer is not carried.** `planner` asks whether to add the project's trigger label, but schema v1 is
-  closed (adding a key is a `schema_version` bump) and the boundary applies no label. The answer is discarded. A
-  follow-up must decide how it reaches the boundary. Tracked in #405.
 - **The split case is one document.** The shipped `multi-issue-split` eval case returns one document (the first issue)
   and keeps later issues as one-line summaries, so it cannot assert resolved `#{key}` placeholders. `ProcessChain`
   proves the resolved form in unit tests.
