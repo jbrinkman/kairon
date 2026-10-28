@@ -912,6 +912,11 @@ func (pt *PlanningTab) Update(msg tea.Msg) (Tab, tea.Cmd) {
 			pt.state = session.PlanningStateIdle
 			logging.Info("state transition on error", "tab_id", pt.id, "from", oldState, "to", pt.state)
 
+			// The message may not have reached the agent: a failed NewSession
+			// arrives here with the client still connected. The next message
+			// carries the document path again.
+			pt.pathAnnounced = false
+
 			// Preserve accumulated response before displaying error
 			accumulatedResponse := pt.currentResponse.String()
 			if accumulatedResponse != "" {

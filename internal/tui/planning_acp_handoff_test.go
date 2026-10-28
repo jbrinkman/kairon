@@ -408,6 +408,22 @@ func TestACPSendFailureAnnouncesPathAgain(t *testing.T) {
 	}
 }
 
+func TestACPStreamErrorAnnouncesPathAgain(t *testing.T) {
+	f := newACPFixture(t)
+	f.send(t, "first")
+
+	f.tab.Update(planningStreamMsg{tabID: f.tab.ID(), response: &acp.StreamingResponse{Type: "error", Error: "failed to create session: x"}})
+	f.send(t, "retry")
+
+	sent := f.client.sent()
+	if len(sent) != 2 {
+		t.Fatalf("client received %d messages, want 2", len(sent))
+	}
+	if !strings.HasPrefix(sent[1], "Document path: "+f.doc) {
+		t.Errorf("message after a stream error = %q, want it to announce the document path again", sent[1])
+	}
+}
+
 func TestACPTabWithoutSessionAddsNothing(t *testing.T) {
 	t.Chdir(t.TempDir())
 	m := validateTestModel(t, nil)
