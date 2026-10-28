@@ -20,16 +20,6 @@ func viewerMarker(runID string, at time.Time) Comment {
 	return Comment{Body: Marker(runID) + "\nexplanation", CreatedAt: at, ByViewer: true}
 }
 
-func TestClassify_NoMarkerIsEligible(t *testing.T) {
-	s := IssueState{Labels: []string{"kairon"}, Comments: []Comment{{Body: "hello", CreatedAt: t0, ByViewer: true}}}
-	if got := s.Classify(doneL, failedL); got != SelectEligible {
-		t.Errorf("Classify = %v, want SelectEligible", got)
-	}
-	if got := (IssueState{}).Classify(doneL, failedL); got != SelectEligible {
-		t.Errorf("empty state Classify = %v, want SelectEligible", got)
-	}
-}
-
 func TestClassify_TerminalPendingIsExcluded(t *testing.T) {
 	s := IssueState{
 		Labels:   []string{"kairon"},
@@ -41,18 +31,6 @@ func TestClassify_TerminalPendingIsExcluded(t *testing.T) {
 	}
 	if !got.Excluded() {
 		t.Error("TerminalPending must be excluded")
-	}
-}
-
-func TestClassify_LabelRemovedBeforeMarkerStaysPending(t *testing.T) {
-	// A removal older than the newest marker belongs to an earlier run.
-	s := IssueState{
-		Labels:             []string{"kairon"},
-		Comments:           []Comment{viewerMarker("r1", t1)},
-		FailLabelRemovedAt: t0,
-	}
-	if got := s.Classify(doneL, failedL); got != SelectTerminalPending {
-		t.Errorf("Classify = %v, want SelectTerminalPending", got)
 	}
 }
 
@@ -70,39 +48,6 @@ func TestClassify_LabelClearedAfterMarkerIsEligible(t *testing.T) {
 		if got.Excluded() {
 			t.Errorf("%s: Eligible must not be excluded", name)
 		}
-	}
-}
-
-func TestClassify_NewMarkerAfterRestartIsPending(t *testing.T) {
-	// Run r1 punched out at t0, a human cleared the label at t1, run r2
-	// punched out again at t2 and its label has not been removed since.
-	s := IssueState{
-		Labels:             []string{"kairon"},
-		Comments:           []Comment{viewerMarker("r1", t0), viewerMarker("r2", t2)},
-		FailLabelRemovedAt: t1,
-	}
-	if got := s.Classify(doneL, failedL); got != SelectTerminalPending {
-		t.Errorf("Classify = %v, want SelectTerminalPending", got)
-	}
-}
-
-func TestClassify_UsesNewestMarkerRegardlessOfOrder(t *testing.T) {
-	s := IssueState{
-		Labels:             []string{"kairon"},
-		Comments:           []Comment{viewerMarker("r2", t2), viewerMarker("r1", t0)},
-		FailLabelRemovedAt: t1,
-	}
-	if got := s.Classify(doneL, failedL); got != SelectTerminalPending {
-		t.Errorf("Classify = %v, want SelectTerminalPending", got)
-	}
-}
-
-func TestClassify_IgnoresMarkerNotByViewer(t *testing.T) {
-	c := viewerMarker("r1", t0)
-	c.ByViewer = false
-	s := IssueState{Labels: []string{"kairon"}, Comments: []Comment{c}}
-	if got := s.Classify(doneL, failedL); got != SelectEligible {
-		t.Errorf("Classify = %v, want SelectEligible for a marker not by the viewer", got)
 	}
 }
 
@@ -129,38 +74,104 @@ func TestClassify_UntrustedMarkerDoesNotHideTrustedOne(t *testing.T) {
 }
 
 func TestClassify_DoneAndFailed(t *testing.T) {
+	notByViewer := viewerMarker("r1", t0)
+	notByViewer.ByViewer = false
+
 	cases := []struct {
-		name   string
-		labels []string
-		want   Selection
+		name     string
+		state    IssueState
+		want     Selection
+		excluded bool
 	}{
-		{"done", []string{"kairon", doneL}, SelectDone},
-		{"failed", []string{"kairon", failedL}, SelectFailed},
-		{"failed wins over pending", []string{failedL}, SelectFailed},
+		{
+			name:     "done",
+			state:    IssueState{Labels: []string{"kairon", doneL}, Comments: []Comment{viewerMarker("r1", t0)}},
+			want:     SelectDone,
+			excluded: true,
+		},
+		{
+			name:     "failed",
+			state:    IssueState{Labels: []string{"kairon", failedL}, Comments: []Comment{viewerMarker("r1", t0)}},
+			want:     SelectFailed,
+			excluded: true,
+		},
+		{
+			name:     "failed wins over pending",
+			state:    IssueState{Labels: []string{failedL}, Comments: []Comment{viewerMarker("r1", t0)}},
+			want:     SelectFailed,
+			excluded: true,
+		},
+		{
+			// Labels alone, with no comments.
+			name:     "done without comments",
+			state:    IssueState{Labels: []string{doneL}},
+			want:     SelectDone,
+			excluded: true,
+		},
+		{
+			name: "no marker",
+			state: IssueState{
+				Labels:   []string{"kairon"},
+				Comments: []Comment{{Body: "hello", CreatedAt: t0, ByViewer: true}},
+			},
+			want:     SelectEligible,
+			excluded: false,
+		},
+		{
+			name:     "empty state",
+			state:    IssueState{},
+			want:     SelectEligible,
+			excluded: false,
+		},
+		{
+			// A removal older than the newest marker belongs to an earlier run.
+			name: "label removed before marker stays pending",
+			state: IssueState{
+				Labels:             []string{"kairon"},
+				Comments:           []Comment{viewerMarker("r1", t1)},
+				FailLabelRemovedAt: t0,
+			},
+			want:     SelectTerminalPending,
+			excluded: true,
+		},
+		{
+			// Run r1 punched out at t0, a human cleared the label at t1, run r2
+			// punched out again at t2 and its label has not been removed since.
+			name: "new marker after restart is pending",
+			state: IssueState{
+				Labels:             []string{"kairon"},
+				Comments:           []Comment{viewerMarker("r1", t0), viewerMarker("r2", t2)},
+				FailLabelRemovedAt: t1,
+			},
+			want:     SelectTerminalPending,
+			excluded: true,
+		},
+		{
+			name: "newest marker regardless of order",
+			state: IssueState{
+				Labels:             []string{"kairon"},
+				Comments:           []Comment{viewerMarker("r2", t2), viewerMarker("r1", t0)},
+				FailLabelRemovedAt: t1,
+			},
+			want:     SelectTerminalPending,
+			excluded: true,
+		},
+		{
+			name:     "marker not by viewer is ignored",
+			state:    IssueState{Labels: []string{"kairon"}, Comments: []Comment{notByViewer}},
+			want:     SelectEligible,
+			excluded: false,
+		},
 	}
 	for _, c := range cases {
-		s := IssueState{Labels: c.labels, Comments: []Comment{viewerMarker("r1", t0)}}
-		got := s.Classify(doneL, failedL)
-		if got != c.want {
-			t.Errorf("%s: Classify = %v, want %v", c.name, got, c.want)
-		}
-		if !got.Excluded() {
-			t.Errorf("%s: must be excluded", c.name)
-		}
-	}
-	// Labels alone, with no comments.
-	if got := (IssueState{Labels: []string{doneL}}).Classify(doneL, failedL); got != SelectDone {
-		t.Errorf("done without comments = %v", got)
-	}
-}
-
-func TestSelectionExcluded(t *testing.T) {
-	want := map[Selection]bool{
-		SelectEligible: false, SelectDone: true, SelectFailed: true, SelectTerminalPending: true,
-	}
-	for s, w := range want {
-		if got := s.Excluded(); got != w {
-			t.Errorf("Selection(%d).Excluded() = %v, want %v", s, got, w)
-		}
+		t.Run(c.name, func(t *testing.T) {
+			got := c.state.Classify(doneL, failedL)
+			if got != c.want {
+				t.Errorf("Classify = %v, want %v", got, c.want)
+			}
+			if got.Excluded() != c.excluded {
+				t.Errorf("Excluded() = %v, want %v", got.Excluded(), c.excluded)
+			}
+		})
 	}
 }
