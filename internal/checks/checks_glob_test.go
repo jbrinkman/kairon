@@ -63,6 +63,8 @@ func TestGlobMatch(t *testing.T) {
 		{"doublestar any depth go top-level", "**/*.go", "main.go", true},
 		{"doublestar any depth go one", "**/*.go", "cmd/main.go", true},
 		{"doublestar any depth go deep", "**/*.go", "a/b/c/d.go", true},
+		{"doublestar any depth go two dirs", "**/*.go", "a/b/main.go", true},
+		{"doublestar any depth go two dirs wrong ext", "**/*.go", "a/b/main.txt", false},
 		{"doublestar any depth go wrong ext", "**/*.go", "a/b/c/d.md", false},
 		{"doublestar any depth go name suffix", "**/*.go", "a/b/xgo", false},
 		{"doublestar mid zero dirs", "a/**/b", "a/b", true},
@@ -122,21 +124,5 @@ func TestGlobInvalidPatterns(t *testing.T) {
 				t.Fatalf("globMatch(%q, ...) returned nil error, want error", tt.pattern)
 			}
 		})
-	}
-}
-
-func TestGlobCompiledReuse(t *testing.T) {
-	g, err := compileGlob("**/*.go")
-	if err != nil {
-		t.Fatalf("compileGlob: %v", err)
-	}
-	for path, want := range map[string]bool{
-		"main.go":      true,
-		"a/b/main.go":  true,
-		"a/b/main.txt": false,
-	} {
-		if got := g.match(path); got != want {
-			t.Errorf("match(%q) = %v, want %v", path, got, want)
-		}
 	}
 }
