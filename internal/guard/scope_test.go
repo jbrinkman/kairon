@@ -193,3 +193,17 @@ func TestScopeCheck_ItemQuoteMustBeWhole(t *testing.T) {
 		{Kind: ScopeUncovered, Item: "s-3", Text: "retry-cap"},
 	}, got)
 }
+
+// TestScopeCheck_BlankDeliveredByCell pins that an empty last cell stays the
+// Delivered by cell: the item cell's code spans are never read as tasks.
+func TestScopeCheck_BlankDeliveredByCell(t *testing.T) {
+	body := "## In Scope\n\n- Document `retry-cap`\n"
+	spec := "## Scope Coverage\n\n" +
+		"| # | Item (quoted from the issue) | Delivered by |\n" +
+		"|---|---|---|\n" +
+		"| S1 | In Scope: \"Document `retry-cap`\" | |\n\n" +
+		"## Deferred work\n\nnone\n"
+	want := []ScopeFinding{{Kind: ScopeUncovered, Item: "s-1", Text: "Document `retry-cap`"}}
+	assert.Equal(t, want, CheckScope(body, spec, []string{"retry-cap"}))
+	assert.Equal(t, want, CheckScope(body, spec, []string{"retry-docs"}))
+}

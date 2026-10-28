@@ -202,8 +202,9 @@ func coverageRows(lines []bodyLine) []coverageRow {
 	return rows
 }
 
-// splitCells splits a table row on pipes that are not backslash-escaped and
-// drops the empty cells the leading and trailing pipes produce.
+// splitCells splits a table row on pipes that are not backslash-escaped. It
+// drops only the cells outside the leading and trailing pipes, so an empty
+// column stays in place.
 func splitCells(row string) []string {
 	var cells []string
 	var cur strings.Builder
@@ -224,13 +225,13 @@ func splitCells(row string) []string {
 		}
 	}
 	cells = append(cells, cur.String())
-	var out []string
-	for _, c := range cells {
-		if strings.TrimSpace(c) != "" {
-			out = append(out, c)
-		}
+	if strings.HasPrefix(row, "|") {
+		cells = cells[1:]
 	}
-	return out
+	if len(cells) > 0 && strings.HasSuffix(row, "|") && !strings.HasSuffix(row, `\|`) {
+		cells = cells[:len(cells)-1]
+	}
+	return cells
 }
 
 // cellTaskIDs returns the task IDs a "Delivered by" cell names.
