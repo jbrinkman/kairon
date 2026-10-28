@@ -1,0 +1,125 @@
+package cmd
+
+import (
+	"encoding/json"
+	"fmt"
+	"os"
+
+	"github.com/spf13/cobra"
+
+	"github.com/jbrinkman/kairon/internal/boundary"
+	"github.com/jbrinkman/kairon/internal/guard"
+	"github.com/jbrinkman/kairon/internal/plan"
+)
+
+// Exit codes of kairon scope check.
+const (
+	scopeExitFindings  = 1
+	scopeExitCannotRun = 3
+)
+
+// ExitError makes main exit with Code instead of the default 1.
+type ExitError struct {
+	Code int
+	Err  error
+}
+
+func (e *ExitError) Error() string { return e.Err.Error() }
+func (e *ExitError) Unwrap() error { return e.Err }
+
+var (
+	scopeInput string
+	scopeSpec  string
+)
+
+var scopeCmd = &cobra.Command{
+	Use:   "scope",
+	Short: "Check that a spec covers its issue's scope",
+}
+
+var scopeCheckCmd = &cobra.Command{
+	Use:   "check --input <input.yaml> --spec <spec.md>",
+	Short: "Check a spec's Scope Coverage table and Deferred work section",
+	Long: `Read the issue body from a verified input document and check the spec against it.
+
+Every In Scope item (s-N) and acceptance criterion (ac-N) must have a row in the
+spec's "## Scope Coverage" table that quotes the item's text and names, in
+backticks in its last cell, at least one task ID from the spec's kiro-plan block.
+Every task ID a row names must exist. The spec must have a "## Deferred work"
+section whose only content is none.
+
+The check is presence-only and deterministic. It does not judge whether the
+tasks deliver an item, and it does not scan for deferral language: the
+validator judges that.
+
+Prints one JSON object: {"status":"pass"} or {"status":"fail","findings":[...]}.
+Exits 0 on pass, 1 when there is at least one finding, and 3 when the check
+cannot run (a missing file, or an input document that does not verify).`,
+	Args: cobra.NoArgs,
+	RunE: runScopeCheckCommand,
+}
+
+type scopeResult struct {
+	Status   string               `json:"status"`
+	Findings []guard.ScopeFinding `json:"findings,omitempty"`
+}
+
+func runScopeCheckCommand(cmd *cobra.Command, _ []string) error {
+	// Arguments are parsed; from here an error is a result, not a usage
+	// mistake. main prints the error, so cobra does not print it again.
+	cmd.SilenceUsage = true
+	cmd.SilenceErrors = true
+
+	cannotRun := func(err error) error { return &ExitError{Code: scopeExitCannotRun, Err: err} }
+	data, err := os.ReadFile(scopeInput)
+	if err != nil {
+		return cannotRun(fmt.Errorf("--input: %w", err))
+	}
+	doc, err := boundary.ParseInputDocument(data)
+	if err != nil {
+		return cannotRun(fmt.Errorf("--input %s does not verify: %w", scopeInput, err))
+	}
+	spec, err := os.ReadFile(scopeSpec)
+	if err != nil {
+		return cannotRun(fmt.Errorf("--spec: %w", err))
+	}
+
+	// A missing or malformed plan leaves no known task IDs, so every row's
+	// tasks are reported unknown: that is a spec defect the architect fixes,
+	// not a reason the check cannot run.
+	var taskIDs []string
+	p, err := plan.ParsePlanFromMarkdown(spec)
+	switch {
+	case err != nil:
+		fmt.Fprintf(cmd.ErrOrStderr(), "kiro-plan block does not parse: %v\n", err)
+	case p == nil:
+		fmt.Fprintln(cmd.ErrOrStderr(), "spec has no kiro-plan block")
+	default:
+		taskIDs = p.GetTaskIDs()
+	}
+
+	findings := guard.CheckScope(doc.Body, string(spec), taskIDs)
+	res := scopeResult{Status: "pass"}
+	if len(findings) > 0 {
+		res = scopeResult{Status: "fail", Findings: findings}
+	}
+	out, err := json.Marshal(res)
+	if err != nil {
+		return cannotRun(err)
+	}
+	fmt.Fprintln(cmd.OutOrStdout(), string(out))
+	if len(findings) > 0 {
+		return &ExitError{Code: scopeExitFindings, Err: fmt.Errorf("scope check found %d finding(s)", len(findings))}
+	}
+	return nil
+}
+
+func init() {
+	scopeCheckCmd.Flags().StringVar(&scopeInput, "input", "", "Verified input document holding the issue body (required)")
+	scopeCheckCmd.Flags().StringVar(&scopeSpec, "spec", "", "Spec file to check (required)")
+	_ = scopeCheckCmd.MarkFlagRequired("input")
+	_ = scopeCheckCmd.MarkFlagRequired("spec")
+
+	scopeCmd.AddCommand(scopeCheckCmd)
+	rootCmd.AddCommand(scopeCmd)
+}

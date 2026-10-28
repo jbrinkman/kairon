@@ -26,7 +26,16 @@ Create design spec at `.kairon/specs/issue-<number>-<slug>.md` (relative to curr
 
 **CRITICAL**: The issue's In Scope list and Acceptance Criteria are a contract. Your spec delivers all of it. You do not decide that part of the issue will not be done.
 
-- The spec starts with a `## Scope Coverage` table. It has one row for every In Scope item and every acceptance criterion in the issue, quoted from the issue, and the plan task IDs that deliver it. Every row names at least one task.
+- The spec starts with a `## Scope Coverage` table. It has one row for every In Scope item and every acceptance criterion in the issue, quoted from the issue, and the plan task IDs that deliver it. Every row names at least one task. krew-lead checks the table mechanically with `kairon scope check`, so write it in this form:
+  - Quote each item's first line exactly as the issue writes it, without its list marker. Inside a table cell, write `"` as `\"` and `|` as `\|`.
+  - The **last** column ("Delivered by") names task IDs from the `kiro-plan` block in backticks, such as `` `add-flag`, `wire-flag` ``. Put anything else in that cell, such as test names, inside parentheses: `` `add-flag` (`TestAddFlag`) ``. A backticked ID outside parentheses that is not a plan task fails the check.
+
+  ```markdown
+  | # | Item (quoted from the issue) | Delivered by |
+  |---|------------------------------|--------------|
+  | S1 | In Scope: "`internal/agent`: cap the attempts per issue" | `retry-cap` |
+  | AC1 | "The third failed attempt stops the loop." | `retry-cap` (`TestRetryCap`) |
+  ```
 - Directly after the table, write `## Deferred work` followed by `none`. A spec never defers part of its issue. Words like "follow-up", "deferred", "future work", "later issue", "not wired yet" or "out of scope for this issue" must not describe anything the issue puts in scope.
 - Never narrow an item to something easier than the issue says. If an acceptance criterion's `Verify:` line covers less than its In Scope item, deliver the In Scope item.
 - **If you cannot deliver an item** (it is impossible, contradicts another item, depends on something that does not exist, or needs a decision only a person can make), do not write around it. Write your sentinel per the **sentinel-protocol** skill with `**Status**: BLOCKED`, quote each item you cannot deliver, and explain why and what a person must decide. Do not write a plan. krew-lead halts the issue for a human.
@@ -200,9 +209,18 @@ Kairon's orchestration workflow operates as follows:
 
 The builder operates on **one issue at a time** and expects clear, actionable tasks that build toward complete issue resolution. Task breakdowns should indicate dependencies between tasks so that independent work can be parallelized while dependent work is sequenced correctly.
 
+## Rejected Specs (retries)
+
+krew-lead checks every spec before any builder runs: first `kairon scope check` (coverage), then a validator spec-scope review (whether the tasks really deliver each item, and whether the spec puts off in-scope work). If either rejects the spec, krew-lead delegates to you again with an `[attempt:N]` tag and the findings verbatim: the check's JSON (`uncovered`, `unknown_task` or `deferred_section` findings), or the validator's numbered FAIL Scope findings, each with **Where**, **Quote**, **Why it fails** and **Required fix**.
+
+1. Read every finding before you change anything.
+2. Rewrite the spec at the same path so that every finding is resolved: add or correct the Scope Coverage row, add or extend the plan tasks that deliver the item, or remove the text that puts off in-scope work and plan that work instead. Removing or rewording a phrase while the work it described stays unplanned does not resolve a finding.
+3. Do not resolve a finding by narrowing an item. If a finding cannot be resolved, follow the BLOCKED rule under **Scope Fidelity**.
+4. In your sentinel, add a `**Scope findings resolved**` list with one entry per finding: the finding (quoted), and what you changed in the spec to resolve it (the section, row or task).
+
 ## Sentinel File
 
-Signal completion by writing a sentinel file per the **sentinel-protocol** skill (`skill://.kiro/skills/sentinel-protocol/SKILL.md`) — the single source of truth for the path format and write rules. Include a brief summary of the design spec produced.
+Signal completion by writing a sentinel file per the **sentinel-protocol** skill (`skill://.kiro/skills/sentinel-protocol/SKILL.md`) — the single source of truth for the path format and write rules. Include a brief summary of the design spec produced. On a retry that carried scope findings, include the `**Scope findings resolved**` list (see **Rejected Specs (retries)**).
 
 ## Critical Requirements
 

@@ -1,0 +1,288 @@
+package guard
+
+import (
+	"regexp"
+	"strconv"
+	"strings"
+)
+
+// Finding kinds reported by CheckScope.
+const (
+	// ScopeUncovered: no Scope Coverage row quotes the item, or its rows name
+	// no task.
+	ScopeUncovered = "uncovered"
+	// ScopeUnknownTask: a Scope Coverage row names a task ID that is not in
+	// the spec's kiro-plan block.
+	ScopeUnknownTask = "unknown_task"
+	// ScopeDeferredSection: the spec's Deferred work section is missing, empty,
+	// or says anything other than none.
+	ScopeDeferredSection = "deferred_section"
+)
+
+const (
+	inScope       = "In Scope"
+	scopeCoverage = "Scope Coverage"
+	deferredWork  = "Deferred work"
+)
+
+// taskIDRE is the plan's task ID shape (internal/plan taskIDPattern). The guard
+// package may not import internal/plan, so the pattern is repeated here.
+var taskIDRE = regexp.MustCompile(`^[a-z0-9]+(-[a-z0-9]+)*$`)
+
+var (
+	tableSeparatorRE = regexp.MustCompile(`^\|?[ \t]*:?-+:?[ \t]*(\|[ \t]*:?-+:?[ \t]*)*\|?[ \t]*$`)
+	codeSpanRE       = regexp.MustCompile("`([^`]+)`")
+)
+
+// ScopeItem is one In Scope item (ID s-N) or acceptance criterion (ID ac-N).
+// Text is the item's first line without its list marker.
+type ScopeItem struct {
+	ID   string
+	Text string
+}
+
+// ScopeFinding is one reason a spec does not cover its issue. Line is the
+// 1-based spec line, or 0 when the finding has no line (an uncovered item, a
+// missing section).
+type ScopeFinding struct {
+	Kind string `json:"kind"`
+	Item string `json:"item"`
+	Line int    `json:"line,omitempty"`
+	Text string `json:"text"`
+}
+
+// ScopeItems lists every In Scope item, then every acceptance criterion, in
+// body order. Acceptance criteria are read exactly as the structural guard
+// reads them, so the two never disagree about what an item is.
+func ScopeItems(body string) []ScopeItem {
+	lines := scanLines(body)
+	var out []ScopeItem
+	for i, it := range sectionListItems(lines, inScope) {
+		out = append(out, ScopeItem{ID: "s-" + strconv.Itoa(i+1), Text: itemHeadline(it)})
+	}
+	for i, it := range sectionListItems(lines, acceptanceCriteria) {
+		out = append(out, ScopeItem{ID: "ac-" + strconv.Itoa(i+1), Text: itemHeadline(it)})
+	}
+	return out
+}
+
+// CheckScope reports every way spec fails to cover the issue body: an item no
+// Scope Coverage row quotes, a row naming a task not in taskIDs (the spec's
+// kiro-plan task IDs), and a Deferred work section that is not exactly none.
+// It is presence-only: it does not judge whether the named tasks deliver the
+// item, and it never scans for deferral language, which needs judgment and is
+// left to the validator.
+func CheckScope(body, spec string, taskIDs []string) []ScopeFinding {
+	known := make(map[string]bool, len(taskIDs))
+	for _, id := range taskIDs {
+		known[id] = true
+	}
+	lines := scanLines(spec)
+	rows := coverageRows(lines)
+
+	var findings []ScopeFinding
+	matched := make([]bool, len(rows))
+	reported := map[string]bool{}
+	reportUnknown := func(r coverageRow, item string) {
+		for _, id := range r.tasks {
+			key := strconv.Itoa(r.line) + "\x00" + id
+			if known[id] || reported[key] {
+				continue
+			}
+			reported[key] = true
+			findings = append(findings, ScopeFinding{Kind: ScopeUnknownTask, Item: item, Line: r.line, Text: id})
+		}
+	}
+
+	for _, it := range ScopeItems(body) {
+		quote := normalizeQuote(it.Text)
+		var found, hasKnown, hasUnknown bool
+		for i, r := range rows {
+			if quote == "" || !strings.Contains(r.text, quote) {
+				continue
+			}
+			found = true
+			matched[i] = true
+			for _, id := range r.tasks {
+				if known[id] {
+					hasKnown = true
+				} else {
+					hasUnknown = true
+				}
+			}
+		}
+		switch {
+		case hasUnknown:
+			for i, r := range rows {
+				if matched[i] && strings.Contains(r.text, quote) {
+					reportUnknown(r, it.ID)
+				}
+			}
+		case !found || !hasKnown:
+			findings = append(findings, ScopeFinding{Kind: ScopeUncovered, Item: it.ID, Text: it.Text})
+		}
+	}
+	for i, r := range rows {
+		if !matched[i] {
+			reportUnknown(r, r.label)
+		}
+	}
+
+	if f, ok := checkDeferredSection(lines); !ok {
+		findings = append(findings, f)
+	}
+	return findings
+}
+
+// coverageRow is one body row of the Scope Coverage table.
+type coverageRow struct {
+	line  int    // 1-based spec line
+	label string // first cell, used to name a row that quotes no item
+	text  string // the whole row, normalized for quote matching
+	tasks []string
+}
+
+// coverageRows returns the body rows of every table in the Scope Coverage
+// section. A row's tasks are the code spans in its last cell that have the
+// plan's task ID shape and sit outside parentheses; parentheses hold
+// commentary such as test names.
+func coverageRows(lines []bodyLine) []coverageRow {
+	var rows []coverageRow
+	for _, start := range findSections(lines, scopeCoverage) {
+		end := sectionEnd(lines, start)
+		for i := start + 1; i < end; i++ {
+			l := lines[i]
+			text := strings.TrimSpace(l.text)
+			if l.inFence || !strings.HasPrefix(text, "|") || tableSeparatorRE.MatchString(text) {
+				continue
+			}
+			// The row directly above a separator is the header.
+			if i+1 < end && tableSeparatorRE.MatchString(strings.TrimSpace(lines[i+1].text)) {
+				continue
+			}
+			cells := splitCells(text)
+			if len(cells) == 0 {
+				continue
+			}
+			rows = append(rows, coverageRow{
+				line:  i + 1,
+				label: strings.TrimSpace(cells[0]),
+				text:  normalizeQuote(text),
+				tasks: cellTaskIDs(cells[len(cells)-1]),
+			})
+		}
+	}
+	return rows
+}
+
+// splitCells splits a table row on pipes that are not backslash-escaped and
+// drops the empty cells the leading and trailing pipes produce.
+func splitCells(row string) []string {
+	var cells []string
+	var cur strings.Builder
+	escaped := false
+	for _, r := range row {
+		switch {
+		case escaped:
+			cur.WriteRune(r)
+			escaped = false
+		case r == '\\':
+			cur.WriteRune(r)
+			escaped = true
+		case r == '|':
+			cells = append(cells, cur.String())
+			cur.Reset()
+		default:
+			cur.WriteRune(r)
+		}
+	}
+	cells = append(cells, cur.String())
+	var out []string
+	for _, c := range cells {
+		if strings.TrimSpace(c) != "" {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+// cellTaskIDs returns the task IDs a "Delivered by" cell names.
+func cellTaskIDs(cell string) []string {
+	var outside strings.Builder
+	depth := 0
+	for _, r := range cell {
+		switch {
+		case r == '(':
+			depth++
+		case r == ')' && depth > 0:
+			depth--
+		case depth == 0:
+			outside.WriteRune(r)
+		}
+	}
+	var ids []string
+	for _, m := range codeSpanRE.FindAllStringSubmatch(outside.String(), -1) {
+		if id := strings.TrimSpace(m[1]); taskIDRE.MatchString(id) {
+			ids = append(ids, id)
+		}
+	}
+	return ids
+}
+
+// checkDeferredSection requires a Deferred work section whose only non-blank
+// content is none.
+func checkDeferredSection(lines []bodyLine) (ScopeFinding, bool) {
+	start, ok := findSection(lines, deferredWork)
+	if !ok {
+		return ScopeFinding{Kind: ScopeDeferredSection, Item: deferredWork, Text: "missing"}, false
+	}
+	sawNone := false
+	for i := start + 1; i < sectionEnd(lines, start); i++ {
+		text := strings.TrimSpace(lines[i].text)
+		if text == "" {
+			continue
+		}
+		if !sawNone && isNone(text) {
+			sawNone = true
+			continue
+		}
+		return ScopeFinding{Kind: ScopeDeferredSection, Item: deferredWork, Line: i + 1, Text: text}, false
+	}
+	if !sawNone {
+		return ScopeFinding{Kind: ScopeDeferredSection, Item: deferredWork, Line: start + 1, Text: "empty"}, false
+	}
+	return ScopeFinding{}, true
+}
+
+// isNone reports whether a line says none, allowing emphasis, a code span and
+// a trailing period.
+func isNone(text string) bool {
+	t := strings.Trim(strings.ToLower(text), "*_` \t.")
+	return t == "none"
+}
+
+// sectionListItems returns the list items of every section the heading names,
+// in order.
+func sectionListItems(lines []bodyLine, name string) []string {
+	var items []string
+	for _, start := range findSections(lines, name) {
+		items = append(items, listItems(lines[start+1:sectionEnd(lines, start)])...)
+	}
+	return items
+}
+
+// itemHeadline returns a list item's first line without its marker.
+func itemHeadline(item string) string {
+	first, _, _ := strings.Cut(item, "\n")
+	if m := listRE.FindString(first); m != "" {
+		first = first[len(m):]
+	}
+	return strings.Join(strings.Fields(first), " ")
+}
+
+// normalizeQuote undoes the escapes a quote needs inside a table cell (\" and
+// \|) and collapses whitespace, so a quoted item matches its source text.
+func normalizeQuote(s string) string {
+	s = strings.NewReplacer(`\"`, `"`, `\|`, `|`).Replace(s)
+	return strings.Join(strings.Fields(s), " ")
+}
