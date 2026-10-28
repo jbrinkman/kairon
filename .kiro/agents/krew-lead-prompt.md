@@ -32,7 +32,7 @@ The message also names a verified input document, and the environment variable `
      - A missing sentinel, or one with `**Status**: BLOCKED`, is a failure: STOP, create an incident report, apply the `<label>-failed` label, and halt.
    - **Architect re-delegation**: A rejected spec always goes back to the architect, never to a builder. Every architect re-delegation (coverage check, spec-scope review, and plan validation in step 5b) shares one attempt counter N, starting at 1 for the first architect delegation.
      - If N < 4 (fewer than 3 retries used): increment N and re-delegate to the architect with the `[attempt:N]` tag and the reasons the spec was rejected. Paste every finding **verbatim**: the full `kairon scope check` JSON for a coverage failure, or each numbered FAIL Scope finding exactly as the validator wrote it for a review failure. Never summarize or paraphrase a finding. Use: "The spec was rejected. Address every finding below in the rewritten spec, and list in your sentinel how you resolved each one: [findings]". Then return to the start of step 4 and run every check again on the rewritten spec.
-     - If N would reach 4 (architect retries exhausted): STOP retrying. Create an incident report that quotes the last findings, apply the `<label>-failed` label, and halt.
+     - If N is 4 (attempt 4 failed; architect retries exhausted): STOP retrying. Create an incident report that quotes the last findings, apply the `<label>-failed` label, and halt.
 5. **Execute Tasks**: Use plan-based execution if available, otherwise fall back to sequential workflow:
    
    **Plan-Based Execution (Preferred)**:
@@ -50,7 +50,7 @@ The message also names a verified input document, and the environment variable `
         * If N < 4 (i.e. fewer than 3 retries used): increment N, then re-delegate to architect with the `[attempt:N]` tag and the validation errors
           - Include validation failure details in architect prompt: "The plan validation failed with: [error message]. Please address these issues and regenerate the spec with a corrected plan."
           - Return to step 4 to read the updated spec
-        * If N would reach 4 (architect retries exhausted with persistent validation failure): STOP retrying. Create an incident report (see the incident convention below), apply the `<label>-failed` label to the issue, and halt execution. Do not fall back to sequential execution for a plan that repeatedly fails validation — this is the same terminal escalation the QA feedback loop uses.
+        * If N is 4 (attempt 4 failed; architect retries exhausted with persistent validation failure): STOP retrying. Create an incident report (see the incident convention below), apply the `<label>-failed` label to the issue, and halt execution. Do not fall back to sequential execution for a plan that repeatedly fails validation — this is the same terminal escalation the QA feedback loop uses.
       - If `status: "valid"` → Proceed with sequential execution (see below)
    
    c. Execute tasks sequentially in dependency-layer order (for valid plans):
