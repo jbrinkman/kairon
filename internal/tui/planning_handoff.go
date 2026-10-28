@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path"
 	"strings"
@@ -33,6 +34,11 @@ import (
 // planningHandoffTimeout bounds one send to the planning boundary.
 const planningHandoffTimeout = 2 * time.Minute
 
+// planningLabelTimeout bounds the label call after a commit. gh runs without
+// a context, so a call that times out is abandoned, not stopped; it may still
+// add the label later. A variable so tests can shorten it.
+var planningLabelTimeout = 30 * time.Second
+
 // planningSessionsDir holds the per-session document files.
 const planningSessionsDir = ".kairon/sessions"
 
@@ -52,6 +58,109 @@ type planningHandoffDoneMsg struct {
 	sent   []byte
 	result planner.Result
 	err    error
+
+	// label is the trigger-label answer read together with the document, and
+	// labelPath is the file it came from.
+	label     labelAnswer
+	labelPath string
+	// labelName is the label the command tried to apply when labelTried is
+	// set, and labelErr is how that failed.
+	labelName  string
+	labelTried bool
+	labelErr   error
+}
+
+// planningLabeler is the part of the GitHub port the handoff uses to apply
+// the trigger label. github.CLI satisfies it.
+type planningLabeler interface {
+	AddLabel(repo string, issue int, label string) error
+}
+
+var _ planningLabeler = github.CLI{}
+
+// newPlanningLabeler builds the port the handoff uses to apply the trigger
+// label. It returns nil when no repository is configured, like the boundary.
+func newPlanningLabeler(cfg *config.Config) planningLabeler {
+	if cfg == nil || cfg.Repo == "" {
+		return nil
+	}
+	return github.CLI{}
+}
+
+// labelAnswerMaxBytes bounds the label file. The answer is one word.
+const labelAnswerMaxBytes = 16
+
+// labelAnswer is what the label file said when the document was read.
+type labelAnswer struct {
+	apply   bool   // the person answered yes
+	problem string // non-empty: the file could not be used; apply is false
+	// seen is the file as it was read, nil when there was none. Cleanup
+	// removes the file only if it is still this one, so an answer written
+	// for a newer document survives.
+	seen os.FileInfo
+}
+
+// readLabelAnswer reads the label file the planner wrote. A missing file is
+// no answer, which means no label. The file must hold the single word yes or
+// no, in any case; anything else is reported as a problem and applies nothing.
+func readLabelAnswer(path string) labelAnswer {
+	info, err := os.Stat(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return labelAnswer{}
+		}
+		return labelAnswer{problem: fmt.Sprintf("the label answer file %s cannot be checked (%v)", path, err)}
+	}
+	answer := readLabelFile(path, info)
+	answer.seen = info
+	return answer
+}
+
+// readLabelFile reads and parses the label file found at path.
+func readLabelFile(path string, info os.FileInfo) labelAnswer {
+	if !info.Mode().IsRegular() {
+		return labelAnswer{problem: fmt.Sprintf("the label answer file %s is not a regular file", path)}
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return labelAnswer{problem: fmt.Sprintf("the label answer file %s cannot be read (%v)", path, err)}
+	}
+	defer f.Close()
+	data, err := io.ReadAll(io.LimitReader(f, labelAnswerMaxBytes+1))
+	if err != nil {
+		return labelAnswer{problem: fmt.Sprintf("the label answer file %s cannot be read (%v)", path, err)}
+	}
+	if len(data) > labelAnswerMaxBytes {
+		return labelAnswer{problem: fmt.Sprintf("the label answer file %s is longer than %d bytes", path, labelAnswerMaxBytes)}
+	}
+	switch strings.ToLower(strings.TrimSpace(string(data))) {
+	case "yes":
+		return labelAnswer{apply: true}
+	case "no":
+		return labelAnswer{}
+	}
+	return labelAnswer{problem: fmt.Sprintf("the label answer file %s says %q, not yes or no", path, string(data))}
+}
+
+// applyTriggerLabel adds the trigger label to the committed issue. It runs
+// inside the handoff command, so gh never runs on the UI goroutine. It returns
+// when ctx ends even if gh has not, so a stalled call cannot hold back the
+// report of the issue that was created.
+func applyTriggerLabel(ctx context.Context, labeler planningLabeler, repo, label string, issue int) error {
+	if labeler == nil {
+		return errors.New("no GitHub connection is configured")
+	}
+	if strings.TrimSpace(label) == "" {
+		return errors.New("no trigger label is configured")
+	}
+	errc := make(chan error, 1)
+	go func() { errc <- labeler.AddLabel(repo, issue, label) }()
+	select {
+	case err := <-errc:
+		return err
+	case <-ctx.Done():
+		return fmt.Errorf("gh did not finish in time (%w)", ctx.Err())
+	}
 }
 
 // newPlanningBoundary builds the boundary the handoff uses, with the same
@@ -74,30 +183,47 @@ func newPlanningBoundary(cfg *config.Config) planningBoundary {
 	}
 }
 
-// planningDocumentPath returns the document file for a planning session,
-// relative to the working directory. The session ID comes from a file name, so
-// an ID that is empty or could leave the sessions directory is refused.
-func planningDocumentPath(sessionID string) (string, error) {
+// planningSessionFile returns the path of a per-session file under the
+// sessions directory, relative to the working directory. The session ID comes
+// from a file name, so an ID that is empty or could leave the sessions
+// directory is refused.
+func planningSessionFile(sessionID, suffix string) (string, error) {
 	if sessionID == "" {
 		return "", errors.New("planning session has no ID")
 	}
 	if strings.ContainsAny(sessionID, `/\`) || strings.Contains(sessionID, "..") {
 		return "", fmt.Errorf("planning session ID %q is not a plain file name", sessionID)
 	}
-	return path.Join(planningSessionsDir, sessionID+".document.yaml"), nil
+	return path.Join(planningSessionsDir, sessionID+suffix), nil
+}
+
+// planningDocumentPath returns the document file for a planning session.
+func planningDocumentPath(sessionID string) (string, error) {
+	return planningSessionFile(sessionID, ".document.yaml")
+}
+
+// planningLabelPath returns the file where the planner records the person's
+// answer to the trigger-label question, next to the document file.
+func planningLabelPath(sessionID string) (string, error) {
+	return planningSessionFile(sessionID, ".label")
 }
 
 // planningPrompt is the initial prompt for a planning session: the document
-// path on the first line, one more sentence for a resumed session, then the
-// person's own request. A session ID that has no valid path adds nothing, and
-// the request is returned unchanged.
+// path and the label answer path on the first two lines, one more sentence for
+// a resumed session, then the person's own request. A session ID that has no
+// valid path adds nothing, and the request is returned unchanged.
 func planningPrompt(sessionID, request string, resumed bool) string {
 	docPath, err := planningDocumentPath(sessionID)
 	if err != nil {
 		return request
 	}
+	labelPath, err := planningLabelPath(sessionID)
+	if err != nil {
+		return request
+	}
 	var sb strings.Builder
 	sb.WriteString("Document path: " + docPath)
+	sb.WriteString("\nLabel answer path: " + labelPath)
 	if resumed {
 		sb.WriteString("\nThis session is being resumed. The file may already hold the last document; read it before continuing.")
 	}
@@ -148,6 +274,13 @@ func (m model) finishPlanning(end planningEnd) (model, tea.Cmd) {
 	if err != nil {
 		return m.handoffError(fmt.Sprintf("Cannot read the planning document %s: %v. The file was kept.", docPath, err)), nil
 	}
+	// The answer is read with the document it belongs to, so a rewrite while
+	// the send is in flight cannot change what this send does.
+	labelPath, err := planningLabelPath(end.SessionID)
+	if err != nil {
+		return m, nil
+	}
+	answer := readLabelAnswer(labelPath)
 
 	if m.planningHandoffs == nil {
 		m.planningHandoffs = make(map[string]bool)
@@ -155,6 +288,11 @@ func (m model) finishPlanning(end planningEnd) (model, tea.Cmd) {
 	m.planningHandoffs[end.SessionID] = true
 
 	boundary := m.planBoundary
+	labeler := m.planLabeler
+	repo, labelName := "", ""
+	if m.config != nil {
+		repo, labelName = m.config.Repo, m.config.Label
+	}
 	req := planner.Request{
 		Reply:   string(contents),
 		Attempt: guard.Attempt{Current: 1, Max: 1},
@@ -164,7 +302,18 @@ func (m model) finishPlanning(end planningEnd) (model, tea.Cmd) {
 		ctx, cancel := context.WithTimeout(context.Background(), planningHandoffTimeout)
 		defer cancel()
 		res, err := boundary.Process(ctx, req)
-		return planningHandoffDoneMsg{end: end, path: docPath, sent: contents, result: res, err: err}
+		done := planningHandoffDoneMsg{
+			end: end, path: docPath, sent: contents, result: res, err: err,
+			label: answer, labelPath: labelPath, labelName: labelName,
+		}
+		if err == nil && res.Outcome == planner.OutcomeCommitted && answer.apply {
+			done.labelTried = true
+			// A fresh timeout, so a slow commit does not use up the label's.
+			lctx, lcancel := context.WithTimeout(context.Background(), planningLabelTimeout)
+			done.labelErr = applyTriggerLabel(lctx, labeler, repo, labelName, res.Number)
+			lcancel()
+		}
+		return done
 	}
 }
 
@@ -201,13 +350,23 @@ func (m model) handlePlanningHandoffDone(msg planningHandoffDoneMsg) (model, tea
 		}
 		m = m.appendActivity(m.styles.Success.Render(fmt.Sprintf(
 			"Created issue #%d from the planning session: https://github.com/%s/issues/%d", n, repo, n)))
+		m = m.reportTriggerLabel(msg, n)
 		if newer {
+			// The label file may belong to the newer document, so keep it.
 			return sendNewer(m)
 		}
 		if err := os.Remove(msg.path); err != nil && !errors.Is(err, os.ErrNotExist) {
 			m = m.handoffError(fmt.Sprintf(
 				"Issue #%d exists, but the planning document %s could not be removed (%v). To avoid a duplicate issue, delete the file by hand.",
 				n, msg.path, err))
+		}
+		if msg.labelPath != "" && labelFileUnchanged(msg.labelPath, msg.label.seen) {
+			// A stale yes would label the next issue of this session.
+			if err := os.Remove(msg.labelPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+				m = m.handoffError(fmt.Sprintf(
+					"Issue #%d exists, but the label answer file %s could not be removed (%v). Delete it by hand, or the next issue from this session may get the label.",
+					n, msg.labelPath, err))
+			}
 		}
 		return m, nil
 
@@ -229,6 +388,36 @@ func (m model) handlePlanningHandoffDone(msg planningHandoffDoneMsg) (model, tea
 		return sendNewer(m)
 	}
 	return m, nil
+}
+
+// reportTriggerLabel adds the console line for the label step of a committed
+// issue. No answer and a no answer add nothing.
+func (m model) reportTriggerLabel(msg planningHandoffDoneMsg, issue int) model {
+	switch {
+	case msg.label.problem != "":
+		return m.handoffError(fmt.Sprintf("Issue #%d was created without the trigger label: %s. Add it by hand if you want the watcher to pick it up.",
+			issue, msg.label.problem))
+	case msg.labelErr != nil:
+		return m.handoffError(fmt.Sprintf("Issue #%d was created, but adding the label `%s` failed: %v. Add the label by hand if you want the watcher to pick it up.",
+			issue, msg.labelName, msg.labelErr))
+	case msg.labelTried:
+		return m.appendActivity(m.styles.Success.Render(fmt.Sprintf(
+			"Added the label `%s` to issue #%d.", msg.labelName, issue)))
+	}
+	return m
+}
+
+// labelFileUnchanged reports whether the label file at path is still the one
+// that was read as seen. The planner writes the answer before the document, so
+// a send can end after a new answer is written but before the new document is;
+// that answer must not be removed with the old one. Size and modification time
+// tell a rewrite apart even when it holds the same word.
+func labelFileUnchanged(path string, seen os.FileInfo) bool {
+	if seen == nil {
+		return false
+	}
+	now, err := os.Stat(path)
+	return err == nil && now.Size() == seen.Size() && now.ModTime().Equal(seen.ModTime())
 }
 
 func (m model) handoffError(line string) model {
