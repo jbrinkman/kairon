@@ -73,6 +73,8 @@ The message also names a verified input document, and the environment variable `
              to finish before starting the next task:
              - Pass task.description, task.acceptance_criteria, and
                task.validation_commands to the agent
+             - When task.agent is `validator`, also pass the issue number
+               and the input document path (`$KAIRON_INPUT_DOCUMENT`)
              - Tag with [attempt:1] for initial execution
              - Use agent name from task.agent field
           2. Run the task-level validation gate:
@@ -114,7 +116,7 @@ The message also names a verified input document, and the environment variable `
    - Wait for sentinel file before marking task complete
 6. **Quality Assurance Loop**: Enforce quality gates before PR creation:
    1. **Discover QA Tools**: Use the `@discover-qa-tools` skill to identify project QA commands. Check if `.kairon/artifacts/qa-tools.md` exists and is less than 24 hours old — if so, reuse it; otherwise regenerate.
-   2. **Validate Implementation**: Delegate to `validator` agent with QA commands from discovery output
+   2. **Validate Implementation**: Delegate to `validator` agent with QA commands from discovery output, the issue number and the input document path (`$KAIRON_INPUT_DOCUMENT`), which its Phase 3 coverage check needs
    3. **Check QA Status**: Read validator sentinel file for QA verification results
    4. **QA Feedback Loop**: If validator reports QA failures or a failed Spec Deviation Review (Phase 4):
       - Parse validator feedback for specific failing checks and fixes
