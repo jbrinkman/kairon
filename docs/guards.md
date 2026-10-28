@@ -308,6 +308,79 @@ body: |
   Dependencies: #314
 ```
 
+## The scope coverage check
+
+`kairon scope check` checks a spec against the issue it implements. Its rules live in `guard.CheckScope` and
+`guard.ScopeItems` in [`internal/guard/scope.go`](../internal/guard/scope.go). Like every guard, they are plain Go
+with no model call and no network. The command reads the files and parses the `kiro-plan` block, then passes the
+issue body, the spec and the plan's task IDs to the check.
+
+```bash
+kairon scope check --input "$KAIRON_INPUT_DOCUMENT" --spec .kairon/specs/issue-<number>-<slug>.md
+```
+
+`--input` is the verified input document that the watcher writes for krew-lead. The body is used only if the
+document parses and its provenance hash matches (`boundary.ParseInputDocument`). The check lists every In Scope
+item (`s-1`, `s-2`, …) and then every acceptance criterion (`ac-1`, …) in body order. It reads acceptance criteria
+with the same scanner as the structural guard, so the two always agree on what a criterion is.
+
+### Rules
+
+- Every listed item has a row in the spec's `## Scope Coverage` table that quotes the item's first line in double
+  quotes. The quote is the text between the first and last `"` of the row's cells other than the last. It must hold
+  the item's whole first line and may continue into the item's later lines, but nothing beyond the item, so a row
+  quoting "Add retry caps and record attempts" does not cover an item "Add retry caps". Quotes are matched after
+  `\"` and `\|` are unescaped and whitespace is collapsed.
+- A row's tasks are the backticked values in its last cell that sit outside parentheses, whatever their shape, so a
+  mistyped ID such as `retry_cap` is an unknown task. Parentheses hold
+  commentary, such as test names. Every task a row names must exist in the spec's `kiro-plan` block. A spec with no
+  plan, or a plan that does not parse, has no known tasks and gets a `plan` finding.
+- The spec has a `## Deferred work` section whose only content is `none`. If the heading appears more than once,
+  every such section is checked. Emphasis, a code span or a trailing
+  period around the word are allowed.
+
+### Findings
+
+The command prints one JSON object on stdout:
+
+```json
+{"status":"fail","findings":[{"kind":"uncovered","item":"s-2","text":"`docs/retries.md`: document the cap"}]}
+```
+
+A spec that passes prints `{"status":"pass"}`. Every finding is reported, not just the first. `line` is the
+1-based spec line, and it is omitted when a finding has no line.
+
+| `kind` | Meaning | `item` | `text` |
+|--------|---------|--------|--------|
+| `uncovered` | No row quotes the item, or its rows name no task | `s-N` or `ac-N` | the item's text |
+| `unknown_task` | A row names a task ID that is not in the plan | the item the row quotes, or the row's first cell | the task ID |
+| `deferred_section` | `## Deferred work` is missing, empty, or says anything other than `none` | `Deferred work` | the offending line, `missing` or `empty` |
+| `plan` | The spec's `kiro-plan` block is missing or does not parse; listed first, before the `unknown_task` findings it causes | `kiro-plan` | the parse error, or `missing` |
+
+### Exit codes
+
+| Code | Meaning |
+|------|---------|
+| 0 | Pass |
+| 1 | At least one finding |
+| 3 | The check could not run: a usage error (an extra argument, a missing or unknown flag), a file is missing or unreadable, or the input document does not verify. No status is printed. |
+
+### Where it runs
+
+krew-lead runs the check right after it reads the architect's spec, before any builder starts. Exit 1 with the fail
+JSON on stdout sends the spec back to the architect with the complete JSON output. Exit 3 halts the issue with
+`<label>-failed`, and so does an exit 1 without that JSON, such as from an older binary with no `scope` command. The
+validator's Phase 3 runs the check again and cites its output as coverage evidence.
+
+### What it does not check
+
+The check is presence-only. It does not judge whether the named tasks actually deliver an item. It also does not
+scan for deferral language, such as `defer`, `TODO` or `follow-up`. Whether a hit puts off work depends on context:
+the required `## Deferred work` heading, a Go `defer` statement and a quoted example all match these words. So
+deferral language is judged by the validator and never matched by a guard. The validator's spec-scope review judges
+both questions for the spec before the build, and its Phase 3 judges deferral language in the branch's diff
+(`.kiro/agents/validator-prompt.md`).
+
 ## Adding a guard
 
 1. Write a type with the two methods. `Admit` returns `Admitted()` or `in.Reject(name, expected, actual)`. It does no
