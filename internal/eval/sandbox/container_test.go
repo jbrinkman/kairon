@@ -201,40 +201,6 @@ func TestSandboxHomeWritableAsSandboxUser(t *testing.T) {
 	})
 }
 
-func TestContainerTimeout(t *testing.T) {
-	skipIfNoContainerDaemon(t)
-
-	ctx := context.Background()
-
-	c, err := NewContainer("alpine:3.19")
-	require.NoError(t, err)
-	defer c.Close()
-
-	config := &container.Config{
-		Image: "alpine:3.19",
-		Cmd:   []string{"sleep", "30"},
-	}
-
-	err = c.Create(ctx, config, &container.HostConfig{})
-	require.NoError(t, err)
-
-	err = c.Start(ctx)
-	require.NoError(t, err)
-	defer c.Cleanup(ctx)
-
-	// Use a very short timeout for the exec — should fail
-	execCtx, cancel := context.WithTimeout(ctx, 1*time.Second)
-	defer cancel()
-
-	_, err = c.ExecWithOutput(execCtx, []string{"sleep", "10"})
-	if err != nil {
-		assert.Contains(t, err.Error(), "context deadline exceeded")
-	} else {
-		// Some Docker versions complete exec create before timeout hits
-		t.Log("exec completed before timeout — skipping timeout assertion")
-	}
-}
-
 // TestWorkspaceValidation tests comprehensive workspace validation per Task 5
 func TestWorkspaceValidation(t *testing.T) {
 	skipIfNoContainerDaemon(t)
@@ -361,41 +327,6 @@ func TestWorkspaceValidation(t *testing.T) {
 	})
 }
 
-func TestExecWithOutput_ErrorHandling(t *testing.T) {
-	skipIfNoContainerDaemon(t)
-
-	ctx := context.Background()
-	c, err := NewContainer("alpine:3.19")
-	require.NoError(t, err)
-	defer c.Close()
-
-	config := &container.Config{
-		Image: "alpine:3.19",
-		Cmd:   []string{"sleep", "30"},
-	}
-
-	err = c.Create(ctx, config, &container.HostConfig{})
-	require.NoError(t, err)
-
-	err = c.Start(ctx)
-	require.NoError(t, err)
-	defer c.Cleanup(ctx)
-
-	// Test successful command
-	output, err := c.ExecWithOutput(ctx, []string{"echo", "success"})
-	assert.NoError(t, err)
-	assert.Contains(t, output, "success")
-
-	// Test failing command should return error
-	_, err = c.ExecWithOutput(ctx, []string{"false"})
-	assert.Error(t, err, "failing command should return error")
-	assert.Contains(t, err.Error(), "exit code 1")
-
-	// Test non-existent command should return error
-	_, err = c.ExecWithOutput(ctx, []string{"nonexistent-command"})
-	assert.Error(t, err, "non-existent command should return error")
-}
-
 func TestKiroCLIInstallation_VerificationLogic(t *testing.T) {
 	skipIfNoContainerDaemon(t)
 
@@ -462,6 +393,17 @@ func TestContainer_ExecWithStdin(t *testing.T) {
 		require.Error(t, err)
 		assert.Equal(t, "hi", out)
 		assert.Equal(t, "command failed with exit code 2: boom", err.Error())
+	})
+
+	// Folded from TestExecWithOutput_ErrorHandling (issue #434). The old
+	// `false` -> "exit code 1" check is covered by the exit code 2 assertion above.
+	t.Run("ExecWithOutput reports a nonexistent binary", func(t *testing.T) {
+		out, err := c.ExecWithOutput(ctx, []string{"echo", "success"})
+		assert.NoError(t, err)
+		assert.Contains(t, out, "success")
+
+		_, err = c.ExecWithOutput(ctx, []string{"nonexistent-command"})
+		assert.Error(t, err, "non-existent command should return error")
 	})
 
 	t.Run("context cancellation returns promptly with the context error", func(t *testing.T) {
