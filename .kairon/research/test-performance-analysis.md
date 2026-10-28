@@ -369,8 +369,11 @@ Recurring patterns:
    kept some of these under the old rules, such as docs tests that run documented YAML examples and prompt
    tests for tokens like `Document path:`. The maintainer's rule now overrides those verdicts.
 6. **Tests of dead or test-only code** (DELETE together with the code).
-   - `internal/plan`'s `Executor` has no caller outside its own tests (I verified this). Delete
-     `executor.go` and its tests.
+   - `internal/plan`'s `Executor` (`NewExecutor`, `NewExecutorWithLimit`, `ExecutePlan` and its helpers)
+     has no caller outside its own tests (I verified this). Delete that code and its tests. Don't delete
+     the whole of `executor.go`: the same file defines `TopologicalSort`, which `kairon plan parse` calls
+     (`cmd/kairon/cmd/plan.go:77`). `TopologicalSort` and its tests stay, moved to their own file if
+     `executor.go` is removed.
    - `tui.ViewManager` has no production use.
    - The Podman-discovery tests exercise a helper that exists only for tests.
 7. **The same check in two places.**
@@ -420,11 +423,12 @@ recorded. 66 tests open documentation, prompt or skill files.
 |-------|------:|--------|
 | **Documentation:** `docs/*.md`, plus two examples parsed from `.kairon/research/` | 26 | Delete. These are `TestDocs_*` in `boundary`, `failure`, `guard`, `provenance` and `stageoutput`; `TestChecksDocs*` in `checks`; and `TestWorkflowDocs*` and `TestSimulatedUserDoc*` in `eval`. The docs tests that run YAML examples go too. Two parser tests in `stageoutput` (`TestParse_CanonicalExampleFromSpec`, `TestParse_PunchOutExampleFromSpec`) check parser behaviour, but they read their input from a research doc. Keep the behaviour by moving those two inputs into `testdata/`, and stop reading the doc. |
 | **Prompt and skill wording:** `internal/planner`'s `TestAutomatedPrompt*`, `TestInteractivePrompt*` (except the template-match ones) and `TestSkill*` | 26 | Delete. This includes the tests for tokens that the code reads from agent output (`Document path:`, `Label answer path:`, the yes/no label answer), the Dependencies line format, the examples embedded in the skill, and skill front matter. What those tests protected is now covered by checking the agent's output (see below). |
-| **Live/template copies of prompts and skills:** `TestAutomatedFilesMatchTemplates`, `TestInteractiveFilesMatchTemplates`, `TestInteractiveTemplatePromptMatchesLive`, `TestTemplateSkillIsByteIdentical`, `TestTemplateSkillDirHasOnlySkillFile`, `TestTemplatesContainNoPlannerConventionsPath`, `TestSyncGate_*` | 10 | Delete. They repeat `task sync:check`, which CI runs. |
+| **Live/template copies of prompts and skills:** `TestAutomatedFilesMatchTemplates`, `TestInteractiveFilesMatchTemplates`, `TestInteractiveTemplatePromptMatchesLive`, `TestTemplateSkillIsByteIdentical`, `TestTemplateSkillDirHasOnlySkillFile`, `TestSyncGate_*` | 9 | Delete. They repeat `task sync:check`, which CI runs. `TestSyncGate_TemplatesHaveNoPlannerConventionsSkill` is a copy of `TestTemplatesContainNoPlannerConventionsPath`, which stays (next row). |
+| **Templates ship no `planner-conventions` skill:** `TestTemplatesContainNoPlannerConventionsPath` | 1 | Keep. It enforces a packaging rule that `task sync:check` does not check: the templates must never ship the project-owned `planner-conventions` skill, because shipping it would let `kairon update` overwrite a project's local guidance. It checks that a path is absent and pins no prompt or skill text. |
 | **CLI audit run against the real prompts:** `TestAuditRealBuilderListsSkillsAndHooks`, `TestAuditRealPlannerHasRTCCHeadings` | 2 | Delete. They check the structure of the live prompts through `kairon eval audit`. The audit command's own behaviour is already tested against fixtures. |
 | **Code that reads prompts as input:** `TestSelfTestWorkspaceCasesNative` (copies the real `.kiro/` into a workspace) and `TestEvalDriverOverlayAndResults` (the planner eval driver's overlay) | 2 | Keep. They test what the code does with the files, not what the files say. (`TestSelfTestWorkspaceCasesNative` is still a REWRITE-CHEAPER candidate in §8.3.) |
 
-In total, 62 tests are deleted and 2 parser tests are rewritten to use `testdata/`. Both of those are counted in the documentation row. 2 tests stay. The
+In total, 61 tests are deleted and 2 parser tests are rewritten to use `testdata/`. Both of those are counted in the documentation row. 3 tests stay. The
 companion verdicts file reflects the earlier rules; where it conflicts with this table, this table wins.
 
 **Where the planner's behaviour is tested instead.** The planner eval cases are in `.kairon/evals/cases/planner/`:
