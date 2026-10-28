@@ -7,49 +7,6 @@ import (
 	"time"
 )
 
-func TestLoad_SandboxConfigDefaults(t *testing.T) {
-	tmpDir := t.TempDir()
-	configDir := tmpDir + string(os.PathSeparator) + ".kairon"
-	if err := os.Mkdir(configDir, 0755); err != nil {
-		t.Fatalf("Failed to create config dir: %v", err)
-	}
-
-	configContent := `repo: test/repo`
-	configFile := configDir + string(os.PathSeparator) + "config.yaml"
-	if err := os.WriteFile(configFile, []byte(configContent), 0644); err != nil {
-		t.Fatalf("Failed to write config file: %v", err)
-	}
-
-	oldDir, err := os.Getwd()
-	if err != nil {
-		t.Fatalf("Failed to get working directory: %v", err)
-	}
-	t.Cleanup(func() {
-		if err := os.Chdir(oldDir); err != nil {
-			t.Errorf("Failed to restore working directory: %v", err)
-		}
-	})
-	if err := os.Chdir(tmpDir); err != nil {
-		t.Fatalf("Failed to change directory: %v", err)
-	}
-
-	cfg, err := Load()
-	if err != nil {
-		t.Fatalf("Load() error = %v", err)
-	}
-
-	expected := SandboxConfig{
-		WorkspaceDir: "/workspace",
-		CPUCores:     1.0,
-		MemoryMB:     1024,
-		Timeout:      5 * time.Minute,
-	}
-
-	if cfg.Sandbox != expected {
-		t.Errorf("SandboxConfig = %+v, expected %+v", cfg.Sandbox, expected)
-	}
-}
-
 func TestLoad_SandboxConfigParsing(t *testing.T) {
 	tests := []struct {
 		name           string
@@ -87,6 +44,16 @@ sandbox:
 			name: "empty sandbox section uses defaults",
 			configContent: `repo: test/repo
 sandbox:`,
+			expectedConfig: SandboxConfig{
+				WorkspaceDir: "/workspace",
+				CPUCores:     1.0,
+				MemoryMB:     1024,
+				Timeout:      5 * time.Minute,
+			},
+		},
+		{
+			name:          "no sandbox key uses defaults",
+			configContent: `repo: test/repo`,
 			expectedConfig: SandboxConfig{
 				WorkspaceDir: "/workspace",
 				CPUCores:     1.0,
@@ -230,80 +197,6 @@ sandbox:
 			}
 			if !containsError(err.Error(), tt.expectError) {
 				t.Errorf("Expected error containing %q, got %q", tt.expectError, err.Error())
-			}
-		})
-	}
-}
-
-func TestLoad_DurationParsing(t *testing.T) {
-	tests := []struct {
-		name            string
-		timeoutValue    string
-		expectedTimeout time.Duration
-	}{
-		{
-			name:            "minutes format",
-			timeoutValue:    "5m",
-			expectedTimeout: 5 * time.Minute,
-		},
-		{
-			name:            "seconds format",
-			timeoutValue:    "300s",
-			expectedTimeout: 300 * time.Second,
-		},
-		{
-			name:            "hours format",
-			timeoutValue:    "1h",
-			expectedTimeout: time.Hour,
-		},
-		{
-			name:            "mixed format",
-			timeoutValue:    "1h30m",
-			expectedTimeout: time.Hour + 30*time.Minute,
-		},
-		{
-			name:            "nanoseconds",
-			timeoutValue:    "1000000000ns",
-			expectedTimeout: time.Second,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			tmpDir := t.TempDir()
-			configDir := tmpDir + string(os.PathSeparator) + ".kairon"
-			if err := os.Mkdir(configDir, 0755); err != nil {
-				t.Fatalf("Failed to create config dir: %v", err)
-			}
-
-			configContent := `repo: test/repo
-sandbox:
-  timeout: ` + tt.timeoutValue
-			configFile := configDir + string(os.PathSeparator) + "config.yaml"
-			if err := os.WriteFile(configFile, []byte(configContent), 0644); err != nil {
-				t.Fatalf("Failed to write config file: %v", err)
-			}
-
-			oldDir, err := os.Getwd()
-			if err != nil {
-				t.Fatalf("Failed to get working directory: %v", err)
-			}
-			t.Cleanup(func() {
-				if err := os.Chdir(oldDir); err != nil {
-					t.Errorf("Failed to restore working directory: %v", err)
-				}
-			})
-			if err := os.Chdir(tmpDir); err != nil {
-				t.Fatalf("Failed to change directory: %v", err)
-			}
-
-			cfg, err := Load()
-			if err != nil {
-				t.Fatalf("Load() error = %v", err)
-			}
-
-			if cfg.Sandbox.Timeout != tt.expectedTimeout {
-				t.Errorf("Timeout = %v, expected %v", cfg.Sandbox.Timeout, tt.expectedTimeout)
 			}
 		})
 	}

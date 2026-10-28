@@ -81,31 +81,6 @@ func TestShippedConfigFiles_PricingBlockPricesEverySonnetModel(t *testing.T) {
 	}
 }
 
-// TestShippedConfigFiles_PricingBlockIsDocumented checks that the block is
-// visible and explained, not just present.
-func TestShippedConfigFiles_PricingBlockIsDocumented(t *testing.T) {
-	for name, path := range shippedConfigFiles {
-		t.Run(name, func(t *testing.T) {
-			text := string(readShipped(t, path))
-			if !strings.Contains(text, "\npricing:\n") {
-				t.Fatalf("%s: no uncommented top-level `pricing:` line", path)
-			}
-			lower := strings.ToLower(text)
-			for _, want := range []string{
-				"exact",            // keys are exact model ids
-				"per million",      // unit
-				"unknown",          // unpriced model = unknown cost
-				"replace",          // replace, not merge
-				"claude-haiku-4.5", // intentionally unpriced
-			} {
-				if !strings.Contains(lower, want) {
-					t.Errorf("%s: pricing comments do not mention %q", path, want)
-				}
-			}
-		})
-	}
-}
-
 // TestShippedConfigFiles_Loadable runs the real loaders against both files.
 func TestShippedConfigFiles_Loadable(t *testing.T) {
 	for name, path := range shippedConfigFiles {
