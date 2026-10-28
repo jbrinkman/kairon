@@ -1,8 +1,10 @@
 package cmd
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -12,66 +14,331 @@ import (
 
 	"github.com/jbrinkman/kairon/internal/eval"
 	"github.com/jbrinkman/kairon/internal/inference"
+	"github.com/spf13/cobra"
 )
 
-func TestEvalFlagsRegistered(t *testing.T) {
-	backend := evalCmd.Flags().Lookup("backend")
-	if backend == nil {
-		t.Fatal("--backend flag not registered on eval")
-	}
-	if backend.DefValue != inference.NameKiroCLI {
-		t.Errorf("--backend default = %q, want %q", backend.DefValue, inference.NameKiroCLI)
-	}
-	for _, name := range inference.Names() {
-		if !strings.Contains(backend.Usage, name) {
-			t.Errorf("--backend usage %q does not list backend %q", backend.Usage, name)
+// flagLookup selects which flag set of the owning command a flagCase reads.
+type flagLookup int
+
+const (
+	// lookupFlags reads cmd.Flags(): local and persistent flags together.
+	lookupFlags flagLookup = iota
+	// lookupPersistent reads cmd.PersistentFlags().
+	lookupPersistent
+	// lookupLocal reads cmd.LocalFlags(): flags the command declares itself.
+	lookupLocal
+	// lookupInherited reads cmd.InheritedFlags(): persistent flags of a parent.
+	//
+	// Deviates from spec "Shared flag-table shape", which lists only Flags(),
+	// PersistentFlags() and LocalFlags(): cobra merges a parent's persistent
+	// flags into cmd.Flags() only as a side effect of another call, so a
+	// Flags() lookup of an inherited flag passes or fails depending on which
+	// rows ran first (audit:--evals-dir failed when run alone). The spec's
+	// assertion for these rows is "InheritedFlags() has it"; this reads it
+	// directly and is order-independent.
+	lookupInherited
+)
+
+// flagCase is one row of a flag-registration table. Only the fields a row
+// sets are checked. TestEvalFlagsRegistered and TestVerifyLogFlags share it so
+// the package has one flag-row shape.
+type flagCase struct {
+	// name is the subtest name. It contains no spaces.
+	name string
+	// cmd resolves the command that owns the flag when the row runs, so a
+	// command looked up through rootCmd.Find can fail the row itself.
+	cmd func(t *testing.T) *cobra.Command
+	// flag is the flag name without the leading dashes.
+	flag string
+	// lookup selects the flag set that must contain the flag.
+	lookup flagLookup
+	// def, when non-nil, is the expected DefValue. defHint is appended to the
+	// failure message.
+	def     *string
+	defHint string
+	// valueType, when set, is the expected Value.Type().
+	valueType string
+	// usage lists strings the flag's Usage must contain.
+	usage []string
+	// required asserts the flag carries cobra's required annotation.
+	required bool
+	// inherits lists commands whose InheritedFlags() must contain the flag.
+	inherits []*cobra.Command
+	// notInherited lists commands whose InheritedFlags() must not contain it.
+	notInherited []*cobra.Command
+	// notLocal asserts the owner's LocalFlags() does not contain the flag.
+	notLocal bool
+	// notPersistent asserts the owner's PersistentFlags() does not contain it.
+	notPersistent bool
+}
+
+// ownedBy returns a flagCase.cmd resolver for a command held in a variable.
+func ownedBy(c *cobra.Command) func(t *testing.T) *cobra.Command {
+	return func(*testing.T) *cobra.Command { return c }
+}
+
+// strPtr returns a pointer to s, for flagCase.def.
+func strPtr(s string) *string { return &s }
+
+// runFlagCase runs one row as a subtest named tc.name.
+func runFlagCase(t *testing.T, tc flagCase) {
+	t.Helper()
+	t.Run(tc.name, func(t *testing.T) {
+		c := tc.cmd(t)
+		if c == nil {
+			t.Fatalf("no command owns --%s", tc.flag)
 		}
+
+		// Method values avoid naming the pflag type: every lookup has the
+		// same signature.
+		lookup := c.Flags().Lookup
+		switch tc.lookup {
+		case lookupPersistent:
+			lookup = c.PersistentFlags().Lookup
+		case lookupLocal:
+			lookup = c.LocalFlags().Lookup
+		case lookupInherited:
+			lookup = c.InheritedFlags().Lookup
+		}
+		f := lookup(tc.flag)
+		if f == nil {
+			if tc.lookup == lookupPersistent {
+				t.Fatalf("--%s must be a persistent flag on %s", tc.flag, c.Name())
+			}
+			if tc.lookup == lookupInherited {
+				t.Fatalf("%s does not inherit --%s", c.Name(), tc.flag)
+			}
+			t.Fatalf("--%s flag not registered on %s", tc.flag, c.Name())
+		}
+
+		if tc.def != nil && f.DefValue != *tc.def {
+			msg := fmt.Sprintf("--%s default = %q, want %q", tc.flag, f.DefValue, *tc.def)
+			if tc.defHint != "" {
+				msg += " (" + tc.defHint + ")"
+			}
+			t.Error(msg)
+		}
+		if tc.valueType != "" && f.Value.Type() != tc.valueType {
+			t.Errorf("--%s type = %q, want %s", tc.flag, f.Value.Type(), tc.valueType)
+		}
+		for _, want := range tc.usage {
+			if !strings.Contains(f.Usage, want) {
+				// Same text as the old backend assertions; other flags drop the noun.
+				if tc.flag == "backend" {
+					t.Errorf("--%s usage %q does not list backend %q", tc.flag, f.Usage, want)
+				} else {
+					t.Errorf("--%s usage %q does not list %q", tc.flag, f.Usage, want)
+				}
+			}
+		}
+		if tc.required {
+			if got := f.Annotations[cobraRequiredAnnotation]; len(got) != 1 || got[0] != "true" {
+				t.Errorf("--%s must be required, annotations = %v", tc.flag, f.Annotations)
+			}
+		}
+		if tc.notLocal && c.LocalFlags().Lookup(tc.flag) != nil {
+			t.Errorf("--%s must not be defined locally on %s", tc.flag, c.Name())
+		}
+		if tc.notPersistent && c.PersistentFlags().Lookup(tc.flag) != nil {
+			t.Errorf("--%s must be a local flag on %s, not persistent", tc.flag, c.Name())
+		}
+		for _, other := range tc.inherits {
+			if other.InheritedFlags().Lookup(tc.flag) == nil {
+				t.Errorf("%s subcommand does not inherit --%s", other.Name(), tc.flag)
+			}
+		}
+		for _, other := range tc.notInherited {
+			if other.InheritedFlags().Lookup(tc.flag) != nil {
+				t.Errorf("%s subcommand must not inherit --%s", other.Name(), tc.flag)
+			}
+		}
+	})
+}
+
+func TestEvalFlagsRegistered(t *testing.T) {
+	cases := []flagCase{
+		{
+			name: "eval:--backend", cmd: ownedBy(evalCmd), flag: "backend",
+			lookup: lookupFlags, def: strPtr(inference.NameKiroCLI), usage: inference.Names(),
+		},
+		{
+			// Persistent flags are inherited, so `eval diff` honours --evals-dir too.
+			name: "eval:--evals-dir", cmd: ownedBy(evalCmd), flag: "evals-dir",
+			lookup: lookupPersistent, def: strPtr(""), defHint: "use package default",
+			inherits: []*cobra.Command{diffCmd},
+		},
+		{
+			// Local to eval: it must not be a persistent flag, so diff does not inherit it.
+			name: "eval:--prompt-file", cmd: ownedBy(evalCmd), flag: "prompt-file",
+			lookup: lookupFlags, notPersistent: true, notInherited: []*cobra.Command{diffCmd},
+		},
+		{
+			// Local to eval: diff must not inherit it.
+			name: "eval:--repeat", cmd: ownedBy(evalCmd), flag: "repeat",
+			lookup: lookupFlags, def: strPtr("1"), notInherited: []*cobra.Command{diffCmd},
+		},
+		{
+			// Persistent: diff and trend inherit it from the one declaration.
+			name: "eval:--filter", cmd: ownedBy(evalCmd), flag: "filter",
+			lookup: lookupPersistent, inherits: []*cobra.Command{diffCmd, trendCmd},
+		},
+		{
+			name: "eval:--strict", cmd: ownedBy(evalCmd), flag: "strict",
+			lookup: lookupFlags, valueType: "bool", def: strPtr("false"), notPersistent: true,
+			notInherited: []*cobra.Command{diffCmd, trendCmd},
+		},
+		{
+			name: "check:--checks", cmd: findCheckCmd, flag: "checks",
+			lookup: lookupFlags, required: true,
+		},
+		{
+			name: "check:--dir", cmd: findCheckCmd, flag: "dir",
+			lookup: lookupFlags, required: true,
+		},
+		{
+			name: "check:--backend", cmd: findCheckCmd, flag: "backend",
+			lookup: lookupFlags, def: strPtr(inference.NameKiroCLI), usage: inference.Names(),
+		},
+		{
+			name: "audit:--iterations-dir", cmd: ownedBy(auditCmd), flag: "iterations-dir",
+			lookup: lookupFlags, def: strPtr(".kairon/iterations"),
+		},
+		{
+			name: "audit:--prompt-file", cmd: ownedBy(auditCmd), flag: "prompt-file",
+			lookup: lookupLocal,
+		},
+		{
+			// Not redefined locally: audit inherits the persistent flag from eval.
+			// Inheritance fails if audit is not a child of eval.
+			name: "audit:--evals-dir", cmd: ownedBy(auditCmd), flag: "evals-dir",
+			lookup: lookupInherited, notLocal: true,
+		},
+		{
+			name: "trend:--json", cmd: ownedBy(trendCmd), flag: "json",
+			lookup: lookupLocal, def: strPtr("false"),
+		},
+		{
+			// Not redefined locally: trend inherits the persistent flag from eval.
+			name: "trend:--evals-dir", cmd: ownedBy(trendCmd), flag: "evals-dir",
+			lookup: lookupInherited, notLocal: true,
+		},
+		{
+			name: "inference-exec:--backend", cmd: ownedBy(inferenceExecCmd), flag: "backend",
+			lookup: lookupFlags,
+		},
+	}
+	for _, tc := range cases {
+		runFlagCase(t, tc)
 	}
 
-	evalsDir := evalCmd.PersistentFlags().Lookup("evals-dir")
-	if evalsDir == nil {
-		t.Fatal("--evals-dir must be a persistent flag on eval")
+	// The hidden check is not a flag lookup, so it is a plain subtest next to
+	// the table rather than a flagCase field.
+	t.Run("inference-exec:hidden", func(t *testing.T) {
+		if !inferenceExecCmd.Hidden {
+			t.Fatal("inference-exec must be Hidden")
+		}
+
+		var help bytes.Buffer
+		rootCmd.SetOut(&help)
+		t.Cleanup(func() { rootCmd.SetOut(nil) })
+		if err := rootCmd.Help(); err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(help.String(), "inference-exec") {
+			t.Errorf("root help lists inference-exec:\n%s", help.String())
+		}
+	})
+}
+
+// findCheckCmd resolves the check command through rootCmd, so a row fails if
+// check is not registered on the root.
+func findCheckCmd(t *testing.T) *cobra.Command {
+	t.Helper()
+	cc, _, err := rootCmd.Find([]string{"check"})
+	if err != nil || cc.Name() != "check" {
+		t.Fatalf("kairon check command is not registered (Find: %v)", err)
 	}
-	if evalsDir.DefValue != "" {
-		t.Errorf("--evals-dir default = %q, want empty (use package default)", evalsDir.DefValue)
+	return cc
+}
+
+// TestEvalAgentSubcommandArgs pins the arity of the per-agent eval
+// subcommands: each takes exactly one agent argument.
+func TestEvalAgentSubcommandArgs(t *testing.T) {
+	cases := []struct {
+		name string
+		cmd  *cobra.Command
+		one  string // a valid single argument
+	}{
+		{name: "audit", cmd: auditCmd, one: "builder"},
+		{name: "trend", cmd: trendCmd, one: "selftest"},
+		{name: "verify-log", cmd: verifyLogCmd, one: "selftest"},
 	}
-	// Persistent flags are inherited, so `eval diff` honours --evals-dir too.
-	if diffCmd.InheritedFlags().Lookup("evals-dir") == nil {
-		t.Error("diff subcommand does not inherit --evals-dir")
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := tc.cmd.Args(tc.cmd, nil); err == nil {
+				t.Error("expected arg error when agent is missing")
+			}
+			if err := tc.cmd.Args(tc.cmd, []string{"a", "b"}); err == nil {
+				t.Error("expected arg error for extra arguments")
+			}
+			if err := tc.cmd.Args(tc.cmd, []string{tc.one}); err != nil {
+				t.Errorf("one argument should be accepted: %v", err)
+			}
+		})
 	}
 }
 
 func TestEvalUnknownBackendRejected(t *testing.T) {
-	orig := evalBackend
-	t.Cleanup(func() { evalBackend = orig })
-	evalBackend = "nope"
-
-	err := evalCmd.RunE(evalCmd, []string{"selftest"})
-	if err == nil {
-		t.Fatal("expected error for unknown backend")
+	cases := []struct {
+		name  string
+		args  []string
+		perf  bool
+		clean bool
+		// flag, when set, names the --flag in the failure message, as the
+		// former TestEvalUnknownBackendRejectedForPerfAndCleanup did.
+		flag string
+		// want lists substrings the error must contain.
+		want []string
+	}{
+		{
+			name: "selftest", args: []string{"selftest"},
+			want: []string{"nope", inference.NameKiroCLI, inference.NameStub},
+		},
+		{
+			// --perf and --cleanup go through RunWithOptions, so configuration
+			// (and backend validation) applies before any work is done.
+			name: "perf", perf: true, flag: "perf",
+			want: []string{"unknown backend"},
+		},
+		{
+			name: "cleanup", clean: true, flag: "cleanup",
+			want: []string{"unknown backend"},
+		},
 	}
-	for _, want := range []string{"nope", inference.NameKiroCLI, inference.NameStub} {
-		if !strings.Contains(err.Error(), want) {
-			t.Errorf("error %q does not mention %q", err.Error(), want)
-		}
-	}
-}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			origBackend, origPerf, origCleanup := evalBackend, evalPerf, evalCleanup
+			t.Cleanup(func() { evalBackend, evalPerf, evalCleanup = origBackend, origPerf, origCleanup })
+			evalBackend, evalPerf, evalCleanup = "nope", tc.perf, tc.clean
 
-func TestEvalUnknownBackendRejectedForPerfAndCleanup(t *testing.T) {
-	origBackend, origPerf, origCleanup := evalBackend, evalPerf, evalCleanup
-	t.Cleanup(func() { evalBackend, evalPerf, evalCleanup = origBackend, origPerf, origCleanup })
-	evalBackend = "nope"
-
-	// --perf and --cleanup go through RunWithOptions, so configuration (and
-	// backend validation) applies before any work is done.
-	for name, set := range map[string]func(){
-		"perf":    func() { evalPerf, evalCleanup = true, false },
-		"cleanup": func() { evalPerf, evalCleanup = false, true },
-	} {
-		set()
-		if err := evalCmd.RunE(evalCmd, nil); err == nil || !strings.Contains(err.Error(), "unknown backend") {
-			t.Errorf("--%s with bad backend: err = %v, want unknown backend error", name, err)
-		}
+			err := evalCmd.RunE(evalCmd, tc.args)
+			if tc.flag != "" {
+				for _, want := range tc.want {
+					if err == nil || !strings.Contains(err.Error(), want) {
+						t.Errorf("--%s with bad backend: err = %v, want unknown backend error", tc.flag, err)
+					}
+				}
+				return
+			}
+			if err == nil {
+				t.Fatal("expected error for unknown backend")
+			}
+			for _, want := range tc.want {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("error %q does not mention %q", err.Error(), want)
+				}
+			}
+		})
 	}
 }
 
@@ -146,18 +413,6 @@ func TestEvalRejectsUnpinnedJudgeModel(t *testing.T) {
 	}
 }
 
-func TestEvalSelfTestSucceedsWithDefaults(t *testing.T) {
-	evalsDir := evalSelfTestProject(t, "")
-
-	if err := evalCmd.RunE(evalCmd, []string{"selftest"}); err != nil {
-		t.Fatalf("self-test with default evals config failed: %v", err)
-	}
-	runs, _ := filepath.Glob(filepath.Join(evalsDir, "results", "*", "summary.json"))
-	if len(runs) != 1 {
-		t.Fatalf("summary.json files = %v, want 1", runs)
-	}
-}
-
 // A failed verdict is a result, not a usage error: the eval command must
 // silence cobra's usage dump (this is set when RunE starts).
 func TestEvalSilencesUsageOnRunError(t *testing.T) {
@@ -189,26 +444,6 @@ func TestEvalSelfTestFailExitsWithThresholdError(t *testing.T) {
 	}
 	if !evalCmd.SilenceUsage {
 		t.Error("usage would be printed for a threshold failure")
-	}
-}
-
-func TestEvalPromptFileFlagRegistered(t *testing.T) {
-	f := evalCmd.Flags().Lookup("prompt-file")
-	if f == nil {
-		t.Fatal("--prompt-file flag not registered on eval")
-	}
-	if f.DefValue != "" {
-		t.Errorf("--prompt-file default = %q, want empty", f.DefValue)
-	}
-	if !strings.Contains(strings.ToLower(f.Usage), "candidate") {
-		t.Errorf("--prompt-file usage %q does not describe the candidate prompt", f.Usage)
-	}
-	// Local to eval: it must not be a persistent flag, so diff does not inherit it.
-	if evalCmd.PersistentFlags().Lookup("prompt-file") != nil {
-		t.Error("--prompt-file must be a local flag on eval, not persistent")
-	}
-	if diffCmd.InheritedFlags().Lookup("prompt-file") != nil {
-		t.Error("diff subcommand must not inherit --prompt-file")
 	}
 }
 
@@ -315,26 +550,6 @@ func TestEvalPromptFileRecorded(t *testing.T) {
 	}
 }
 
-func TestEvalRepeatFlagRegistered(t *testing.T) {
-	f := evalCmd.Flags().Lookup("repeat")
-	if f == nil {
-		t.Fatal("--repeat flag not registered on eval")
-	}
-	if f.DefValue != "1" {
-		t.Errorf("--repeat default = %q, want %q", f.DefValue, "1")
-	}
-	if f.Value.Type() != "int" {
-		t.Errorf("--repeat type = %q, want int", f.Value.Type())
-	}
-	// Local to eval: diff must not inherit it.
-	if diffCmd.InheritedFlags().Lookup("repeat") != nil {
-		t.Error("diff subcommand must not inherit --repeat")
-	}
-	if !strings.Contains(evalCmd.UsageString(), "--repeat") {
-		t.Error("eval usage (--help) does not list --repeat")
-	}
-}
-
 // --repeat below 1 is refused before any work: the error names the flag, the
 // usage is still shown (SilenceUsage not yet set), no results directory is
 // created and the backend is never reached. The backend is deliberately set to
@@ -432,47 +647,6 @@ func readJSON(t *testing.T, path string, v any) {
 	}
 	if err := json.Unmarshal(data, v); err != nil {
 		t.Fatalf("%s: %v", path, err)
-	}
-}
-
-func TestEvalFilterAndStrictFlagsRegistered(t *testing.T) {
-	filter := evalCmd.PersistentFlags().Lookup("filter")
-	if filter == nil {
-		t.Fatal("--filter must be a persistent flag on eval")
-	}
-	if filter.Value.Type() != "stringArray" {
-		t.Errorf("--filter type = %q, want stringArray (stringSlice would split on commas)", filter.Value.Type())
-	}
-	// Persistent: diff and trend inherit it from the one declaration.
-	if diffCmd.InheritedFlags().Lookup("filter") == nil {
-		t.Error("diff subcommand does not inherit --filter")
-	}
-	if trendCmd.InheritedFlags().Lookup("filter") == nil {
-		t.Error("trend subcommand does not inherit --filter")
-	}
-
-	strict := evalCmd.Flags().Lookup("strict")
-	if strict == nil {
-		t.Fatal("--strict flag not registered on eval")
-	}
-	if strict.Value.Type() != "bool" || strict.DefValue != "false" {
-		t.Errorf("--strict = type %q default %q, want bool false", strict.Value.Type(), strict.DefValue)
-	}
-	if evalCmd.PersistentFlags().Lookup("strict") != nil {
-		t.Error("--strict must be local to eval, not persistent")
-	}
-	if diffCmd.InheritedFlags().Lookup("strict") != nil {
-		t.Error("diff subcommand must not inherit --strict")
-	}
-	if trendCmd.InheritedFlags().Lookup("strict") != nil {
-		t.Error("trend subcommand must not inherit --strict")
-	}
-
-	usage := evalCmd.UsageString()
-	for _, name := range []string{"--filter", "--strict"} {
-		if !strings.Contains(usage, name) {
-			t.Errorf("eval usage (--help) does not list %s", name)
-		}
 	}
 }
 

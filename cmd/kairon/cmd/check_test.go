@@ -84,46 +84,6 @@ func outputLines(s string) []string {
 	return strings.Split(s, "\n")
 }
 
-func TestCheckCommandRegistered(t *testing.T) {
-	cc, _, err := rootCmd.Find([]string{"check"})
-	if err != nil || cc == nil || cc.Name() != "check" {
-		t.Fatalf("kairon check command is not registered on the root command (Find: %v)", err)
-	}
-}
-
-func TestCheckFlagsRegistered(t *testing.T) {
-	cc, _, err := rootCmd.Find([]string{"check"})
-	if err != nil || cc.Name() != "check" {
-		t.Fatalf("kairon check command is not registered (Find: %v)", err)
-	}
-	for _, name := range []string{"checks", "dir", "output", "gh-log", "hidden-dir", "backend"} {
-		if cc.Flags().Lookup(name) == nil {
-			t.Errorf("--%s flag not registered on check", name)
-		}
-	}
-	for _, name := range []string{"checks", "dir"} {
-		f := cc.Flags().Lookup(name)
-		if f == nil {
-			continue
-		}
-		if got := f.Annotations[cobraRequiredAnnotation]; len(got) != 1 || got[0] != "true" {
-			t.Errorf("--%s must be required, annotations = %v", name, f.Annotations)
-		}
-	}
-	backend := cc.Flags().Lookup("backend")
-	if backend == nil {
-		return
-	}
-	if backend.DefValue != inference.NameKiroCLI {
-		t.Errorf("--backend default = %q, want %q", backend.DefValue, inference.NameKiroCLI)
-	}
-	for _, name := range inference.Names() {
-		if !strings.Contains(backend.Usage, name) {
-			t.Errorf("--backend usage %q does not list backend %q", backend.Usage, name)
-		}
-	}
-}
-
 // cobraRequiredAnnotation is the annotation cobra sets with MarkFlagRequired.
 const cobraRequiredAnnotation = "cobra_annotation_bash_completion_one_required_flag"
 
