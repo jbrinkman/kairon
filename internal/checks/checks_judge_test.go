@@ -134,6 +134,25 @@ func TestJudgeCheckLabel(t *testing.T) {
 			check: docWithTurn,
 			want:  "#1 output_document_valid turn=1",
 		},
+		{
+			name:  "fact-not-asked",
+			index: 2,
+			check: factCheck(CheckFactNotAsked, "f1"),
+			want:  "#2 fact_not_asked fact=f1",
+		},
+		{
+			name:  "fact-asked",
+			index: 1,
+			check: factCheck(CheckFactAsked, "f1"),
+			want:  "#1 fact_asked fact=f1",
+		},
+		{
+			// Existing labels are unchanged by the fact check types.
+			name:  "file-exists-unchanged",
+			index: 3,
+			check: Check{Type: CheckFileExists, Path: "a.txt"},
+			want:  "#3 file_exists path=a.txt",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
