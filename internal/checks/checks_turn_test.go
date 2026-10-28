@@ -65,27 +65,31 @@ func threeTurns() Input {
 	}
 }
 
+// TestCheckTurnEvalPerTurnGHLog covers per-turn scoping for each kind of
+// evidence a check can read: the gh log and the agent output.
 func TestCheckTurnEvalPerTurnGHLog(t *testing.T) {
-	in := threeTurns()
-	notCreate := Check{Criterion: "c", Type: CheckGHLogNotContains, Pattern: "issue create", Turn: turnPtr(1)}
-	create3 := Check{Criterion: "c", Type: CheckGHLogContains, Pattern: "issue create", Turn: turnPtr(3)}
-	rs := Evaluate([]Check{notCreate, create3}, in)
-	wantPass(t, rs[0])
-	wantPass(t, rs[1])
+	t.Run("gh-log", func(t *testing.T) {
+		in := threeTurns()
+		notCreate := Check{Criterion: "c", Type: CheckGHLogNotContains, Pattern: "issue create", Turn: turnPtr(1)}
+		create3 := Check{Criterion: "c", Type: CheckGHLogContains, Pattern: "issue create", Turn: turnPtr(3)}
+		rs := Evaluate([]Check{notCreate, create3}, in)
+		wantPass(t, rs[0])
+		wantPass(t, rs[1])
 
-	// The same pattern pinned to the wrong turn must fail (proves scoping).
-	create1 := Check{Criterion: "c", Type: CheckGHLogContains, Pattern: "issue create", Turn: turnPtr(1)}
-	wantFail(t, evalOne(t, create1, in), "not found in gh log")
-	notCreate3 := Check{Criterion: "c", Type: CheckGHLogNotContains, Pattern: "issue create", Turn: turnPtr(3)}
-	wantFail(t, evalOne(t, notCreate3, in), "matched in gh log")
-}
+		// The same pattern pinned to the wrong turn must fail (proves scoping).
+		create1 := Check{Criterion: "c", Type: CheckGHLogContains, Pattern: "issue create", Turn: turnPtr(1)}
+		wantFail(t, evalOne(t, create1, in), "not found in gh log")
+		notCreate3 := Check{Criterion: "c", Type: CheckGHLogNotContains, Pattern: "issue create", Turn: turnPtr(3)}
+		wantFail(t, evalOne(t, notCreate3, in), "matched in gh log")
+	})
 
-func TestCheckTurnEvalPerTurnOutput(t *testing.T) {
-	in := threeTurns()
-	wantPass(t, evalOne(t, Check{Type: CheckOutputContains, Pattern: "out1", Turn: turnPtr(1)}, in))
-	wantFail(t, evalOne(t, Check{Type: CheckOutputContains, Pattern: "out1", Turn: turnPtr(2)}, in), "not found in output")
-	wantPass(t, evalOne(t, Check{Type: CheckOutputNotContains, Pattern: "out3", Turn: turnPtr(2)}, in))
-	wantFail(t, evalOne(t, Check{Type: CheckOutputNotContains, Pattern: "out2", Turn: turnPtr(2)}, in), "matched in output")
+	t.Run("output", func(t *testing.T) {
+		in := threeTurns()
+		wantPass(t, evalOne(t, Check{Type: CheckOutputContains, Pattern: "out1", Turn: turnPtr(1)}, in))
+		wantFail(t, evalOne(t, Check{Type: CheckOutputContains, Pattern: "out1", Turn: turnPtr(2)}, in), "not found in output")
+		wantPass(t, evalOne(t, Check{Type: CheckOutputNotContains, Pattern: "out3", Turn: turnPtr(2)}, in))
+		wantFail(t, evalOne(t, Check{Type: CheckOutputNotContains, Pattern: "out2", Turn: turnPtr(2)}, in), "matched in output")
+	})
 }
 
 func TestCheckTurnEvalDefaultsToLastTurn(t *testing.T) {
@@ -138,18 +142,4 @@ func TestCheckTurnEvalOversizedGHLogIsPerTurn(t *testing.T) {
 	wantFail(t, evalOne(t, Check{Type: CheckGHLogContains, Pattern: "huge", Turn: turnPtr(2)}, in), "10 MiB")
 	// Default (last turn) is the oversized one.
 	wantFail(t, evalOne(t, Check{Type: CheckGHLogNotContains, Pattern: "x"}, in), "10 MiB")
-}
-
-func TestCheckTurnLabel(t *testing.T) {
-	with := checkLabel(2, Check{Type: CheckGHLogContains, Pattern: "issue create", Turn: turnPtr(3)})
-	if want := "#2 gh_log_contains pattern=/issue create/ turn=3"; with != want {
-		t.Errorf("label = %q, want %q", with, want)
-	}
-	without := checkLabel(2, Check{Type: CheckGHLogContains, Pattern: "issue create"})
-	if want := "#2 gh_log_contains pattern=/issue create/"; without != want {
-		t.Errorf("label = %q, want %q", without, want)
-	}
-	if strings.Contains(checkLabel(1, Check{Type: CheckFileExists, Path: "a.txt"}), "turn") {
-		t.Error("label for a check without turn must not mention turn")
-	}
 }

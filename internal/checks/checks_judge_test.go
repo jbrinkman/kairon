@@ -140,6 +140,28 @@ func TestJudgeCheckLabel(t *testing.T) {
 			check: Check{Type: CheckFileExists, Path: "a.txt"},
 			want:  "#3 file_exists path=a.txt",
 		},
+		{
+			name:  "gh-log-with-turn",
+			index: 2,
+			check: Check{Type: CheckGHLogContains, Pattern: "issue create", Turn: turnPtr(3)},
+			want:  "#2 gh_log_contains pattern=/issue create/ turn=3",
+		},
+		{
+			name:  "gh-log-without-turn",
+			index: 2,
+			check: Check{Type: CheckGHLogContains, Pattern: "issue create"},
+			want:  "#2 gh_log_contains pattern=/issue create/",
+		},
+		{
+			name:  "file-exists-no-turn",
+			index: 1,
+			check: Check{Type: CheckFileExists, Path: "a.txt"},
+			verify: func(t *testing.T, got string) {
+				if strings.Contains(got, "turn") {
+					t.Errorf("label %q for a check without turn must not mention turn", got)
+				}
+			},
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
