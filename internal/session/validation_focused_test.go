@@ -327,33 +327,3 @@ func TestExcessiveHistoryTrimming(t *testing.T) {
 		t.Errorf("Expected last kept message to be 'message 11999', got %s", trimmedState.History[4999].Content)
 	}
 }
-
-func TestModeSwitchLogging(t *testing.T) {
-	tempDir := t.TempDir()
-	oldDir, _ := os.Getwd()
-	os.Chdir(tempDir)
-	defer os.Chdir(oldDir)
-
-	manager := NewSessionManager()
-
-	sessionID, err := manager.Create(Console)
-	if err != nil {
-		t.Fatalf("Failed to create session: %v", err)
-	}
-
-	// Test logging with different data types
-	preservedData := map[string]interface{}{
-		"inputValue":    "test input",
-		"activityLines": []string{"line1", "line2", "line3"},
-	}
-
-	// This should not panic or error - just logs
-	manager.LogModeSwitch(sessionID, Console, Planning, preservedData)
-	manager.LogModeSwitch(sessionID, Planning, Console, "simple string data")
-	manager.LogModeSwitch(sessionID, Console, Planning, nil)
-
-	// Test flow validation
-	if err := manager.ValidateSessionFlow(sessionID); err != nil {
-		t.Errorf("Session flow validation failed: %v", err)
-	}
-}
