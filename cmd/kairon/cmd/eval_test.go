@@ -231,8 +231,11 @@ func TestEvalFlagsRegistered(t *testing.T) {
 		runFlagCase(t, tc)
 	}
 
-	// The hidden check is not a flag lookup, so it is a plain subtest next to
-	// the table rather than a flagCase field.
+	// Deviates from spec "Table: TestEvalFlagsRegistered", which lists
+	// inference-exec:hidden as a row of the table. The hidden check is not a
+	// flag lookup (it reads Command.Hidden and the root help text), so it is a
+	// plain subtest next to the table rather than a flagCase field. The
+	// subtest name and assertions are the ones the spec gives.
 	t.Run("inference-exec:hidden", func(t *testing.T) {
 		if !inferenceExecCmd.Hidden {
 			t.Fatal("inference-exec must be Hidden")
