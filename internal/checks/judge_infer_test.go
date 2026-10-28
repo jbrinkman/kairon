@@ -35,34 +35,56 @@ func replying(text string, err error) *recordingBackend {
 }
 
 func TestInferenceJudgeRequest(t *testing.T) {
-	b := replying(testYesReply, nil)
 	stub := &inference.StubScript{Judge: inference.StubJudge{"yes"}}
 	q := JudgeQuery{Criterion: "crit", Question: "Is it good?", Input: "in", Output: "out"}
 
-	v, err := InferenceJudge{Backend: b, Model: "pinned", Stub: stub}.Func()(q)
-	if err != nil {
-		t.Fatal(err)
+	tests := []struct {
+		name      string
+		judge     func(b *recordingBackend) InferenceJudge
+		query     JudgeQuery
+		wantModel string
+		wantStub  *inference.StubScript
+		// wantFull also asserts Role, YesNo, Timeout and Prompt on the request.
+		wantFull bool
+	}{
+		{
+			name: "pinned-with-stub",
+			judge: func(b *recordingBackend) InferenceJudge {
+				return InferenceJudge{Backend: b, Model: "pinned", Stub: stub}
+			},
+			query:     q,
+			wantModel: "pinned",
+			wantStub:  stub,
+			wantFull:  true,
+		},
+		{
+			name:  "unpinned-no-stub",
+			judge: func(b *recordingBackend) InferenceJudge { return InferenceJudge{Backend: b} },
+			query: JudgeQuery{Question: "q"},
+		},
 	}
-	if !v.Yes || v.Reasoning != "looks right" {
-		t.Errorf("verdict = %+v", v)
-	}
-	if len(b.reqs) != 1 {
-		t.Fatalf("backend called %d times, want 1", len(b.reqs))
-	}
-	req := b.reqs[0]
-	if req.Role != inference.RoleJudge || !req.YesNo || req.Timeout != 2*time.Minute ||
-		req.Model != "pinned" || req.Stub != stub || req.Prompt != BuildYesNoPrompt(q) {
-		t.Errorf("request = %+v", req)
-	}
-}
-
-func TestInferenceJudgeUnpinnedNoStub(t *testing.T) {
-	b := replying(testYesReply, nil)
-	if _, err := (InferenceJudge{Backend: b}).Func()(JudgeQuery{Question: "q"}); err != nil {
-		t.Fatal(err)
-	}
-	if req := b.reqs[0]; req.Model != "" || req.Stub != nil {
-		t.Errorf("request = %+v, want no model and no stub", req)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			b := replying(testYesReply, nil)
+			v, err := tt.judge(b).Func()(tt.query)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !v.Yes || v.Reasoning != "looks right" {
+				t.Errorf("verdict = %+v", v)
+			}
+			if len(b.reqs) != 1 {
+				t.Fatalf("backend called %d times, want 1", len(b.reqs))
+			}
+			req := b.reqs[0]
+			if req.Model != tt.wantModel || req.Stub != tt.wantStub {
+				t.Errorf("request = %+v, want model %q and stub %p", req, tt.wantModel, tt.wantStub)
+			}
+			if tt.wantFull && (req.Role != inference.RoleJudge || !req.YesNo || req.Timeout != 2*time.Minute ||
+				req.Prompt != BuildYesNoPrompt(tt.query)) {
+				t.Errorf("request = %+v", req)
+			}
+		})
 	}
 }
 
