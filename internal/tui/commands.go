@@ -14,6 +14,7 @@ import (
 	"github.com/jbrinkman/kairon/internal/agent"
 	"github.com/jbrinkman/kairon/internal/config"
 	"github.com/jbrinkman/kairon/internal/github"
+	"github.com/jbrinkman/kairon/internal/guard"
 	"github.com/jbrinkman/kairon/internal/incidents"
 	"github.com/jbrinkman/kairon/internal/planner"
 	"github.com/jbrinkman/kairon/internal/session"
@@ -319,6 +320,75 @@ func (m model) handlePlanClassic(description string) (model, tea.Cmd) {
 }
 
 func (m model) handlePlanSubprocess(description string) (model, tea.Cmd) {
+	// Resolve the planning session before any console state changes, so a
+	// failure leaves the console as it was.
+	sessions, err := m.sessionManager.List()
+	if err != nil {
+		m = m.appendActivity(m.styles.Error.Render(fmt.Sprintf("Failed to check sessions: %v", err)))
+		return m, nil
+	}
+
+	// Look for an existing classic planning session with corruption handling.
+	// A session that belongs to an ACP tab is skipped: its ID names a tab, not
+	// a terminal session.
+	var planningSessionID string
+	for _, sessionID := range sessions {
+		state, err := m.sessionManager.Load(sessionID)
+		if err != nil {
+			if strings.Contains(err.Error(), "corruption") {
+				m = m.appendActivity(m.styles.Warning.Render(fmt.Sprintf("Removing corrupted session %s", shortID(sessionID))))
+				_ = m.sessionManager.Delete(sessionID)
+			}
+			continue
+		}
+		if isClassicPlanningSession(sessionID, state) {
+			planningSessionID = sessionID
+			break
+		}
+	}
+
+	resumed := planningSessionID != ""
+	var statusLine string
+	if resumed {
+		statusLine = fmt.Sprintf("Resuming planning session %s...", shortID(planningSessionID))
+	} else {
+		// Without a session ID there is no document path, and a document
+		// written by the agent would be lost. Stop instead of launching.
+		planningSessionID, err = m.sessionManager.Create(session.Planning)
+		if err != nil {
+			m = m.appendActivity(m.styles.Error.Render(fmt.Sprintf("Failed to create planning session: %v", err)))
+			return m, nil
+		}
+		statusLine = "Starting new classic planning session"
+	}
+
+	prompt := planningPrompt(planningSessionID, description, resumed)
+	return m.launchClassicPlanning(planningSessionID, prompt, statusLine)
+}
+
+// isClassicPlanningSession reports whether a stored planning session was
+// created for classic planning. Saving a session repairs a missing
+// PlanningData into a placeholder tab named after the session ID, so a classic
+// session is one with no planning data or only that placeholder. A session
+// made for an ACP tab carries the tab's own ID.
+func isClassicPlanningSession(id string, state *session.SessionState) bool {
+	if state == nil || state.Type != session.Planning {
+		return false
+	}
+	return state.PlanningData == nil || state.PlanningData.TabID == "recovered-"+id
+}
+
+func shortID(id string) string {
+	if len(id) > 8 {
+		return id[:8]
+	}
+	return id
+}
+
+// launchClassicPlanning suspends the console, shows the status line and runs
+// the classic planner for the session through the execPlanning seam. The
+// execDoneMsg that ends the run carries the session ID.
+func (m model) launchClassicPlanning(sessionID, prompt, statusLine string) (model, tea.Cmd) {
 	// Suspend agent output capture before entering planning mode
 	m.manager.SuspendOutputCapture()
 
@@ -330,52 +400,18 @@ func (m model) handlePlanSubprocess(description string) (model, tea.Cmd) {
 		m.consoleState.activeTabID = activeTab.ID()
 	}
 
-	// Check for existing planning sessions with error recovery
-	sessions, err := m.sessionManager.List()
-	if err != nil {
-		m = m.appendActivity(m.styles.Error.Render(fmt.Sprintf("Failed to check sessions: %v", err)))
-		return m, nil
-	}
-
-	// Look for existing planning session with corruption handling
-	var planningSessionID string
-	for _, sessionID := range sessions {
-		state, err := m.sessionManager.Load(sessionID)
-		if err != nil {
-			if strings.Contains(err.Error(), "corruption") {
-				m = m.appendActivity(m.styles.Warning.Render(fmt.Sprintf("Removing corrupted session %s", sessionID[:8])))
-				_ = m.sessionManager.Delete(sessionID)
-			}
-			continue
-		}
-		if state.Type == session.Planning {
-			planningSessionID = sessionID
-			break
-		}
-	}
-
-	var sessionMsg string
-	if planningSessionID == "" {
-		sessionMsg = "Starting new classic planning session"
-	} else {
-		sessionMsg = fmt.Sprintf("Resuming planning session %s...", planningSessionID[:8])
-	}
-
 	// Start context tracking for planning mode with default model
 	m.footerManager.GetContextTracker().StartPlanningSession("claude-sonnet-4")
 
-	m = m.appendActivity(m.styles.Success.Render(sessionMsg))
+	m = m.appendActivity(m.styles.Success.Render(statusLine))
 	m.currentMode = session.Planning
 	m.input.Blur()
 
-	// Execute the kiro-cli subprocess for classic planning with shell wrapper
-	args := []string{"chat", "--classic", "--agent", planner.AgentInteractive}
-	if description != "" {
-		args = append(args, description)
-	}
+	return m, m.execPlanning(classicPlanningCmd(sessionID, prompt), sessionID)
+}
 
-	// Wrap in shell with clear and centered ASCII art banner
-	banner := `cols=$(tput cols 2>/dev/null || echo 80)
+// classicPlanningBanner clears the screen and draws the Kiro banner.
+const classicPlanningBanner = `cols=$(tput cols 2>/dev/null || echo 80)
 art1="  _  ___              _  __                   "
 art2=" | |/ (_)_ __ ___    | |/ /_ __ _____      __"
 art3=" | ' /| | '__/ _ \   | ' /| '__/ _ \ \ /\ / /"
@@ -389,16 +425,41 @@ pad "$art3"
 pad "$art4"
 pad "$art5"
 echo ""`
-	script := "clear && " + banner + " && exec kiro-cli \"$@\""
-	cmd := exec.Command("sh", append([]string{"-c", script, "sh"}, args...)...)
 
-	return m, tea.ExecProcess(cmd, func(err error) tea.Msg {
-		return execDoneMsg{err: err}
+// classicPlanningCmd builds the kiro-cli command for a classic planning
+// session. The prompt, which carries the document path, is the last argument.
+// It has no side effects, so a test can read its Args.
+func classicPlanningCmd(sessionID, prompt string) *exec.Cmd {
+	args := []string{"chat", "--classic", "--agent", planner.AgentInteractive}
+	if prompt != "" {
+		args = append(args, prompt)
+	}
+	// Wrap in shell with clear and centered ASCII art banner
+	script := "clear && " + classicPlanningBanner + " && exec kiro-cli \"$@\""
+	return exec.Command("sh", append([]string{"-c", script, "sh"}, args...)...)
+}
+
+// classicResume returns the Resume function for a classic planning session:
+// it relaunches the same session with a prompt that carries the failure.
+func classicResume(sessionID string) func(model, guard.FailureContext) (model, tea.Cmd) {
+	return func(m model, fc guard.FailureContext) (model, tea.Cmd) {
+		prompt := planningResumePrompt(sessionID, fc)
+		return m.launchClassicPlanning(sessionID, prompt,
+			fmt.Sprintf("Resuming planning session %s after the planning document was rejected...", shortID(sessionID)))
+	}
+}
+
+// execPlanningProcess runs the command with tea.ExecProcess and reports its
+// exit as an execDoneMsg for the session.
+func execPlanningProcess(cmd *exec.Cmd, sessionID string) tea.Cmd {
+	return tea.ExecProcess(cmd, func(err error) tea.Msg {
+		return execDoneMsg{err: err, sessionID: sessionID}
 	})
 }
 
 type execDoneMsg struct {
-	err error
+	err       error
+	sessionID string
 }
 
 type updateCheckMsg struct {

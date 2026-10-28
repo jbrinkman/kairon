@@ -8,6 +8,7 @@ import (
 	"io"
 	"log"
 	"os"
+	"os/exec"
 	"strconv"
 	"strings"
 	"time"
@@ -45,6 +46,7 @@ const (
 	overlayHelp
 	overlayAbout
 	overlayLogs
+	overlayPlanningRejection
 
 	maxOverlayLines = 1000 // Prevent memory growth from very large overlay content
 
@@ -98,6 +100,23 @@ type model struct {
 	// Agent lifecycle tracking
 	knownAgents         map[string]bool
 	statusRunningAgents []*agent.Agent // Snapshot for deterministic number key selection
+
+	// planningRejection is the state behind overlayPlanningRejection. It is
+	// nil unless that overlay is open.
+	planningRejection *planningRejection
+
+	// planBoundary is the planning boundary the handoff sends a finished
+	// planning document to. newModel builds it from the config; tests replace
+	// it. It is nil when no repository is configured.
+	planBoundary planningBoundary
+	// planningHandoffs marks the planning sessions whose document is being
+	// sent, so a second session end cannot send the same document again.
+	planningHandoffs map[string]bool
+
+	// execPlanning starts the classic planning process and returns the
+	// command that reports its exit. newModel wraps tea.ExecProcess; tests
+	// replace it to record the command without starting a process.
+	execPlanning func(cmd *exec.Cmd, sessionID string) tea.Cmd
 
 	// About dialog state
 	aboutDialog *AboutDialog
@@ -167,6 +186,10 @@ func newModel(w *watcher.Watcher, m *agent.Manager, cfg *config.Config, logFile 
 		aboutDialog:    NewAboutDialog(),
 		footerManager:  footerManager,
 		tabFocusStates: make(map[string]FocusTarget),
+
+		planBoundary:     newPlanningBoundary(cfg),
+		execPlanning:     execPlanningProcess,
+		planningHandoffs: make(map[string]bool),
 	}
 }
 
@@ -291,7 +314,12 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		m = m.restoreConsoleState()
 		m.input.Focus()
-		return m, tea.Batch(m.input.Focus(), tea.ClearScreen)
+
+		// Hand the session's document to the planning boundary. This runs
+		// whether or not the process exited with an error: the user may have
+		// approved a document and then quit.
+		m, handoff := m.finishPlanning(planningEnd{SessionID: msg.sessionID, Resume: classicResume(msg.sessionID)})
+		return m, tea.Batch(m.input.Focus(), tea.ClearScreen, handoff)
 
 	case focusTransferMsg:
 		// Handle focus coordination between planning tab and footer input
@@ -317,6 +345,20 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		return m, nil
+
+	case planningHandoffDoneMsg:
+		return m.handlePlanningHandoffDone(msg)
+
+	// Stream events and turn ends belong to the planning tab that sent them,
+	// not to whichever tab or input is active.
+	case planningStreamStartMsg:
+		return m.routeToPlanningTab(msg.tabID, msg)
+	case planningStreamMsg:
+		return m.routeToPlanningTab(msg.tabID, msg)
+	case planningResponseMsg:
+		return m.routeToPlanningTab(msg.tabID, msg)
+	case planningTurnEndedMsg:
+		return m.finishPlanning(planningEnd{SessionID: msg.sessionID, Resume: acpResume(msg.tabID)})
 
 	case validateDoneMsg:
 		for _, line := range m.validateLines(msg.res) {
@@ -497,6 +539,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Handle hotkey detection first
 		if hotkeyCmd := hotkey.HandleKeyMsg(msg); hotkeyCmd != nil {
 			return m, hotkeyCmd
+		}
+
+		// The planning-rejection dialog owns its keys: resume or dismiss.
+		if next, cmd, handled := m.handlePlanningRejectionKey(msg.String()); handled {
+			return next, cmd
 		}
 
 		// Priority handling for overlay dismissal
@@ -731,6 +778,17 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// routeToPlanningTab delivers a planning message to the planning tab that
+// owns it. A message for a tab that has been closed is dropped.
+func (m model) routeToPlanningTab(tabID string, msg tea.Msg) (model, tea.Cmd) {
+	tab := m.tabManager.GetPlanningTabByID(tabID)
+	if tab == nil {
+		return m, nil
+	}
+	_, cmd := tab.Update(msg)
+	return m, cmd
+}
+
 func (m model) activateOverlay(overlay overlayType, title string, content []string) model {
 	// Limit content size to prevent memory issues
 	if len(content) > maxOverlayLines {
@@ -893,6 +951,10 @@ func (m model) renderOverlay() string {
 	}
 
 	content := m.overlayContent.content
+	if m.activeOverlay == overlayPlanningRejection && m.planningRejection != nil {
+		// Fit the dialog to the height so the guard and keys stay visible.
+		content = m.planningRejection.lines(contentHeight)
+	}
 	if len(content) > contentHeight {
 		content = content[len(content)-contentHeight:]
 	}

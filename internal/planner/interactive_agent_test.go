@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"reflect"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -15,6 +16,9 @@ const (
 	interactivePromptFileURI  = "file://./planner-prompt.md"
 	interactiveManifestModel  = "claude-sonnet-5.5"
 	interactiveWriteScopePath = ".worktrees/planning-*"
+	// interactiveSessionDocumentPath is where Kairon asks the planner to write
+	// the approved document, so the end of a planning session can commit it.
+	interactiveSessionDocumentPath = ".kairon/sessions/*.document.yaml"
 )
 
 func readInteractivePrompt(t *testing.T) string {
@@ -53,8 +57,132 @@ func TestInteractiveManifest(t *testing.T) {
 	settings, _ := m["toolsSettings"].(map[string]any)
 	write, _ := settings["write"].(map[string]any)
 	paths, _ := write["allowedPaths"].([]any)
-	if len(paths) != 1 || paths[0] != interactiveWriteScopePath {
-		t.Errorf("toolsSettings.write.allowedPaths = %v, want [%s]", paths, interactiveWriteScopePath)
+	wantPaths := []any{interactiveWriteScopePath, interactiveSessionDocumentPath}
+	if !reflect.DeepEqual(paths, wantPaths) {
+		t.Errorf("toolsSettings.write.allowedPaths = %v, want %v", paths, wantPaths)
+	}
+}
+
+// writeAllowedPaths returns toolsSettings.write.allowedPaths of a manifest. It
+// reads only that field, so it is not affected by other fields the pipeline
+// injects into working-tree manifests.
+func writeAllowedPaths(t *testing.T, rel string) []string {
+	t.Helper()
+	m := readManifest(t, rel)
+	settings, _ := m["toolsSettings"].(map[string]any)
+	write, _ := settings["write"].(map[string]any)
+	raw, ok := write["allowedPaths"].([]any)
+	if !ok {
+		t.Fatalf("%s: toolsSettings.write.allowedPaths is not an array: %v", rel, write["allowedPaths"])
+	}
+	out := make([]string, 0, len(raw))
+	for _, v := range raw {
+		s, ok := v.(string)
+		if !ok {
+			t.Fatalf("%s: allowedPaths has a non-string entry: %v", rel, v)
+		}
+		out = append(out, s)
+	}
+	return out
+}
+
+// The interactive planner writes the approved document under
+// .kairon/sessions/ so Kairon can commit it when the session ends.
+func TestInteractiveManifestAllowsSessionDocument(t *testing.T) {
+	got := writeAllowedPaths(t, interactiveManifest)
+	for _, want := range []string{interactiveWriteScopePath, interactiveSessionDocumentPath} {
+		if !slices.Contains(got, want) {
+			t.Errorf("toolsSettings.write.allowedPaths = %v, missing %q", got, want)
+		}
+	}
+}
+
+func TestInteractiveTemplateManifestAllowedPathsMatchLive(t *testing.T) {
+	live := writeAllowedPaths(t, interactiveManifest)
+	tmpl := writeAllowedPaths(t, interactiveTmplManifest)
+	if !reflect.DeepEqual(live, tmpl) {
+		t.Errorf("template allowedPaths = %v, live = %v", tmpl, live)
+	}
+}
+
+func TestInteractiveTemplatePromptMatchesLive(t *testing.T) {
+	live, tmpl := readRepoFile(t, interactivePromptPath), readRepoFile(t, interactiveTmplPrompt)
+	if !bytes.Equal(live, tmpl) {
+		t.Errorf("%s differs from %s", interactiveTmplPrompt, interactivePromptPath)
+	}
+}
+
+// promptSection returns the text of one "## " section of the prompt.
+func promptSection(t *testing.T, prompt, heading string) string {
+	t.Helper()
+	start := strings.Index(prompt, "\n## "+heading+"\n")
+	if start < 0 {
+		t.Fatalf("prompt lacks section %q", heading)
+	}
+	rest := prompt[start+1:]
+	if end := strings.Index(rest[3:], "\n## "); end >= 0 {
+		return rest[:end+3]
+	}
+	return rest
+}
+
+// The approved document is written to the path Kairon gives, after the label
+// turn and before the reply, and the reply is still the document.
+func TestInteractivePromptWritesDocumentToGivenPath(t *testing.T) {
+	prompt := readInteractivePrompt(t)
+	task := promptSection(t, prompt, "Task")
+
+	label := strings.Index(task, "**Label question.**")
+	write := strings.Index(task, "**Write the document file.**")
+	ret := strings.Index(task, "**Return the document.**")
+	if label < 0 || write < 0 || ret < 0 {
+		t.Fatalf("Task must have label (%d), write (%d) and return (%d) steps", label, write, ret)
+	}
+	if !(label < write && write < ret) {
+		t.Fatalf("steps out of order: label=%d write=%d return=%d, want label < write < return", label, write, ret)
+	}
+
+	step := task[write:ret]
+	for name, re := range map[string]*regexp.Regexp{
+		"names the Document path line": regexp.MustCompile("`Document path:`"),
+		"uses the write tool":          regexp.MustCompile("(?i)`write` tool"),
+		"writes the same document":     regexp.MustCompile(`(?i)same document`),
+		"handles a missing path":       regexp.MustCompile(`(?i)no .?Document path:.? line`),
+	} {
+		if !re.MatchString(step) {
+			t.Errorf("write step does not state: %s", name)
+		}
+	}
+
+	if !regexp.MustCompile(`(?i)reply is still the document`).MatchString(prompt) {
+		t.Error("prompt must say the reply is still the document")
+	}
+	if !regexp.MustCompile(`(?i)only names a path`).MatchString(prompt) {
+		t.Error("prompt must say a message that only names a path is not a request")
+	}
+	if !regexp.MustCompile(`(?is)rejected.{0,200}expected.{0,200}found`).MatchString(prompt) {
+		t.Error("prompt must say what a rejection message names (check, expected, found)")
+	}
+}
+
+// The no-project-files constraint has exactly one stated exception: the file
+// at the given Document path.
+func TestInteractivePromptStatesSingleWriteException(t *testing.T) {
+	constraints := promptSection(t, readInteractivePrompt(t), "Constraints")
+	var line string
+	for _, l := range strings.Split(constraints, "\n") {
+		if strings.Contains(l, "Never write, modify or create project files") {
+			line = l
+		}
+	}
+	if line == "" {
+		t.Fatal("constraints must keep the rule against writing project files")
+	}
+	if !regexp.MustCompile(`(?i)\b(exception|except)\b`).MatchString(line) || !strings.Contains(line, "Document path:") {
+		t.Errorf("the write rule must state its one exception, the Document path file: %q", line)
+	}
+	if !regexp.MustCompile(`(?i)reply is still the document`).MatchString(line) {
+		t.Errorf("the exception must say the reply is still the document: %q", line)
 	}
 }
 
