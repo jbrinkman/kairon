@@ -231,7 +231,7 @@ go to `Boundary.Process` on the create path (`Target.Number` is 0), off the UI g
 | Result | What the console shows | The file |
 |--------|------------------------|----------|
 | `OutcomeCommitted` | A success line with the new issue number and `https://github.com/<repo>/issues/<n>`. | Deleted. |
-| `OutcomeRejected` (including an empty file or text that is not valid YAML, which fails the `extract` guard) | A line naming the failing guard and the kept file path, and the rejection dialog. Nothing is written to GitHub. | Kept. |
+| `OutcomeRejected` (including an empty file or text that is not one stage-output document, which fails the `extract` guard, and a document that opens with `schema_version:` but is not valid YAML, which fails the `structural` guard) | A line naming the failing guard and the kept file path, and the rejection dialog. Nothing is written to GitHub. | Kept. |
 | A `Process` error (a failed `gh` call, a cancelled or timed-out context, or a `punch_out` document, which returns `ErrNoPunchOutTarget` on the create path) | An error line naming the cause. | Kept. |
 | No file | Nothing. | Not applicable. |
 
