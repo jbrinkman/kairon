@@ -25,10 +25,6 @@ const (
 	deferredWork  = "Deferred work"
 )
 
-// taskIDRE is the plan's task ID shape (internal/plan taskIDPattern). The guard
-// package may not import internal/plan, so the pattern is repeated here.
-var taskIDRE = regexp.MustCompile(`^[a-z0-9]+(-[a-z0-9]+)*$`)
-
 var (
 	tableSeparatorRE = regexp.MustCompile(`^\|?[ \t]*:?-+:?[ \t]*(\|[ \t]*:?-+:?[ \t]*)*\|?[ \t]*$`)
 	codeSpanRE       = regexp.MustCompile("`([^`]+)`")
@@ -167,9 +163,9 @@ func (r coverageRow) quotes(it scopeItem) bool {
 }
 
 // coverageRows returns the body rows of every table in the Scope Coverage
-// section. A row's tasks are the code spans in its last cell that have the
-// plan's task ID shape and sit outside parentheses; parentheses hold
-// commentary such as test names.
+// section. A row's tasks are the code spans in its last cell that sit outside
+// parentheses, whatever their shape, so a mistyped ID is reported rather than
+// skipped; parentheses hold commentary such as test names.
 func coverageRows(lines []bodyLine) []coverageRow {
 	var rows []coverageRow
 	for _, start := range findSections(lines, scopeCoverage) {
@@ -247,7 +243,7 @@ func cellTaskIDs(cell string) []string {
 	}
 	var ids []string
 	for _, m := range codeSpanRE.FindAllStringSubmatch(outside.String(), -1) {
-		if id := strings.TrimSpace(m[1]); taskIDRE.MatchString(id) {
+		if id := strings.TrimSpace(m[1]); id != "" {
 			ids = append(ids, id)
 		}
 	}

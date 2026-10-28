@@ -331,7 +331,8 @@ with the same scanner as the structural guard, so the two always agree on what a
   the item's whole first line and may continue into the item's later lines, but nothing beyond the item, so a row
   quoting "Add retry caps and record attempts" does not cover an item "Add retry caps". Quotes are matched after
   `\"` and `\|` are unescaped and whitespace is collapsed.
-- A row's tasks are the backticked task IDs in its last cell that sit outside parentheses. Parentheses hold
+- A row's tasks are the backticked values in its last cell that sit outside parentheses, whatever their shape, so a
+  mistyped ID such as `retry_cap` is an unknown task. Parentheses hold
   commentary, such as test names. Every task a row names must exist in the spec's `kiro-plan` block. A spec with no
   plan, or a plan that does not parse, has no known tasks.
 - The spec has a `## Deferred work` section whose only content is `none`. If the heading appears more than once,

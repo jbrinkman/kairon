@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -218,4 +219,14 @@ func TestScopeCheck_EveryDeferredSectionIsChecked(t *testing.T) {
 	assert.Equal(t, []ScopeFinding{
 		{Kind: ScopeDeferredSection, Item: "Deferred work", Line: line, Text: "- Per-repo caps later."},
 	}, got)
+}
+
+// TestScopeCheck_MisshapedTaskIDIsUnknown pins that every backticked value
+// outside parentheses is a task reference: a mistyped ID is reported even when
+// a valid ID in the same cell covers the item.
+func TestScopeCheck_MisshapedTaskIDIsUnknown(t *testing.T) {
+	spec := strings.Replace(scopeFixtureSpec(t, "pass.md"),
+		"| `retry-cap` (`TestRetryCap`) |", "| `retry-cap`, `retry_cap` (`TestRetryCap`) |", 1)
+	got := CheckScope(scopeFixtureBody(t), spec, fixtureTaskIDs)
+	assert.Equal(t, []ScopeFinding{{Kind: ScopeUnknownTask, Item: "s-1", Line: 7, Text: "retry_cap"}}, got)
 }
