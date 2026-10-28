@@ -36,19 +36,6 @@ func writeProjectConfig(t *testing.T, content *string) {
 
 func strPtr(s string) *string { return &s }
 
-func TestDefaultEvalsConfig(t *testing.T) {
-	d := DefaultEvalsConfig()
-	if d.AgentModel != "" {
-		t.Errorf("AgentModel = %q, want empty", d.AgentModel)
-	}
-	if d.JudgeModel != "claude-sonnet-5.5" {
-		t.Errorf("JudgeModel = %q, want claude-sonnet-5.5", d.JudgeModel)
-	}
-	if !reflect.DeepEqual(d.AllowedModels, wantDefaultAllowed) {
-		t.Errorf("AllowedModels = %v, want %v", d.AllowedModels, wantDefaultAllowed)
-	}
-}
-
 func TestDefaultEvalsConfigReturnsFreshSlice(t *testing.T) {
 	a := DefaultEvalsConfig()
 	a.AllowedModels[0] = "mutated"
@@ -58,26 +45,59 @@ func TestDefaultEvalsConfigReturnsFreshSlice(t *testing.T) {
 	}
 }
 
-func TestLoadEvals_MissingFileReturnsDefaults(t *testing.T) {
-	writeProjectConfig(t, nil)
-	got, err := LoadEvals()
-	if err != nil {
-		t.Fatalf("LoadEvals() error = %v", err)
+// loadAny adapts a typed loader to a common signature so one table can cover
+// LoadEvals and LoadPricing.
+type loadAny func() (any, error)
+
+func loadEvalsAny() (any, error)   { return LoadEvals() }
+func loadPricingAny() (any, error) { return LoadPricing() }
+
+func TestLoadEvalsAndPricing_MissingFileReturnsDefaults(t *testing.T) {
+	tests := []struct {
+		name string
+		load loadAny
+		want any
+	}{
+		{"LoadEvals", loadEvalsAny, DefaultEvalsConfig()},
+		{"LoadPricing", loadPricingAny, DefaultPricing()},
 	}
-	if !reflect.DeepEqual(got, DefaultEvalsConfig()) {
-		t.Errorf("LoadEvals() = %+v, want defaults", got)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			writeProjectConfig(t, nil)
+			got, err := tt.load()
+			if err != nil {
+				t.Fatalf("%s error = %v", tt.name, err)
+			}
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Errorf("%s = %+v, want defaults", tt.name, got)
+			}
+		})
 	}
 }
 
-func TestLoadEvals_NoEvalsKeyReturnsDefaults(t *testing.T) {
-	// No repo key: LoadEvals must not require it.
-	writeProjectConfig(t, strPtr("label: foo\n"))
-	got, err := LoadEvals()
-	if err != nil {
-		t.Fatalf("LoadEvals() error = %v", err)
+func TestLoadEvalsAndPricing_AbsentKeyReturnsDefaults(t *testing.T) {
+	// No repo key in any row: the loaders must not require it.
+	tests := []struct {
+		name string
+		yaml string
+		load loadAny
+		want any
+	}{
+		{"LoadEvals_NoEvalsKey", "label: foo\n", loadEvalsAny, DefaultEvalsConfig()},
+		{"LoadPricing_NoPricingKeyWithoutRepo", "label: foo\n", loadPricingAny, DefaultPricing()},
+		{"LoadPricing_NullKey", "pricing:\n", loadPricingAny, DefaultPricing()},
 	}
-	if !reflect.DeepEqual(got, DefaultEvalsConfig()) {
-		t.Errorf("LoadEvals() = %+v, want defaults", got)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			writeProjectConfig(t, strPtr(tt.yaml))
+			got, err := tt.load()
+			if err != nil {
+				t.Fatalf("%s error = %v", tt.name, err)
+			}
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Errorf("%s = %+v, want defaults", tt.name, got)
+			}
+		})
 	}
 }
 
@@ -101,31 +121,80 @@ func TestLoadEvals_ReadErrorOtherThanNotExist(t *testing.T) {
 }
 
 func TestLoadEvals_PartialBlockKeepsOtherDefaults(t *testing.T) {
-	writeProjectConfig(t, strPtr("evals:\n  agent_model: claude-sonnet-4.5\n"))
-	got, err := LoadEvals()
-	if err != nil {
-		t.Fatalf("LoadEvals() error = %v", err)
+	// One check per row: allowed_models: [] must keep its len == 0 assertion,
+	// so rows are not forced into a single DeepEqual.
+	tests := []struct {
+		name  string
+		yaml  string
+		check func(t *testing.T, got EvalsConfig)
+	}{
+		{
+			name: "partial_block",
+			yaml: "evals:\n  agent_model: claude-sonnet-4.5\n",
+			check: func(t *testing.T, got EvalsConfig) {
+				if got.AgentModel != "claude-sonnet-4.5" {
+					t.Errorf("AgentModel = %q", got.AgentModel)
+				}
+				if got.JudgeModel != DefaultJudgeModel {
+					t.Errorf("JudgeModel = %q, want default", got.JudgeModel)
+				}
+				if !reflect.DeepEqual(got.AllowedModels, wantDefaultAllowed) {
+					t.Errorf("AllowedModels = %v, want defaults", got.AllowedModels)
+				}
+			},
+		},
+		{
+			name: "allowed_models_replaces_default",
+			yaml: "evals:\n  allowed_models:\n    - my-model\n    - other-model\n",
+			check: func(t *testing.T, got EvalsConfig) {
+				want := []string{"my-model", "other-model"}
+				if !reflect.DeepEqual(got.AllowedModels, want) {
+					t.Errorf("AllowedModels = %v, want %v (replace, not append)", got.AllowedModels, want)
+				}
+			},
+		},
+		{
+			// The empty judge model is rejected by CheckModel; that is the
+			// TestCheckModel "empty" case, so it is not repeated here.
+			name: "explicit_empty_judge_model",
+			yaml: "evals:\n  judge_model: \"\"\n",
+			check: func(t *testing.T, got EvalsConfig) {
+				if got.JudgeModel != "" {
+					t.Errorf("JudgeModel = %q, want empty", got.JudgeModel)
+				}
+			},
+		},
+		{
+			name: "explicit_empty_allowed_models",
+			yaml: "evals:\n  allowed_models: []\n",
+			check: func(t *testing.T, got EvalsConfig) {
+				if len(got.AllowedModels) != 0 {
+					t.Errorf("AllowedModels = %v, want empty", got.AllowedModels)
+				}
+			},
+		},
+		{
+			name: "trust_tools_defaults_nil",
+			yaml: "evals:\n  judge_model: claude-sonnet-5.5\n",
+			check: func(t *testing.T, got EvalsConfig) {
+				if got.TrustTools != nil {
+					t.Errorf("TrustTools = %#v, want nil", got.TrustTools)
+				}
+				if DefaultEvalsConfig().TrustTools != nil {
+					t.Error("default TrustTools must be nil")
+				}
+			},
+		},
 	}
-	if got.AgentModel != "claude-sonnet-4.5" {
-		t.Errorf("AgentModel = %q", got.AgentModel)
-	}
-	if got.JudgeModel != DefaultJudgeModel {
-		t.Errorf("JudgeModel = %q, want default", got.JudgeModel)
-	}
-	if !reflect.DeepEqual(got.AllowedModels, wantDefaultAllowed) {
-		t.Errorf("AllowedModels = %v, want defaults", got.AllowedModels)
-	}
-}
-
-func TestLoadEvals_AllowedModelsReplacesDefault(t *testing.T) {
-	writeProjectConfig(t, strPtr("evals:\n  allowed_models:\n    - my-model\n    - other-model\n"))
-	got, err := LoadEvals()
-	if err != nil {
-		t.Fatalf("LoadEvals() error = %v", err)
-	}
-	want := []string{"my-model", "other-model"}
-	if !reflect.DeepEqual(got.AllowedModels, want) {
-		t.Errorf("AllowedModels = %v, want %v (replace, not append)", got.AllowedModels, want)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			writeProjectConfig(t, strPtr(tt.yaml))
+			got, err := LoadEvals()
+			if err != nil {
+				t.Fatalf("LoadEvals() error = %v", err)
+			}
+			tt.check(t, got)
+		})
 	}
 }
 
@@ -152,31 +221,6 @@ func TestLoadEvals_TrimsWhitespaceAndDropsEmptyEntries(t *testing.T) {
 	want := []string{"claude-sonnet-5", "claude-sonnet-4.5"}
 	if !reflect.DeepEqual(got.AllowedModels, want) {
 		t.Errorf("AllowedModels = %v, want %v", got.AllowedModels, want)
-	}
-}
-
-func TestLoadEvals_ExplicitEmptyJudgeModelStaysEmpty(t *testing.T) {
-	writeProjectConfig(t, strPtr("evals:\n  judge_model: \"\"\n"))
-	got, err := LoadEvals()
-	if err != nil {
-		t.Fatalf("LoadEvals() error = %v", err)
-	}
-	if got.JudgeModel != "" {
-		t.Errorf("JudgeModel = %q, want empty", got.JudgeModel)
-	}
-	if err := got.CheckModel(got.JudgeModel); err == nil {
-		t.Error("CheckModel(empty judge model) = nil, want error")
-	}
-}
-
-func TestLoadEvals_ExplicitEmptyAllowedModels(t *testing.T) {
-	writeProjectConfig(t, strPtr("evals:\n  allowed_models: []\n"))
-	got, err := LoadEvals()
-	if err != nil {
-		t.Fatalf("LoadEvals() error = %v", err)
-	}
-	if len(got.AllowedModels) != 0 {
-		t.Errorf("AllowedModels = %v, want empty", got.AllowedModels)
 	}
 }
 
@@ -226,44 +270,48 @@ func TestCheckModel(t *testing.T) {
 	}
 }
 
-func TestLoad_ExposesEvalsDefaults(t *testing.T) {
-	writeProjectConfig(t, strPtr("repo: owner/name\n"))
-	cfg, err := Load()
-	if err != nil {
-		t.Fatalf("Load() error = %v", err)
-	}
-	if !reflect.DeepEqual(cfg.Evals, DefaultEvalsConfig()) {
-		t.Errorf("cfg.Evals = %+v, want defaults", cfg.Evals)
-	}
-}
-
 func TestLoad_EvalsPartialBlockAndNoModelRejection(t *testing.T) {
-	// Load must not reject model values: enforcement is a run-time concern.
-	writeProjectConfig(t, strPtr(`repo: owner/name
+	tests := []struct {
+		name  string
+		yaml  string
+		check func(t *testing.T, cfg *Config)
+	}{
+		{
+			// Load must not reject model values: enforcement is a run-time concern.
+			name: "partial_block_and_no_model_rejection",
+			yaml: `repo: owner/name
 evals:
   judge_model: auto
   agent_model: not-a-real-model
-`))
-	cfg, err := Load()
-	if err != nil {
-		t.Fatalf("Load() rejected model values: %v", err)
+`,
+			check: func(t *testing.T, cfg *Config) {
+				if cfg.Evals.JudgeModel != "auto" || cfg.Evals.AgentModel != "not-a-real-model" {
+					t.Errorf("cfg.Evals = %+v", cfg.Evals)
+				}
+				if !reflect.DeepEqual(cfg.Evals.AllowedModels, wantDefaultAllowed) {
+					t.Errorf("AllowedModels = %v, want defaults", cfg.Evals.AllowedModels)
+				}
+			},
+		},
+		{
+			name: "allowed_models_replaces_default",
+			yaml: "repo: owner/name\nevals:\n  allowed_models: [only-one]\n",
+			check: func(t *testing.T, cfg *Config) {
+				if !reflect.DeepEqual(cfg.Evals.AllowedModels, []string{"only-one"}) {
+					t.Errorf("AllowedModels = %v", cfg.Evals.AllowedModels)
+				}
+			},
+		},
 	}
-	if cfg.Evals.JudgeModel != "auto" || cfg.Evals.AgentModel != "not-a-real-model" {
-		t.Errorf("cfg.Evals = %+v", cfg.Evals)
-	}
-	if !reflect.DeepEqual(cfg.Evals.AllowedModels, wantDefaultAllowed) {
-		t.Errorf("AllowedModels = %v, want defaults", cfg.Evals.AllowedModels)
-	}
-}
-
-func TestLoad_EvalsAllowedModelsReplacesDefault(t *testing.T) {
-	writeProjectConfig(t, strPtr("repo: owner/name\nevals:\n  allowed_models: [only-one]\n"))
-	cfg, err := Load()
-	if err != nil {
-		t.Fatalf("Load() error = %v", err)
-	}
-	if !reflect.DeepEqual(cfg.Evals.AllowedModels, []string{"only-one"}) {
-		t.Errorf("AllowedModels = %v", cfg.Evals.AllowedModels)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			writeProjectConfig(t, strPtr(tt.yaml))
+			cfg, err := Load()
+			if err != nil {
+				t.Fatalf("Load() error = %v", err)
+			}
+			tt.check(t, cfg)
+		})
 	}
 }
 
@@ -337,20 +385,6 @@ func TestConfigFilesEvalsBlockMatchesDefaults(t *testing.T) {
 	}
 	if !reflect.DeepEqual(got, DefaultEvalsConfig()) {
 		t.Errorf("documented block = %+v, want defaults %+v", got, DefaultEvalsConfig())
-	}
-}
-
-func TestLoadEvals_TrustToolsDefaultsNil(t *testing.T) {
-	writeProjectConfig(t, strPtr("evals:\n  judge_model: claude-sonnet-5.5\n"))
-	got, err := LoadEvals()
-	if err != nil {
-		t.Fatalf("LoadEvals() error = %v", err)
-	}
-	if got.TrustTools != nil {
-		t.Errorf("TrustTools = %#v, want nil", got.TrustTools)
-	}
-	if DefaultEvalsConfig().TrustTools != nil {
-		t.Error("default TrustTools must be nil")
 	}
 }
 

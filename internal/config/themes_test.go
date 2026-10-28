@@ -100,17 +100,6 @@ func TestValidateTheme(t *testing.T) {
 	}
 }
 
-func TestLoadThemeReturnsErrorForMissingTheme(t *testing.T) {
-	// Test loading nonexistent theme returns an error
-	theme, err := LoadTheme("nonexistent-theme")
-	if err == nil {
-		t.Error("LoadTheme() should return error for nonexistent theme")
-	}
-	if theme != nil {
-		t.Error("LoadTheme() should return nil theme on error")
-	}
-}
-
 func TestLoadThemeInvalidName(t *testing.T) {
 	invalidNames := []string{
 		"../../etc/passwd",
@@ -119,6 +108,8 @@ func TestLoadThemeInvalidName(t *testing.T) {
 		"theme name",
 		"theme@name",
 		"theme.yaml",
+		// Well-formed name that fails on the theme-not-found read, not on the name pattern.
+		"nonexistent-theme",
 	}
 	for _, name := range invalidNames {
 		t.Run(name, func(t *testing.T) {

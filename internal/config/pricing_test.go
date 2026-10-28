@@ -53,64 +53,46 @@ func TestDefaultPricing_ReturnsFreshTable(t *testing.T) {
 	}
 }
 
-func TestLoadPricing_MissingFileReturnsDefaults(t *testing.T) {
-	writeProjectConfig(t, nil)
-	got, err := LoadPricing()
-	if err != nil {
-		t.Fatalf("LoadPricing() error = %v", err)
-	}
-	if !reflect.DeepEqual(got, DefaultPricing()) {
-		t.Errorf("LoadPricing() = %v, want defaults", got)
-	}
-}
-
-func TestLoadPricing_NoPricingKeyReturnsDefaultsWithoutRepo(t *testing.T) {
-	// No repo key: LoadPricing must not require it.
-	writeProjectConfig(t, strPtr("label: foo\n"))
-	got, err := LoadPricing()
-	if err != nil {
-		t.Fatalf("LoadPricing() error = %v", err)
-	}
-	if !reflect.DeepEqual(got, DefaultPricing()) {
-		t.Errorf("LoadPricing() = %v, want defaults", got)
-	}
-}
-
-func TestLoadPricing_NullKeyReturnsDefaults(t *testing.T) {
-	writeProjectConfig(t, strPtr("pricing:\n"))
-	got, err := LoadPricing()
-	if err != nil {
-		t.Fatalf("LoadPricing() error = %v", err)
-	}
-	if !reflect.DeepEqual(got, DefaultPricing()) {
-		t.Errorf("LoadPricing() = %v, want defaults", got)
-	}
-}
-
 func TestLoadPricing_PresentKeyReplacesDefaults(t *testing.T) {
-	writeProjectConfig(t, strPtr(`pricing:
+	// One check per row: the empty mapping keeps its len == 0 assertion.
+	tests := []struct {
+		name  string
+		yaml  string
+		check func(t *testing.T, got inference.PriceTable)
+	}{
+		{
+			name: "one_entry",
+			yaml: `pricing:
   my-model:
     input_usd_per_mtok: 1.5
     output_usd_per_mtok: 7
-`))
-	got, err := LoadPricing()
-	if err != nil {
-		t.Fatalf("LoadPricing() error = %v", err)
+`,
+			check: func(t *testing.T, got inference.PriceTable) {
+				want := inference.PriceTable{"my-model": {InputUSDPerMTok: 1.5, OutputUSDPerMTok: 7}}
+				if !reflect.DeepEqual(got, want) {
+					t.Errorf("LoadPricing() = %v, want exactly %v (no merge with defaults)", got, want)
+				}
+			},
+		},
+		{
+			name: "empty_mapping",
+			yaml: "pricing: {}\n",
+			check: func(t *testing.T, got inference.PriceTable) {
+				if len(got) != 0 {
+					t.Errorf("LoadPricing() = %v, want empty table", got)
+				}
+			},
+		},
 	}
-	want := inference.PriceTable{"my-model": {InputUSDPerMTok: 1.5, OutputUSDPerMTok: 7}}
-	if !reflect.DeepEqual(got, want) {
-		t.Errorf("LoadPricing() = %v, want exactly %v (no merge with defaults)", got, want)
-	}
-}
-
-func TestLoadPricing_EmptyMappingReplacesDefaultsWithEmptyTable(t *testing.T) {
-	writeProjectConfig(t, strPtr("pricing: {}\n"))
-	got, err := LoadPricing()
-	if err != nil {
-		t.Fatalf("LoadPricing() error = %v", err)
-	}
-	if len(got) != 0 {
-		t.Errorf("LoadPricing() = %v, want empty table", got)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			writeProjectConfig(t, strPtr(tt.yaml))
+			got, err := LoadPricing()
+			if err != nil {
+				t.Fatalf("LoadPricing() error = %v", err)
+			}
+			tt.check(t, got)
+		})
 	}
 }
 
@@ -226,34 +208,6 @@ func TestLoadPricing_InvalidEntryRejectedNamingModel(t *testing.T) {
 				}
 			}
 		})
-	}
-}
-
-func TestLoad_NoPricingKeyUsesDefaults(t *testing.T) {
-	writeProjectConfig(t, strPtr("repo: owner/name\n"))
-	cfg, err := Load()
-	if err != nil {
-		t.Fatalf("Load() error = %v", err)
-	}
-	if !reflect.DeepEqual(cfg.Pricing, DefaultPricing()) {
-		t.Errorf("Load().Pricing = %v, want defaults", cfg.Pricing)
-	}
-}
-
-func TestLoad_PresentPricingKeyReplacesDefaults(t *testing.T) {
-	writeProjectConfig(t, strPtr(`repo: owner/name
-pricing:
-  claude-sonnet-5.5:
-    input_usd_per_mtok: 1
-    output_usd_per_mtok: 2
-`))
-	cfg, err := Load()
-	if err != nil {
-		t.Fatalf("Load() error = %v", err)
-	}
-	want := inference.PriceTable{"claude-sonnet-5.5": {InputUSDPerMTok: 1, OutputUSDPerMTok: 2}}
-	if !reflect.DeepEqual(cfg.Pricing, want) {
-		t.Errorf("Load().Pricing = %v, want exactly %v (no merge with defaults)", cfg.Pricing, want)
 	}
 }
 
