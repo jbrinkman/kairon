@@ -19,27 +19,6 @@ func decodeChecks(t *testing.T, src string) []Check {
 
 func turnPtr(n int) *int { return &n }
 
-func TestCheckTurnYAMLDecodes(t *testing.T) {
-	checks := decodeChecks(t, "- {criterion: c, type: gh_log_contains, pattern: x, turn: 3}\n- {criterion: c, type: gh_log_contains, pattern: x}\n")
-	if checks[0].Turn == nil || *checks[0].Turn != 3 {
-		t.Errorf("turn: 3 decoded as %v, want 3", checks[0].Turn)
-	}
-	if checks[1].Turn != nil {
-		t.Errorf("missing turn decoded as %v, want nil", *checks[1].Turn)
-	}
-}
-
-func TestCheckTurnValidateAllowedTypes(t *testing.T) {
-	for _, typ := range []string{"output_contains", "output_not_contains", "gh_log_contains", "gh_log_not_contains"} {
-		t.Run(typ, func(t *testing.T) {
-			checks := decodeChecks(t, "- {criterion: c, type: "+typ+", pattern: x, turn: 2}\n")
-			if err := Validate("f.yaml", checks, ValidateOptions{}); err != nil {
-				t.Fatalf("turn should be valid for %s: %v", typ, err)
-			}
-		})
-	}
-}
-
 func TestCheckTurnValidateRejectedTypes(t *testing.T) {
 	cases := map[string]string{
 		"file_exists":       "{criterion: c, type: file_exists, path: a.txt, turn: 1}",
@@ -61,18 +40,13 @@ func TestCheckTurnValidateRejectedTypes(t *testing.T) {
 			}
 		})
 	}
-}
 
-func TestCheckTurnValidateRejectsBelowOne(t *testing.T) {
-	for _, n := range []string{"0", "-1"} {
-		t.Run(n, func(t *testing.T) {
-			checks := decodeChecks(t, "- {criterion: c, type: output_contains, pattern: x, turn: "+n+"}\n")
-			err := Validate("f.yaml", checks, ValidateOptions{})
-			if err == nil {
-				t.Fatalf("turn: %s must be rejected", n)
-			}
-			if !strings.Contains(err.Error(), "turn") || !strings.Contains(err.Error(), ">= 1") {
-				t.Errorf("error %q should say turn must be >= 1", err)
+	// turn is valid on the four evidence-reading types.
+	for _, typ := range []string{"output_contains", "output_not_contains", "gh_log_contains", "gh_log_not_contains"} {
+		t.Run("allowed_"+typ, func(t *testing.T) {
+			checks := decodeChecks(t, "- {criterion: c, type: "+typ+", pattern: x, turn: 2}\n")
+			if err := Validate("f.yaml", checks, ValidateOptions{}); err != nil {
+				t.Fatalf("turn should be valid for %s: %v", typ, err)
 			}
 		})
 	}

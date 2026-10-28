@@ -193,9 +193,21 @@ func TestDocumentCheckValidate(t *testing.T) {
 	}
 
 	t.Run("turn below one", func(t *testing.T) {
-		err := Validate("f.yaml", decodeChecks(t, "- {criterion: c, type: output_document_valid, turn: 0}\n"), ValidateOptions{})
-		if err == nil || !strings.Contains(err.Error(), ">= 1") {
-			t.Fatalf("turn: 0 should be rejected with >= 1, got %v", err)
+		for _, tc := range []struct{ typ, extra, turn string }{
+			{"output_document_valid", "", "0"},
+			{"output_contains", ", pattern: x", "0"},
+			{"output_contains", ", pattern: x", "-1"},
+		} {
+			t.Run(tc.typ+" "+tc.turn, func(t *testing.T) {
+				src := "- {criterion: c, type: " + tc.typ + tc.extra + ", turn: " + tc.turn + "}\n"
+				err := Validate("f.yaml", decodeChecks(t, src), ValidateOptions{})
+				if err == nil {
+					t.Fatalf("turn: %s on %s must be rejected", tc.turn, tc.typ)
+				}
+				if !strings.Contains(err.Error(), "turn") || !strings.Contains(err.Error(), ">= 1") {
+					t.Errorf("error %q should say turn must be >= 1", err)
+				}
+			})
 		}
 	})
 }

@@ -59,13 +59,17 @@ func TestChecksYAMLDecodesChecksList(t *testing.T) {
 - criterion: clarity
   type: changed_files
   allow: [README.md, "docs/**"]
+- criterion: clarity
+  type: gh_log_contains
+  pattern: x
+  turn: 3
 `
 	var list []Check
 	if err := yaml.Unmarshal([]byte(src), &list); err != nil {
 		t.Fatal(err)
 	}
-	if len(list) != 3 {
-		t.Fatalf("got %d checks, want 3", len(list))
+	if len(list) != 4 {
+		t.Fatalf("got %d checks, want 4", len(list))
 	}
 	c := list[0]
 	if c.Criterion != "completeness" || c.Type != CheckCommand || c.Run != "go test ./..." ||
@@ -79,6 +83,13 @@ func TestChecksYAMLDecodesChecksList(t *testing.T) {
 	c = list[2]
 	if c.Type != CheckChangedFiles || len(c.Allow) != 2 || c.Allow[1] != "docs/**" {
 		t.Errorf("changed_files check decoded wrong: %+v", c)
+	}
+	c = list[3]
+	if c.Type != CheckGHLogContains || c.Turn == nil || *c.Turn != 3 {
+		t.Errorf("turn: 3 decoded as %v, want 3: %+v", c.Turn, c)
+	}
+	if list[1].Turn != nil {
+		t.Errorf("missing turn decoded as %v, want nil", *list[1].Turn)
 	}
 }
 
