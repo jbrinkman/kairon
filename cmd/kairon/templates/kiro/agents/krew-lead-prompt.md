@@ -24,8 +24,8 @@ The message also names a verified input document, and the environment variable `
      kairon scope check --input "$KAIRON_INPUT_DOCUMENT" --spec .kairon/specs/issue-<number>-*.md
      ```
      - Exit 0 (prints `{"status":"pass"}`) → continue to the spec-scope review.
-     - Exit 1 (prints `{"status":"fail","findings":[...]}`) → the spec does not cover the issue. Re-delegate to the architect (see **Architect re-delegation** below) with the complete JSON output.
-     - Exit 3, or any other non-zero exit → the check could not run. STOP: create an incident report that quotes the command's error output, apply the `<label>-failed` label, and halt.
+     - Exit 1 **and** stdout is the JSON object `{"status":"fail","findings":[...]}` → the spec does not cover the issue. Re-delegate to the architect (see **Architect re-delegation** below) with the complete JSON output.
+     - Exit 3, an exit 1 whose stdout is not that JSON object (for example an older `kairon` without `scope check`), or any other non-zero exit → the check could not run. STOP: create an incident report that quotes the command's error output, apply the `<label>-failed` label, and halt.
    - **Spec-scope review**: Before any builder runs, delegate a spec-scope review to the `validator`. First remove any earlier `.kairon/artifacts/validator-<number>-spec-scope.md` so a stale result is never read. Tell the validator this is a **spec-scope review**, and pass the issue number, the spec path, the input document path (`$KAIRON_INPUT_DOCUMENT`) and the coverage check's JSON output. Then read `.kairon/artifacts/validator-<number>-spec-scope.md`.
      - `**Spec-Scope Review**: PASS` → proceed to step 5.
      - `**Spec-Scope Review**: FAIL` → re-delegate to the architect (see **Architect re-delegation** below) with every FAIL Scope finding from the sentinel.

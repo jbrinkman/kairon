@@ -134,3 +134,25 @@ func TestScopeCheck_MalformedPlanReportsUnknownTasks(t *testing.T) {
 		assert.Equal(t, "unknown_task", f.Kind)
 	}
 }
+
+// TestScopeCheck_UsageErrorsExitThree pins that a run that could not start (an
+// extra argument, such as a spec glob matching two files, a missing flag or an
+// unknown flag) exits 3 and prints no status, so exit 1 always means findings.
+func TestScopeCheck_UsageErrorsExitThree(t *testing.T) {
+	input, spec := scopeFixture(t, "input.yaml"), scopeFixture(t, "pass.md")
+	for name, args := range map[string][]string{
+		"extra argument": {"--input", input, "--spec", spec, scopeFixture(t, "uncovered-s2.md")},
+		"missing spec":   {"--input", input},
+		"missing input":  {"--spec", spec},
+		"unknown flag":   {"--input", input, "--spec", spec, "--bogus"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			out, err := runScopeCheck(t, args...)
+			require.Error(t, err)
+			assert.Equal(t, 3, exitCodeOf(err), err)
+			// The test sets stdout, so cobra's usage text lands there; a real
+			// run sends it to stderr. Either way no status is printed.
+			assert.NotContains(t, out, `"status"`)
+		})
+	}
+}

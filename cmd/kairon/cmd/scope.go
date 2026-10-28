@@ -54,10 +54,20 @@ validator judges that.
 
 Prints one JSON object: {"status":"pass"} or {"status":"fail","findings":[...]}.
 Exits 0 on pass, 1 when there is at least one finding, and 3 when the check
-cannot run (a missing file, or an input document that does not verify).`,
-	Args: cobra.NoArgs,
+cannot run (a usage error, a missing file, or an input document that does not
+verify).`,
+	// A usage error means the check did not run, so it exits 3 like any other
+	// run that could not start; exit 1 is kept for findings.
+	Args: func(cmd *cobra.Command, args []string) error {
+		if err := cobra.NoArgs(cmd, args); err != nil {
+			return scopeCannotRun(err)
+		}
+		return nil
+	},
 	RunE: runScopeCheckCommand,
 }
+
+func scopeCannotRun(err error) error { return &ExitError{Code: scopeExitCannotRun, Err: err} }
 
 type scopeResult struct {
 	Status   string               `json:"status"`
@@ -70,7 +80,12 @@ func runScopeCheckCommand(cmd *cobra.Command, _ []string) error {
 	cmd.SilenceUsage = true
 	cmd.SilenceErrors = true
 
-	cannotRun := func(err error) error { return &ExitError{Code: scopeExitCannotRun, Err: err} }
+	cannotRun := scopeCannotRun
+	// The flags are checked here, not with MarkFlagRequired, whose error cobra
+	// raises before RunE as a plain error that exits 1.
+	if scopeInput == "" || scopeSpec == "" {
+		return cannotRun(fmt.Errorf("--input and --spec are required"))
+	}
 	data, err := os.ReadFile(scopeInput)
 	if err != nil {
 		return cannotRun(fmt.Errorf("--input: %w", err))
@@ -117,8 +132,7 @@ func runScopeCheckCommand(cmd *cobra.Command, _ []string) error {
 func init() {
 	scopeCheckCmd.Flags().StringVar(&scopeInput, "input", "", "Verified input document holding the issue body (required)")
 	scopeCheckCmd.Flags().StringVar(&scopeSpec, "spec", "", "Spec file to check (required)")
-	_ = scopeCheckCmd.MarkFlagRequired("input")
-	_ = scopeCheckCmd.MarkFlagRequired("spec")
+	scopeCheckCmd.SetFlagErrorFunc(func(_ *cobra.Command, err error) error { return scopeCannotRun(err) })
 
 	scopeCmd.AddCommand(scopeCheckCmd)
 	rootCmd.AddCommand(scopeCmd)

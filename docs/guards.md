@@ -362,12 +362,13 @@ A spec that passes prints `{"status":"pass"}`. Every finding is reported, not ju
 |------|---------|
 | 0 | Pass |
 | 1 | At least one finding |
-| 3 | The check could not run: a file is missing or unreadable, or the input document does not verify. No status is printed. |
+| 3 | The check could not run: a usage error (an extra argument, a missing or unknown flag), a file is missing or unreadable, or the input document does not verify. No status is printed. |
 
 ### Where it runs
 
-krew-lead runs the check right after it reads the architect's spec, before any builder starts. Exit 1 sends the
-spec back to the architect with the complete JSON output. Exit 3 halts the issue with `<label>-failed`. The
+krew-lead runs the check right after it reads the architect's spec, before any builder starts. Exit 1 with the fail
+JSON on stdout sends the spec back to the architect with the complete JSON output. Exit 3 halts the issue with
+`<label>-failed`, and so does an exit 1 without that JSON, such as from an older binary with no `scope` command. The
 validator's Phase 3 runs the check again and cites its output as coverage evidence.
 
 ### What it does not check
