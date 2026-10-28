@@ -283,13 +283,14 @@ What the console shows for a committed issue:
 | Case | Console |
 |------|---------|
 | `yes` and the call succeeds | A success line: ``Added the label `<label>` to issue #<n>.`` |
-| `yes` and the call fails, or no GitHub connection or no label name is configured | An error line with the issue number, the label name and the error. The issue is not created again. Add the label by hand for the watcher to pick it up. |
+| `yes` and the call fails, does not finish within 30 seconds, or no GitHub connection or no label name is configured | An error line with the issue number, the label name and the error. The issue is not created again. Add the label by hand for the watcher to pick it up. A call that timed out is abandoned, not stopped, so it may still add the label. |
 | The file is not a regular file, cannot be read, is longer than 16 bytes, or says anything other than `yes` or `no` | An error line with the issue number and the problem. No label is applied. |
 | `no`, or no file | Nothing. |
 
 After a commit the handoff deletes the label file with the document file, so a stale `yes` cannot label the next issue
 of the same session. If the label file cannot be removed, the console says so. If the agent wrote a newer document while
-the send was in flight, the label file is kept for that document's send.
+the send was in flight, the label file is kept for that document's send. The label file is also kept when it was
+created or rewritten after the document was read, because the agent writes the answer before the document it belongs to.
 
 ### The duplicate-issue guard
 

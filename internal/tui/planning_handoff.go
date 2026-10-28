@@ -34,6 +34,11 @@ import (
 // planningHandoffTimeout bounds one send to the planning boundary.
 const planningHandoffTimeout = 2 * time.Minute
 
+// planningLabelTimeout bounds the label call after a commit. gh runs without
+// a context, so a call that times out is abandoned, not stopped; it may still
+// add the label later. A variable so tests can shorten it.
+var planningLabelTimeout = 30 * time.Second
+
 // planningSessionsDir holds the per-session document files.
 const planningSessionsDir = ".kairon/sessions"
 
@@ -138,15 +143,24 @@ func readLabelFile(path string, info os.FileInfo) labelAnswer {
 }
 
 // applyTriggerLabel adds the trigger label to the committed issue. It runs
-// inside the handoff command, so gh never runs on the UI goroutine.
-func applyTriggerLabel(labeler planningLabeler, repo, label string, issue int) error {
+// inside the handoff command, so gh never runs on the UI goroutine. It returns
+// when ctx ends even if gh has not, so a stalled call cannot hold back the
+// report of the issue that was created.
+func applyTriggerLabel(ctx context.Context, labeler planningLabeler, repo, label string, issue int) error {
 	if labeler == nil {
 		return errors.New("no GitHub connection is configured")
 	}
 	if strings.TrimSpace(label) == "" {
 		return errors.New("no trigger label is configured")
 	}
-	return labeler.AddLabel(repo, issue, label)
+	errc := make(chan error, 1)
+	go func() { errc <- labeler.AddLabel(repo, issue, label) }()
+	select {
+	case err := <-errc:
+		return err
+	case <-ctx.Done():
+		return fmt.Errorf("gh did not finish in time (%w)", ctx.Err())
+	}
 }
 
 // newPlanningBoundary builds the boundary the handoff uses, with the same
@@ -294,7 +308,10 @@ func (m model) finishPlanning(end planningEnd) (model, tea.Cmd) {
 		}
 		if err == nil && res.Outcome == planner.OutcomeCommitted && answer.apply {
 			done.labelTried = true
-			done.labelErr = applyTriggerLabel(labeler, repo, labelName, res.Number)
+			// A fresh timeout, so a slow commit does not use up the label's.
+			lctx, lcancel := context.WithTimeout(context.Background(), planningLabelTimeout)
+			done.labelErr = applyTriggerLabel(lctx, labeler, repo, labelName, res.Number)
+			lcancel()
 		}
 		return done
 	}

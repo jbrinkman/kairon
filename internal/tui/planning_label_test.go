@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
@@ -9,6 +10,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	tea "charm.land/bubbletea/v2"
 
 	"github.com/jbrinkman/kairon/internal/planner"
 	"github.com/jbrinkman/kairon/internal/planner/plannertest"
@@ -427,5 +430,49 @@ func TestHandoffLabelAnswerCreatedDuringSendIsKept(t *testing.T) {
 	assertLabelCalls(t, lab)
 	if !fileExists(labelPath) {
 		t.Error("the label answer written during the send was deleted")
+	}
+}
+
+// blockingLabeler never returns from AddLabel until release is closed.
+type blockingLabeler struct{ release chan struct{} }
+
+func (b *blockingLabeler) AddLabel(string, int, string) error {
+	<-b.release
+	return nil
+}
+
+// A stalled label call must not hold the handoff: the created issue is still
+// reported, with the label failure, and the document is removed.
+func TestHandoffLabelCallThatStallsTimesOut(t *testing.T) {
+	old := planningLabelTimeout
+	planningLabelTimeout = 50 * time.Millisecond
+	t.Cleanup(func() { planningLabelTimeout = old })
+
+	fb := &fakeBoundary{res: committedResult(77)}
+	m, docPath, _, _ := labelFixture(t, fb, "yes")
+	stall := &blockingLabeler{release: make(chan struct{})}
+	t.Cleanup(func() { close(stall.release) })
+	m.planLabeler = stall
+
+	m, cmd := m.finishPlanning(s1End())
+	got := make(chan tea.Msg, 1)
+	go func() { got <- cmd() }()
+	var done planningHandoffDoneMsg
+	select {
+	case msg := <-got:
+		done = msg.(planningHandoffDoneMsg)
+	case <-time.After(5 * time.Second):
+		t.Fatal("the handoff command did not return while the label call stalled")
+	}
+	if !done.labelTried || !errors.Is(done.labelErr, context.DeadlineExceeded) {
+		t.Fatalf("labelTried = %v, labelErr = %v; want a tried call that hit its deadline", done.labelTried, done.labelErr)
+	}
+	next, _ := m.Update(done)
+	m = next.(model)
+	if lineWith(m, "Created issue #77") == "" || lineWith(m, "#77", "adding the label `kairon` failed") == "" {
+		t.Errorf("console = %q, want the created issue and the label failure", activityText(m))
+	}
+	if fileExists(docPath) {
+		t.Error("the committed document file must be deleted")
 	}
 }
