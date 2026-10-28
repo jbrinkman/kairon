@@ -109,6 +109,9 @@ type model struct {
 	// planning document to. newModel builds it from the config; tests replace
 	// it. It is nil when no repository is configured.
 	planBoundary planningBoundary
+	// planLabeler applies the trigger label to a committed planning issue.
+	// It is nil when no repository is configured.
+	planLabeler planningLabeler
 	// planningHandoffs marks the planning sessions whose document is being
 	// sent, so a second session end cannot send the same document again.
 	planningHandoffs map[string]bool
@@ -188,6 +191,7 @@ func newModel(w *watcher.Watcher, m *agent.Manager, cfg *config.Config, logFile 
 		tabFocusStates: make(map[string]FocusTarget),
 
 		planBoundary:     newPlanningBoundary(cfg),
+		planLabeler:      newPlanningLabeler(cfg),
 		execPlanning:     execPlanningProcess,
 		planningHandoffs: make(map[string]bool),
 	}
