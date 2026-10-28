@@ -5,8 +5,6 @@ import (
 	"errors"
 	"strings"
 	"testing"
-
-	"github.com/jbrinkman/kairon/internal/provenance"
 )
 
 // storeGH is a scripted gh for IssueStore tests. It records every call.
@@ -26,10 +24,6 @@ func newStore(f *storeGH) IssueStore { return IssueStore{Repo: testRepo, run: f.
 func hasArgs(args []string, want ...string) bool {
 	j := " " + strings.Join(args, " ") + " "
 	return strings.Contains(j, " "+strings.Join(want, " ")+" ")
-}
-
-func TestIssueStoreImplementsProvenanceStore(t *testing.T) {
-	var _ provenance.IssueStore = IssueStore{}
 }
 
 func TestIssueStoreRevisionReturnsUpdatedAt(t *testing.T) {

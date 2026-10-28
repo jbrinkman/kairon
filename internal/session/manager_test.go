@@ -44,6 +44,11 @@ func TestSessionManagerCRUD(t *testing.T) {
 	}
 	if len(state2.History) != 1 {
 		t.Errorf("Expected 1 message, got %d", len(state2.History))
+	} else if state2.History[0].Role != "user" || state2.History[0].Content != "test message" {
+		t.Errorf("First message not restored correctly: got role %q, content %q", state2.History[0].Role, state2.History[0].Content)
+	}
+	if state2.Type != Console {
+		t.Errorf("Expected reloaded session type %v, got %v", Console, state2.Type)
 	}
 
 	// Test List

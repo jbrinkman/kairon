@@ -460,6 +460,7 @@ func TestValidateIssue(t *testing.T) {
 
 	tests := []struct {
 		name           string
+		issue          int // issue number under validation; 1 when zero
 		body           string
 		details        map[int]*github.IssueDetails
 		errs           map[int]error
@@ -550,6 +551,31 @@ func TestValidateIssue(t *testing.T) {
 			wantLookups: nil,
 			wantValid:   true,
 		},
+		{
+			// Issue 10 depends on #11, whose body points back at #10. Only the
+			// direct dependency is looked up (no recursive chain fetch).
+			name:  "two issue cycle only looks up the direct dependency",
+			issue: 10,
+			body:  "Dependencies: #11",
+			details: map[int]*github.IssueDetails{
+				11: {State: "closed", Body: "Dependencies: #10"},
+			},
+			wantLookups: []int{11},
+			wantValid:   true,
+		},
+		{
+			// Issue 10 depends on itself; the dependency body repeats the cycle.
+			// It is looked up once and reported unresolved because it is open.
+			name:  "self referencing issue is looked up once",
+			issue: 10,
+			body:  "Dependencies: #10",
+			details: map[int]*github.IssueDetails{
+				10: {State: "open", Body: "Dependencies: #10"},
+			},
+			wantLookups:    []int{10},
+			wantValid:      false,
+			wantUnresolved: []int{10},
+		},
 	}
 
 	for _, tt := range tests {
@@ -558,7 +584,11 @@ func TestValidateIssue(t *testing.T) {
 			dv := NewDependencyValidator()
 			dv.getIssueDetails = fakeIssueLookup(&calls, tt.details, tt.errs)
 
-			result, err := dv.ValidateIssue("owner/repo", 1, tt.body)
+			issue := tt.issue
+			if issue == 0 {
+				issue = 1
+			}
+			result, err := dv.ValidateIssue("owner/repo", issue, tt.body)
 			if err != nil {
 				t.Fatalf("ValidateIssue() returned unexpected error: %v", err)
 			}
@@ -581,61 +611,6 @@ func TestValidateIssue(t *testing.T) {
 			}
 		})
 	}
-}
-
-func TestValidateIssueCyclicDependencyDoesNotFetchChain(t *testing.T) {
-	t.Run("two issue cycle only looks up the direct dependency", func(t *testing.T) {
-		// Issue 10 depends on #11, whose body points back at #10.
-		var calls []int
-		details := map[int]*github.IssueDetails{
-			11: {State: "closed", Body: "Dependencies: #10"},
-		}
-		dv := NewDependencyValidator()
-		dv.getIssueDetails = fakeIssueLookup(&calls, details, nil)
-
-		result, err := dv.ValidateIssue("owner/repo", 10, "Dependencies: #11")
-		if err != nil {
-			t.Fatalf("ValidateIssue() returned unexpected error: %v", err)
-		}
-
-		if !reflect.DeepEqual(calls, []int{11}) {
-			t.Errorf("lookups = %v, expected [11] (no recursive chain fetch)", calls)
-		}
-		if !result.IsValid {
-			t.Errorf("IsValid = false, expected true (dependency is closed)")
-		}
-		if len(result.CircularDependencies) != 0 {
-			t.Errorf("CircularDependencies = %v, expected empty", result.CircularDependencies)
-		}
-	})
-
-	t.Run("self referencing issue is looked up once", func(t *testing.T) {
-		// Issue 10 depends on itself; the dependency body repeats the cycle.
-		var calls []int
-		details := map[int]*github.IssueDetails{
-			10: {State: "open", Body: "Dependencies: #10"},
-		}
-		dv := NewDependencyValidator()
-		dv.getIssueDetails = fakeIssueLookup(&calls, details, nil)
-
-		result, err := dv.ValidateIssue("owner/repo", 10, "Dependencies: #10")
-		if err != nil {
-			t.Fatalf("ValidateIssue() returned unexpected error: %v", err)
-		}
-
-		if !reflect.DeepEqual(calls, []int{10}) {
-			t.Errorf("lookups = %v, expected [10] (no recursive chain fetch)", calls)
-		}
-		if result.IsValid {
-			t.Errorf("IsValid = true, expected false (dependency is open)")
-		}
-		if !reflect.DeepEqual(result.UnresolvedDependencies, []int{10}) {
-			t.Errorf("UnresolvedDependencies = %v, expected [10]", result.UnresolvedDependencies)
-		}
-		if len(result.CircularDependencies) != 0 {
-			t.Errorf("CircularDependencies = %v, expected empty", result.CircularDependencies)
-		}
-	})
 }
 
 // fencedBody builds an issue body whose declaration line sits inside a
