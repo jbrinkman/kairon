@@ -158,6 +158,9 @@ func TestClassicPlanningCmdArgvCarriesPrompt(t *testing.T) {
 	if !strings.Contains(prompt, "Document path: .kairon/sessions/abc123.document.yaml") {
 		t.Errorf("prompt = %q, want the document path line", prompt)
 	}
+	if !strings.Contains(prompt, "Label answer path: .kairon/sessions/abc123.label") {
+		t.Errorf("prompt = %q, want the label answer path line", prompt)
+	}
 }
 
 func TestClassicNewSessionPromptHasDocumentPath(t *testing.T) {

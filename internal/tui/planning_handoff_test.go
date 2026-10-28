@@ -588,10 +588,26 @@ func TestPlanningDocumentPath(t *testing.T) {
 	}
 }
 
+func TestPlanningLabelPath(t *testing.T) {
+	got, err := planningLabelPath("s1")
+	if err != nil {
+		t.Fatalf("planningLabelPath: %v", err)
+	}
+	if want := ".kairon/sessions/s1.label"; got != want {
+		t.Errorf("path = %q, want %q", got, want)
+	}
+
+	for _, id := range []string{"", "a/b", `a\b`, "..", "a..b", "../x", "/abs"} {
+		if p, err := planningLabelPath(id); err == nil {
+			t.Errorf("planningLabelPath(%q) = %q, want an error", id, p)
+		}
+	}
+}
+
 func TestPlanningPromptNewSession(t *testing.T) {
 	got := planningPrompt("s1", "Plan an exporter", false)
 
-	if want := "Document path: .kairon/sessions/s1.document.yaml\n"; !strings.HasPrefix(got, want) {
+	if want := "Document path: .kairon/sessions/s1.document.yaml\nLabel answer path: .kairon/sessions/s1.label\n"; !strings.HasPrefix(got, want) {
 		t.Errorf("prompt = %q, want it to begin with %q", got, want)
 	}
 	if !strings.HasSuffix(got, "\n\nPlan an exporter") {
@@ -605,8 +621,8 @@ func TestPlanningPromptNewSession(t *testing.T) {
 func TestPlanningPromptResumedSessionAddsSentence(t *testing.T) {
 	got := planningPrompt("s1", "Continue", true)
 
-	if !strings.HasPrefix(got, "Document path: .kairon/sessions/s1.document.yaml\n") {
-		t.Errorf("prompt = %q, want the path line first", got)
+	if want := "Document path: .kairon/sessions/s1.document.yaml\nLabel answer path: .kairon/sessions/s1.label\n"; !strings.HasPrefix(got, want) {
+		t.Errorf("prompt = %q, want the two path lines first", got)
 	}
 	if !strings.Contains(got, "may already hold the last document") || !strings.Contains(got, "read it before continuing") {
 		t.Errorf("prompt = %q, want the resumed sentence", got)
@@ -618,8 +634,8 @@ func TestPlanningPromptResumedSessionAddsSentence(t *testing.T) {
 
 func TestPlanningPromptWithoutRequestIsJustThePath(t *testing.T) {
 	got := planningPrompt("s1", "", false)
-	if got != "Document path: .kairon/sessions/s1.document.yaml" {
-		t.Errorf("prompt = %q, want only the path line", got)
+	if want := "Document path: .kairon/sessions/s1.document.yaml\nLabel answer path: .kairon/sessions/s1.label"; got != want {
+		t.Errorf("prompt = %q, want only the two path lines %q", got, want)
 	}
 }
 
@@ -633,7 +649,7 @@ func TestPlanningResumePromptCarriesFailureAndPath(t *testing.T) {
 	got := planningResumePrompt("s1", rejectionFailure())
 
 	for _, want := range []string{
-		"Document path: .kairon/sessions/s1.document.yaml",
+		"Document path: .kairon/sessions/s1.document.yaml\nLabel answer path: .kairon/sessions/s1.label",
 		"rejected",
 		"extract",
 		"a stage-output document in YAML",

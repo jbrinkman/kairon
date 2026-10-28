@@ -74,30 +74,47 @@ func newPlanningBoundary(cfg *config.Config) planningBoundary {
 	}
 }
 
-// planningDocumentPath returns the document file for a planning session,
-// relative to the working directory. The session ID comes from a file name, so
-// an ID that is empty or could leave the sessions directory is refused.
-func planningDocumentPath(sessionID string) (string, error) {
+// planningSessionFile returns the path of a per-session file under the
+// sessions directory, relative to the working directory. The session ID comes
+// from a file name, so an ID that is empty or could leave the sessions
+// directory is refused.
+func planningSessionFile(sessionID, suffix string) (string, error) {
 	if sessionID == "" {
 		return "", errors.New("planning session has no ID")
 	}
 	if strings.ContainsAny(sessionID, `/\`) || strings.Contains(sessionID, "..") {
 		return "", fmt.Errorf("planning session ID %q is not a plain file name", sessionID)
 	}
-	return path.Join(planningSessionsDir, sessionID+".document.yaml"), nil
+	return path.Join(planningSessionsDir, sessionID+suffix), nil
+}
+
+// planningDocumentPath returns the document file for a planning session.
+func planningDocumentPath(sessionID string) (string, error) {
+	return planningSessionFile(sessionID, ".document.yaml")
+}
+
+// planningLabelPath returns the file where the planner records the person's
+// answer to the trigger-label question, next to the document file.
+func planningLabelPath(sessionID string) (string, error) {
+	return planningSessionFile(sessionID, ".label")
 }
 
 // planningPrompt is the initial prompt for a planning session: the document
-// path on the first line, one more sentence for a resumed session, then the
-// person's own request. A session ID that has no valid path adds nothing, and
-// the request is returned unchanged.
+// path and the label answer path on the first two lines, one more sentence for
+// a resumed session, then the person's own request. A session ID that has no
+// valid path adds nothing, and the request is returned unchanged.
 func planningPrompt(sessionID, request string, resumed bool) string {
 	docPath, err := planningDocumentPath(sessionID)
 	if err != nil {
 		return request
 	}
+	labelPath, err := planningLabelPath(sessionID)
+	if err != nil {
+		return request
+	}
 	var sb strings.Builder
 	sb.WriteString("Document path: " + docPath)
+	sb.WriteString("\nLabel answer path: " + labelPath)
 	if resumed {
 		sb.WriteString("\nThis session is being resumed. The file may already hold the last document; read it before continuing.")
 	}

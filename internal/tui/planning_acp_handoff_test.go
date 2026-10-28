@@ -327,6 +327,9 @@ func TestACPFirstMessageAnnouncesDocumentPath(t *testing.T) {
 	if !strings.HasPrefix(f.doc, ".kairon/sessions/") {
 		t.Errorf("document path %q is not under .kairon/sessions/", f.doc)
 	}
+	if want := "Label answer path: " + strings.TrimSuffix(f.doc, ".document.yaml") + ".label"; !strings.Contains(sent[0], want) {
+		t.Errorf("first message = %q, want the line %q", sent[0], want)
+	}
 	if !strings.HasSuffix(sent[0], "plan a thing") {
 		t.Errorf("first message = %q, want the user's request at the end", sent[0])
 	}
