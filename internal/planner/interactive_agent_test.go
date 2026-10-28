@@ -19,6 +19,9 @@ const (
 	// interactiveSessionDocumentPath is where Kairon asks the planner to write
 	// the approved document, so the end of a planning session can commit it.
 	interactiveSessionDocumentPath = ".kairon/sessions/*.document.yaml"
+	// interactiveSessionLabelPath is where Kairon asks the planner to record the
+	// person's answer to the trigger-label question (yes or no).
+	interactiveSessionLabelPath = ".kairon/sessions/*.label"
 )
 
 func readInteractivePrompt(t *testing.T) string {
@@ -57,7 +60,7 @@ func TestInteractiveManifest(t *testing.T) {
 	settings, _ := m["toolsSettings"].(map[string]any)
 	write, _ := settings["write"].(map[string]any)
 	paths, _ := write["allowedPaths"].([]any)
-	wantPaths := []any{interactiveWriteScopePath, interactiveSessionDocumentPath}
+	wantPaths := []any{interactiveWriteScopePath, interactiveSessionDocumentPath, interactiveSessionLabelPath}
 	if !reflect.DeepEqual(paths, wantPaths) {
 		t.Errorf("toolsSettings.write.allowedPaths = %v, want %v", paths, wantPaths)
 	}
@@ -86,11 +89,12 @@ func writeAllowedPaths(t *testing.T, rel string) []string {
 	return out
 }
 
-// The interactive planner writes the approved document under
-// .kairon/sessions/ so Kairon can commit it when the session ends.
+// The interactive planner writes the approved document and the label answer
+// under .kairon/sessions/ so Kairon can commit the document and apply the
+// label when the session ends.
 func TestInteractiveManifestAllowsSessionDocument(t *testing.T) {
 	got := writeAllowedPaths(t, interactiveManifest)
-	for _, want := range []string{interactiveWriteScopePath, interactiveSessionDocumentPath} {
+	for _, want := range []string{interactiveWriteScopePath, interactiveSessionDocumentPath, interactiveSessionLabelPath} {
 		if !slices.Contains(got, want) {
 			t.Errorf("toolsSettings.write.allowedPaths = %v, missing %q", got, want)
 		}
@@ -165,8 +169,8 @@ func TestInteractivePromptWritesDocumentToGivenPath(t *testing.T) {
 	}
 }
 
-// The no-project-files constraint has exactly one stated exception: the file
-// at the given Document path.
+// The no-project-files constraint has exactly one stated exception: the files
+// at the given Document path and Label answer path.
 func TestInteractivePromptStatesSingleWriteException(t *testing.T) {
 	constraints := promptSection(t, readInteractivePrompt(t), "Constraints")
 	var line string
@@ -178,11 +182,75 @@ func TestInteractivePromptStatesSingleWriteException(t *testing.T) {
 	if line == "" {
 		t.Fatal("constraints must keep the rule against writing project files")
 	}
-	if !regexp.MustCompile(`(?i)\b(exception|except)\b`).MatchString(line) || !strings.Contains(line, "Document path:") {
-		t.Errorf("the write rule must state its one exception, the Document path file: %q", line)
+	if !regexp.MustCompile(`(?i)\b(exception|except)\b`).MatchString(line) ||
+		!strings.Contains(line, "Document path:") || !strings.Contains(line, "Label answer path:") {
+		t.Errorf("the write rule must state its one exception, the Document path and Label answer path files: %q", line)
 	}
 	if !regexp.MustCompile(`(?i)reply is still the document`).MatchString(line) {
 		t.Errorf("the exception must say the reply is still the document: %q", line)
+	}
+}
+
+// The agent records the answer to the label question in the file at the Label
+// answer path, before it writes the document, and never applies a label.
+func TestInteractivePromptRecordsLabelAnswer(t *testing.T) {
+	prompt := readInteractivePrompt(t)
+	task := promptSection(t, prompt, "Task")
+
+	label := strings.Index(task, "**Label question.**")
+	write := strings.Index(task, "**Write the document file.**")
+	ret := strings.Index(task, "**Return the document.**")
+	if label < 0 || write < 0 || ret < 0 {
+		t.Fatalf("Task must have label (%d), write (%d) and return (%d) steps", label, write, ret)
+	}
+
+	step := task[write:ret]
+	for name, re := range map[string]*regexp.Regexp{
+		"names the Label answer path line":     regexp.MustCompile("`Label answer path:`"),
+		"uses the write tool":                  regexp.MustCompile("(?i)`write` tool"),
+		"says to write yes":                    regexp.MustCompile("`yes`"),
+		"says to write no":                     regexp.MustCompile("`no`"),
+		"writes only the word":                 regexp.MustCompile(`(?i)nothing else`),
+		"writes the label file first":          regexp.MustCompile(`(?i)label file first`),
+		"rewrites both when the document is":   regexp.MustCompile(`(?i)whenever you rewrite the document`),
+		"skips the step with no path line":     regexp.MustCompile(`(?i)no .?Document path:.? line.{0,40}skip`),
+		"names the Document path line as well": regexp.MustCompile("`Document path:`"),
+	} {
+		if !re.MatchString(step) {
+			t.Errorf("write step does not state: %s", name)
+		}
+	}
+	// The label answer is written before the document it goes with.
+	labelWrite := strings.Index(step, "to the `Label answer path:`")
+	docWrite := strings.Index(step, "to the `Document path:`")
+	if labelWrite < 0 || docWrite < 0 || labelWrite > docWrite {
+		t.Errorf("write step must write the Label answer path (%d) before the Document path (%d)", labelWrite, docWrite)
+	}
+
+	askStep := task[label:write]
+	for name, re := range map[string]*regexp.Regexp{
+		"answer is not part of the document": regexp.MustCompile(`(?i)answer is not part of the document`),
+		"agent never applies a label":        regexp.MustCompile(`(?i)you never apply a label`),
+		"Kairon applies the label":           regexp.MustCompile(`(?i)Kairon applies the label from the answer`),
+	} {
+		if !re.MatchString(askStep) {
+			t.Errorf("label step does not state: %s", name)
+		}
+	}
+
+	var pathBullet string
+	for _, l := range strings.Split(promptSection(t, prompt, "Context"), "\n") {
+		if strings.Contains(l, "only names a path") {
+			pathBullet = l
+		}
+	}
+	if pathBullet == "" {
+		t.Fatal("context must keep the bullet about a message that only names a path")
+	}
+	for _, want := range []string{"Document path:", "Label answer path:"} {
+		if !strings.Contains(pathBullet, want) {
+			t.Errorf("the path-only bullet does not name the %s line: %q", want, pathBullet)
+		}
 	}
 }
 
