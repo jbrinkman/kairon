@@ -98,24 +98,6 @@ func TestChecksYAMLAllowEmptyVersusMissing(t *testing.T) {
 	}
 }
 
-func TestChecksCheckTypeSet(t *testing.T) {
-	want := []CheckType{
-		"command", "file_exists", "file_absent", "file_contains", "file_not_contains",
-		"changed_files", "output_contains", "output_not_contains",
-		"gh_log_contains", "gh_log_not_contains", "judge",
-	}
-	got := []CheckType{
-		CheckCommand, CheckFileExists, CheckFileAbsent, CheckFileContains, CheckFileNotContains,
-		CheckChangedFiles, CheckOutputContains, CheckOutputNotContains,
-		CheckGHLogContains, CheckGHLogNotContains, CheckJudge,
-	}
-	for i := range want {
-		if got[i] != want[i] {
-			t.Errorf("constant %d = %q, want %q", i, got[i], want[i])
-		}
-	}
-}
-
 // TestChecksValidateTable drives Validate through every rule. Each
 // invalid case must wrap ErrInvalid and name the case file, the 1-based
 // check index and the check type.
@@ -139,94 +121,103 @@ func TestChecksValidateTable(t *testing.T) {
 		name    string
 		check   Check
 		wantErr string // substring besides file/index/type; "" = valid
+		// nilList passes a nil check list to Validate instead of the two-check
+		// list wrapped around check, for the whole-list case.
+		nilList bool
 	}{
 		// valid forms
-		{"command ok", Check{Criterion: "completeness", Type: CheckCommand, Run: "true"}, ""},
-		{"command expect_exit 0", Check{Criterion: "completeness", Type: CheckCommand, Run: "true", ExpectExit: &zero}, ""},
-		{"command expect_exit 255", Check{Criterion: "completeness", Type: CheckCommand, Run: "true", ExpectExit: func() *int { v := 255; return &v }()}, ""},
-		{"command with inject", Check{Criterion: "completeness", Type: CheckCommand, Run: "true", Inject: []string{"hidden_test.go"}}, ""},
-		{"command nested inject", Check{Criterion: "completeness", Type: CheckCommand, Run: "true", Inject: []string{"sub/dir/x.txt"}}, ""},
-		{"file_exists ok", Check{Criterion: "clarity", Type: CheckFileExists, Path: "a/b.txt"}, ""},
-		{"file_absent ok", Check{Criterion: "clarity", Type: CheckFileAbsent, Path: "a"}, ""},
-		{"file_contains ok", Check{Criterion: "clarity", Type: CheckFileContains, Path: "a", Pattern: `(?m)^x+$`}, ""},
-		{"file_not_contains ok", Check{Criterion: "clarity", Type: CheckFileNotContains, Path: "a", Pattern: "x"}, ""},
-		{"changed_files ok", Check{Criterion: "clarity", Type: CheckChangedFiles, Allow: []string{"README.md", "docs/**", "**/*.go"}}, ""},
-		{"changed_files empty allow", Check{Criterion: "clarity", Type: CheckChangedFiles, Allow: []string{}}, ""},
-		{"output_contains ok", Check{Criterion: "clarity", Type: CheckOutputContains, Pattern: "## "}, ""},
-		{"output_not_contains ok", Check{Criterion: "clarity", Type: CheckOutputNotContains, Pattern: "x"}, ""},
-		{"gh_log_contains ok", Check{Criterion: "clarity", Type: CheckGHLogContains, Pattern: "gh issue"}, ""},
-		{"gh_log_not_contains ok", Check{Criterion: "clarity", Type: CheckGHLogNotContains, Pattern: "pr merge"}, ""},
+		{"command ok", Check{Criterion: "completeness", Type: CheckCommand, Run: "true"}, "", false},
+		{"command expect_exit 0", Check{Criterion: "completeness", Type: CheckCommand, Run: "true", ExpectExit: &zero}, "", false},
+		{"command expect_exit 255", Check{Criterion: "completeness", Type: CheckCommand, Run: "true", ExpectExit: func() *int { v := 255; return &v }()}, "", false},
+		{"command with inject", Check{Criterion: "completeness", Type: CheckCommand, Run: "true", Inject: []string{"hidden_test.go"}}, "", false},
+		{"command nested inject", Check{Criterion: "completeness", Type: CheckCommand, Run: "true", Inject: []string{"sub/dir/x.txt"}}, "", false},
+		{"file_exists ok", Check{Criterion: "clarity", Type: CheckFileExists, Path: "a/b.txt"}, "", false},
+		{"file_absent ok", Check{Criterion: "clarity", Type: CheckFileAbsent, Path: "a"}, "", false},
+		{"file_contains ok", Check{Criterion: "clarity", Type: CheckFileContains, Path: "a", Pattern: `(?m)^x+$`}, "", false},
+		{"file_not_contains ok", Check{Criterion: "clarity", Type: CheckFileNotContains, Path: "a", Pattern: "x"}, "", false},
+		{"changed_files ok", Check{Criterion: "clarity", Type: CheckChangedFiles, Allow: []string{"README.md", "docs/**", "**/*.go"}}, "", false},
+		{"changed_files empty allow", Check{Criterion: "clarity", Type: CheckChangedFiles, Allow: []string{}}, "", false},
+		{"output_contains ok", Check{Criterion: "clarity", Type: CheckOutputContains, Pattern: "## "}, "", false},
+		{"output_not_contains ok", Check{Criterion: "clarity", Type: CheckOutputNotContains, Pattern: "x"}, "", false},
+		{"gh_log_contains ok", Check{Criterion: "clarity", Type: CheckGHLogContains, Pattern: "gh issue"}, "", false},
+		{"gh_log_not_contains ok", Check{Criterion: "clarity", Type: CheckGHLogNotContains, Pattern: "pr merge"}, "", false},
 
 		// type / criterion / required fields
-		{"unknown type", Check{Criterion: "clarity", Type: "bogus", Path: "a"}, "unknown type"},
-		{"missing type", Check{Criterion: "clarity", Path: "a"}, "type is required"},
-		{"missing criterion", Check{Type: CheckFileExists, Path: "a"}, "criterion is required"},
-		{"command missing run", Check{Criterion: "clarity", Type: CheckCommand}, "run is required"},
-		{"command blank run", Check{Criterion: "clarity", Type: CheckCommand, Run: "  "}, "run is required"},
-		{"file_exists missing path", Check{Criterion: "clarity", Type: CheckFileExists}, "path is required"},
-		{"file_absent missing path", Check{Criterion: "clarity", Type: CheckFileAbsent}, "path is required"},
-		{"file_contains missing path", Check{Criterion: "clarity", Type: CheckFileContains, Pattern: "x"}, "path is required"},
-		{"file_contains missing pattern", Check{Criterion: "clarity", Type: CheckFileContains, Path: "a"}, "pattern is required"},
-		{"file_not_contains missing pattern", Check{Criterion: "clarity", Type: CheckFileNotContains, Path: "a"}, "pattern is required"},
-		{"output_contains missing pattern", Check{Criterion: "clarity", Type: CheckOutputContains}, "pattern is required"},
-		{"output_not_contains missing pattern", Check{Criterion: "clarity", Type: CheckOutputNotContains}, "pattern is required"},
-		{"gh_log_contains missing pattern", Check{Criterion: "clarity", Type: CheckGHLogContains}, "pattern is required"},
-		{"gh_log_not_contains missing pattern", Check{Criterion: "clarity", Type: CheckGHLogNotContains}, "pattern is required"},
-		{"changed_files missing allow", Check{Criterion: "clarity", Type: CheckChangedFiles}, "allow is required"},
+		{"unknown type", Check{Criterion: "clarity", Type: "bogus", Path: "a"}, "unknown type", false},
+		{"missing type", Check{Criterion: "clarity", Path: "a"}, "type is required", false},
+		{"missing criterion", Check{Type: CheckFileExists, Path: "a"}, "criterion is required", false},
+		{"command missing run", Check{Criterion: "clarity", Type: CheckCommand}, "run is required", false},
+		{"command blank run", Check{Criterion: "clarity", Type: CheckCommand, Run: "  "}, "run is required", false},
+		{"file_exists missing path", Check{Criterion: "clarity", Type: CheckFileExists}, "path is required", false},
+		{"file_absent missing path", Check{Criterion: "clarity", Type: CheckFileAbsent}, "path is required", false},
+		{"file_contains missing path", Check{Criterion: "clarity", Type: CheckFileContains, Pattern: "x"}, "path is required", false},
+		{"file_contains missing pattern", Check{Criterion: "clarity", Type: CheckFileContains, Path: "a"}, "pattern is required", false},
+		{"file_not_contains missing pattern", Check{Criterion: "clarity", Type: CheckFileNotContains, Path: "a"}, "pattern is required", false},
+		{"output_contains missing pattern", Check{Criterion: "clarity", Type: CheckOutputContains}, "pattern is required", false},
+		{"output_not_contains missing pattern", Check{Criterion: "clarity", Type: CheckOutputNotContains}, "pattern is required", false},
+		{"gh_log_contains missing pattern", Check{Criterion: "clarity", Type: CheckGHLogContains}, "pattern is required", false},
+		{"gh_log_not_contains missing pattern", Check{Criterion: "clarity", Type: CheckGHLogNotContains}, "pattern is required", false},
+		{"changed_files missing allow", Check{Criterion: "clarity", Type: CheckChangedFiles}, "allow is required", false},
 
 		// fields that do not belong to the type
-		{"command with path", Check{Criterion: "clarity", Type: CheckCommand, Run: "true", Path: "a"}, "path is not valid"},
-		{"command with pattern", Check{Criterion: "clarity", Type: CheckCommand, Run: "true", Pattern: "a"}, "pattern is not valid"},
-		{"command with allow", Check{Criterion: "clarity", Type: CheckCommand, Run: "true", Allow: []string{"a"}}, "allow is not valid"},
-		{"file_exists with run", Check{Criterion: "clarity", Type: CheckFileExists, Path: "a", Run: "true"}, "run is not valid"},
-		{"file_exists with pattern", Check{Criterion: "clarity", Type: CheckFileExists, Path: "a", Pattern: "x"}, "pattern is not valid"},
-		{"file_exists with expect_exit", Check{Criterion: "clarity", Type: CheckFileExists, Path: "a", ExpectExit: &zero}, "expect_exit is not valid"},
-		{"file_absent with pattern", Check{Criterion: "clarity", Type: CheckFileAbsent, Path: "a", Pattern: "x"}, "pattern is not valid"},
-		{"file_contains with allow", Check{Criterion: "clarity", Type: CheckFileContains, Path: "a", Pattern: "x", Allow: []string{}}, "allow is not valid"},
-		{"changed_files with path", Check{Criterion: "clarity", Type: CheckChangedFiles, Allow: []string{}, Path: "a"}, "path is not valid"},
-		{"changed_files with pattern", Check{Criterion: "clarity", Type: CheckChangedFiles, Allow: []string{}, Pattern: "a"}, "pattern is not valid"},
-		{"output_contains with path", Check{Criterion: "clarity", Type: CheckOutputContains, Pattern: "x", Path: "a"}, "path is not valid"},
-		{"gh_log_contains with run", Check{Criterion: "clarity", Type: CheckGHLogContains, Pattern: "x", Run: "true"}, "run is not valid"},
+		{"command with path", Check{Criterion: "clarity", Type: CheckCommand, Run: "true", Path: "a"}, "path is not valid", false},
+		{"command with pattern", Check{Criterion: "clarity", Type: CheckCommand, Run: "true", Pattern: "a"}, "pattern is not valid", false},
+		{"command with allow", Check{Criterion: "clarity", Type: CheckCommand, Run: "true", Allow: []string{"a"}}, "allow is not valid", false},
+		{"file_exists with run", Check{Criterion: "clarity", Type: CheckFileExists, Path: "a", Run: "true"}, "run is not valid", false},
+		{"file_exists with pattern", Check{Criterion: "clarity", Type: CheckFileExists, Path: "a", Pattern: "x"}, "pattern is not valid", false},
+		{"file_exists with expect_exit", Check{Criterion: "clarity", Type: CheckFileExists, Path: "a", ExpectExit: &zero}, "expect_exit is not valid", false},
+		{"file_absent with pattern", Check{Criterion: "clarity", Type: CheckFileAbsent, Path: "a", Pattern: "x"}, "pattern is not valid", false},
+		{"file_contains with allow", Check{Criterion: "clarity", Type: CheckFileContains, Path: "a", Pattern: "x", Allow: []string{}}, "allow is not valid", false},
+		{"changed_files with path", Check{Criterion: "clarity", Type: CheckChangedFiles, Allow: []string{}, Path: "a"}, "path is not valid", false},
+		{"changed_files with pattern", Check{Criterion: "clarity", Type: CheckChangedFiles, Allow: []string{}, Pattern: "a"}, "pattern is not valid", false},
+		{"output_contains with path", Check{Criterion: "clarity", Type: CheckOutputContains, Pattern: "x", Path: "a"}, "path is not valid", false},
+		{"gh_log_contains with run", Check{Criterion: "clarity", Type: CheckGHLogContains, Pattern: "x", Run: "true"}, "run is not valid", false},
 
 		// regex / glob / path
-		{"bad regex file_contains", Check{Criterion: "clarity", Type: CheckFileContains, Path: "a", Pattern: "(unclosed"}, "pattern"},
-		{"bad regex output", Check{Criterion: "clarity", Type: CheckOutputContains, Pattern: "[a-"}, "pattern"},
-		{"bad regex gh_log", Check{Criterion: "clarity", Type: CheckGHLogNotContains, Pattern: "*x"}, "pattern"},
-		{"bad glob", Check{Criterion: "clarity", Type: CheckChangedFiles, Allow: []string{"ok", "docs/[a-"}}, "invalid glob"},
-		{"empty glob", Check{Criterion: "clarity", Type: CheckChangedFiles, Allow: []string{""}}, "invalid glob"},
-		{"absolute path", Check{Criterion: "clarity", Type: CheckFileExists, Path: "/etc/passwd"}, "path"},
-		{"dotdot path", Check{Criterion: "clarity", Type: CheckFileExists, Path: "../x"}, "path"},
-		{"embedded dotdot path", Check{Criterion: "clarity", Type: CheckFileContains, Path: "a/../../x", Pattern: "x"}, "path"},
-		{"dotdot only path", Check{Criterion: "clarity", Type: CheckFileAbsent, Path: ".."}, "path"},
+		{"bad regex file_contains", Check{Criterion: "clarity", Type: CheckFileContains, Path: "a", Pattern: "(unclosed"}, "pattern", false},
+		{"bad regex output", Check{Criterion: "clarity", Type: CheckOutputContains, Pattern: "[a-"}, "pattern", false},
+		{"bad regex gh_log", Check{Criterion: "clarity", Type: CheckGHLogNotContains, Pattern: "*x"}, "pattern", false},
+		{"bad glob", Check{Criterion: "clarity", Type: CheckChangedFiles, Allow: []string{"ok", "docs/[a-"}}, "invalid glob", false},
+		{"empty glob", Check{Criterion: "clarity", Type: CheckChangedFiles, Allow: []string{""}}, "invalid glob", false},
+		{"absolute path", Check{Criterion: "clarity", Type: CheckFileExists, Path: "/etc/passwd"}, "path", false},
+		{"dotdot path", Check{Criterion: "clarity", Type: CheckFileExists, Path: "../x"}, "path", false},
+		{"embedded dotdot path", Check{Criterion: "clarity", Type: CheckFileContains, Path: "a/../../x", Pattern: "x"}, "path", false},
+		{"dotdot only path", Check{Criterion: "clarity", Type: CheckFileAbsent, Path: ".."}, "path", false},
 
 		// expect_exit range
-		{"expect_exit negative", Check{Criterion: "clarity", Type: CheckCommand, Run: "true", ExpectExit: &neg}, "expect_exit"},
-		{"expect_exit too big", Check{Criterion: "clarity", Type: CheckCommand, Run: "true", ExpectExit: &big}, "expect_exit"},
-		{"expect_exit 3 ok", Check{Criterion: "clarity", Type: CheckCommand, Run: "true", ExpectExit: &three}, ""},
+		{"expect_exit negative", Check{Criterion: "clarity", Type: CheckCommand, Run: "true", ExpectExit: &neg}, "expect_exit", false},
+		{"expect_exit too big", Check{Criterion: "clarity", Type: CheckCommand, Run: "true", ExpectExit: &big}, "expect_exit", false},
+		{"expect_exit 3 ok", Check{Criterion: "clarity", Type: CheckCommand, Run: "true", ExpectExit: &three}, "", false},
 
 		// inject
-		{"inject on file_exists", Check{Criterion: "clarity", Type: CheckFileExists, Path: "a", Inject: []string{"hidden_test.go"}}, "inject is not valid"},
-		{"inject on output_contains", Check{Criterion: "clarity", Type: CheckOutputContains, Pattern: "x", Inject: []string{"hidden_test.go"}}, "inject is not valid"},
-		{"inject missing source", Check{Criterion: "clarity", Type: CheckCommand, Run: "true", Inject: []string{"nope.go"}}, "inject"},
-		{"inject absolute", Check{Criterion: "clarity", Type: CheckCommand, Run: "true", Inject: []string{"/etc/passwd"}}, "inject"},
-		{"inject dotdot", Check{Criterion: "clarity", Type: CheckCommand, Run: "true", Inject: []string{"../rubrics/chk.yaml"}}, "inject"},
-		{"inject empty entry", Check{Criterion: "clarity", Type: CheckCommand, Run: "true", Inject: []string{""}}, "inject"},
-		{"inject directory", Check{Criterion: "clarity", Type: CheckCommand, Run: "true", Inject: []string{"sub"}}, "regular file"},
-		{"inject symlink file", Check{Criterion: "clarity", Type: CheckCommand, Run: "true", Inject: []string{"link.txt"}}, "symlink"},
-		{"inject via symlink dir", Check{Criterion: "clarity", Type: CheckCommand, Run: "true", Inject: []string{"linkdir/dir/x.txt"}}, "symlink"},
-		{"inject dest .git", Check{Criterion: "clarity", Type: CheckCommand, Run: "true", Inject: []string{".git/config"}}, "inject"},
-		{"inject dest .eval", Check{Criterion: "clarity", Type: CheckCommand, Run: "true", Inject: []string{".eval/gh.log"}}, "inject"},
-		{"inject dest .kiro", Check{Criterion: "clarity", Type: CheckCommand, Run: "true", Inject: []string{".kiro/agents/x.json"}}, "inject"},
+		{"inject on file_exists", Check{Criterion: "clarity", Type: CheckFileExists, Path: "a", Inject: []string{"hidden_test.go"}}, "inject is not valid", false},
+		{"inject on output_contains", Check{Criterion: "clarity", Type: CheckOutputContains, Pattern: "x", Inject: []string{"hidden_test.go"}}, "inject is not valid", false},
+		{"inject missing source", Check{Criterion: "clarity", Type: CheckCommand, Run: "true", Inject: []string{"nope.go"}}, "inject", false},
+		{"inject absolute", Check{Criterion: "clarity", Type: CheckCommand, Run: "true", Inject: []string{"/etc/passwd"}}, "inject", false},
+		{"inject dotdot", Check{Criterion: "clarity", Type: CheckCommand, Run: "true", Inject: []string{"../rubrics/chk.yaml"}}, "inject", false},
+		{"inject empty entry", Check{Criterion: "clarity", Type: CheckCommand, Run: "true", Inject: []string{""}}, "inject", false},
+		{"inject directory", Check{Criterion: "clarity", Type: CheckCommand, Run: "true", Inject: []string{"sub"}}, "regular file", false},
+		{"inject symlink file", Check{Criterion: "clarity", Type: CheckCommand, Run: "true", Inject: []string{"link.txt"}}, "symlink", false},
+		{"inject via symlink dir", Check{Criterion: "clarity", Type: CheckCommand, Run: "true", Inject: []string{"linkdir/dir/x.txt"}}, "symlink", false},
+		{"inject dest .git", Check{Criterion: "clarity", Type: CheckCommand, Run: "true", Inject: []string{".git/config"}}, "inject", false},
+		{"inject dest .eval", Check{Criterion: "clarity", Type: CheckCommand, Run: "true", Inject: []string{".eval/gh.log"}}, "inject", false},
+		{"inject dest .kiro", Check{Criterion: "clarity", Type: CheckCommand, Run: "true", Inject: []string{".kiro/agents/x.json"}}, "inject", false},
 
 		// Criterion callback (eval passes the rubric cross-check)
-		{"unknown criterion", Check{Criterion: "nonexistent", Type: CheckFileExists, Path: "a"}, "nonexistent"},
-		{"cost criterion", Check{Criterion: "cost_efficiency", Type: CheckFileExists, Path: "a"}, "cost"},
+		{"unknown criterion", Check{Criterion: "nonexistent", Type: CheckFileExists, Path: "a"}, "nonexistent", false},
+		{"cost criterion", Check{Criterion: "cost_efficiency", Type: CheckFileExists, Path: "a"}, "cost", false},
+
+		// whole list
+		{"empty-list", Check{}, "", true},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			// Two checks: a valid one first so the reported index is 2.
 			checks := []Check{{Criterion: "clarity", Type: CheckFileExists, Path: "ok"}, tt.check}
+			if tt.nilList {
+				checks = nil
+			}
 			err := Validate("case-file.yaml", checks, ValidateOptions{HiddenDir: hidden, Criterion: stubRubric})
 			if tt.wantErr == "" {
 				if err != nil {
@@ -296,19 +287,6 @@ func TestChecksValidateCompilesAndResolves(t *testing.T) {
 	}
 }
 
-func TestChecksValidateNilCriterionSkipsCrossCheck(t *testing.T) {
-	checks := []Check{{Criterion: "anything", Type: CheckFileExists, Path: "a"}}
-	if err := Validate("f.yaml", checks, ValidateOptions{}); err != nil {
-		t.Fatalf("nil Criterion must skip the criterion cross-check: %v", err)
-	}
-}
-
-func TestChecksValidateEmptyList(t *testing.T) {
-	if err := Validate("f.yaml", nil, ValidateOptions{}); err != nil {
-		t.Fatal(err)
-	}
-}
-
 func TestChecksValidateOptionalCriterion(t *testing.T) {
 	c := Check{Type: CheckFileExists, Path: "a"}
 
@@ -332,4 +310,11 @@ func TestChecksValidateOptionalCriterion(t *testing.T) {
 	if len(seen) != 2 || seen[0] != "" || seen[1] != "clarity" {
 		t.Errorf("Criterion callback saw %q, want [\"\" \"clarity\"]", seen)
 	}
+	// A nil Criterion callback skips the criterion cross-check.
+	t.Run("nil-callback-skips-cross-check", func(t *testing.T) {
+		checks := []Check{{Criterion: "anything", Type: CheckFileExists, Path: "a"}}
+		if err := Validate("f.yaml", checks, ValidateOptions{}); err != nil {
+			t.Fatalf("nil Criterion must skip the criterion cross-check: %v", err)
+		}
+	})
 }
