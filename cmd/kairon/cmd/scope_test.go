@@ -118,20 +118,42 @@ func TestScopeCheck_MissingFilesExitThree(t *testing.T) {
 	}
 }
 
-func TestScopeCheck_MalformedPlanReportsUnknownTasks(t *testing.T) {
+// TestScopeCheck_BrokenPlanReportsPlanFinding pins that a plan that does not
+// parse, or no plan at all, is named in the JSON before the unknown_task
+// findings it causes, so the architect sees the real cause.
+func TestScopeCheck_BrokenPlanReportsPlanFinding(t *testing.T) {
 	data, err := os.ReadFile(scopeFixture(t, "pass.md"))
 	require.NoError(t, err)
-	spec := filepath.Join(t.TempDir(), "spec.md")
-	broken := bytes.Replace(data, []byte("version: \"1.0\""), []byte("version: \"1.0\"\nbogus_key: 1"), 1)
-	require.NoError(t, os.WriteFile(spec, broken, 0o644))
+	planStart := bytes.Index(data, []byte("```kiro-plan"))
+	require.GreaterOrEqual(t, planStart, 0)
+	for name, c := range map[string]struct {
+		spec []byte
+		text string
+	}{
+		"malformed": {bytes.Replace(data, []byte("version: \"1.0\""), []byte("version: \"1.0\"\nbogus_key: 1"), 1), ""},
+		"missing":   {data[:planStart], "missing"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			spec := filepath.Join(t.TempDir(), "spec.md")
+			require.NoError(t, os.WriteFile(spec, c.spec, 0o644))
 
-	out, err := runScopeCheck(t, "--input", scopeFixture(t, "input.yaml"), "--spec", spec)
-	assert.Equal(t, 1, exitCodeOf(err))
-	var got scopeOutput
-	require.NoError(t, json.Unmarshal([]byte(out), &got), out)
-	require.NotEmpty(t, got.Findings)
-	for _, f := range got.Findings {
-		assert.Equal(t, "unknown_task", f.Kind)
+			out, err := runScopeCheck(t, "--input", scopeFixture(t, "input.yaml"), "--spec", spec)
+			assert.Equal(t, 1, exitCodeOf(err))
+			var got scopeOutput
+			require.NoError(t, json.Unmarshal([]byte(out), &got), out)
+			require.Greater(t, len(got.Findings), 1, out)
+			first := got.Findings[0]
+			assert.Equal(t, "plan", first.Kind)
+			assert.Equal(t, "kiro-plan", first.Item)
+			if c.text != "" {
+				assert.Equal(t, c.text, first.Text)
+			} else {
+				assert.Contains(t, first.Text, "bogus_key")
+			}
+			for _, f := range got.Findings[1:] {
+				assert.Equal(t, "unknown_task", f.Kind)
+			}
+		})
 	}
 }
 

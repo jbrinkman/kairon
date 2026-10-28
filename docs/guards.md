@@ -334,7 +334,7 @@ with the same scanner as the structural guard, so the two always agree on what a
 - A row's tasks are the backticked values in its last cell that sit outside parentheses, whatever their shape, so a
   mistyped ID such as `retry_cap` is an unknown task. Parentheses hold
   commentary, such as test names. Every task a row names must exist in the spec's `kiro-plan` block. A spec with no
-  plan, or a plan that does not parse, has no known tasks.
+  plan, or a plan that does not parse, has no known tasks and gets a `plan` finding.
 - The spec has a `## Deferred work` section whose only content is `none`. If the heading appears more than once,
   every such section is checked. Emphasis, a code span or a trailing
   period around the word are allowed.
@@ -355,6 +355,7 @@ A spec that passes prints `{"status":"pass"}`. Every finding is reported, not ju
 | `uncovered` | No row quotes the item, or its rows name no task | `s-N` or `ac-N` | the item's text |
 | `unknown_task` | A row names a task ID that is not in the plan | the item the row quotes, or the row's first cell | the task ID |
 | `deferred_section` | `## Deferred work` is missing, empty, or says anything other than `none` | `Deferred work` | the offending line, `missing` or `empty` |
+| `plan` | The spec's `kiro-plan` block is missing or does not parse; listed first, before the `unknown_task` findings it causes | `kiro-plan` | the parse error, or `missing` |
 
 ### Exit codes
 

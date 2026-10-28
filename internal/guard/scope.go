@@ -17,6 +17,9 @@ const (
 	// ScopeDeferredSection: the spec's Deferred work section is missing, empty,
 	// or says anything other than none.
 	ScopeDeferredSection = "deferred_section"
+	// ScopePlan: the spec's kiro-plan block is missing or does not parse, so
+	// no task is known and every named task is reported unknown.
+	ScopePlan = "plan"
 )
 
 const (

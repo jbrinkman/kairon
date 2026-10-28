@@ -101,19 +101,24 @@ func runScopeCheckCommand(cmd *cobra.Command, _ []string) error {
 
 	// A missing or malformed plan leaves no known task IDs, so every row's
 	// tasks are reported unknown: that is a spec defect the architect fixes,
-	// not a reason the check cannot run.
+	// not a reason the check cannot run. A plan finding comes first so the
+	// architect sees the cause of the unknown_task findings.
 	var taskIDs []string
+	var findings []guard.ScopeFinding
+	planFinding := func(text string) guard.ScopeFinding {
+		return guard.ScopeFinding{Kind: guard.ScopePlan, Item: "kiro-plan", Text: text}
+	}
 	p, err := plan.ParsePlanFromMarkdown(spec)
 	switch {
 	case err != nil:
-		fmt.Fprintf(cmd.ErrOrStderr(), "kiro-plan block does not parse: %v\n", err)
+		findings = append(findings, planFinding(err.Error()))
 	case p == nil:
-		fmt.Fprintln(cmd.ErrOrStderr(), "spec has no kiro-plan block")
+		findings = append(findings, planFinding("missing"))
 	default:
 		taskIDs = p.GetTaskIDs()
 	}
 
-	findings := guard.CheckScope(doc.Body, string(spec), taskIDs)
+	findings = append(findings, guard.CheckScope(doc.Body, string(spec), taskIDs)...)
 	res := scopeResult{Status: "pass"}
 	if len(findings) > 0 {
 		res = scopeResult{Status: "fail", Findings: findings}
