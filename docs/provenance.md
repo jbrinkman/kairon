@@ -3,7 +3,7 @@
 The provenance step is the one place the workflow writes a planned issue body to GitHub. It canonicalizes the
 validated body, hashes it, appends a `v1` marker and writes the result once. The same code classifies any issue body
 on read as `valid`, `none` or `mismatch`. The code is in [`internal/provenance`](../internal/provenance). The design
-background is in `.kairon/specs/maturity-model/planner-requirements.md` (§4.3, §7, §8, §8.3, §8.4 and §8.5).
+background is in `.kairon/research/maturity-model/planner-requirements.md` (§4.3, §7, §8, §8.3, §8.4 and §8.5).
 
 The package is plain Go and has no GitHub client. It imports only the standard library, `internal/guard` and
 `internal/stageoutput`. `TestNoForbiddenImports` fails the build if it directly imports `os`, `os/exec`, `net`,

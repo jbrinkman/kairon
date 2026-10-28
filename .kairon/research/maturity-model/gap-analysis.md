@@ -15,7 +15,7 @@
 ## Stage 3 — Task Certification
 
 **Re-assessed:** 2026-10-05, against `main` @ `2fca610` plus open PRs and issues.
-**Assessed against:** `.kairon/specs/maturity-model/stage-3.md`
+**Assessed against:** `.kairon/research/maturity-model/stage-3.md`
 
 Stage 3 evaluates prompt design, evaluation infrastructure, and iteration discipline.
 
@@ -972,7 +972,7 @@ Kairon's planner override (.kiro/skills/planner-conventions/SKILL.md) loads on e
 - Shipping the override in templates (`*-conventions` skills are never synced)
 
 ## Acceptance Criteria
-1. The override contains the Kairon-specific guidance listed under "Planner issue standard" in .kairon/specs/maturity-model/gap-analysis.md: verify commands use `go run ./cmd/kairon …` or `task …`; issues touching template-synced paths carry the `task sync:check` constraint; dependencies are referenced by issue number.
+1. The override contains the Kairon-specific guidance listed under "Planner issue standard" in .kairon/research/maturity-model/gap-analysis.md: verify commands use `go run ./cmd/kairon …` or `task …`; issues touching template-synced paths carry the `task sync:check` constraint; dependencies are referenced by issue number.
    Verify: (manual) each item appears in the skill.
 2. Guidance that is generic, or that conflicts with the base planner, is removed. Content kept from the P1 inventory table's "stay in override" rows is retained.
    Verify: (manual) compare against the "stay in override" rows in .kairon/iterations/planner/eval-spec.md.

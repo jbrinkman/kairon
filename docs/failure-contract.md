@@ -4,7 +4,7 @@ When a workflow stage fails, it ends in one of two ways. Either the stage is re-
 budget (Tier 1), or the workflow stops and tells a human why (Tier 2). This page describes that contract and the code
 that enforces it in `internal/failure`.
 
-The design background is `.kairon/specs/maturity-model/planner-requirements.md` §14 (failure contract), §4.1
+The design background is `.kairon/research/maturity-model/planner-requirements.md` §14 (failure contract), §4.1
 (`FailureContext`) and §3.5 (a planner punch-out is a `FailureContext`). The package builds on `internal/guard`
 ([guards.md](guards.md)), which defines `FailureContext`, `Attempt` and `FailureHandler`.
 

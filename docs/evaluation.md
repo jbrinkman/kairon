@@ -3241,7 +3241,7 @@ All six shipped agents have rubrics and test cases:
 
 ## Planner suite
 
-The planner suite (`rubrics/planner.yaml` plus `cases/planner/*.yaml`) certifies the planner's output-document contract from `.kairon/specs/maturity-model/planner-requirements.md`. It is the failing-first target for the planner prompt rewrite in #381. It adds no harness code: `kairon eval planner` finds the suite by agent name.
+The planner suite (`rubrics/planner.yaml` plus `cases/planner/*.yaml`) certifies the planner's output-document contract from `.kairon/research/maturity-model/planner-requirements.md`. It is the failing-first target for the planner prompt rewrite in #381. It adds no harness code: `kairon eval planner` finds the suite by agent name.
 
 ### Two agents, one suite
 
@@ -3921,7 +3921,7 @@ This section is the one-page map of how a `--sandbox` run is contained: which la
 
 #### Why a container, not a convention
 
-Kairon's earlier plan for Stage 3 isolation (item E4 in `.kairon/specs/maturity-model/gap-analysis.md`) was convention-based: run each case in a temporary workspace, put a `gh` shim first on `PATH` and point `GH_CONFIG_DIR` at an empty directory. **That design is superseded by the container sandbox.** A convention only holds for an agent that cooperates. Kairon runs arbitrary, extensible third-party agents (MCP servers, built-in tools that do their own I/O, scripts that call binaries by absolute path such as `/usr/local/bin/gh`, writes outside the current directory), and a working-directory change or a `PATH` shim cannot stop any of them. The container gives a real mount-level boundary (a read-only root filesystem and a short list of bind mounts), and everything the boundary cannot cover is placed in a named layer with a named owner, below. What E4 contributed beyond isolation (per-case git workspaces, staged `.kiro/`, `.eval/`, timeouts, `--keep-workspaces`) is kept and is shared by native and sandbox runs (see [Case Workspaces](#case-workspaces)).
+Kairon's earlier plan for Stage 3 isolation (item E4 in `.kairon/research/maturity-model/gap-analysis.md`) was convention-based: run each case in a temporary workspace, put a `gh` shim first on `PATH` and point `GH_CONFIG_DIR` at an empty directory. **That design is superseded by the container sandbox.** A convention only holds for an agent that cooperates. Kairon runs arbitrary, extensible third-party agents (MCP servers, built-in tools that do their own I/O, scripts that call binaries by absolute path such as `/usr/local/bin/gh`, writes outside the current directory), and a working-directory change or a `PATH` shim cannot stop any of them. The container gives a real mount-level boundary (a read-only root filesystem and a short list of bind mounts), and everything the boundary cannot cover is placed in a named layer with a named owner, below. What E4 contributed beyond isolation (per-case git workspaces, staged `.kiro/`, `.eval/`, timeouts, `--keep-workspaces`) is kept and is shared by native and sandbox runs (see [Case Workspaces](#case-workspaces)).
 
 #### Containment model
 

@@ -5,7 +5,7 @@ Kairon-managed skill, plus a deterministic output boundary that is the only thin
 GitHub. This page describes the agents, the skill and its ownership tier, the boundary and its outcomes, how a call
 site picks an agent, the eval driver, and what is not finished yet.
 
-The design background is `.kairon/specs/maturity-model/planner-requirements.md` (§1, §3, §3.5, §4, §10 and §14). The
+The design background is `.kairon/research/maturity-model/planner-requirements.md` (§1, §3, §3.5, §4, §10 and §14). The
 boundary is glue over [`internal/stageoutput`](stage-output.md), [`internal/guard`](guards.md),
 [`internal/provenance`](provenance.md) and [`internal/failure`](failure-contract.md), and adds no contract of its own.
 The code is in [`internal/planner`](../internal/planner).

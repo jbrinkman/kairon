@@ -267,7 +267,7 @@ unresolved:
 // planner-requirements design document.
 func specFence(t *testing.T, marker string) string {
 	t.Helper()
-	raw, err := os.ReadFile("../../.kairon/specs/maturity-model/planner-requirements.md")
+	raw, err := os.ReadFile("../../.kairon/research/maturity-model/planner-requirements.md")
 	require.NoError(t, err)
 	text := string(raw)
 	idx := strings.Index(text, marker)

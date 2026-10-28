@@ -8,7 +8,7 @@ guard interface, the ordered chain runner and one reference guard live in
 Guards are plain Go. A guard never spawns an agent, never calls a model and never reads from or writes to GitHub.
 The package imports only the standard library and `internal/stageoutput`, and `TestNoForbiddenImports` fails the
 build if it directly imports `os`, `os/exec`, `net` or `net/http`, or depends on any other internal package. The
-design background is in `.kairon/specs/maturity-model/planner-requirements.md` (§4, §4.1, §4.2, §4.4 and §14).
+design background is in `.kairon/research/maturity-model/planner-requirements.md` (§4, §4.1, §4.2, §4.4 and §14).
 
 This package defines the guard contract and the runner. Two related pieces are out of scope here:
 
