@@ -28,33 +28,60 @@ const planningRejectionTitle = "Planning document rejected"
 
 // openPlanningRejection opens the rejection dialog for a document the
 // planning boundary refused. path is the kept document file. The dialog never
-// touches the file: both choices leave it in place.
+// touches the file: both choices leave it in place. The full Expected and
+// Actual text also goes to the console, which scrolls, because the dialog
+// shortens them to fit the screen.
 func (m model) openPlanningRejection(end planningEnd, fc guard.FailureContext, path string) model {
-	lines := []string{
-		"The planning boundary rejected the document. Nothing was written to GitHub.",
-		"",
-		"Guard: " + fc.Guard,
+	pr := &planningRejection{end: end, failure: fc, path: path}
+	for _, line := range pr.detailLines() {
+		m = m.appendActivity(line)
 	}
-	lines = append(lines, labelledLines("Expected", fc.Expected)...)
-	lines = append(lines, labelledLines("Actual", fc.Actual)...)
-	lines = append(lines,
-		"",
-		"Kept file: "+path,
-		"",
-		"R  Resume planning    D / Esc  Dismiss",
-	)
-	if len(lines) > maxOverlayLines {
-		lines = lines[len(lines)-maxOverlayLines:]
-	}
-
-	m.planningRejection = &planningRejection{end: end, failure: fc, path: path}
+	m.planningRejection = pr
 	m.activeOverlay = overlayPlanningRejection
-	m.overlayContent = overlayContent{title: planningRejectionTitle, content: lines}
+	m.overlayContent = overlayContent{title: planningRejectionTitle, content: pr.lines(0)}
 	return m
 }
 
+// detailLines are the Expected and Actual text, one entry per line.
+func (pr *planningRejection) detailLines() []string {
+	lines := labelledLines("Expected", pr.failure.Expected)
+	return append(lines, labelledLines("Actual", pr.failure.Actual)...)
+}
+
+// lines renders the dialog in at most height lines; height 0 means no limit.
+// The summary, the guard, the kept file and the keys always show. When the
+// Expected and Actual text does not fit, it is cut short with a note that the
+// full text is in the console. Blank spacer lines go first when space is tight.
+func (pr *planningRejection) lines(height int) []string {
+	summary := "The planning boundary rejected the document. Nothing was written to GitHub."
+	guardLine := "Guard: " + pr.failure.Guard
+	keptLine := "Kept file: " + pr.path
+	keys := "R  Resume planning    D / Esc  Dismiss"
+
+	header := []string{summary, "", guardLine}
+	footer := []string{"", keptLine, "", keys}
+	details := pr.detailLines()
+	if height <= 0 {
+		height = maxOverlayLines
+	}
+	room := height - len(header) - len(footer)
+	if room < len(details) && room < 2 {
+		header = []string{summary, guardLine}
+		footer = []string{keptLine, keys}
+		room = height - len(header) - len(footer)
+	}
+	if room < len(details) {
+		keep := max(room-1, 0)
+		details = append(details[:keep:keep],
+			fmt.Sprintf("… %d more lines (full text in the console)", len(details)-keep))
+	}
+
+	out := append(header, details...)
+	return append(out, footer...)
+}
+
 // labelledLines renders "Label: text". Multi-line text continues on indented
-// lines; nothing is truncated.
+// lines.
 func labelledLines(label, text string) []string {
 	parts := strings.Split(text, "\n")
 	out := []string{label + ": " + parts[0]}

@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -172,5 +173,57 @@ func TestRejectionDialogSwallowsOtherKeys(t *testing.T) {
 	}
 	if calls != 0 {
 		t.Errorf("Resume called %d times for an unrelated key", calls)
+	}
+}
+
+func longRejection(path string) *planningRejection {
+	fc := rejectionFailure()
+	var actual []string
+	for i := range 40 {
+		actual = append(actual, fmt.Sprintf("actual line %d", i))
+	}
+	fc.Actual = strings.Join(actual, "\n")
+	return &planningRejection{failure: fc, path: path}
+}
+
+func TestRejectionDialogLongFailureKeepsGuardAndKeys(t *testing.T) {
+	for _, height := range []int{6, 10, 20} {
+		lines := longRejection("kept.yaml").lines(height)
+		if len(lines) > height {
+			t.Errorf("height %d: got %d lines", height, len(lines))
+		}
+		text := strings.Join(lines, "\n")
+		for _, want := range []string{"Guard: extract", "Kept file: kept.yaml", "Resume planning", "full text in the console"} {
+			if !strings.Contains(text, want) {
+				t.Errorf("height %d: dialog missing %q:\n%s", height, want, text)
+			}
+		}
+	}
+}
+
+func TestRejectionDialogRenderedKeepsGuardForLongFailure(t *testing.T) {
+	m := validateTestModel(t, nil)
+	m.width, m.height = 100, 30
+	pr := longRejection("kept.yaml")
+	m = m.openPlanningRejection(planningEnd{SessionID: "s1"}, pr.failure, pr.path)
+
+	view := m.renderOverlay()
+	for _, want := range []string{"Guard: extract", "Expected:", "Kept file: kept.yaml", "Resume planning"} {
+		if !strings.Contains(view, want) {
+			t.Errorf("rendered dialog missing %q:\n%s", want, view)
+		}
+	}
+}
+
+func TestRejectionDialogWritesFullFailureToConsole(t *testing.T) {
+	m := validateTestModel(t, nil)
+	pr := longRejection("kept.yaml")
+	m = m.openPlanningRejection(planningEnd{SessionID: "s1"}, pr.failure, pr.path)
+
+	got := activityText(m)
+	for _, want := range []string{"Expected: a stage-output document in YAML", "actual line 0", "actual line 39"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("console missing %q", want)
+		}
 	}
 }

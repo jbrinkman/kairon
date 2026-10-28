@@ -951,6 +951,10 @@ func (m model) renderOverlay() string {
 	}
 
 	content := m.overlayContent.content
+	if m.activeOverlay == overlayPlanningRejection && m.planningRejection != nil {
+		// Fit the dialog to the height so the guard and keys stay visible.
+		content = m.planningRejection.lines(contentHeight)
+	}
 	if len(content) > contentHeight {
 		content = content[len(content)-contentHeight:]
 	}
