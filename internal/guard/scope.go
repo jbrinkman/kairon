@@ -146,10 +146,7 @@ func CheckScope(body, spec string, taskIDs []string) []ScopeFinding {
 		}
 	}
 
-	if f, ok := checkDeferredSection(lines); !ok {
-		findings = append(findings, f)
-	}
-	return findings
+	return append(findings, checkDeferredSections(lines)...)
 }
 
 // coverageRow is one body row of the Scope Coverage table.
@@ -257,13 +254,25 @@ func cellTaskIDs(cell string) []string {
 	return ids
 }
 
-// checkDeferredSection requires a Deferred work section whose only non-blank
-// content is none.
-func checkDeferredSection(lines []bodyLine) (ScopeFinding, bool) {
-	start, ok := findSection(lines, deferredWork)
-	if !ok {
-		return ScopeFinding{Kind: ScopeDeferredSection, Item: deferredWork, Text: "missing"}, false
+// checkDeferredSections requires a Deferred work section and checks every one,
+// so a later section cannot hide deferred work behind an earlier none.
+func checkDeferredSections(lines []bodyLine) []ScopeFinding {
+	starts := findSections(lines, deferredWork)
+	if len(starts) == 0 {
+		return []ScopeFinding{{Kind: ScopeDeferredSection, Item: deferredWork, Text: "missing"}}
 	}
+	var findings []ScopeFinding
+	for _, start := range starts {
+		if f, ok := checkDeferredSection(lines, start); !ok {
+			findings = append(findings, f)
+		}
+	}
+	return findings
+}
+
+// checkDeferredSection requires the Deferred work section at start to hold
+// nothing but none.
+func checkDeferredSection(lines []bodyLine, start int) (ScopeFinding, bool) {
 	sawNone := false
 	for i := start + 1; i < sectionEnd(lines, start); i++ {
 		text := strings.TrimSpace(lines[i].text)

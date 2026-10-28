@@ -207,3 +207,15 @@ func TestScopeCheck_BlankDeliveredByCell(t *testing.T) {
 	assert.Equal(t, want, CheckScope(body, spec, []string{"retry-cap"}))
 	assert.Equal(t, want, CheckScope(body, spec, []string{"retry-docs"}))
 }
+
+// TestScopeCheck_EveryDeferredSectionIsChecked pins that a second Deferred work
+// section cannot hide deferred work behind a first one that says none.
+func TestScopeCheck_EveryDeferredSectionIsChecked(t *testing.T) {
+	spec := scopeFixtureSpec(t, "pass.md") + "\n## Deferred work\n\n- Per-repo caps later.\n"
+	got := CheckScope(scopeFixtureBody(t), spec, fixtureTaskIDs)
+	line := len(scanLines(spec)) - 1
+	require.Equal(t, "- Per-repo caps later.", scanLines(spec)[line-1].text)
+	assert.Equal(t, []ScopeFinding{
+		{Kind: ScopeDeferredSection, Item: "Deferred work", Line: line, Text: "- Per-repo caps later."},
+	}, got)
+}

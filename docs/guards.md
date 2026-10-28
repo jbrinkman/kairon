@@ -334,7 +334,8 @@ with the same scanner as the structural guard, so the two always agree on what a
 - A row's tasks are the backticked task IDs in its last cell that sit outside parentheses. Parentheses hold
   commentary, such as test names. Every task a row names must exist in the spec's `kiro-plan` block. A spec with no
   plan, or a plan that does not parse, has no known tasks.
-- The spec has a `## Deferred work` section whose only content is `none`. Emphasis, a code span or a trailing
+- The spec has a `## Deferred work` section whose only content is `none`. If the heading appears more than once,
+  every such section is checked. Emphasis, a code span or a trailing
   period around the word are allowed.
 
 ### Findings
