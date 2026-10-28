@@ -96,13 +96,56 @@ func TestChecksValidateJudge(t *testing.T) {
 }
 
 func TestJudgeCheckLabel(t *testing.T) {
-	c := judgeCheck("Does the body state a criterion?", "a.md")
-	if got, want := checkLabel(2, c), `#2 judge question="Does the body state a criterion?"`; got != want {
-		t.Errorf("label = %q, want %q", got, want)
+	docWithTurn := docCheck()
+	docWithTurn.Turn = turnPtr(1)
+
+	cases := []struct {
+		name   string
+		index  int
+		check  Check
+		want   string                         // exact label; ignored when verify is set
+		verify func(t *testing.T, got string) // custom assertion for labels that are not compared exactly
+	}{
+		{
+			name:  "judge-question",
+			index: 2,
+			check: judgeCheck("Does the body state a criterion?", "a.md"),
+			want:  `#2 judge question="Does the body state a criterion?"`,
+		},
+		{
+			name:  "judge-long-question-shortened",
+			index: 1,
+			check: judgeCheck(strings.Repeat("q", 200)),
+			verify: func(t *testing.T, got string) {
+				if len(got) > 120 || !strings.HasSuffix(got, `…"`) {
+					t.Errorf("long question not shortened: %q", got)
+				}
+			},
+		},
+		{
+			name:  "document-result-label",
+			index: 2,
+			check: docCheck(),
+			want:  "#2 output_document_valid",
+		},
+		{
+			name:  "document-label-with-turn",
+			index: 1,
+			check: docWithTurn,
+			want:  "#1 output_document_valid turn=1",
+		},
 	}
-	long := judgeCheck(strings.Repeat("q", 200))
-	if got := checkLabel(1, long); len(got) > 120 || !strings.HasSuffix(got, `…"`) {
-		t.Errorf("long question not shortened: %q", got)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := checkLabel(tc.index, tc.check)
+			if tc.verify != nil {
+				tc.verify(t, got)
+				return
+			}
+			if got != tc.want {
+				t.Errorf("label = %q, want %q", got, tc.want)
+			}
+		})
 	}
 }
 
