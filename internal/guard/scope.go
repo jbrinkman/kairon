@@ -55,14 +55,33 @@ type ScopeFinding struct {
 // body order. Acceptance criteria are read exactly as the structural guard
 // reads them, so the two never disagree about what an item is.
 func ScopeItems(body string) []ScopeItem {
-	lines := scanLines(body)
 	var out []ScopeItem
-	for i, it := range sectionListItems(lines, inScope) {
-		out = append(out, ScopeItem{ID: "s-" + strconv.Itoa(i+1), Text: itemHeadline(it)})
+	for _, it := range scopeItems(body) {
+		out = append(out, it.ScopeItem)
 	}
-	for i, it := range sectionListItems(lines, acceptanceCriteria) {
-		out = append(out, ScopeItem{ID: "ac-" + strconv.Itoa(i+1), Text: itemHeadline(it)})
+	return out
+}
+
+// scopeItem is a ScopeItem plus the item's whole text, normalized, so a row
+// may quote the first line or more of the item.
+type scopeItem struct {
+	ScopeItem
+	full string
+}
+
+func scopeItems(body string) []scopeItem {
+	lines := scanLines(body)
+	var out []scopeItem
+	add := func(prefix, section string) {
+		for i, it := range sectionListItems(lines, section) {
+			out = append(out, scopeItem{
+				ScopeItem: ScopeItem{ID: prefix + strconv.Itoa(i+1), Text: itemHeadline(it)},
+				full:      itemText(it),
+			})
+		}
 	}
+	add("s-", inScope)
+	add("ac-", acceptanceCriteria)
 	return out
 }
 
@@ -94,11 +113,10 @@ func CheckScope(body, spec string, taskIDs []string) []ScopeFinding {
 		}
 	}
 
-	for _, it := range ScopeItems(body) {
-		quote := normalizeQuote(it.Text)
+	for _, it := range scopeItems(body) {
 		var found, hasKnown, hasUnknown bool
 		for i, r := range rows {
-			if quote == "" || !strings.Contains(r.text, quote) {
+			if !r.quotes(it) {
 				continue
 			}
 			found = true
@@ -114,7 +132,7 @@ func CheckScope(body, spec string, taskIDs []string) []ScopeFinding {
 		switch {
 		case hasUnknown:
 			for i, r := range rows {
-				if matched[i] && strings.Contains(r.text, quote) {
+				if matched[i] && r.quotes(it) {
 					reportUnknown(r, it.ID)
 				}
 			}
@@ -136,10 +154,19 @@ func CheckScope(body, spec string, taskIDs []string) []ScopeFinding {
 
 // coverageRow is one body row of the Scope Coverage table.
 type coverageRow struct {
-	line  int    // 1-based spec line
-	label string // first cell, used to name a row that quotes no item
-	text  string // the whole row, normalized for quote matching
-	tasks []string
+	line   int    // 1-based spec line
+	label  string // first cell, used to name a row that quotes no item
+	quoted string // the normalized text between the first and last double quote of the item cells
+	tasks  []string
+}
+
+// quotes reports whether the row quotes the item: the quoted text holds at
+// least the item's first line and nothing beyond the item's own text. A longer
+// item that starts with a shorter one, or a task name, never covers the
+// shorter item.
+func (r coverageRow) quotes(it scopeItem) bool {
+	headline := normalizeQuote(it.Text)
+	return headline != "" && len(r.quoted) >= len(headline) && strings.HasPrefix(normalizeQuote(it.full), r.quoted)
 }
 
 // coverageRows returns the body rows of every table in the Scope Coverage
@@ -165,10 +192,10 @@ func coverageRows(lines []bodyLine) []coverageRow {
 				continue
 			}
 			rows = append(rows, coverageRow{
-				line:  i + 1,
-				label: strings.TrimSpace(cells[0]),
-				text:  normalizeQuote(text),
-				tasks: cellTaskIDs(cells[len(cells)-1]),
+				line:   i + 1,
+				label:  strings.TrimSpace(cells[0]),
+				quoted: quotedText(normalizeQuote(strings.Join(cells[:len(cells)-1], "|"))),
+				tasks:  cellTaskIDs(cells[len(cells)-1]),
 			})
 		}
 	}
@@ -278,6 +305,25 @@ func itemHeadline(item string) string {
 		first = first[len(m):]
 	}
 	return strings.Join(strings.Fields(first), " ")
+}
+
+// quotedText returns the text between the first and the last double quote of
+// s, or "" when s has fewer than two.
+func quotedText(s string) string {
+	first, last := strings.Index(s, `"`), strings.LastIndex(s, `"`)
+	if first < 0 || last <= first {
+		return ""
+	}
+	return strings.TrimSpace(s[first+1 : last])
+}
+
+// itemText returns a list item's whole text without its marker, with
+// whitespace collapsed.
+func itemText(item string) string {
+	if m := listRE.FindString(item); m != "" {
+		item = item[len(m):]
+	}
+	return strings.Join(strings.Fields(item), " ")
 }
 
 // normalizeQuote undoes the escapes a quote needs inside a table cell (\" and

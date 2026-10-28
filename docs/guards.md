@@ -326,8 +326,11 @@ with the same scanner as the structural guard, so the two always agree on what a
 
 ### Rules
 
-- Every listed item has a row in the spec's `## Scope Coverage` table that quotes the item's first line. Quotes are
-  matched after `\"` and `\|` are unescaped and whitespace is collapsed.
+- Every listed item has a row in the spec's `## Scope Coverage` table that quotes the item's first line in double
+  quotes. The quote is the text between the first and last `"` of the row's cells other than the last. It must hold
+  the item's whole first line and may continue into the item's later lines, but nothing beyond the item, so a row
+  quoting "Add retry caps and record attempts" does not cover an item "Add retry caps". Quotes are matched after
+  `\"` and `\|` are unescaped and whitespace is collapsed.
 - A row's tasks are the backticked task IDs in its last cell that sit outside parentheses. Parentheses hold
   commentary, such as test names. Every task a row names must exist in the spec's `kiro-plan` block. A spec with no
   plan, or a plan that does not parse, has no known tasks.

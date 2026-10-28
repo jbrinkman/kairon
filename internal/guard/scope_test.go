@@ -176,3 +176,20 @@ func TestScopeItems_SameAcceptanceCriteriaAsStructural(t *testing.T) {
 	}
 	assert.Equal(t, m[1], strconv.Itoa(acs))
 }
+
+// TestScopeCheck_ItemQuoteMustBeWhole pins that a row covers an item only when
+// its item cell quotes the item whole: a longer item that starts with a
+// shorter one, or a task cell, does not cover the shorter item.
+func TestScopeCheck_ItemQuoteMustBeWhole(t *testing.T) {
+	body := "## In Scope\n\n- Add retry caps\n- Add retry caps and record attempts\n- retry-cap\n"
+	spec := "## Scope Coverage\n\n" +
+		"| # | Item (quoted from the issue) | Delivered by |\n" +
+		"|---|---|---|\n" +
+		"| S2 | In Scope: \"Add retry caps and record attempts\" | `retry-cap` |\n\n" +
+		"## Deferred work\n\nnone\n"
+	got := CheckScope(body, spec, []string{"retry-cap"})
+	assert.Equal(t, []ScopeFinding{
+		{Kind: ScopeUncovered, Item: "s-1", Text: "Add retry caps"},
+		{Kind: ScopeUncovered, Item: "s-3", Text: "retry-cap"},
+	}, got)
+}
