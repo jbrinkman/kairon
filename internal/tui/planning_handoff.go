@@ -89,6 +89,10 @@ const labelAnswerMaxBytes = 16
 type labelAnswer struct {
 	apply   bool   // the person answered yes
 	problem string // non-empty: the file could not be used; apply is false
+	// seen is the file as it was read, nil when there was none. Cleanup
+	// removes the file only if it is still this one, so an answer written
+	// for a newer document survives.
+	seen os.FileInfo
 }
 
 // readLabelAnswer reads the label file the planner wrote. A missing file is
@@ -102,6 +106,13 @@ func readLabelAnswer(path string) labelAnswer {
 		}
 		return labelAnswer{problem: fmt.Sprintf("the label answer file %s cannot be checked (%v)", path, err)}
 	}
+	answer := readLabelFile(path, info)
+	answer.seen = info
+	return answer
+}
+
+// readLabelFile reads and parses the label file found at path.
+func readLabelFile(path string, info os.FileInfo) labelAnswer {
 	if !info.Mode().IsRegular() {
 		return labelAnswer{problem: fmt.Sprintf("the label answer file %s is not a regular file", path)}
 	}
@@ -332,7 +343,7 @@ func (m model) handlePlanningHandoffDone(msg planningHandoffDoneMsg) (model, tea
 				"Issue #%d exists, but the planning document %s could not be removed (%v). To avoid a duplicate issue, delete the file by hand.",
 				n, msg.path, err))
 		}
-		if msg.labelPath != "" {
+		if msg.labelPath != "" && labelFileUnchanged(msg.labelPath, msg.label.seen) {
 			// A stale yes would label the next issue of this session.
 			if err := os.Remove(msg.labelPath); err != nil && !errors.Is(err, os.ErrNotExist) {
 				m = m.handoffError(fmt.Sprintf(
@@ -377,6 +388,19 @@ func (m model) reportTriggerLabel(msg planningHandoffDoneMsg, issue int) model {
 			"Added the label `%s` to issue #%d.", msg.labelName, issue)))
 	}
 	return m
+}
+
+// labelFileUnchanged reports whether the label file at path is still the one
+// that was read as seen. The planner writes the answer before the document, so
+// a send can end after a new answer is written but before the new document is;
+// that answer must not be removed with the old one. Size and modification time
+// tell a rewrite apart even when it holds the same word.
+func labelFileUnchanged(path string, seen os.FileInfo) bool {
+	if seen == nil {
+		return false
+	}
+	now, err := os.Stat(path)
+	return err == nil && now.Size() == seen.Size() && now.ModTime().Equal(seen.ModTime())
 }
 
 func (m model) handoffError(line string) model {

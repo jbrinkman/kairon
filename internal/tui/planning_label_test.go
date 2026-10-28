@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/jbrinkman/kairon/internal/planner"
 	"github.com/jbrinkman/kairon/internal/planner/plannertest"
@@ -366,12 +367,65 @@ func TestHandoffLabelFileRemovalFailureIsReported(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(stuck, "child"), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	seen, err := os.Stat(stuck)
+	if err != nil {
+		t.Fatal(err)
+	}
 	docPath := filepath.Join(t.TempDir(), "gone.document.yaml")
 
-	next, _ := m.Update(planningHandoffDoneMsg{end: s1End(), path: docPath, labelPath: stuck, result: committedResult(12)})
+	next, _ := m.Update(planningHandoffDoneMsg{end: s1End(), path: docPath, labelPath: stuck,
+		label: labelAnswer{seen: seen}, result: committedResult(12)})
 	m = next.(model)
 
 	if lineWith(m, "#12", stuck) == "" {
 		t.Errorf("console = %q, want a line naming #12 and %s", activityText(m), stuck)
+	}
+}
+
+// The planner writes the label answer before the document. A commit that ends
+// between those two writes sees the old document bytes, so the answer just
+// written for the next document must survive the cleanup.
+func TestHandoffLabelAnswerRewrittenDuringSendIsKept(t *testing.T) {
+	fb := &fakeBoundary{res: committedResult(77)}
+	m, docPath, labelPath, lab := labelFixture(t, fb, "yes\n")
+
+	m, cmd := m.finishPlanning(s1End())
+	if cmd == nil {
+		t.Fatal("finishPlanning returned no command")
+	}
+	done := cmd().(planningHandoffDoneMsg)
+	// Same bytes, new write: the answer for the next document.
+	writeLabelAnswer(t, "s1", "yes\n")
+	later := time.Now().Add(time.Minute)
+	if err := os.Chtimes(labelPath, later, later); err != nil {
+		t.Fatal(err)
+	}
+	next, _ := m.Update(done)
+	m = next.(model)
+
+	assertLabelCalls(t, lab, labelCall{repo: "o/r", issue: 77, label: "kairon"})
+	if fileExists(docPath) {
+		t.Error("the committed document file must be deleted")
+	}
+	if !fileExists(labelPath) {
+		t.Error("the label answer written during the send was deleted")
+	}
+}
+
+// A label file that did not exist when the document was read belongs to a
+// later document and is kept.
+func TestHandoffLabelAnswerCreatedDuringSendIsKept(t *testing.T) {
+	fb := &fakeBoundary{res: committedResult(77)}
+	m, _, labelPath, lab := labelFixture(t, fb, "")
+
+	m, cmd := m.finishPlanning(s1End())
+	done := cmd().(planningHandoffDoneMsg)
+	writeLabelAnswer(t, "s1", "yes\n")
+	next, _ := m.Update(done)
+	m = next.(model)
+
+	assertLabelCalls(t, lab)
+	if !fileExists(labelPath) {
+		t.Error("the label answer written during the send was deleted")
 	}
 }
