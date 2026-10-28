@@ -27,25 +27,6 @@ func newSpawnWatcher(t *testing.T, spawnErr error) (*Watcher, *[]int) {
 	return w, &spawned
 }
 
-func TestCheckIssues_NotAdmittedUntracksAndRefundsRetryCount(t *testing.T) {
-	w, spawned := newSpawnWatcher(t, fmt.Errorf("%w: skipped (done)", agent.ErrNotAdmitted))
-
-	w.checkIssues()
-
-	if want := []int{7}; !reflect.DeepEqual(*spawned, want) {
-		t.Fatalf("spawned = %v, want %v", *spawned, want)
-	}
-	if got := trackedKeys(w); len(got) != 0 {
-		t.Errorf("tracked = %v, want issue untracked after ErrNotAdmitted", got)
-	}
-	if got := w.getCurrentRetryCount(7); got != 0 {
-		t.Errorf("retry count = %d, want 0 (refunded)", got)
-	}
-	if fileExists(".kairon/retries/issue-7.count") {
-		t.Error("retry file should be removed when the refunded count reaches zero")
-	}
-}
-
 func TestCheckIssues_NotAdmittedRefundKeepsPriorAttempts(t *testing.T) {
 	w, _ := newSpawnWatcher(t, fmt.Errorf("%w: punched out", agent.ErrNotAdmitted))
 	writeRetryFile(t, 7, 1) // one earlier real attempt
@@ -61,44 +42,56 @@ func TestCheckIssues_NotAdmittedRefundKeepsPriorAttempts(t *testing.T) {
 }
 
 func TestCheckIssues_AdmissionUnavailableUntracksAndRefunds(t *testing.T) {
-	w, _ := newSpawnWatcher(t, fmt.Errorf("%w: gh down", agent.ErrAdmissionUnavailable))
-
-	w.checkIssues()
-
-	if got := trackedKeys(w); len(got) != 0 {
-		t.Errorf("tracked = %v, want issue untracked after ErrAdmissionUnavailable", got)
+	tests := []struct {
+		name string
+		err  error
+	}{
+		{"ErrNotAdmitted", fmt.Errorf("%w: skipped (done)", agent.ErrNotAdmitted)},
+		{"ErrAdmissionUnavailable", fmt.Errorf("%w: gh down", agent.ErrAdmissionUnavailable)},
 	}
-	if got := w.getCurrentRetryCount(7); got != 0 {
-		t.Errorf("retry count = %d, want 0 (refunded)", got)
-	}
-	if fileExists(".kairon/retries/issue-7.count") {
-		t.Error("retry file should be removed at zero")
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			w, spawned := newSpawnWatcher(t, tt.err)
+
+			w.checkIssues()
+
+			if want := []int{7}; !reflect.DeepEqual(*spawned, want) {
+				t.Fatalf("spawned = %v, want %v", *spawned, want)
+			}
+			if got := trackedKeys(w); len(got) != 0 {
+				t.Errorf("tracked = %v, want issue untracked after %s", got, tt.name)
+			}
+			if got := w.getCurrentRetryCount(7); got != 0 {
+				t.Errorf("retry count = %d, want 0 (refunded) after %s", got, tt.name)
+			}
+			if fileExists(".kairon/retries/issue-7.count") {
+				t.Errorf("retry file should be removed when the refunded count reaches zero after %s", tt.name)
+			}
+		})
 	}
 }
 
 func TestCheckIssues_OtherSpawnErrorStaysTracked(t *testing.T) {
-	w, _ := newSpawnWatcher(t, errors.New("worktree create failed"))
-
-	w.checkIssues()
-
-	if got, want := trackedKeys(w), []int{7}; !reflect.DeepEqual(got, want) {
-		t.Errorf("tracked = %v, want %v", got, want)
+	tests := []struct {
+		name string
+		err  error
+	}{
+		{"other spawn error", errors.New("worktree create failed")},
+		{"successful spawn", nil},
 	}
-	if got := w.getCurrentRetryCount(7); got != 1 {
-		t.Errorf("retry count = %d, want 1 (unchanged)", got)
-	}
-}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			w, _ := newSpawnWatcher(t, tt.err)
 
-func TestCheckIssues_SuccessfulSpawnStaysTracked(t *testing.T) {
-	w, _ := newSpawnWatcher(t, nil)
+			w.checkIssues()
 
-	w.checkIssues()
-
-	if got, want := trackedKeys(w), []int{7}; !reflect.DeepEqual(got, want) {
-		t.Errorf("tracked = %v, want %v", got, want)
-	}
-	if got := w.getCurrentRetryCount(7); got != 1 {
-		t.Errorf("retry count = %d, want 1", got)
+			if got, want := trackedKeys(w), []int{7}; !reflect.DeepEqual(got, want) {
+				t.Errorf("tracked = %v, want %v", got, want)
+			}
+			if got := w.getCurrentRetryCount(7); got != 1 {
+				t.Errorf("retry count = %d, want 1", got)
+			}
+		})
 	}
 }
 
