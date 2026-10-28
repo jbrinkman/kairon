@@ -4,7 +4,7 @@ The watcher boundary is the step between "an issue has the trigger label" and "k
 a **load-and-verify**: before any worktree is created or any process is started, it reads the issue from GitHub,
 checks the provenance hash on the body it just read, and only then hands krew-lead a verified input document. The code
 is in [`internal/boundary`](../internal/boundary). The design background is in
-`.kairon/specs/maturity-model/planner-requirements.md` (§2.1, §8, §8.4, §8.5, §11.1 and §14.2).
+`.kairon/research/maturity-model/planner-requirements.md` (§2.1, §8, §8.4, §8.5, §11.1 and §14.2).
 
 Related work: the provenance classifier is [#378](provenance.md), the failure contract (punch-out and terminal-pending)
 is [#379](failure-contract.md), the planner punch-out decision is #381, splitting the planner into interactive and

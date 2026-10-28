@@ -7,7 +7,7 @@ envelope and a body, parsed under a strict schema. The Go type, parser and seria
 
 A stage produces the document, and a guard validates it before the next stage consumes it. This package only
 defines the contract: the guard chain, provenance hashing and the conversion of individual stages are separate work.
-The design background is in `.kairon/specs/maturity-model/planner-requirements.md` (§3, §3.1.1, §3.3, §3.4, §3.5).
+The design background is in `.kairon/research/maturity-model/planner-requirements.md` (§3, §3.1.1, §3.3, §3.4, §3.5).
 
 ## Document shape
 
