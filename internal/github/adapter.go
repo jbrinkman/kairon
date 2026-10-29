@@ -8,6 +8,7 @@ import (
 	"io"
 	"log"
 	"os/exec"
+	"strconv"
 	"strings"
 	"time"
 
@@ -53,6 +54,11 @@ type rawIssue struct {
 	Issue
 	Comments []rawComment `json:"comments"`
 }
+
+// listIssueLimit is the most issues one poll fetches. gh defaults to 30,
+// newest first; issues are requested oldest first so that, past the limit,
+// the newest issues wait rather than the oldest being starved.
+const listIssueLimit = 50
 
 // listCommentCap is the number of comments `gh issue list --json comments`
 // returns per issue at most (oldest first). An issue whose list page is at the
@@ -324,7 +330,8 @@ func SelectIssues(repo, label, assignee string) (Selection, error) {
 
 func selectIssues(run ghFunc, repo, label, assignee string) (Selection, error) {
 	args := []string{"issue", "list", "--repo", repo, "--label", label, "--state", "open",
-		"--json", "number,title,body,labels,comments"}
+		"--json", "number,title,body,labels,comments",
+		"--limit", strconv.Itoa(listIssueLimit), "--search", "sort:created-asc"}
 	if assignee != "" {
 		args = append(args, "--assignee", assignee)
 	}
