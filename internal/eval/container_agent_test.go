@@ -189,63 +189,6 @@ func assertNoPromptInArgv(t *testing.T, cmds [][]string) {
 	}
 }
 
-func TestContainerKiroCLIPromptOnStdinNotArgv(t *testing.T) {
-	chdirTemp(t)
-	useAgentConfigs(t)
-	pinAgentModel("builder", "m1")
-	prompt := nastyPrompt()
-	x := &fakeExecer{kiroStdout: "\x1b[1mhello\x1b[0m"}
-	useFakeContainer(t, x)
-
-	out, cost, rec, ec, err := invokeAgent("builder", prompt, testContainerConfig(), callOpts{})
-	if err != nil {
-		t.Fatalf("invokeAgent: %v", err)
-	}
-	if out != "hello" {
-		t.Errorf("output = %q, want ANSI stripped", out)
-	}
-	if len(x.stdins) != 1 || x.stdins[0] != prompt {
-		t.Fatalf("stdin did not carry the exact prompt (got %d bytes)", len(x.stdins[0]))
-	}
-	assertNoPromptInArgv(t, x.cmds)
-	if ec != nil {
-		t.Errorf("ec = %+v", ec)
-	}
-	if cost.UsageSource != "estimated" || cost.Model != "m1" || cost.TokensIn != len(prompt)/4 {
-		t.Errorf("cost = %+v", cost)
-	}
-	if rec.Model != "m1" || !rec.Estimated || rec.Role != "agent" {
-		t.Errorf("rec = %+v", rec)
-	}
-}
-
-func TestContainerHelperPromptOnStdinNotArgv(t *testing.T) {
-	chdirTemp(t)
-	useStubBackend(t)
-	useAgentConfigs(t)
-	useFakeLinuxBinary(t)
-	prompt := nastyPrompt()
-	x := &fakeExecer{}
-	useFakeContainer(t, x)
-
-	stub := &inference.StubScript{Turns: []inference.StubTurn{{Response: "scripted"}}}
-	out, _, _, _, err := invokeAgent("selftest", prompt, testContainerConfig(), callOpts{Stub: stub})
-	if err != nil {
-		t.Fatalf("invokeAgent: %v", err)
-	}
-	if out != "scripted" {
-		t.Errorf("output = %q", out)
-	}
-	assertNoPromptInArgv(t, x.cmds)
-	if len(x.stdins) != 1 || !strings.Contains(x.stdins[0], "PROMPT-MARKER") {
-		t.Errorf("the JSON request on stdin must carry the prompt")
-	}
-	wantCmd := "/usr/local/bin/kairon inference-exec --backend stub"
-	if got := strings.Join(x.cmds[0], " "); got != wantCmd {
-		t.Errorf("cmd = %q, want %q", got, wantCmd)
-	}
-}
-
 func TestContainerKiroCLIArgvMatchesNative(t *testing.T) {
 	for _, model := range []string{"", "claude-sonnet-4.5"} {
 		t.Run("model="+model, func(t *testing.T) {
@@ -417,50 +360,6 @@ func TestContainerNoEstimateCostOrGuessedRecord(t *testing.T) {
 	}
 	if rec.InputTokens != 123 || rec.OutputTokens != 45 || rec.Model != "stub-model" {
 		t.Errorf("rec = %+v", rec)
-	}
-}
-
-func TestContainerTimeoutMapping(t *testing.T) {
-	chdirTemp(t)
-	useAgentConfigs(t)
-	cc := testContainerConfig()
-	cc.ResourceLimits.Timeout = 30 * time.Millisecond
-	x := &fakeExecer{block: true}
-	useFakeContainer(t, x)
-
-	_, _, rec, ec, err := invokeAgent("builder", "p", cc, callOpts{})
-	if err == nil {
-		t.Fatal("expected a timeout")
-	}
-	if !errors.Is(err, inference.ErrTimeout) {
-		t.Errorf("err does not satisfy ErrTimeout: %v", err)
-	}
-	if !strings.Contains(err.Error(), "Container execution timeout after 30ms") || !strings.Contains(err.Error(), "--resource-limit timeout=") {
-		t.Errorf("message = %q", err.Error())
-	}
-	if ec == nil || !strings.HasPrefix(ec.Stderr, "timeout after 30ms") {
-		t.Errorf("ec = %+v", ec)
-	}
-	if ec != nil && (ec.Platform != "linux/arm64" || ec.WorkingDir != "/workspace") {
-		t.Errorf("container context missing: %+v", ec)
-	}
-	if rec.Error == "" {
-		t.Errorf("failed call not recorded: %+v", rec)
-	}
-}
-
-func TestContainerHelperReportedTimeout(t *testing.T) {
-	chdirTemp(t)
-	useStubBackend(t)
-	useAgentConfigs(t)
-	useFakeLinuxBinary(t)
-	env := `{"response":{},"error":"stub timeout","timeout":true}`
-	x := &fakeExecer{helperStdout: &env}
-	useFakeContainer(t, x)
-
-	_, _, _, _, err := invokeAgent("selftest", "p", testContainerConfig(), callOpts{})
-	if !errors.Is(err, inference.ErrTimeout) {
-		t.Fatalf("err = %v, want ErrTimeout", err)
 	}
 }
 

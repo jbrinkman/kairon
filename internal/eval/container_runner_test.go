@@ -346,44 +346,80 @@ func TestContainerConfigKeepAliveIsEffectivelyUnbounded(t *testing.T) {
 }
 
 func TestContainerExecsAreWrappedAndPromptStaysOnStdin(t *testing.T) {
-	chdirTemp(t)
-	useAgentConfigs(t)
-	pinAgentModel("builder", "m1")
-	x := &fakeExecer{kiroStdout: "ok"}
-	useFakeContainer(t, x)
+	t.Run("kiro-cli-exec", func(t *testing.T) {
+		chdirTemp(t)
+		useAgentConfigs(t)
+		pinAgentModel("builder", "m1")
+		prompt := nastyPrompt()
+		x := &fakeExecer{kiroStdout: "\x1b[1mhello\x1b[0m"}
+		useFakeContainer(t, x)
 
-	if _, _, _, _, err := invokeAgent("builder", nastyPrompt(), testContainerConfig(), callOpts{}); err != nil {
-		t.Fatal(err)
-	}
-	if len(x.rawCmds) != 1 {
-		t.Fatalf("execs = %d", len(x.rawCmds))
-	}
-	raw := x.rawCmds[0]
-	if len(raw) < 6 || raw[0] != "sh" || raw[1] != "-c" || raw[2] != `umask 000; exec "$@"` || raw[3] != "kairon-exec" {
-		t.Fatalf("exec not wrapped with the open umask: %q", raw[:min(len(raw), 5)])
-	}
-	if raw[4] != "kiro-cli" {
-		t.Errorf("wrapped program = %q", raw[4])
-	}
-	assertNoPromptInArgv(t, x.rawCmds)
-	if len(x.stdins) != 1 || !strings.Contains(x.stdins[0], "PROMPT-MARKER") {
-		t.Error("prompt must be on stdin")
-	}
+		out, cost, rec, ec, err := invokeAgent("builder", prompt, testContainerConfig(), callOpts{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if out != "hello" {
+			t.Errorf("output = %q, want ANSI stripped", out)
+		}
+		if len(x.rawCmds) != 1 {
+			t.Fatalf("execs = %d", len(x.rawCmds))
+		}
+		raw := x.rawCmds[0]
+		if len(raw) < 6 || raw[0] != "sh" || raw[1] != "-c" || raw[2] != `umask 000; exec "$@"` || raw[3] != "kairon-exec" {
+			t.Fatalf("exec not wrapped with the open umask: %q", raw[:min(len(raw), 5)])
+		}
+		if raw[4] != "kiro-cli" {
+			t.Errorf("wrapped program = %q", raw[4])
+		}
+		assertNoPromptInArgv(t, x.rawCmds)
+		assertNoPromptInArgv(t, x.cmds)
+		if len(x.stdins) != 1 || !strings.Contains(x.stdins[0], "PROMPT-MARKER") {
+			t.Fatal("prompt must be on stdin")
+		}
+		if x.stdins[0] != prompt {
+			t.Fatalf("stdin did not carry the exact prompt (got %d bytes)", len(x.stdins[0]))
+		}
+		if ec != nil {
+			t.Errorf("ec = %+v", ec)
+		}
+		if cost.UsageSource != "estimated" || cost.Model != "m1" || cost.TokensIn != len(prompt)/4 {
+			t.Errorf("cost = %+v", cost)
+		}
+		if rec.Model != "m1" || !rec.Estimated || rec.Role != "agent" {
+			t.Errorf("rec = %+v", rec)
+		}
+	})
 
 	// The helper exec is wrapped too.
-	chdirTemp(t)
-	useStubBackend(t)
-	useAgentConfigs(t)
-	useFakeLinuxBinary(t)
-	h := &fakeExecer{}
-	useFakeContainer(t, h)
-	stub := &inference.StubScript{Turns: []inference.StubTurn{{Response: "r"}}}
-	if _, _, _, _, err := invokeAgent("selftest", "p", testContainerConfig(), callOpts{Stub: stub}); err != nil {
-		t.Fatal(err)
-	}
-	if _, ok := unwrapOpenUmask(h.rawCmds[0]); !ok {
-		t.Errorf("helper exec not wrapped: %q", h.rawCmds[0])
-	}
+	t.Run("helper-exec", func(t *testing.T) {
+		chdirTemp(t)
+		useStubBackend(t)
+		useAgentConfigs(t)
+		useFakeLinuxBinary(t)
+		prompt := nastyPrompt()
+		h := &fakeExecer{}
+		useFakeContainer(t, h)
+		stub := &inference.StubScript{Turns: []inference.StubTurn{{Response: "scripted"}}}
+		out, _, _, _, err := invokeAgent("selftest", prompt, testContainerConfig(), callOpts{Stub: stub})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if out != "scripted" {
+			t.Errorf("output = %q", out)
+		}
+		if _, ok := unwrapOpenUmask(h.rawCmds[0]); !ok {
+			t.Errorf("helper exec not wrapped: %q", h.rawCmds[0])
+		}
+		assertNoPromptInArgv(t, h.cmds)
+		assertNoPromptInArgv(t, h.rawCmds)
+		if len(h.stdins) != 1 || !strings.Contains(h.stdins[0], "PROMPT-MARKER") {
+			t.Errorf("the JSON request on stdin must carry the prompt")
+		}
+		wantCmd := "/usr/local/bin/kairon inference-exec --backend stub"
+		if got := strings.Join(h.cmds[0], " "); got != wantCmd {
+			t.Errorf("cmd = %q, want %q", got, wantCmd)
+		}
+	})
 }
 
 func TestContainerHostExecDeadline(t *testing.T) {
@@ -486,6 +522,35 @@ func TestContainerTimeoutNamesEffectiveTimeout(t *testing.T) {
 		}
 		if ec == nil || !strings.HasPrefix(ec.Stderr, "timeout after 1s") {
 			t.Errorf("ec = %+v", ec)
+		}
+	})
+
+	t.Run("sandbox-limit-timeout", func(t *testing.T) {
+		chdirTemp(t)
+		useAgentConfigs(t)
+		cc := testContainerConfig()
+		cc.ResourceLimits.Timeout = 30 * time.Millisecond
+		x := &fakeExecer{block: true}
+		useFakeContainer(t, x)
+
+		_, _, rec, ec, err := invokeAgent("builder", "p", cc, callOpts{})
+		if err == nil {
+			t.Fatal("expected a timeout")
+		}
+		if !errors.Is(err, inference.ErrTimeout) {
+			t.Errorf("err does not satisfy ErrTimeout: %v", err)
+		}
+		if !strings.Contains(err.Error(), "Container execution timeout after 30ms") || !strings.Contains(err.Error(), "--resource-limit timeout=") {
+			t.Errorf("message = %q", err.Error())
+		}
+		if ec == nil || !strings.HasPrefix(ec.Stderr, "timeout after 30ms") {
+			t.Errorf("ec = %+v", ec)
+		}
+		if ec != nil && (ec.Platform != "linux/arm64" || ec.WorkingDir != "/workspace") {
+			t.Errorf("container context missing: %+v", ec)
+		}
+		if rec.Error == "" {
+			t.Errorf("failed call not recorded: %+v", rec)
 		}
 	})
 }
