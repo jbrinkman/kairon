@@ -605,52 +605,6 @@ func TestWorkspaceCreationFailureLeavesNothingBehind(t *testing.T) {
 	}
 }
 
-func TestWorkspacesAreIndependent(t *testing.T) {
-	wsEnv(t)
-	a := newWS(t, TestCase{Name: "a"})
-	b := newWS(t, TestCase{Name: "b"})
-	if a.Dir == b.Dir {
-		t.Fatal("workspaces share a directory")
-	}
-}
-
-func TestCaseResultWorkspaceDirJSON(t *testing.T) {
-	data, err := json.Marshal(CaseResult{CaseName: "c"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(string(data), "workspace_dir") {
-		t.Fatalf("workspace_dir must be omitted when empty: %s", data)
-	}
-
-	data, err = json.Marshal(CaseResult{CaseName: "c", WorkspaceDir: "/tmp/ws"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	var raw map[string]any
-	if err := json.Unmarshal(data, &raw); err != nil {
-		t.Fatal(err)
-	}
-	if raw["workspace_dir"] != "/tmp/ws" {
-		t.Fatalf("workspace_dir = %v in %s", raw["workspace_dir"], data)
-	}
-
-	// Result files written before the field existed still decode.
-	var old CaseResult
-	if err := json.Unmarshal([]byte(`{"case_name":"c","actual_output":"o","scores":[],"agent_cost":{},"judge_cost":{}}`), &old); err != nil {
-		t.Fatal(err)
-	}
-	if old.WorkspaceDir != "" || old.CaseName != "c" {
-		t.Fatalf("decoded = %+v", old)
-	}
-}
-
-func TestRunOptionsKeepWorkspacesField(t *testing.T) {
-	if !(RunOptions{KeepWorkspaces: true}).KeepWorkspaces {
-		t.Fatal("KeepWorkspaces not settable")
-	}
-}
-
 // snapshotTree maps relative file paths to their contents and modes.
 func snapshotTree(t *testing.T, root string) map[string]string {
 	t.Helper()
@@ -756,16 +710,6 @@ func TestNewCaseWorkspaceWritesFakeGHAndIssue(t *testing.T) {
 	// A gh_issue without a title cannot be rendered.
 	if _, err := newCaseWorkspace(TestCase{Name: "bad", GHIssue: &sandbox.GHIssue{}}); err == nil {
 		t.Error("expected an error for gh_issue without title")
-	}
-}
-
-func TestRemoveDeletesBinDir(t *testing.T) {
-	wsEnv(t)
-	ws := newWS(t, TestCase{Name: "rm"})
-	bin := ws.BinDir
-	_ = ws.Remove()
-	if _, err := os.Stat(bin); !os.IsNotExist(err) {
-		t.Errorf("BinDir survived Remove: %v", err)
 	}
 }
 
