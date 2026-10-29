@@ -44,6 +44,11 @@ checks:
     type: output_contains
     pattern: '(?m)^\s*b\)'
     turn: 1
+  # B13: the options end with an Other option
+  - criterion: conversation_protocol
+    type: output_contains
+    pattern: '(?mi)^\s*[c-e]\)\s*Other\b'
+    turn: 1
   - criterion: two_mode_behavior
     type: output_not_contains
     pattern: '(?m)^schema_version:'
@@ -72,6 +77,11 @@ checks:
   - criterion: conversation_protocol
     type: output_contains
     pattern: '(?m)^\s*b\)'
+    turn: 2
+  # B13: the options end with an Other option
+  - criterion: conversation_protocol
+    type: output_contains
+    pattern: '(?mi)^\s*[c-e]\)\s*Other\b'
     turn: 2
   - criterion: conversation_protocol
     type: judge

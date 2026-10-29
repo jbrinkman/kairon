@@ -21,6 +21,10 @@ checks:
   - criterion: option_rules
     type: output_contains
     pattern: '(?m)^\s*c\)'
+  # B13: the options end with an Other option
+  - criterion: option_rules
+    type: output_contains
+    pattern: '(?mi)^\s*[c-e]\)\s*Other\b'
   - criterion: option_rules
     type: output_contains
     pattern: '(?i)\bsymptom\b'

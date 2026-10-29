@@ -74,6 +74,22 @@ checks:
   - criterion: issue_quality
     type: output_not_contains
     pattern: '(?mi)^\s*#{1,6}\s*Dependencies\s*\n(\s*\n)*\s*[-*]\s'
+  # FR4: the body ends with one single-line Dependencies list
+  - criterion: issue_quality
+    type: output_contains
+    pattern: '(?m)^[ \t]*Dependencies:[ \t]*(?:none|#(?:[0-9]+|\{[A-Za-z0-9][A-Za-z0-9_-]*\})(?:[ \t]*,[ \t]*#(?:[0-9]+|\{[A-Za-z0-9][A-Za-z0-9_-]*\}))*)[ \t]*(?:\n[ \t]*)*(?:\z|\n\S)'
+  # FR4: there is exactly one Dependencies line
+  - criterion: issue_quality
+    type: output_not_contains
+    pattern: '(?mis)^[ \t]*Dependencies:.*^[ \t]*Dependencies:'
+  # FR4: no list item carries the Dependencies line
+  - criterion: issue_quality
+    type: output_not_contains
+    pattern: '(?mi)^[ \t]*(?:[-*+]|[0-9]+[.)])[ \t]+[^\n]*\bdependencies:'
+  # B12: title is one line of at most 70 characters (planner-shared, issue-body standard)
+  - criterion: issue_quality
+    type: output_not_contains
+    pattern: '(?m)^[ \t]*# [^\n]{71,}$'
   - criterion: issue_quality
     type: output_not_contains
     pattern: '(?mi)^\s*#{1,6}\s*User Story'
@@ -101,9 +117,25 @@ checks:
   - criterion: gate_compliance
     type: output_not_contains
     pattern: '(?mi)^\s*(provenance|hash|sha256)\s*:'
+  # B5 (B4): the input has no Document path line, so the planner writes no file
+  - criterion: gate_compliance
+    type: changed_files
+    allow: []
+  # B14: the defaults are listed in one turn and confirmed with one question
+  - criterion: elicitation_completeness
+    type: judge
+    question: "Before it drafted the issue, did the planner list every slot it defaulted, with the proposed edge and error behavior, in a single turn and ask one confirmation question about them?"
+  # B14: the draft is reviewed with a coverage summary outside the issue and one approval question
+  - criterion: elicitation_completeness
+    type: judge
+    question: "After it showed the draft issue, did the planner add a coverage summary outside the issue text and ask a single approval question?"
+  # B14: no document before approval
+  - criterion: two_mode_behavior
+    type: judge
+    question: "Did the planner return the stage-output document only after the requester approved the draft?"
 stub:
   routes: [none, none, none, none]
-  judge: [yes, yes, yes]
+  judge: [yes, yes, yes, yes, yes, yes]
   turns:
     - response: |
         I read the exporter code before asking. Exporters implement Exporter (internal/export/exporter.go:11), are registered in internal/export/registry.go:9, and treat empty input as a no-op (internal/export/csv.go:19). I will follow all three, so I am not asking about them.

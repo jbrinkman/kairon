@@ -3247,12 +3247,12 @@ The planner suite (`rubrics/planner.yaml` plus `cases/planner/*.yaml`) certifies
 
 The planner is two single-mode agents: `planner` (interactive elicitation) and `planner-automated` (unattended intake). Both load the Kairon-managed `planner-shared` skill. The mode is not a prompt branch: the caller picks the agent name, and that name is the mode signal. The agents themselves are described in `docs/planner.md`.
 
-The harness keys a suite by its directory name: `loadCases` sets every case's agent to `planner`, and the rubric is `rubrics/planner.yaml`. A single run of `kairon eval planner` therefore runs all seven cases against the `planner` agent, which cannot pass the three automated cases. So the suite is run in two halves, each against the agent of its mode:
+The harness keys a suite by its directory name: `loadCases` sets every case's agent to `planner`, and the rubric is `rubrics/planner.yaml`. A single run of `kairon eval planner` therefore runs all eleven cases against the `planner` agent, which cannot pass the four automated cases. So the suite is run in two halves, each against the agent of its mode:
 
 | Half | Cases | Agent under test | How |
 |------|-------|------------------|-----|
-| Interactive | `interactive-single-decision`, `interactive-option-rules`, `interactive-return-document`, `multi-issue-split` | `planner` | `.kiro/agents/planner.json`, unchanged |
-| Automated | `automated-best-effort-fill`, `automated-bug-classification`, `automated-punch-out` | `planner-automated` | an [`--evals-dir` overlay](#evals-directory---evals-dir) whose `agents/planner.json` is the `planner-automated` manifest |
+| Interactive | `interactive-single-decision`, `interactive-option-rules`, `interactive-return-document`, `multi-issue-split`, `interactive-document-handoff`, `interactive-path-only-message`, `interactive-decline-implementation` | `planner` | `.kiro/agents/planner.json`, unchanged |
+| Automated | `automated-best-effort-fill`, `automated-bug-classification`, `automated-punch-out`, `automated-dependencies-line` | `planner-automated` | an [`--evals-dir` overlay](#evals-directory---evals-dir) whose `agents/planner.json` is the `planner-automated` manifest |
 
 The overlay is a temporary copy of the evals directory (without `results/`) with two files added under `agents/`: `planner.json`, which is `.kiro/agents/planner-automated.json` with only `name` changed to `planner`, and `planner-automated-prompt.md`, which the manifest's `file://./planner-automated-prompt.md` prompt resolves to. The shared skill is not copied into the overlay: the harness stages the git-tracked `.kiro/skills/planner-shared` from the repository, so both halves are certified against the real skill. Run `git add` on new agent and skill files before evaluating, or they are not staged.
 
@@ -3267,8 +3267,8 @@ bash scripts/eval-planner.sh --dry-run
 The script runs these two commands (both with `--sandbox`; the filter names are exact):
 
 ```bash
-kairon eval --sandbox planner --filter 'name==interactive-single-decision,interactive-option-rules,interactive-return-document,multi-issue-split'
-kairon eval --evals-dir <overlay> --sandbox planner --filter 'name==automated-best-effort-fill,automated-bug-classification,automated-punch-out'
+kairon eval --sandbox planner --filter 'name==interactive-single-decision,interactive-option-rules,interactive-return-document,multi-issue-split,interactive-document-handoff,interactive-path-only-message,interactive-decline-implementation'
+kairon eval --evals-dir <overlay> --sandbox planner --filter 'name==automated-best-effort-fill,automated-bug-classification,automated-punch-out,automated-dependencies-line'
 ```
 
 Both halves always run. The script exits non-zero if either fails, and copies the automated half's new result directories from the overlay back under `.kairon/evals/results/` whether or not it passed (the interactive half writes there directly). Set `KAIRON_BIN` to use a binary that is not `kairon` on `PATH`, and `KAIRON_EVALS_DIR` to use another evals directory.
@@ -3292,8 +3292,27 @@ The planner does not write to GitHub or add a provenance marker. The suite only 
 | `automated-punch-out.yaml` | automated | output_document_validity, best_effort_then_punch_out, two_mode_behavior, gate_compliance |
 | `automated-bug-classification.yaml` | automated | output_document_validity, best_effort_then_punch_out, issue_quality, two_mode_behavior, gate_compliance |
 | `multi-issue-split.yaml` | interactive | dependency_split, issue_quality, output_document_validity, conversation_protocol, two_mode_behavior, gate_compliance |
+| `interactive-document-handoff.yaml` | interactive | gate_compliance, elicitation_completeness, two_mode_behavior, output_document_validity, issue_quality |
+| `interactive-path-only-message.yaml` | interactive | two_mode_behavior, conversation_protocol, gate_compliance |
+| `interactive-decline-implementation.yaml` | interactive | gate_compliance, two_mode_behavior, conversation_protocol |
+| `automated-dependencies-line.yaml` | automated | output_document_validity, two_mode_behavior, issue_quality, best_effort_then_punch_out, gate_compliance |
 
 `cost_efficiency` (`type: cost`) applies to every case. The evidence sources that two cases share live in the workspace fixture `fixtures/workspaces/planner-evidence/` (see [Evidence sources for the judge](#evidence-sources-for-the-judge)). The other fixtures are `fixtures/planner-*.md`. Both kinds are synced to the templates: the `planner-*.md` files by the bulk `task sync:check` comparison, and the `planner-evidence` workspace by the per-workspace loop in `sync:check` (see [Workspace fixtures](#workspace-fixtures)).
+
+### Output checks for #418 (FR1 to FR4)
+
+Four groups of checks cover behaviour the planner prompt and the `planner-shared` skill require. FR1, FR3 and FR4 are new checks, and FR2 is the existing `automated-punch-out` case. Each group feeds an existing rubric criterion, so the rubric is unchanged.
+
+| Group | What it checks | Case files | Criterion |
+|-------|----------------|------------|-----------|
+| FR1: hand-off files | The interactive planner writes the approved document to the `Document path:` it is given and the requester's label answer to the `Label answer path:`. The document file is a canonical stage-output document with no provenance field, and the judge confirms it has the same content as the reply. The two files are the only paths the planner changes. A message that holds only the two path lines is not a request: the planner asks what to plan and writes neither file. A request to implement code is declined: no file, no GitHub write, no code in the reply. | `interactive-document-handoff.yaml`, `interactive-path-only-message.yaml`, `interactive-decline-implementation.yaml` | `gate_compliance` (plus `elicitation_completeness` for the label question and `conversation_protocol` for the questions) |
+| FR2: punch-out | The automated planner returns `result: punch_out` with a non-empty `unresolved` list of `slot` and `reason`, no `body:` and no question, when a required slot cannot be inferred. | `automated-punch-out.yaml` | `best_effort_then_punch_out`, `output_document_validity` |
+| FR3: inference evidence | Every entry in `inferences` has `slot`, `inferred` and `evidence` in that order, at least one entry exists, and `evidence` is not a placeholder such as `n/a`, `none` or `tbd`. The document must also pass the stage-output parser (`output_document_valid`). | `automated-best-effort-fill.yaml`, `automated-bug-classification.yaml`, `automated-dependencies-line.yaml` | `best_effort_then_punch_out` |
+| FR4: Dependencies line | The body ends with one `Dependencies:` line (`none` or `#12, #15`, where a same-split reference may also be `#{key}`). There is exactly one such line, and no bullet or numbered list item carries it. `automated-dependencies-line` gives the planner a request whose two prerequisites are written as bullets and expects `Dependencies: #512, #519`. The other cases listed here run the same checks on the body they return, together with a title check (one line of at most 70 characters). | `automated-dependencies-line.yaml`, `automated-best-effort-fill.yaml`, `automated-bug-classification.yaml`, `interactive-return-document.yaml`, `multi-issue-split.yaml`, `interactive-document-handoff.yaml` | `issue_quality` |
+
+`multi-issue-split.yaml` also checks that each remaining issue of a split carries a short kebab-case key, and that the Out of Scope section of the returned issue names the other issues by that key (criterion `dependency_split`).
+
+**The hand-off file convention.** A case that exercises the hand-off puts the two paths in its `input`, in the shape Kairon sends (`internal/tui/planning_handoff.go`): a `Document path:` line, a `Label answer path:` line, a blank line, then the request. The paths are `.kairon/sessions/eval-<name>.document.yaml` and `.kairon/sessions/eval-<name>.label`, for example `eval-handoff` and `eval-path-only`. The `eval-` prefix keeps them apart from real planning sessions, which use `.kairon/sessions/<session-id>.*`. The checks read them from the case workspace with [`file_exists`, `file_contains`, `file_not_contains` and `file_absent`](#the-fourteen-check-types), and a `changed_files` check allows only those two paths. The label file holds `yes` or `no`. In `interactive-document-handoff` the simulated user answers `yes`, which is not the planner's recommended answer, so a planner that writes a default instead of the requester's answer fails.
 
 ### Evidence sources for the judge
 
@@ -3351,7 +3370,7 @@ Offline, with no model. Each case carries a reference transcript in `stub.turns`
 kairon eval --backend stub planner
 ```
 
-Offline, `kairon eval --backend stub planner` replays the reference transcripts for all seven cases whatever the prompt says, so it certifies the suite and not the prompts. Against the real agents, run both halves with `task eval:planner` (see [Two agents, one suite](#two-agents-one-suite)). A bare `kairon eval --sandbox planner` runs every case against the interactive `planner` and is expected to fail the three automated cases.
+Offline, `kairon eval --backend stub planner` replays the reference transcripts for all eleven cases whatever the prompt says, so it certifies the suite and not the prompts. Against the real agents, run both halves with `task eval:planner` (see [Two agents, one suite](#two-agents-one-suite)). A bare `kairon eval --sandbox planner` runs every case against the interactive `planner` and is expected to fail the four automated cases.
 
 Always pass `--sandbox` when an agent prompt is not yet verified. The pre-#381 prompt can run `gh issue create`, and outside the sandbox that creates real GitHub issues. Under `--sandbox` the call goes to the [fake `gh`](#the-fake-gh) and the `gh_log_not_contains` check records it as a failure. Cases do not set `requires_sandbox`, because the harness would then fail them under `--backend stub`.
 
@@ -3375,7 +3394,7 @@ That preamble is now only input text that makes the case read like an unattended
 
 `go test ./internal/eval -run TestPlannerSuite` reproduces the RED/GREEN claim without a model:
 
-- The suite registers all seven cases, and each case file declares `agent: planner`.
+- The suite registers all eleven cases, and each case file declares `agent: planner`.
 - **GREEN.** The shipped reference transcripts score a passing agent verdict, every YAML document in them parses and validates with `internal/stageoutput`, every `output_document_valid` check (the parse-backed check on `output_document_validity`) accepts the document its case returns, and every `output_contains`/`output_not_contains` pattern compiles. `TestPlannerSuiteDocumentCasesUseParseBackedCheck` fails if a document-returning case, derived from its stub replies, lacks that check, or if a case that returns no document carries one.
 - **RED.** Legacy transcripts in `internal/eval/testdata/planner-legacy/` reproduce what the pre-#381 prompt produces (User Story drafts, several questions in one reply, `gh issue create`, questions in automated mode, no document). They must fail the agent verdict, with `output_document_validity` and `two_mode_behavior` below the 60% floor.
 - **Malformed timestamp.** `TestPlannerSuiteMalformedDocumentFailsParseBackedCheck` rewrites each stub document's `generated:` to `2026-99-21T12:00:00Z` (shaped like a timestamp, but month 99 is not RFC 3339) and evaluates the case's deterministic `output_document_validity` checks. Every `output_contains`/`output_not_contains` regex still passes, while `output_document_valid` fails with the parser's RFC 3339 reason. The unmodified document passes all of them. The test fails if the rewrite changes nothing.

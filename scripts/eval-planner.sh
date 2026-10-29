@@ -8,11 +8,14 @@
 # mode:
 #
 #   interactive half  cases: interactive-single-decision, interactive-option-rules,
-#                            interactive-return-document, multi-issue-split
+#                            interactive-return-document, multi-issue-split,
+#                            interactive-document-handoff,
+#                            interactive-path-only-message,
+#                            interactive-decline-implementation
 #                     agent: planner (.kiro/agents/planner.json), unchanged
 #
 #   automated half    cases: automated-best-effort-fill, automated-bug-classification,
-#                            automated-punch-out
+#                            automated-punch-out, automated-dependencies-line
 #                     agent: planner-automated, run through an --evals-dir overlay
 #                            whose agents/planner.json is the planner-automated
 #                            manifest with only "name" changed to "planner", plus
@@ -38,8 +41,8 @@
 
 set -u
 
-INTERACTIVE_CASES='interactive-single-decision,interactive-option-rules,interactive-return-document,multi-issue-split'
-AUTOMATED_CASES='automated-best-effort-fill,automated-bug-classification,automated-punch-out'
+INTERACTIVE_CASES='interactive-single-decision,interactive-option-rules,interactive-return-document,multi-issue-split,interactive-document-handoff,interactive-path-only-message,interactive-decline-implementation'
+AUTOMATED_CASES='automated-best-effort-fill,automated-bug-classification,automated-punch-out,automated-dependencies-line'
 INTERACTIVE_FILTER="name==${INTERACTIVE_CASES}"
 AUTOMATED_FILTER="name==${AUTOMATED_CASES}"
 

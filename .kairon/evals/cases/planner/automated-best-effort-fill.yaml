@@ -101,6 +101,37 @@ checks:
   - criterion: issue_quality
     type: output_not_contains
     pattern: '(?i)\b(properly|appropriate(ly)?|gracefully|robust(ly)?|as needed|should work|fast)\b|\betc\.'
+  # FR3: the parser rejects an inference whose slot, inferred or evidence is empty
+  - criterion: best_effort_then_punch_out
+    type: output_document_valid
+  # FR3: at least one inference is recorded, each with slot, inferred and evidence in that order
+  - criterion: best_effort_then_punch_out
+    type: output_contains
+    pattern: '(?m)^[ \t]+- slot: [^\n]+\n[ \t]+inferred: [^\n]+\n[ \t]+evidence: [^\n]+'
+  # FR3: no inference is left without an evidence line right after it
+  - criterion: best_effort_then_punch_out
+    type: output_not_contains
+    pattern: '(?m)^[ \t]+inferred:[^\n]*\n[ \t]*(?:- slot:|slot:|inferred:|body:|unresolved:|source:|generated:|stage:|result:|schema_version:)'
+  # FR3: evidence is not a placeholder
+  - criterion: best_effort_then_punch_out
+    type: output_not_contains
+    pattern: '(?mi)^[ \t]+evidence:[ \t]*["'']?(?:n/?a|none|unknown|tbd|todo|null|~|-)["'']?[ \t]*$'
+  # FR4: the body ends with one single-line Dependencies list
+  - criterion: issue_quality
+    type: output_contains
+    pattern: '(?m)^[ \t]*Dependencies:[ \t]*(?:none|#(?:[0-9]+|\{[A-Za-z0-9][A-Za-z0-9_-]*\})(?:[ \t]*,[ \t]*#(?:[0-9]+|\{[A-Za-z0-9][A-Za-z0-9_-]*\}))*)[ \t]*(?:\n[ \t]*)*(?:\z|\n\S)'
+  # FR4: there is exactly one Dependencies line
+  - criterion: issue_quality
+    type: output_not_contains
+    pattern: '(?mis)^[ \t]*Dependencies:.*^[ \t]*Dependencies:'
+  # FR4: no list item carries the Dependencies line
+  - criterion: issue_quality
+    type: output_not_contains
+    pattern: '(?mi)^[ \t]*(?:[-*+]|[0-9]+[.)])[ \t]+[^\n]*\bdependencies:'
+  # Title is one line of at most 70 characters (planner-shared, issue-body standard)
+  - criterion: issue_quality
+    type: output_not_contains
+    pattern: '(?m)^[ \t]*# [^\n]{71,}$'
   # The planner returns the document and leaves the GitHub write to the guard
   - criterion: gate_compliance
     type: output_not_contains

@@ -29,13 +29,17 @@ import (
 // called and the repository's .kairon/evals/results/ is neither read nor
 // written.
 
-// plannerCaseNames are the seven shipped planner cases. A case that is
+// plannerCaseNames are the eleven shipped planner cases. A case that is
 // removed or renamed makes TestPlannerSuiteRegistration fail.
 var plannerCaseNames = []string{
 	"automated-best-effort-fill",
 	"automated-bug-classification",
+	"automated-dependencies-line",
 	"automated-punch-out",
+	"interactive-decline-implementation",
+	"interactive-document-handoff",
 	"interactive-option-rules",
+	"interactive-path-only-message",
 	"interactive-return-document",
 	"interactive-single-decision",
 	"multi-issue-split",
@@ -374,13 +378,17 @@ func TestPlannerSuiteStubDocumentsAreValid(t *testing.T) {
 
 	// Which cases must return a document, and which must not.
 	wantDocs := map[string]int{
-		"automated-best-effort-fill":   1,
-		"automated-bug-classification": 1,
-		"automated-punch-out":          1,
-		"interactive-return-document":  1,
-		"multi-issue-split":            1,
-		"interactive-option-rules":     0,
-		"interactive-single-decision":  0,
+		"automated-best-effort-fill":         1,
+		"automated-bug-classification":       1,
+		"automated-dependencies-line":        1,
+		"automated-punch-out":                1,
+		"interactive-document-handoff":       1,
+		"interactive-return-document":        1,
+		"multi-issue-split":                  1,
+		"interactive-option-rules":           0,
+		"interactive-single-decision":        0,
+		"interactive-path-only-message":      0,
+		"interactive-decline-implementation": 0,
 	}
 	for _, name := range plannerCaseNames {
 		replies := docs[name]

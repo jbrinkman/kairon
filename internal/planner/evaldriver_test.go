@@ -13,8 +13,8 @@ import (
 )
 
 const (
-	interactiveFilter = "name==interactive-single-decision,interactive-option-rules,interactive-return-document,multi-issue-split"
-	automatedFilter   = "name==automated-best-effort-fill,automated-bug-classification,automated-punch-out"
+	interactiveFilter = "name==interactive-single-decision,interactive-option-rules,interactive-return-document,multi-issue-split,interactive-document-handoff,interactive-path-only-message,interactive-decline-implementation"
+	automatedFilter   = "name==automated-best-effort-fill,automated-bug-classification,automated-punch-out,automated-dependencies-line"
 )
 
 // requireBash skips the test when bash is not available.
