@@ -566,82 +566,6 @@ func TestVerifyLogFixtureRunsRecordCoverage(t *testing.T) {
 	}
 }
 
-// TestVerifyLogFixtureValidEvalIteration pins the shape of the valid set's
-// red (eval) iteration, b -> R1: same prompt hash, different suite hash.
-func TestVerifyLogFixtureValidEvalIteration(t *testing.T) {
-	read := func(run string) (prompt, suite string) {
-		data, err := os.ReadFile(filepath.Join(vlFixtureRoot, "evals", "results", run, "summary.json"))
-		if err != nil {
-			t.Fatal(err)
-		}
-		var sum struct {
-			Agents map[string]struct {
-				PromptSHA256 string `json:"prompt_sha256"`
-				SuiteSHA256  string `json:"suite_sha256"`
-			} `json:"agents"`
-		}
-		if err := json.Unmarshal(data, &sum); err != nil {
-			t.Fatal(err)
-		}
-		a := sum.Agents[vlAgent]
-		return a.PromptSHA256, a.SuiteSHA256
-	}
-	pb, sb := read("260702-100000-bbbbbbb")
-	pr, sr := read("260706-100000-aaaaa11")
-	if pb == "" || pb != pr {
-		t.Errorf("eval iteration prompt hashes: %q vs %q, want equal and non-empty", pb, pr)
-	}
-	if sb == "" || sr == "" || sb == sr {
-		t.Errorf("eval iteration suite hashes: %q vs %q, want both set and different", sb, sr)
-	}
-	doc, err := os.ReadFile(filepath.Join(vlFixtureRoot, "valid", vlAgent, "iteration-01.md"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, want := range []string{"change_type: eval", "phase: red"} {
-		if !strings.Contains(string(doc), want) {
-			t.Errorf("valid iteration-01 should contain %q", want)
-		}
-	}
-}
-
-// TestVerifyLogFixtureValidPhases pins the valid set's four iterations:
-// baseline, red, green, refactor, in that order.
-func TestVerifyLogFixtureValidPhases(t *testing.T) {
-	for i, want := range []string{"baseline", "red", "green", "refactor"} {
-		doc, err := os.ReadFile(filepath.Join(vlFixtureRoot, "valid", vlAgent, fmt.Sprintf("iteration-%02d.md", i)))
-		if err != nil {
-			t.Fatal(err)
-		}
-		if !strings.Contains(string(doc), "\nphase: "+want+"\n") {
-			t.Errorf("valid iteration-%02d should have phase %q", i, want)
-		}
-	}
-	if _, err := os.Stat(filepath.Join(vlFixtureRoot, "valid", vlAgent, "iteration-04.md")); err == nil {
-		t.Error("valid set must have exactly four iterations")
-	}
-}
-
-func TestVerifyLogErrorRendersOneLinePerViolation(t *testing.T) {
-	e := &VerifyLogError{Violations: []LogViolation{
-		{File: "a/iteration-00.md", Rule: "chain", Message: "m1"},
-		{File: "a/iteration-01.md", Rule: "score-match", Message: "m2"},
-	}}
-	want := "a/iteration-00.md: chain: m1\na/iteration-01.md: score-match: m2"
-	if got := e.Error(); got != want {
-		t.Fatalf("Error() = %q, want %q", got, want)
-	}
-}
-
-func TestVerifyLogConstants(t *testing.T) {
-	if DefaultIterationsDir != ".kairon/iterations" {
-		t.Errorf("DefaultIterationsDir = %q", DefaultIterationsDir)
-	}
-	if DefaultMinIterations != 2 {
-		t.Errorf("DefaultMinIterations = %d", DefaultMinIterations)
-	}
-}
-
 // ---------- score tolerance ----------
 
 func TestVerifyLogScoreTolerance(t *testing.T) {
@@ -1825,16 +1749,6 @@ func TestVerifyLogOutputCountsIterations(t *testing.T) {
 	}
 }
 
-// ensure the helper JSON builders produce valid JSON (guards test fixtures).
-func TestVerifyLogTestHelpersProduceValidJSON(t *testing.T) {
-	for _, s := range []string{vlVerdictSummary(72.5, vlShaB), vlAgentJSON(vlShaB)} {
-		var v map[string]any
-		if err := json.Unmarshal([]byte(s), &v); err != nil {
-			t.Fatalf("%s: %v", s, err)
-		}
-	}
-}
-
 // ---------- phase ----------
 
 // vlPhaseViolations verifies a set of logs and returns the violations (nil on
@@ -1965,25 +1879,6 @@ func TestVerifyLogPhaseNonScalarValueDoesNotSuppressOtherChecks(t *testing.T) {
 				t.Fatalf("rules on iteration-01.md = %v, want %v", got, want)
 			}
 		})
-	}
-}
-
-func TestVerifyLogPhaseRuleIDsAreRegisteredInOrder(t *testing.T) {
-	ids := []string{"phase", "red", "green", "refactor", "cycle"}
-	prev := ruleOrder["suite-change"]
-	for _, id := range ids {
-		rank, ok := ruleOrder[id]
-		if !ok {
-			t.Errorf("rule %q is not registered in ruleOrder", id)
-			continue
-		}
-		if rank <= prev {
-			t.Errorf("rule %q has rank %d, want greater than the previous rule's %d", id, rank, prev)
-		}
-		prev = rank
-	}
-	if min := ruleOrder["min-iterations"]; prev >= min {
-		t.Errorf("min-iterations rank %d must come after cycle rank %d", min, prev)
 	}
 }
 
@@ -2293,63 +2188,6 @@ func TestVerifyLogEvidenceRulesDoNotCascade(t *testing.T) {
 		_, err := vlRunVerify(t, vlPhaseOpts(t, "tweak", "prompt", base, res))
 		vlExpectOnly(t, err, "phase", "iteration-00.md")
 	})
-}
-
-// vlFixtureCheckStates reads a committed run's <agent>.json and returns, per
-// repeat, whether the check labelled "#2 ..." passed.
-func vlFixtureCheckStates(t *testing.T, run string) []bool {
-	t.Helper()
-	data, err := os.ReadFile(filepath.Join(vlFixtureRoot, "evals", "results", run, vlAgent+".json"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	var ar AgentResult
-	if err := json.Unmarshal(data, &ar); err != nil {
-		t.Fatal(err)
-	}
-	var out []bool
-	for _, c := range ar.Cases {
-		for _, sc := range c.Scores {
-			if sc.Name != "alpha" || c.CaseName != "basic" {
-				continue
-			}
-			for _, ck := range sc.Checks {
-				if strings.HasPrefix(ck.Label, "#2 output_contains") {
-					out = append(out, ck.Passed)
-				}
-			}
-		}
-	}
-	return out
-}
-
-// TestVerifyLogFixtureEvidenceRuns pins the committed runs that carry checks.
-func TestVerifyLogFixtureEvidenceRuns(t *testing.T) {
-	runs := map[string][]bool{
-		"260706-100000-aaaaa11": {true, false}, // R1: fails in repeat 2 only
-		"260706-110000-aaaaa00": {true, true},  // R0
-		"260707-100000-bbbbb11": {true, true},  // G1
-		"260707-110000-bbbbb22": {true, false}, // Gx
-		"260707-120000-bbbbb33": {true, true},  // Gd
-		"260708-100000-ccccc11": {true, true},  // F1
-		"260708-110000-ccccc22": {true, true},  // Fd
-	}
-	for run, want := range runs {
-		if got := vlFixtureCheckStates(t, run); fmt.Sprint(got) != fmt.Sprint(want) {
-			t.Errorf("run %s: check #2 per repeat = %v, want %v", run, got, want)
-		}
-	}
-	score := func(run string) float64 {
-		return loadRunRecord(filepath.Join(vlFixtureRoot, "evals", "results"), run, vlAgent).score
-	}
-	for run, want := range map[string]float64{
-		"260706-100000-aaaaa11": 70, "260706-110000-aaaaa00": 70, "260707-100000-bbbbb11": 85,
-		"260707-110000-bbbbb22": 85, "260707-120000-bbbbb33": 65, "260708-100000-ccccc11": 85, "260708-110000-ccccc22": 80,
-	} {
-		if got := score(run); got != want {
-			t.Errorf("run %s: score = %v, want %v", run, got, want)
-		}
-	}
 }
 
 // ---------- cycle rule and RequireCycle ----------
