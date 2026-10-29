@@ -16,12 +16,11 @@ func TestHandleKeyMsg(t *testing.T) {
 		name       string
 		key        tea.KeyPressMsg
 		inContext  bool
-		wantCmd    bool
 		wantTrig   bool   // cmd yields HotkeyTriggeredMsg
 		wantErrMsg string // cmd yields HotkeyErrorMsg with this text
 	}{
-		{name: "ctrl+alt+p in kairon context", key: ctrlAltP, inContext: true, wantCmd: true, wantTrig: true},
-		{name: "ctrl+alt+p outside kairon context", key: ctrlAltP, inContext: false, wantCmd: true, wantErrMsg: errText},
+		{name: "ctrl+alt+p in kairon context", key: ctrlAltP, inContext: true, wantTrig: true},
+		{name: "ctrl+alt+p outside kairon context", key: ctrlAltP, inContext: false, wantErrMsg: errText},
 		{name: "ctrl+c in kairon context", key: tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl}, inContext: true},
 		{name: "ctrl+c outside kairon context", key: tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl}, inContext: false},
 		{name: "ctrl+p in kairon context", key: tea.KeyPressMsg{Code: 'p', Mod: tea.ModCtrl}, inContext: true},
@@ -48,7 +47,7 @@ func TestHandleKeyMsg(t *testing.T) {
 
 			cmd := HandleKeyMsg(tt.key)
 
-			if !tt.wantCmd {
+			if !tt.wantTrig && tt.wantErrMsg == "" {
 				if cmd != nil {
 					t.Fatalf("HandleKeyMsg(%q) inContext=%v: expected nil cmd, got non-nil", tt.key.String(), tt.inContext)
 				}
