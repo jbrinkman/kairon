@@ -731,50 +731,65 @@ func skipOnWindows(t *testing.T) {
 	}
 }
 
-// A file listed by ReadDir and removed before chmodOpen runs (the git
-// auto-maintenance race) is skipped, not an error.
-func TestChmodOpenVanishedFileIsSkipped(t *testing.T) {
+// A target that vanishes while chmodOpen walks over it is skipped, not an
+// error. Each row builds the DirEntry while the file still exists; the
+// subtest then removes the file and calls chmodOpen.
+func TestChmodOpenVanishedIsSkipped(t *testing.T) {
 	skipOnWindows(t)
-	dir := t.TempDir()
-	p := filepath.Join(dir, "maintenance.lock")
-	if err := os.WriteFile(p, nil, 0o644); err != nil {
-		t.Fatal(err)
+	tests := []struct {
+		name  string
+		file  string
+		mode  os.FileMode
+		entry func(t *testing.T, dir string) fs.DirEntry
+	}{
+		{
+			// A file listed by ReadDir and removed before chmodOpen runs (the git
+			// auto-maintenance race) is skipped, not an error.
+			name: "VanishedFileIsSkipped",
+			file: "maintenance.lock",
+			mode: 0o644,
+			entry: func(t *testing.T, dir string) fs.DirEntry {
+				entries, err := os.ReadDir(dir)
+				if err != nil || len(entries) != 1 {
+					t.Fatalf("ReadDir: %v, %d entries", err, len(entries))
+				}
+				return entries[0]
+			},
+		},
+		{
+			// The entry's Info succeeds but the file is gone by the time os.Chmod runs.
+			name: "VanishedBeforeChmodIsSkipped",
+			file: "f",
+			mode: 0o600,
+			entry: func(t *testing.T, dir string) fs.DirEntry {
+				entries, err := os.ReadDir(dir)
+				if err != nil || len(entries) != 1 {
+					t.Fatalf("ReadDir: %v, %d entries", err, len(entries))
+				}
+				// Cache the FileInfo so a later removal cannot fail d.Info().
+				info, err := entries[0].Info()
+				if err != nil {
+					t.Fatal(err)
+				}
+				return cachedInfoEntry{fs.FileInfoToDirEntry(info), info}
+			},
+		},
 	}
-	entries, err := os.ReadDir(dir)
-	if err != nil || len(entries) != 1 {
-		t.Fatalf("ReadDir: %v, %d entries", err, len(entries))
-	}
-	if err := os.Remove(p); err != nil {
-		t.Fatal(err)
-	}
-	if err := chmodOpen(p, entries[0], 0o666); err != nil {
-		t.Fatalf("chmodOpen on vanished file = %v, want nil", err)
-	}
-}
-
-// The entry's Info succeeds but the file is gone by the time os.Chmod runs.
-func TestChmodOpenVanishedBeforeChmodIsSkipped(t *testing.T) {
-	skipOnWindows(t)
-	dir := t.TempDir()
-	p := filepath.Join(dir, "f")
-	if err := os.WriteFile(p, nil, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	entries, err := os.ReadDir(dir)
-	if err != nil || len(entries) != 1 {
-		t.Fatalf("ReadDir: %v, %d entries", err, len(entries))
-	}
-	// Cache the FileInfo so a later removal cannot fail d.Info().
-	info, err := entries[0].Info()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Remove(p); err != nil {
-		t.Fatal(err)
-	}
-	d := fs.FileInfoToDirEntry(info)
-	if err := chmodOpen(p, cachedInfoEntry{d, info}, 0o666); err != nil {
-		t.Fatalf("chmodOpen with vanished target = %v, want nil", err)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			p := filepath.Join(dir, tt.file)
+			if err := os.WriteFile(p, nil, tt.mode); err != nil {
+				t.Fatal(err)
+			}
+			d := tt.entry(t, dir)
+			if err := os.Remove(p); err != nil {
+				t.Fatal(err)
+			}
+			if err := chmodOpen(p, d, 0o666); err != nil {
+				t.Fatalf("chmodOpen on vanished target = %v, want nil", err)
+			}
+		})
 	}
 }
 
