@@ -2196,10 +2196,10 @@ func TestVerifyLogEvidenceRulesDoNotCascade(t *testing.T) {
 
 // vlCycleVerify writes one log per phase (iteration-00, -01, ...; an empty
 // phase leaves the key out) over the standard runs and verifies the set with
-// RequireCycle as given. The logs need not satisfy their own phase rules: the
+// RequireCycle and MinIterations as given. The logs need not satisfy their own phase rules: the
 // cycle rule only looks at the phase labels. It returns every violation (nil on
 // success).
-func vlCycleVerify(t *testing.T, requireCycle bool, phases ...string) []LogViolation {
+func vlCycleVerify(t *testing.T, requireCycle bool, minIterations int, phases ...string) []LogViolation {
 	t.Helper()
 	logs := map[string]string{}
 	for i, p := range phases {
@@ -2208,6 +2208,7 @@ func vlCycleVerify(t *testing.T, requireCycle bool, phases ...string) []LogViola
 	}
 	opts := vlSetup(t, logs)
 	opts.RequireCycle = requireCycle
+	opts.MinIterations = minIterations
 	_, err := vlRunVerify(t, opts)
 	if err == nil {
 		return nil
@@ -2249,7 +2250,7 @@ func TestVerifyLogCycleRequired(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			vs := vlCycleOnly(vlCycleVerify(t, true, tt.phases...))
+			vs := vlCycleOnly(vlCycleVerify(t, true, 0, tt.phases...))
 			if len(vs) != len(tt.wantMentions) {
 				t.Fatalf("got %d cycle violation(s), want %d: %v", len(vs), len(tt.wantMentions), vs)
 			}
@@ -2274,7 +2275,7 @@ func TestVerifyLogCycleOffByDefault(t *testing.T) {
 		{"baseline", "green", "red"},
 	} {
 		t.Run(strings.Join(phases, ","), func(t *testing.T) {
-			if vs := vlCycleOnly(vlCycleVerify(t, false, phases...)); len(vs) != 0 {
+			if vs := vlCycleOnly(vlCycleVerify(t, false, 0, phases...)); len(vs) != 0 {
 				t.Fatalf("RequireCycle=false must not report cycle violations, got %v", vs)
 			}
 		})
@@ -2287,7 +2288,7 @@ func TestVerifyLogCycleOffByDefault(t *testing.T) {
 // TestVerifyLogCycleIsSetLevel pins that the cycle rule reports once against
 // the agent directory and does not suppress or duplicate per-file violations.
 func TestVerifyLogCycleIsSetLevel(t *testing.T) {
-	vs := vlCycleVerify(t, true, "baseline")
+	vs := vlCycleVerify(t, true, 0, "baseline")
 	cycle := vlCycleOnly(vs)
 	if len(cycle) != 2 {
 		t.Fatalf("want 2 cycle violations, got %v", vs)
@@ -2299,9 +2300,19 @@ func TestVerifyLogCycleIsSetLevel(t *testing.T) {
 	}
 	// The set also has per-log violations (its runs are the std ones, with the
 	// min-iterations default off): they are unaffected by RequireCycle.
-	withoutCycle := vlCycleVerify(t, false, "baseline")
+	withoutCycle := vlCycleVerify(t, false, 0, "baseline")
 	if len(vs)-len(cycle) != len(withoutCycle) {
 		t.Errorf("RequireCycle changed non-cycle violations: with=%v without=%v", vs, withoutCycle)
+	}
+	// Set-level rules on the agent directory sort cycle before min-iterations.
+	var dirRules []string
+	for _, v := range vlCycleVerify(t, true, 2, "baseline") {
+		if strings.HasSuffix(v.File, vlAgent) {
+			dirRules = append(dirRules, v.Rule)
+		}
+	}
+	if want := []string{"cycle", "cycle", "min-iterations"}; fmt.Sprint(dirRules) != fmt.Sprint(want) {
+		t.Errorf("agent-directory rules = %v, want %v", dirRules, want)
 	}
 }
 
