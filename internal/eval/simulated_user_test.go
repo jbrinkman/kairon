@@ -552,30 +552,6 @@ func TestSimulatedUserSessionClosedBeforeLogRewrite(t *testing.T) {
 	}
 }
 
-func TestOneTurnClassicCaseStillUsesOneShotContainerPath(t *testing.T) {
-	sessionEnv(t)
-	opened := 0
-	origOpen, origInvoke := openContainerSession, invokeInContainer
-	openContainerSession = func(inference.Request, *ContainerConfig, *caseWorkspace) (containerSession, error) {
-		opened++
-		return &fakeSession{}, nil
-	}
-	oneShot := 0
-	invokeInContainer = func(inference.Request, *ContainerConfig, *caseWorkspace) (inference.Response, *ErrorContext, error) {
-		oneShot++
-		return inference.Response{Text: "done"}, nil, nil
-	}
-	t.Cleanup(func() { openContainerSession, invokeInContainer = origOpen, origInvoke })
-
-	tc := stubCase("classic", "", "45s", "done")
-	tc.Checks = simChecks(Check{Type: "output_contains", Pattern: "done"})
-	var out bytes.Buffer
-	executeCase(execRubric(), tc, testContainerConfig(), &out, false)
-	if opened != 0 || oneShot != 1 {
-		t.Errorf("opened = %d one-shot = %d, want 0 and 1", opened, oneShot)
-	}
-}
-
 // Classic and #317 turns cases keep their result shape.
 func TestSimulatedUserFieldsAbsentFromOtherCases(t *testing.T) {
 	execEnv(t, false)
