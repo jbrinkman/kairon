@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
-	"reflect"
 	"strings"
 	"testing"
 )
@@ -202,25 +201,6 @@ func TestDiffListsKaironBinaryDifference(t *testing.T) {
 	}
 }
 
-func TestContainmentDiffKaironBinary(t *testing.T) {
-	a, b := Containment{ToolTrust: []string{}}, Containment{ToolTrust: []string{}, KaironBinary: true}
-	got := containmentDiff(&a, &b)
-	if !reflect.DeepEqual(got, []string{"kairon_binary: false → true"}) {
-		t.Errorf("containmentDiff = %v", got)
-	}
-	if got := containmentDiff(&b, &b); len(got) != 0 {
-		t.Errorf("identical containment diff = %v, want none", got)
-	}
-}
-
-func TestDescribeContainmentIncludesKaironBinary(t *testing.T) {
-	c := Containment{ToolTrust: []string{"read"}, FakeGH: true, ReadOnlyFS: true, KaironBinary: true, Network: "unrestricted"}
-	want := "tool_trust=[read] fake_gh=true read_only_fs=true kairon_binary=true network=unrestricted"
-	if got := describeContainment(c); got != want {
-		t.Errorf("describeContainment = %q, want %q", got, want)
-	}
-}
-
 func TestDiffContainmentNoneVsPresent(t *testing.T) {
 	chdirTemp(t)
 	scores := map[string]float64{"a1": 0.5}
@@ -285,28 +265,6 @@ func TestDiffLegacyRunShowsUnknownMode(t *testing.T) {
 		if strings.Contains(out, bad) {
 			t.Errorf("two unknown-mode runs must not warn (%q):\n%s", bad, out)
 		}
-	}
-}
-
-func TestDiffLegacyVsContainerDoesNotFail(t *testing.T) {
-	chdirTemp(t)
-	writeProvRun(t, "legacy", provRun{
-		summary: Summary{GitHash: "old", AgentScores: map[string]float64{"a1": 0.4}},
-		raw:     map[string]string{"a1.json": `{"agent":"a1","git_hash":"old","cases":[]}`},
-	})
-	cs := provSummary("container", map[string]float64{"a1": 0.5})
-	cs.Containment = map[string]Containment{"a1": *trustContainment()}
-	writeProvRun(t, "container", provRun{summary: cs})
-
-	out := runDiff(t, "legacy", "container")
-	if !strings.Contains(out, "legacy: mode "+modeUnknown) || !strings.Contains(out, "container: mode container") {
-		t.Errorf("modes not shown:\n%s", out)
-	}
-	if strings.Contains(out, "not directly comparable") {
-		t.Errorf("unknown mode must not assert incomparability:\n%s", out)
-	}
-	if !strings.Contains(out, "execution mode of at least one run is unknown") {
-		t.Errorf("expected unknown-mode note:\n%s", out)
 	}
 }
 
@@ -484,29 +442,48 @@ func TestRunFixturesShapes(t *testing.T) {
 	}
 }
 
-// Legacy fixture vs a container run: unknown mode, no error, no false claim
-// of incomparability.
+// The legacy fixture diffed against a newer run: the legacy side's mode is
+// unknown, the diff succeeds, and it never claims the runs are incomparable.
 func TestDiffLegacyFixtureVsContainer(t *testing.T) {
-	chdirTemp(t)
-	copyRunFixture(t, "legacy-native", "legacy")
-	cs := provSummary("container", map[string]float64{"architect": 0.8})
-	cs.Containment = map[string]Containment{"architect": *trustContainment("read")}
-	writeProvRun(t, "container", provRun{summary: cs})
+	// Legacy fixture vs a container run: unknown mode, no error, no false claim
+	// of incomparability.
+	t.Run("container", func(t *testing.T) {
+		chdirTemp(t)
+		copyRunFixture(t, "legacy-native", "legacy")
+		cs := provSummary("container", map[string]float64{"architect": 0.8})
+		cs.Containment = map[string]Containment{"architect": *trustContainment("read")}
+		writeProvRun(t, "container", provRun{summary: cs})
 
-	out := runDiff(t, "legacy", "container")
-	for _, want := range []string{
-		"legacy: mode " + modeUnknown,
-		"container: mode container",
-		"execution mode of at least one run is unknown",
-		"architect containment.record: none →",
-	} {
-		if !strings.Contains(out, want) {
-			t.Errorf("output missing %q:\n%s", want, out)
+		out := runDiff(t, "legacy", "container")
+		for _, want := range []string{
+			"legacy: mode " + modeUnknown,
+			"container: mode container",
+			"execution mode of at least one run is unknown",
+			"architect containment.record: none →",
+		} {
+			if !strings.Contains(out, want) {
+				t.Errorf("output missing %q:\n%s", want, out)
+			}
 		}
-	}
-	if strings.Contains(out, "not directly comparable") || strings.Contains(out, "⚠") {
-		t.Errorf("unknown mode must not assert incomparability:\n%s", out)
-	}
+		if strings.Contains(out, "not directly comparable") || strings.Contains(out, "⚠") {
+			t.Errorf("unknown mode must not assert incomparability:\n%s", out)
+		}
+	})
+
+	// Legacy vs a run that recorded its mode: unknown on one side only.
+	t.Run("native", func(t *testing.T) {
+		chdirTemp(t)
+		copyRunFixture(t, "legacy-native", "legacy")
+		writeProvRun(t, "native", provRun{summary: provSummary("native", map[string]float64{"architect": 0.8})})
+
+		out := runDiff(t, "legacy", "native")
+		if !strings.Contains(out, "legacy: mode "+modeUnknown) || !strings.Contains(out, "native: mode native") {
+			t.Errorf("modes not shown:\n%s", out)
+		}
+		if strings.Contains(out, "not directly comparable") {
+			t.Errorf("unknown mode must not assert incomparability:\n%s", out)
+		}
+	})
 }
 
 // Legacy vs native-pinned: both predate mode tracking; the post-#294
@@ -531,21 +508,6 @@ func TestDiffLegacyFixtureVsNativePinned(t *testing.T) {
 	}
 	if strings.Contains(out, "⚠") || strings.Contains(out, "sandbox:") {
 		t.Errorf("two unknown-mode runs must not report a mode difference:\n%s", out)
-	}
-}
-
-// Legacy vs a run that recorded its mode: unknown on one side only.
-func TestDiffLegacyFixtureVsRecordedNative(t *testing.T) {
-	chdirTemp(t)
-	copyRunFixture(t, "legacy-native", "legacy")
-	writeProvRun(t, "native", provRun{summary: provSummary("native", map[string]float64{"architect": 0.8})})
-
-	out := runDiff(t, "legacy", "native")
-	if !strings.Contains(out, "legacy: mode "+modeUnknown) || !strings.Contains(out, "native: mode native") {
-		t.Errorf("modes not shown:\n%s", out)
-	}
-	if strings.Contains(out, "not directly comparable") {
-		t.Errorf("unknown mode must not assert incomparability:\n%s", out)
 	}
 }
 
