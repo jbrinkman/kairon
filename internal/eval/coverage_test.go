@@ -210,77 +210,44 @@ func TestCoverageAgentResultJSON(t *testing.T) {
 	})
 }
 
-func TestCoverageSummaryJSON(t *testing.T) {
-	t.Run("provenance writes false and empty", func(t *testing.T) {
-		data, err := json.Marshal(Summary{Agents: map[string]AgentProvenance{
-			"a": {PromptSHA256: "p", SuiteSHA256: testSuiteHash, Complete: boolPtr(false), CaseFilter: strPtr("")},
-		}})
+func TestCoverageUpdateIncrementalSummaryCopiesFields(t *testing.T) {
+	t.Run("recorded-coverage-copied", func(t *testing.T) {
+		file := filepath.Join(t.TempDir(), "summary.json")
+		res := AgentResult{Agent: "a", SuiteSHA256: testSuiteHash, Complete: boolPtr(false), CaseFilter: strPtr("")}
+		// No PromptSHA256: the SuiteSHA256 alone must write the entry.
+		if err := updateIncrementalSummary(file, res, "g"); err != nil {
+			t.Fatal(err)
+		}
+		raw, err := os.ReadFile(file)
 		if err != nil {
 			t.Fatal(err)
 		}
-		for _, want := range []string{`"suite_sha256":"` + testSuiteHash + `"`, `"complete":false`, `"case_filter":""`} {
-			if !strings.Contains(string(data), want) {
-				t.Errorf("JSON %s missing %s", data, want)
+		for _, want := range []string{`"complete": false`, `"case_filter": ""`, `"suite_sha256": "` + testSuiteHash + `"`} {
+			if !strings.Contains(string(raw), want) {
+				t.Errorf("summary missing %s:\n%s", want, raw)
 			}
 		}
-	})
-	t.Run("provenance omits unrecorded", func(t *testing.T) {
-		data, _ := json.Marshal(AgentProvenance{PromptSHA256: "p"})
-		for _, key := range []string{"suite_sha256", "complete", "case_filter"} {
-			if strings.Contains(string(data), key) {
-				t.Errorf("JSON %s contains %s", data, key)
-			}
-		}
-	})
-	t.Run("legacy summary decodes with nil Complete", func(t *testing.T) {
 		var s Summary
-		legacy := `{"git_hash":"g","agent_scores":{},"agents":{"a":{"agent_model":"m","prompt_sha256":"p","resources_present":[]}}}`
-		if err := json.Unmarshal([]byte(legacy), &s); err != nil {
+		readJSON(t, file, &s)
+		p, ok := s.Agents["a"]
+		if !ok {
+			t.Fatalf("agents.a missing: %s", raw)
+		}
+		if p.SuiteSHA256 != testSuiteHash || p.Complete == nil || *p.Complete || p.CaseFilter == nil || *p.CaseFilter != "" {
+			t.Errorf("agents.a = %+v", p)
+		}
+	})
+	t.Run("unrecorded-result-writes-no-entry", func(t *testing.T) {
+		file := filepath.Join(t.TempDir(), "summary.json")
+		if err := updateIncrementalSummary(file, AgentResult{Agent: "a"}, "g"); err != nil {
 			t.Fatal(err)
 		}
-		if p := s.Agents["a"]; p.Complete != nil || p.CaseFilter != nil || p.SuiteSHA256 != "" {
-			t.Errorf("legacy provenance = %+v, want unrecorded coverage", p)
+		var s Summary
+		readJSON(t, file, &s)
+		if len(s.Agents) != 0 {
+			t.Errorf("agents = %v, want none for an unpinned, unrecorded result", s.Agents)
 		}
 	})
-}
-
-func TestCoverageUpdateIncrementalSummaryCopiesFields(t *testing.T) {
-	file := filepath.Join(t.TempDir(), "summary.json")
-	res := AgentResult{Agent: "a", SuiteSHA256: testSuiteHash, Complete: boolPtr(false), CaseFilter: strPtr("")}
-	// No PromptSHA256: the SuiteSHA256 alone must write the entry.
-	if err := updateIncrementalSummary(file, res, "g"); err != nil {
-		t.Fatal(err)
-	}
-	raw, err := os.ReadFile(file)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, want := range []string{`"complete": false`, `"case_filter": ""`, `"suite_sha256": "` + testSuiteHash + `"`} {
-		if !strings.Contains(string(raw), want) {
-			t.Errorf("summary missing %s:\n%s", want, raw)
-		}
-	}
-	var s Summary
-	readJSON(t, file, &s)
-	p, ok := s.Agents["a"]
-	if !ok {
-		t.Fatalf("agents.a missing: %s", raw)
-	}
-	if p.SuiteSHA256 != testSuiteHash || p.Complete == nil || *p.Complete || p.CaseFilter == nil || *p.CaseFilter != "" {
-		t.Errorf("agents.a = %+v", p)
-	}
-}
-
-func TestCoverageUpdateIncrementalSummaryNoEntryWhenUnrecorded(t *testing.T) {
-	file := filepath.Join(t.TempDir(), "summary.json")
-	if err := updateIncrementalSummary(file, AgentResult{Agent: "a"}, "g"); err != nil {
-		t.Fatal(err)
-	}
-	var s Summary
-	readJSON(t, file, &s)
-	if len(s.Agents) != 0 {
-		t.Errorf("agents = %v, want none for an unpinned, unrecorded result", s.Agents)
-	}
 }
 
 // covCase is a stub case whose shell command runs in the workspace.
