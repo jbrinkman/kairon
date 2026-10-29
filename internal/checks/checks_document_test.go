@@ -179,6 +179,8 @@ func TestDocumentCheckValidate(t *testing.T) {
 		"fact":        "{criterion: c, type: output_document_valid, fact: f}",
 		"allow":       "{criterion: c, type: output_document_valid, allow: []}",
 		"expect_exit": "{criterion: c, type: output_document_valid, expect_exit: 0}",
+		"files":       "{criterion: c, type: output_document_valid, files: [a.md]}",
+		"inject":      "{criterion: c, type: output_document_valid, inject: [x.txt]}",
 	} {
 		t.Run("rejects "+field, func(t *testing.T) {
 			err := Validate("f.yaml", decodeChecks(t, "- "+src+"\n"), ValidateOptions{})
