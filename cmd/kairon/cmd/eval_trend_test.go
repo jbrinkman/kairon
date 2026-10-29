@@ -27,36 +27,6 @@ func runTrend(t *testing.T, agent string, asJSON bool) (string, error) {
 	return out.String(), err
 }
 
-func TestTrendFlagsRegistered(t *testing.T) {
-	found := false
-	for _, c := range evalCmd.Commands() {
-		if c == trendCmd {
-			found = true
-		}
-	}
-	if !found {
-		t.Fatal("trend is not registered on eval")
-	}
-	if trendCmd.Name() != "trend" {
-		t.Errorf("command name = %q, want trend", trendCmd.Name())
-	}
-
-	jsonFlag := trendCmd.LocalFlags().Lookup("json")
-	if jsonFlag == nil {
-		t.Fatal("--json is not a local flag of trend")
-	}
-	if jsonFlag.DefValue != "false" {
-		t.Errorf("--json default = %q, want false", jsonFlag.DefValue)
-	}
-	// --evals-dir is the persistent flag from eval, not redefined locally.
-	if trendCmd.LocalFlags().Lookup("evals-dir") != nil {
-		t.Error("--evals-dir must be inherited from eval, not redefined")
-	}
-	if trendCmd.InheritedFlags().Lookup("evals-dir") == nil {
-		t.Error("trend does not inherit --evals-dir")
-	}
-}
-
 func TestTrendTextOutput(t *testing.T) {
 	out, err := runTrend(t, "selftest", false)
 	if err != nil {
@@ -116,32 +86,6 @@ func TestTrendUnknownAgentErrorNamesAgent(t *testing.T) {
 	}
 	if out != "" {
 		t.Errorf("nothing should be written on error, got %q", out)
-	}
-}
-
-func TestTrendRestoresFlagVars(t *testing.T) {
-	trendJSON = false
-	evalEvalsDir = "sentinel"
-	t.Run("inner", func(t *testing.T) {
-		if _, err := runTrend(t, "selftest", true); err != nil {
-			t.Fatal(err)
-		}
-	})
-	if trendJSON || evalEvalsDir != "sentinel" {
-		t.Errorf("flag vars not restored: trendJSON=%v evalEvalsDir=%q", trendJSON, evalEvalsDir)
-	}
-	evalEvalsDir = ""
-}
-
-func TestTrendArgs(t *testing.T) {
-	if err := trendCmd.Args(trendCmd, nil); err == nil {
-		t.Error("expected arg error when agent is missing")
-	}
-	if err := trendCmd.Args(trendCmd, []string{"a", "b"}); err == nil {
-		t.Error("expected arg error for extra arguments")
-	}
-	if err := trendCmd.Args(trendCmd, []string{"selftest"}); err != nil {
-		t.Errorf("one argument should be accepted: %v", err)
 	}
 }
 

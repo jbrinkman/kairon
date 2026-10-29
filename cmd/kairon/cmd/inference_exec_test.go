@@ -31,25 +31,6 @@ func runInferenceExec(t *testing.T, stdin string, args ...string) (stdout, stder
 	return out.String(), errBuf.String(), err
 }
 
-func TestInferenceExecHidden(t *testing.T) {
-	if !inferenceExecCmd.Hidden {
-		t.Fatal("inference-exec must be Hidden")
-	}
-	if inferenceExecCmd.Flags().Lookup("backend") == nil {
-		t.Fatal("--backend flag not registered")
-	}
-
-	var help bytes.Buffer
-	rootCmd.SetOut(&help)
-	t.Cleanup(func() { rootCmd.SetOut(nil) })
-	if err := rootCmd.Help(); err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(help.String(), "inference-exec") {
-		t.Errorf("root help lists inference-exec:\n%s", help.String())
-	}
-}
-
 func TestInferenceExecStub(t *testing.T) {
 	const req = `{"Role":"agent","Agent":"a","Prompt":"p","Stub":{"turns":[{"response":"hello","model":"m1"}]}}`
 

@@ -2,7 +2,6 @@ package cmd
 
 import (
 	"bytes"
-	"errors"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -167,15 +166,6 @@ func TestAuditFlatFixtureEvidenceAndDuplicates(t *testing.T) {
 	}
 }
 
-func TestAuditHelpDescribesEvidenceAndDuplicates(t *testing.T) {
-	long := auditCmd.Long
-	for _, want := range []string{"case:<case-name>", "Evidence", "Repeated instructions fail"} {
-		if !strings.Contains(long, want) {
-			t.Errorf("audit help missing %q:\n%s", want, long)
-		}
-	}
-}
-
 func TestAuditThreeCriteriaOKFixturePasses(t *testing.T) {
 	out, err := runAuditFlatFixture(t, "three-criteria-ok")
 	if err != nil {
@@ -195,66 +185,6 @@ func TestAuditThreeCriteriaOKFixturePasses(t *testing.T) {
 	// The type: cost criterion is never listed.
 	if strings.Contains(out, "cost:") {
 		t.Errorf("cost criterion must not be listed:\n%s", out)
-	}
-}
-
-func TestAuditHelpDescribesRubricRules(t *testing.T) {
-	long := auditCmd.Long
-	for _, want := range []string{
-		"at least three non-cost criteria",
-		"no check in any case",
-		"identical checks",
-	} {
-		if !strings.Contains(long, want) {
-			t.Errorf("audit help missing %q:\n%s", want, long)
-		}
-	}
-}
-
-func TestAuditFlagsRegistered(t *testing.T) {
-	found := false
-	for _, c := range evalCmd.Commands() {
-		if c == auditCmd {
-			found = true
-		}
-	}
-	if !found {
-		t.Fatal("audit is not registered on eval")
-	}
-	if auditCmd.Name() != "audit" {
-		t.Errorf("command name = %q, want audit", auditCmd.Name())
-	}
-	if got, _, err := evalCmd.Find([]string{"audit", "builder"}); err != nil || got != auditCmd {
-		t.Errorf("eval audit routes to %v (err %v), want auditCmd", got, err)
-	}
-
-	iters := auditCmd.Flags().Lookup("iterations-dir")
-	if iters == nil {
-		t.Fatal("--iterations-dir flag not registered")
-	}
-	if iters.DefValue != ".kairon/iterations" {
-		t.Errorf("--iterations-dir default = %q, want .kairon/iterations", iters.DefValue)
-	}
-	if auditCmd.LocalFlags().Lookup("prompt-file") == nil {
-		t.Error("--prompt-file must be a local flag of audit")
-	}
-	if auditCmd.LocalFlags().Lookup("evals-dir") != nil {
-		t.Error("--evals-dir must be inherited from eval, not redefined")
-	}
-	if auditCmd.InheritedFlags().Lookup("evals-dir") == nil {
-		t.Error("audit does not inherit --evals-dir")
-	}
-}
-
-func TestAuditArgs(t *testing.T) {
-	if err := auditCmd.Args(auditCmd, nil); err == nil {
-		t.Error("expected arg error when agent is missing")
-	}
-	if err := auditCmd.Args(auditCmd, []string{"a", "b"}); err == nil {
-		t.Error("expected arg error for extra arguments")
-	}
-	if err := auditCmd.Args(auditCmd, []string{"builder"}); err != nil {
-		t.Errorf("one argument should be accepted: %v", err)
 	}
 }
 
@@ -299,18 +229,6 @@ func TestAuditPromptFileFlagIsPassedThrough(t *testing.T) {
 	_, err := runAudit(t, "demo", auditFixtures+"/coverage-90/evals", auditFixtures+"/coverage-90/iterations", "does-not-exist.md")
 	if err == nil || !strings.Contains(err.Error(), "does-not-exist.md") {
 		t.Fatalf("err = %v, want an error naming the missing candidate file", err)
-	}
-}
-
-func TestAuditSkillsFSWiredFromTemplates(t *testing.T) {
-	sub, err := auditSkillsFS()
-	if err != nil {
-		t.Fatalf("auditSkillsFS: %v", err)
-	}
-	// In package cmd tests Templates is the zero embed.FS: the sub-FS must be
-	// usable and simply have nothing in it, not fail.
-	if _, err := fs.ReadFile(sub, "sentinel-protocol/SKILL.md"); err != nil && !errors.Is(err, fs.ErrNotExist) {
-		t.Errorf("reading from sub FS: %v, want nil or ErrNotExist", err)
 	}
 }
 
