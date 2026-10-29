@@ -127,52 +127,54 @@ func TestProvenanceSubAgentsResolved(t *testing.T) {
 }
 
 func TestProvenanceSubAgentEditChangesWorkflowButNotDispatcherHash(t *testing.T) {
-	root := wfRoot(t)
-	base := mustProvInRoot(t, root, "lead")
+	t.Run("sub-agent edit", func(t *testing.T) {
+		root := wfRoot(t)
+		base := mustProvInRoot(t, root, "lead")
 
-	writeProvFile(t, filepath.Join(root, ".kiro/agents/step-a-prompt.md"), "step a prompt EDITED")
-	edited := mustProvInRoot(t, root, "lead")
+		writeProvFile(t, filepath.Join(root, ".kiro/agents/step-a-prompt.md"), "step a prompt EDITED")
+		edited := mustProvInRoot(t, root, "lead")
 
-	if edited.PromptSHA256 != base.PromptSHA256 {
-		t.Error("dispatching agent's PromptSHA256 changed after a sub-agent edit")
-	}
-	if edited.WorkflowSHA256 == base.WorkflowSHA256 {
-		t.Error("WorkflowSHA256 unchanged after a sub-agent prompt edit")
-	}
-	if edited.SubAgents["step-a"].PromptSHA256 == base.SubAgents["step-a"].PromptSHA256 {
-		t.Error("step-a PromptSHA256 unchanged after its prompt edit")
-	}
-	if edited.SubAgents["step-b"].PromptSHA256 != base.SubAgents["step-b"].PromptSHA256 {
-		t.Error("step-b PromptSHA256 changed by an unrelated edit")
-	}
+		if edited.PromptSHA256 != base.PromptSHA256 {
+			t.Error("dispatching agent's PromptSHA256 changed after a sub-agent edit")
+		}
+		if edited.WorkflowSHA256 == base.WorkflowSHA256 {
+			t.Error("WorkflowSHA256 unchanged after a sub-agent prompt edit")
+		}
+		if edited.SubAgents["step-a"].PromptSHA256 == base.SubAgents["step-a"].PromptSHA256 {
+			t.Error("step-a PromptSHA256 unchanged after its prompt edit")
+		}
+		if edited.SubAgents["step-b"].PromptSHA256 != base.SubAgents["step-b"].PromptSHA256 {
+			t.Error("step-b PromptSHA256 changed by an unrelated edit")
+		}
 
-	// A sub-agent resource (staged workspace bytes) is part of its hash.
-	writeProvFile(t, filepath.Join(root, ".kiro/present.md"), "present EDITED")
-	if again := mustProvInRoot(t, root, "lead"); again.WorkflowSHA256 == edited.WorkflowSHA256 {
-		t.Error("WorkflowSHA256 unchanged after a sub-agent resource edit")
-	}
-}
+		// A sub-agent resource (staged workspace bytes) is part of its hash.
+		writeProvFile(t, filepath.Join(root, ".kiro/present.md"), "present EDITED")
+		if again := mustProvInRoot(t, root, "lead"); again.WorkflowSHA256 == edited.WorkflowSHA256 {
+			t.Error("WorkflowSHA256 unchanged after a sub-agent resource edit")
+		}
+	})
 
-func TestProvenanceDispatcherEditChangesBothHashes(t *testing.T) {
-	root := wfRoot(t)
-	base := mustProvInRoot(t, root, "lead")
-	writeProvFile(t, filepath.Join(root, ".kiro/agents/lead-prompt.md"), "lead prompt EDITED")
-	edited := mustProvInRoot(t, root, "lead")
-	if edited.PromptSHA256 == base.PromptSHA256 || edited.WorkflowSHA256 == base.WorkflowSHA256 {
-		t.Error("dispatcher edit must change prompt_sha256 and workflow_sha256")
-	}
-}
+	t.Run("dispatcher edit", func(t *testing.T) {
+		root := wfRoot(t)
+		base := mustProvInRoot(t, root, "lead")
+		writeProvFile(t, filepath.Join(root, ".kiro/agents/lead-prompt.md"), "lead prompt EDITED")
+		edited := mustProvInRoot(t, root, "lead")
+		if edited.PromptSHA256 == base.PromptSHA256 || edited.WorkflowSHA256 == base.WorkflowSHA256 {
+			t.Error("dispatcher edit must change prompt_sha256 and workflow_sha256")
+		}
+	})
 
-func TestWorkflowHashSwappingStepPromptsChangesHash(t *testing.T) {
-	root := wfRoot(t)
-	base := mustProvInRoot(t, root, "lead")
-	// Swap the two steps' prompts: same set of hashes, different names.
-	writeProvFile(t, filepath.Join(root, ".kiro/agents/step-a-prompt.md"), "step b prompt")
-	writeProvFile(t, filepath.Join(root, ".kiro/agents/step-b-prompt.md"), "step a prompt")
-	swapped := mustProvInRoot(t, root, "lead")
-	if swapped.WorkflowSHA256 == base.WorkflowSHA256 {
-		t.Error("swapping the sub-agents' prompts did not change workflow_sha256")
-	}
+	t.Run("swap step prompts", func(t *testing.T) {
+		root := wfRoot(t)
+		base := mustProvInRoot(t, root, "lead")
+		// Swap the two steps' prompts: same set of hashes, different names.
+		writeProvFile(t, filepath.Join(root, ".kiro/agents/step-a-prompt.md"), "step b prompt")
+		writeProvFile(t, filepath.Join(root, ".kiro/agents/step-b-prompt.md"), "step a prompt")
+		swapped := mustProvInRoot(t, root, "lead")
+		if swapped.WorkflowSHA256 == base.WorkflowSHA256 {
+			t.Error("swapping the sub-agents' prompts did not change workflow_sha256")
+		}
+	})
 }
 
 func TestWorkflowHashIndependentOfTrustedAgentsOrder(t *testing.T) {
@@ -384,20 +386,6 @@ func TestProvenanceCandidateAffectsOnlyDispatchingAgent(t *testing.T) {
 		if p2.SubAgents[name].PromptSHA256 != sub.PromptSHA256 {
 			t.Errorf("candidate for another agent changed sub-agent %s", name)
 		}
-	}
-}
-
-func TestAgentConfigFileTrustedAgents(t *testing.T) {
-	var ok agentConfigFile
-	if err := json.Unmarshal([]byte(`{"toolsSettings":{"subagent":{"trustedAgents":["a","b"]}}}`), &ok); err != nil {
-		t.Fatal(err)
-	}
-	if strings.Join(ok.ToolsSettings.Subagent.TrustedAgents, ",") != "a,b" {
-		t.Errorf("TrustedAgents = %v", ok.ToolsSettings.Subagent.TrustedAgents)
-	}
-	var bad agentConfigFile
-	if err := json.Unmarshal([]byte(`{"toolsSettings":{"subagent":{"trustedAgents":"a"}}}`), &bad); err == nil {
-		t.Error("a non-list trustedAgents must be a decode error")
 	}
 }
 

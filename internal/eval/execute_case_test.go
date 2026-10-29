@@ -202,19 +202,38 @@ func TestExecuteCaseWorkspaceFailureIsRecorded(t *testing.T) {
 }
 
 func TestConfigureKeepWorkspaces(t *testing.T) {
-	chdirTemp(t)
-	if err := configure(RunOptions{KeepWorkspaces: true}); err != nil {
-		t.Fatal(err)
-	}
-	if !cfg.keepWorkspaces {
-		t.Fatal("keepWorkspaces not applied")
-	}
-	if err := configure(RunOptions{}); err != nil {
-		t.Fatal(err)
-	}
-	if cfg.keepWorkspaces {
-		t.Fatal("keepWorkspaces leaked into the next configure")
-	}
+	t.Run("keep workspaces", func(t *testing.T) {
+		chdirTemp(t)
+		t.Cleanup(resetConfig)
+		if err := configure(RunOptions{KeepWorkspaces: true}); err != nil {
+			t.Fatal(err)
+		}
+		if !cfg.keepWorkspaces {
+			t.Fatal("keepWorkspaces not applied")
+		}
+		if err := configure(RunOptions{}); err != nil {
+			t.Fatal(err)
+		}
+		if cfg.keepWorkspaces {
+			t.Fatal("keepWorkspaces leaked into the next configure")
+		}
+	})
+
+	t.Run("debug flag", func(t *testing.T) {
+		t.Cleanup(resetConfig)
+		if err := configure(RunOptions{Backend: "stub", Debug: true}); err != nil {
+			t.Fatal(err)
+		}
+		if !cfg.debug {
+			t.Error("configure(Debug: true) did not set cfg.debug")
+		}
+		if err := configure(RunOptions{Backend: "stub"}); err != nil {
+			t.Fatal(err)
+		}
+		if cfg.debug {
+			t.Error("configure without Debug left cfg.debug set")
+		}
+	})
 }
 
 // evaluateProgressive goes through the same executeCase path.

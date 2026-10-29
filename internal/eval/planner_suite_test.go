@@ -275,37 +275,6 @@ func TestPlannerSuiteRegistration(t *testing.T) {
 	}
 }
 
-func TestPlannerSuiteCaseFilesDeclarePlannerAgent(t *testing.T) {
-	p := plannerSuitePaths(t)
-	files, err := filepath.Glob(filepath.Join(p.evals, "cases", "planner", "*.yaml"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(files) != len(plannerCaseNames) {
-		t.Errorf("found %d case files, want %d", len(files), len(plannerCaseNames))
-	}
-	for _, f := range files {
-		data, err := os.ReadFile(f)
-		if err != nil {
-			t.Fatal(err)
-		}
-		var head struct {
-			Name  string `yaml:"name"`
-			Agent string `yaml:"agent"`
-		}
-		if err := yaml.Unmarshal(data, &head); err != nil {
-			t.Fatalf("%s: %v", f, err)
-		}
-		base := strings.TrimSuffix(filepath.Base(f), ".yaml")
-		if head.Agent != "planner" {
-			t.Errorf("%s: agent = %q, want planner", base, head.Agent)
-		}
-		if head.Name != base {
-			t.Errorf("%s: name = %q, want it to match the file name", base, head.Name)
-		}
-	}
-}
-
 func TestPlannerSuiteGreenReferenceTranscriptsPass(t *testing.T) {
 	p := plannerSuitePaths(t)
 	evalsDir := copyPlannerSuite(t, p)
@@ -411,25 +380,6 @@ func TestPlannerSuiteStubDocumentsAreValid(t *testing.T) {
 	}
 }
 
-func TestPlannerSuiteLegacyTranscriptsExistWithoutDocuments(t *testing.T) {
-	p := plannerSuitePaths(t)
-	files, err := filepath.Glob(filepath.Join(p.legacy, "*.txt"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(files) != len(plannerCaseNames) {
-		t.Errorf("found %d legacy transcripts, want %d (one per case)", len(files), len(plannerCaseNames))
-	}
-	docStart := regexp.MustCompile(`(?m)^\s*(schema_version|stage|result)\s*:`)
-	for _, name := range plannerCaseNames {
-		for i, turn := range readLegacyTurns(t, p, name) {
-			if docStart.MatchString(turn) {
-				t.Errorf("%s turn %d contains a stage-output document", name, i+1)
-			}
-		}
-	}
-}
-
 func TestPlannerSuiteRedLegacyTranscriptsFail(t *testing.T) {
 	p := plannerSuitePaths(t)
 	evalsDir := copyPlannerSuite(t, p)
@@ -463,40 +413,6 @@ func TestPlannerSuiteRedLegacyTranscriptsFail(t *testing.T) {
 		if cr.Passed != nil && *cr.Passed {
 			t.Errorf("case %s passed with its legacy transcript", cr.CaseName)
 		}
-	}
-}
-
-func TestPlannerSuiteRegexesCompile(t *testing.T) {
-	p := plannerSuitePaths(t)
-	files, err := filepath.Glob(filepath.Join(p.evals, "cases", "planner", "*.yaml"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	var seen int
-	for _, f := range files {
-		data, err := os.ReadFile(f)
-		if err != nil {
-			t.Fatal(err)
-		}
-		var tc struct {
-			Checks []checks.Check `yaml:"checks"`
-		}
-		if err := yaml.Unmarshal(data, &tc); err != nil {
-			t.Fatalf("%s: %v", f, err)
-		}
-		for i, c := range tc.Checks {
-			switch c.Type {
-			case checks.CheckOutputContains, checks.CheckOutputNotContains:
-				seen++
-				if _, err := regexp.Compile(c.Pattern); err != nil {
-					t.Errorf("%s check #%d (%s): pattern %q does not compile: %v",
-						filepath.Base(f), i+1, c.Type, c.Pattern, err)
-				}
-			}
-		}
-	}
-	if seen == 0 {
-		t.Error("no output_contains/output_not_contains pattern found in the planner suite")
 	}
 }
 

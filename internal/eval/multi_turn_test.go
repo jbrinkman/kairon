@@ -99,30 +99,40 @@ func TestMultiTurnProducesTurnOutputsInOrder(t *testing.T) {
 
 func TestMultiTurnClassicCaseHasNoTurnFields(t *testing.T) {
 	execEnv(t, false)
+	// The recording backend wraps the stub, so the output stays "done".
+	rb := useRecordingBackend(t)
 	var out bytes.Buffer
 	cr := executeCase(execRubric(), stubCase("classic", "", "", "done"), nil, &out, false)
 
-	if cr.ActualOutput != "done" {
-		t.Fatalf("ActualOutput = %q\n%s", cr.ActualOutput, out.String())
-	}
-	if cr.TurnOutputs != nil {
-		t.Errorf("TurnOutputs = %q, want nil for a classic case", cr.TurnOutputs)
-	}
-	data, err := json.Marshal(cr)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(string(data), "turn_outputs") || strings.Contains(string(data), `"turn"`) {
-		t.Errorf("classic result JSON has turn fields: %s", data)
-	}
-	if strings.Contains(out.String(), "turn 1/1") {
-		t.Errorf("classic case prints turn progress:\n%s", out.String())
-	}
-	for _, c := range cr.Calls {
-		if c.Turn != 0 {
-			t.Errorf("call %+v has Turn set for a classic case", c)
+	t.Run("no turn fields", func(t *testing.T) {
+		if cr.ActualOutput != "done" {
+			t.Fatalf("ActualOutput = %q\n%s", cr.ActualOutput, out.String())
 		}
-	}
+		if cr.TurnOutputs != nil {
+			t.Errorf("TurnOutputs = %q, want nil for a classic case", cr.TurnOutputs)
+		}
+		data, err := json.Marshal(cr)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(data), "turn_outputs") || strings.Contains(string(data), `"turn"`) {
+			t.Errorf("classic result JSON has turn fields: %s", data)
+		}
+		if strings.Contains(out.String(), "turn 1/1") {
+			t.Errorf("classic case prints turn progress:\n%s", out.String())
+		}
+		for _, c := range cr.Calls {
+			if c.Turn != 0 {
+				t.Errorf("call %+v has Turn set for a classic case", c)
+			}
+		}
+	})
+
+	t.Run("turn zero request", func(t *testing.T) {
+		if len(rb.reqs) != 1 || rb.reqs[0].Turn != 0 || rb.reqs[0].Prompt != "do it" {
+			t.Fatalf("reqs = %+v", rb.reqs)
+		}
+	})
 }
 
 func TestMultiTurnBackendSeesTurnIndexAndOnlyThatTurnsMessage(t *testing.T) {
@@ -155,16 +165,6 @@ func TestMultiTurnBackendSeesTurnIndexAndOnlyThatTurnsMessage(t *testing.T) {
 	}
 	if rb.reqs[1].Prompt != "MSG-TWO" || rb.reqs[2].Prompt != "MSG-THREE" {
 		t.Errorf("later turns must be sent verbatim: %q, %q", rb.reqs[1].Prompt, rb.reqs[2].Prompt)
-	}
-}
-
-func TestMultiTurnClassicCaseSendsTurnZero(t *testing.T) {
-	execEnv(t, false)
-	rb := useRecordingBackend(t)
-	var out bytes.Buffer
-	executeCase(execRubric(), stubCase("classic", "", "", "done"), nil, &out, false)
-	if len(rb.reqs) != 1 || rb.reqs[0].Turn != 0 || rb.reqs[0].Prompt != "do it" {
-		t.Fatalf("reqs = %+v", rb.reqs)
 	}
 }
 
