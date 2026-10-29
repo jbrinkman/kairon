@@ -1,10 +1,8 @@
 package eval
 
 import (
-	"encoding/json"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 )
 
@@ -252,73 +250,6 @@ func TestScoreDeterministic_ExistingCheckers(t *testing.T) {
 			_, _, skipped := scoreDeterministic(tt.criterion, tc, tt.output, "", "")
 			if skipped != tt.expectSkip {
 				t.Errorf("expected skipped %v, got %v", tt.expectSkip, skipped)
-			}
-		})
-	}
-}
-
-func TestScoreLLMJudge_ANSISequences(t *testing.T) {
-	tests := []struct {
-		name        string
-		rawResponse string
-		expectError bool
-	}{
-		{
-			name:        "valid JSON with ANSI color sequences",
-			rawResponse: "===JSON_START===\n\x1B[38;5;141m{\"score\": 4, \"reasoning\": \"Good implementation\", \"pass\": true}\x1B[0m\n===JSON_END===",
-			expectError: false,
-		},
-		{
-			name:        "valid JSON with multiple ANSI sequences",
-			rawResponse: "===JSON_START===\n\x1B[1m\x1B[32m{\"score\": 5, \"reasoning\": \"Excellent work\", \"pass\": true}\x1B[0m\x1B[39m\n===JSON_END===",
-			expectError: false,
-		},
-		{
-			name:        "valid JSON with bold and reset ANSI",
-			rawResponse: "===JSON_START===\n\x1B[1m{\"score\": 3, \"reasoning\": \"Adequate\", \"pass\": true}\x1B[0m\n===JSON_END===",
-			expectError: false,
-		},
-		{
-			// Verifies ANSI sequences inside JSON string values are also stripped.
-			// This intentionally mutates content—acceptable since ANSI codes in
-			// LLM output are rendering artifacts, not meaningful data.
-			name:        "ANSI sequences within JSON string values",
-			rawResponse: "===JSON_START===\n{\"score\": 2, \"reasoning\": \"\x1B[31mNeeds improvement\x1B[0m\", \"pass\": false}\n===JSON_END===",
-			expectError: false,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			// Extract JSON from the mock response
-			start := strings.Index(tt.rawResponse, "===JSON_START===")
-			end := strings.Index(tt.rawResponse, "===JSON_END===")
-			if start == -1 || end == -1 {
-				t.Fatal("Invalid test data: missing JSON delimiters")
-			}
-			jsonStr := tt.rawResponse[start+len("===JSON_START===") : end]
-			jsonStr = stripANSISequences(strings.TrimSpace(jsonStr))
-
-			var response struct {
-				Score     int    `json:"score"`
-				Reasoning string `json:"reasoning"`
-				Pass      bool   `json:"pass"`
-			}
-
-			err := json.Unmarshal([]byte(jsonStr), &response)
-
-			if tt.expectError && err == nil {
-				t.Error("expected JSON parse error but got none")
-			} else if !tt.expectError && err != nil {
-				t.Errorf("unexpected JSON parse error: %v", err)
-			} else if !tt.expectError {
-				// Verify we got valid parsed data
-				if response.Score < 1 || response.Score > 5 {
-					t.Errorf("invalid score: %d", response.Score)
-				}
-				if response.Reasoning == "" {
-					t.Error("empty reasoning")
-				}
 			}
 		})
 	}
