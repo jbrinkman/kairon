@@ -168,6 +168,52 @@ func TestBuildContainerMountsKiroCLI(t *testing.T) {
 	}
 }
 
+// prepareBaseImage resolves the kairon binary first, so a missing binary
+// fails before any image manager is created or any case starts.
+func TestPrepareBaseImageFailsFastWithoutKaironBinary(t *testing.T) {
+	orig := resolveLinuxBinary
+	var gotPlatform string
+	resolveLinuxBinary = func(p string) (string, error) {
+		gotPlatform = p
+		return "", errors.New("no binary: set KAIRON_SANDBOX_BINARY")
+	}
+	t.Cleanup(func() { resolveLinuxBinary = orig })
+
+	cc := testContainerConfig()
+	cc.Platform = "linux/arm64"
+	im, err := prepareBaseImage(cc)
+	if err == nil {
+		t.Fatal("expected an error when the kairon binary cannot be resolved")
+	}
+	if im != nil {
+		t.Errorf("image manager = %v, want nil (must not be created)", im)
+	}
+	for _, want := range []string{"KAIRON_SANDBOX_BINARY", "linux/arm64"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("err = %v, want it to contain %q", err, want)
+		}
+	}
+	if gotPlatform != "linux/arm64" {
+		t.Errorf("resolver platform = %q, want linux/arm64", gotPlatform)
+	}
+	if cc.ImageManager != nil || cc.CachedImageName != "" {
+		t.Errorf("config must be untouched on failure: %+v", cc)
+	}
+}
+
+func TestPrepareBaseImageNativeRunSkipsPreflight(t *testing.T) {
+	orig := resolveLinuxBinary
+	resolveLinuxBinary = func(string) (string, error) {
+		t.Error("native run must not resolve the kairon binary")
+		return "", errors.New("unexpected")
+	}
+	t.Cleanup(func() { resolveLinuxBinary = orig })
+	im, err := prepareBaseImage(nil)
+	if im != nil || err != nil {
+		t.Errorf("prepareBaseImage(nil) = %v, %v; want nil, nil", im, err)
+	}
+}
+
 func TestBuildContainerMountsErrors(t *testing.T) {
 	ws := testWorkspaceDirs(t)
 	cc := testContainerConfig()
