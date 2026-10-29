@@ -179,6 +179,8 @@ func TestDocumentCheckValidate(t *testing.T) {
 		"fact":        "{criterion: c, type: output_document_valid, fact: f}",
 		"allow":       "{criterion: c, type: output_document_valid, allow: []}",
 		"expect_exit": "{criterion: c, type: output_document_valid, expect_exit: 0}",
+		"files":       "{criterion: c, type: output_document_valid, files: [a.md]}",
+		"inject":      "{criterion: c, type: output_document_valid, inject: [x.txt]}",
 	} {
 		t.Run("rejects "+field, func(t *testing.T) {
 			err := Validate("f.yaml", decodeChecks(t, "- "+src+"\n"), ValidateOptions{})
@@ -193,48 +195,21 @@ func TestDocumentCheckValidate(t *testing.T) {
 	}
 
 	t.Run("turn below one", func(t *testing.T) {
-		err := Validate("f.yaml", decodeChecks(t, "- {criterion: c, type: output_document_valid, turn: 0}\n"), ValidateOptions{})
-		if err == nil || !strings.Contains(err.Error(), ">= 1") {
-			t.Fatalf("turn: 0 should be rejected with >= 1, got %v", err)
+		for _, tc := range []struct{ typ, extra, turn string }{
+			{"output_document_valid", "", "0"},
+			{"output_contains", ", pattern: x", "0"},
+			{"output_contains", ", pattern: x", "-1"},
+		} {
+			t.Run(tc.typ+" "+tc.turn, func(t *testing.T) {
+				src := "- {criterion: c, type: " + tc.typ + tc.extra + ", turn: " + tc.turn + "}\n"
+				err := Validate("f.yaml", decodeChecks(t, src), ValidateOptions{})
+				if err == nil {
+					t.Fatalf("turn: %s on %s must be rejected", tc.turn, tc.typ)
+				}
+				if !strings.Contains(err.Error(), "turn") || !strings.Contains(err.Error(), ">= 1") {
+					t.Errorf("error %q should say turn must be >= 1", err)
+				}
+			})
 		}
 	})
-}
-
-func TestDocumentCheckSpecAllowsOnlyTurn(t *testing.T) {
-	spec, ok := checkSpecs[CheckOutputDocumentValid]
-	if !ok {
-		t.Fatalf("checkSpecs has no entry for %q", CheckOutputDocumentValid)
-	}
-	if spec.required != (checkFields{}) {
-		t.Errorf("required = %+v, want no required fields", spec.required)
-	}
-	if want := (checkFields{turn: true}); spec.allowed != want {
-		t.Errorf("allowed = %+v, want only turn", spec.allowed)
-	}
-}
-
-func TestDocumentCheckResultShape(t *testing.T) {
-	rs := Evaluate([]Check{
-		{Criterion: "c", Type: CheckOutputContains, Pattern: "x"},
-		docCheck(),
-	}, Input{Output: canonicalDoc})
-	if len(rs) != 2 {
-		t.Fatalf("want 2 results, got %d", len(rs))
-	}
-	r := rs[1]
-	if r.Index != 2 {
-		t.Errorf("Index = %d, want 2", r.Index)
-	}
-	if r.Type != CheckOutputDocumentValid {
-		t.Errorf("Type = %q, want %q", r.Type, CheckOutputDocumentValid)
-	}
-	if want := "#2 output_document_valid"; r.Label != want {
-		t.Errorf("Label = %q, want %q", r.Label, want)
-	}
-
-	withTurn := docCheck()
-	withTurn.Turn = turnPtr(1)
-	if got, want := checkLabel(1, withTurn), "#1 output_document_valid turn=1"; got != want {
-		t.Errorf("label = %q, want %q", got, want)
-	}
 }

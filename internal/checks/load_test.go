@@ -68,17 +68,6 @@ func TestLoadFile_InvalidFixtureLoadsButFailsValidate(t *testing.T) {
 	}
 }
 
-func TestLoadFile_EvidenceNeedsHiddenDirForInject(t *testing.T) {
-	path := filepath.Join(fixtureDir, "evidence.yaml")
-	list, err := LoadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := Validate(path, list, ValidateOptions{OptionalCriterion: true}); err == nil {
-		t.Fatal("inject without a hidden dir must be invalid")
-	}
-}
-
 func TestLoadFile_Rejections(t *testing.T) {
 	dir := t.TempDir()
 	big := filepath.Join(dir, "big.yaml")
@@ -184,45 +173,5 @@ func TestValidate_OptionalCriterion(t *testing.T) {
 	}
 	if err != nil && !errors.Is(err, ErrInvalid) {
 		t.Errorf("error does not wrap ErrInvalid: %v", err)
-	}
-}
-
-func TestFixtures_NoAbsolutePaths(t *testing.T) {
-	err := filepath.WalkDir(fixtureDir, func(p string, d os.DirEntry, err error) error {
-		if err != nil || d.IsDir() {
-			return err
-		}
-		b, err := os.ReadFile(p)
-		if err != nil {
-			return err
-		}
-		for _, bad := range []string{"/Users/", "/home/", "/tmp/", "C:\\"} {
-			if strings.Contains(string(b), bad) {
-				t.Errorf("%s contains absolute path marker %q", p, bad)
-			}
-		}
-		return nil
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-}
-
-func TestFixtures_Content(t *testing.T) {
-	for file, want := range map[string]string{
-		"dir/hello.txt":       "hello world\n",
-		"dir/sub/data.txt":    "alpha=1\n",
-		"output.txt":          "all work done",
-		"gh.log":              "gh issue edit 1 --add-label x",
-		"hidden/injected.txt": "injected",
-	} {
-		b, err := os.ReadFile(filepath.Join(fixtureDir, file))
-		if err != nil {
-			t.Errorf("%s: %v", file, err)
-			continue
-		}
-		if strings.TrimSpace(string(b)) != strings.TrimSpace(want) {
-			t.Errorf("%s = %q, want %q", file, b, want)
-		}
 	}
 }

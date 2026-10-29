@@ -102,15 +102,27 @@ func TestBuildYesNoPromptTranscriptOrderAndFences(t *testing.T) {
 	if !strings.Contains(got, "\n===BEGIN FILE a.md===\nAAA\n===END FILE a.md===\n") {
 		t.Errorf("file block missing or changed:\n%s", got)
 	}
-}
 
-func TestBuildYesNoPromptTranscriptOmitsSingleTurnBlocks(t *testing.T) {
-	got := BuildYesNoPrompt(twoTurnQuery())
-	for _, banned := range []string{"AGENT FINAL OUTPUT", "BEGIN INPUT GIVEN TO THE AGENT", "SHOULD-NOT-APPEAR-INPUT"} {
-		if strings.Contains(got, banned) {
-			t.Errorf("transcript prompt contains %q:\n%s", banned, got)
+	t.Run("omits-single-turn-blocks", func(t *testing.T) {
+		for _, banned := range []string{"AGENT FINAL OUTPUT", "BEGIN INPUT GIVEN TO THE AGENT", "SHOULD-NOT-APPEAR-INPUT"} {
+			if strings.Contains(got, banned) {
+				t.Errorf("transcript prompt contains %q:\n%s", banned, got)
+			}
 		}
-	}
+	})
+
+	t.Run("marker-count", func(t *testing.T) {
+		// Bodies are inserted verbatim, exactly like the existing INPUT / OUTPUT /
+		// FILE fences: a body containing a literal end marker is not escaped (a
+		// documented limitation). The builder itself emits exactly one BEGIN and
+		// one END per transcript entry.
+		if n := strings.Count(got, "===BEGIN TURN "); n != 4 {
+			t.Errorf("BEGIN TURN markers = %d, want 4", n)
+		}
+		if n := strings.Count(got, "===END TURN "); n != 4 {
+			t.Errorf("END TURN markers = %d, want 4", n)
+		}
+	})
 }
 
 func TestBuildYesNoPromptTranscriptTurnOneExcludesTurnTwo(t *testing.T) {
@@ -130,19 +142,5 @@ func TestBuildYesNoPromptTranscriptTurnOneExcludesTurnTwo(t *testing.T) {
 		if strings.Contains(got, banned) {
 			t.Errorf("turn-1 prompt contains %q:\n%s", banned, got)
 		}
-	}
-}
-
-func TestBuildYesNoPromptTranscriptMarkerCount(t *testing.T) {
-	// Bodies are inserted verbatim, exactly like the existing INPUT / OUTPUT /
-	// FILE fences: a body containing a literal end marker is not escaped (a
-	// documented limitation). The builder itself emits exactly one BEGIN and
-	// one END per transcript entry.
-	got := BuildYesNoPrompt(twoTurnQuery())
-	if n := strings.Count(got, "===BEGIN TURN "); n != 4 {
-		t.Errorf("BEGIN TURN markers = %d, want 4", n)
-	}
-	if n := strings.Count(got, "===END TURN "); n != 4 {
-		t.Errorf("END TURN markers = %d, want 4", n)
 	}
 }

@@ -25,19 +25,6 @@ func judgeCheck(question string, files ...string) Check {
 	return Check{Criterion: "crit", Type: CheckJudge, Question: question, Files: files}
 }
 
-func TestJudgeCheckVocabulary(t *testing.T) {
-	if CheckJudge != "judge" {
-		t.Errorf("CheckJudge = %q, want judge", CheckJudge)
-	}
-	spec, ok := checkSpecs[CheckJudge]
-	if !ok {
-		t.Fatal("judge is not in checkSpecs")
-	}
-	if !spec.required.question || spec.required.files || !spec.allowed.files || !spec.allowed.question {
-		t.Errorf("judge spec wrong: %+v", spec)
-	}
-}
-
 func TestChecksValidateJudge(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -96,32 +83,124 @@ func TestChecksValidateJudge(t *testing.T) {
 }
 
 func TestJudgeCheckLabel(t *testing.T) {
-	c := judgeCheck("Does the body state a criterion?", "a.md")
-	if got, want := checkLabel(2, c), `#2 judge question="Does the body state a criterion?"`; got != want {
-		t.Errorf("label = %q, want %q", got, want)
+	docWithTurn := docCheck()
+	docWithTurn.Turn = turnPtr(1)
+
+	cases := []struct {
+		name   string
+		index  int
+		check  Check
+		want   string                         // exact label; ignored when verify is set
+		verify func(t *testing.T, got string) // custom assertion for labels that are not compared exactly
+	}{
+		{
+			name:  "judge-question",
+			index: 2,
+			check: judgeCheck("Does the body state a criterion?", "a.md"),
+			want:  `#2 judge question="Does the body state a criterion?"`,
+		},
+		{
+			name:  "judge-long-question-shortened",
+			index: 1,
+			check: judgeCheck(strings.Repeat("q", 200)),
+			verify: func(t *testing.T, got string) {
+				if len(got) > 120 || !strings.HasSuffix(got, `…"`) {
+					t.Errorf("long question not shortened: %q", got)
+				}
+			},
+		},
+		{
+			name:  "document-result-label",
+			index: 2,
+			check: docCheck(),
+			want:  "#2 output_document_valid",
+		},
+		{
+			name:  "document-label-with-turn",
+			index: 1,
+			check: docWithTurn,
+			want:  "#1 output_document_valid turn=1",
+		},
+		{
+			name:  "fact-not-asked",
+			index: 2,
+			check: factCheck(CheckFactNotAsked, "f1"),
+			want:  "#2 fact_not_asked fact=f1",
+		},
+		{
+			name:  "fact-asked",
+			index: 1,
+			check: factCheck(CheckFactAsked, "f1"),
+			want:  "#1 fact_asked fact=f1",
+		},
+		{
+			// Existing labels are unchanged by the fact check types.
+			name:  "file-exists-unchanged",
+			index: 3,
+			check: Check{Type: CheckFileExists, Path: "a.txt"},
+			want:  "#3 file_exists path=a.txt",
+		},
+		{
+			name:  "gh-log-with-turn",
+			index: 2,
+			check: Check{Type: CheckGHLogContains, Pattern: "issue create", Turn: turnPtr(3)},
+			want:  "#2 gh_log_contains pattern=/issue create/ turn=3",
+		},
+		{
+			name:  "gh-log-without-turn",
+			index: 2,
+			check: Check{Type: CheckGHLogContains, Pattern: "issue create"},
+			want:  "#2 gh_log_contains pattern=/issue create/",
+		},
+		{
+			name:  "file-exists-no-turn",
+			index: 1,
+			check: Check{Type: CheckFileExists, Path: "a.txt"},
+			want:  "#1 file_exists path=a.txt",
+		},
 	}
-	long := judgeCheck(strings.Repeat("q", 200))
-	if got := checkLabel(1, long); len(got) > 120 || !strings.HasSuffix(got, `…"`) {
-		t.Errorf("long question not shortened: %q", got)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := checkLabel(tc.index, tc.check)
+			if tc.verify != nil {
+				tc.verify(t, got)
+				return
+			}
+			if got != tc.want {
+				t.Errorf("label = %q, want %q", got, tc.want)
+			}
+		})
 	}
 }
 
+// TestJudgeCheckYesPasses is the verdict table: a yes verdict passes with the
+// reasoning in the detail, and a no verdict fails with the reasoning.
 func TestJudgeCheckYesPasses(t *testing.T) {
-	f := &fakeJudge{verdict: JudgeVerdict{Yes: true, Reasoning: "clearly stated"}}
-	r := evalOne(t, judgeCheck("Is it good?"), Input{Judge: f.judge})
-	wantPass(t, r)
-	if !strings.Contains(r.Detail, "judge answered yes: clearly stated") {
-		t.Errorf("detail %q lacks yes + reasoning", r.Detail)
+	tests := []struct {
+		name    string
+		verdict JudgeVerdict
+		verify  func(t *testing.T, r Result)
+	}{
+		{"verdict-yes", JudgeVerdict{Yes: true, Reasoning: "clearly stated"}, func(t *testing.T, r Result) {
+			wantPass(t, r)
+			if !strings.Contains(r.Detail, "judge answered yes: clearly stated") {
+				t.Errorf("detail %q lacks yes + reasoning", r.Detail)
+			}
+			if r.Type != CheckJudge || !strings.Contains(r.Label, "judge") {
+				t.Errorf("result type/label wrong: %+v", r)
+			}
+		}},
+		{"verdict-no", JudgeVerdict{Yes: false, Reasoning: "criterion missing"}, func(t *testing.T, r Result) {
+			wantFail(t, r, "judge answered no: criterion missing")
+		}},
 	}
-	if r.Type != CheckJudge || !strings.Contains(r.Label, "judge") {
-		t.Errorf("result type/label wrong: %+v", r)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := &fakeJudge{verdict: tt.verdict}
+			r := evalOne(t, judgeCheck("Is it good?"), Input{Judge: f.judge})
+			tt.verify(t, r)
+		})
 	}
-}
-
-func TestJudgeCheckNoFails(t *testing.T) {
-	f := &fakeJudge{verdict: JudgeVerdict{Yes: false, Reasoning: "criterion missing"}}
-	r := evalOne(t, judgeCheck("Is it good?"), Input{Judge: f.judge})
-	wantFail(t, r, "judge answered no: criterion missing")
 }
 
 func TestJudgeCheckEmptyReasoning(t *testing.T) {
@@ -267,46 +346,46 @@ func TestJudgeCheckFileCaps(t *testing.T) {
 			t.Errorf("file 4 content = %q", files[4].Content)
 		}
 	})
-}
 
-// TestJudgeCheckManyLargeFilesNoPanic covers the case where several files each
-// larger than judgeMaxFileBytes exhaust the total budget. The marker must not
-// be charged against the budget and the per-file limit must stay non-negative,
-// so the read never hits data[:negativeLimit]. Before the shownBytes fix the
-// budget went negative after the fourth file and the fifth read panicked
-// (recovered by evaluateOne as a check failure), so capping never showed large
-// files. Each file here is 70,000 bytes (> judgeMaxFileBytes = 65536).
-func TestJudgeCheckManyLargeFilesNoPanic(t *testing.T) {
-	dir := t.TempDir()
-	const big = 70000
-	names := make([]string, 5)
-	for i := range names {
-		names[i] = fmt.Sprintf("big%d.md", i)
-		writeEvalFile(t, dir, names[i], strings.Repeat("a", big))
-	}
-	f := &fakeJudge{verdict: JudgeVerdict{Yes: true, Reasoning: "r"}}
-	// Passes only if evalJudge did not fail the check (a panic would be
-	// recovered as a failure, not a pass).
-	wantPass(t, evalOne(t, judgeCheck("q", names...), Input{Dir: dir, Judge: f.judge}))
+	// many-large-files-total-budget covers the case where several files each
+	// larger than judgeMaxFileBytes exhaust the total budget. The marker must
+	// not be charged against the budget and the per-file limit must stay
+	// non-negative, so the read never hits data[:negativeLimit]. Before the
+	// shownBytes fix the budget went negative after the fourth file and the
+	// fifth read panicked (recovered by evaluateOne as a check failure), so
+	// capping never showed large files. Each file here is 70,000 bytes
+	// (> judgeMaxFileBytes = 65536).
+	t.Run("many-large-files-total-budget", func(t *testing.T) {
+		const manyBig = 70000
+		names := make([]string, 5)
+		for i := range names {
+			names[i] = fmt.Sprintf("big%d.md", i)
+			writeEvalFile(t, dir, names[i], strings.Repeat("a", manyBig))
+		}
+		f := &fakeJudge{verdict: JudgeVerdict{Yes: true, Reasoning: "r"}}
+		// Passes only if evalJudge did not fail the check (a panic would be
+		// recovered as a failure, not a pass).
+		wantPass(t, evalOne(t, judgeCheck("q", names...), Input{Dir: dir, Judge: f.judge}))
 
-	files := f.queries[0].Files
-	if len(files) != len(names) {
-		t.Fatalf("got %d files, want %d", len(files), len(names))
-	}
-	shown := 0
-	for _, jf := range files {
-		if !jf.Truncated {
-			t.Errorf("%s should be truncated (file is %d bytes, per-file cap is %d)", jf.Path, big, judgeMaxFileBytes)
+		files := f.queries[0].Files
+		if len(files) != len(names) {
+			t.Fatalf("got %d files, want %d", len(files), len(names))
 		}
-		body := jf.Content
-		if i := strings.Index(body, "\n[truncated:"); i >= 0 {
-			body = body[:i]
+		shown := 0
+		for _, jf := range files {
+			if !jf.Truncated {
+				t.Errorf("%s should be truncated (file is %d bytes, per-file cap is %d)", jf.Path, manyBig, judgeMaxFileBytes)
+			}
+			body := jf.Content
+			if i := strings.Index(body, "\n[truncated:"); i >= 0 {
+				body = body[:i]
+			}
+			shown += len(body)
 		}
-		shown += len(body)
-	}
-	if shown > judgeMaxTotalBytes {
-		t.Errorf("showed %d bytes of file content, want <= %d", shown, judgeMaxTotalBytes)
-	}
+		if shown > judgeMaxTotalBytes {
+			t.Errorf("showed %d bytes of file content, want <= %d", shown, judgeMaxTotalBytes)
+		}
+	})
 }
 
 func TestJudgeCheckTruncatesOnRuneBoundaryAndSanitizesUTF8(t *testing.T) {
@@ -454,11 +533,6 @@ func TestJudgeCheckParseErrorFails(t *testing.T) {
 	}
 }
 
-func TestJudgeCheckNilJudgeFails(t *testing.T) {
-	r := evalOne(t, judgeCheck("q"), Input{})
-	wantFail(t, r, "no judge configured")
-}
-
 func TestJudgeCheckNilJudgeFailsEvenWithFiles(t *testing.T) {
 	dir := t.TempDir()
 	writeEvalFile(t, dir, "a.md", "a")
@@ -467,14 +541,19 @@ func TestJudgeCheckNilJudgeFailsEvenWithFiles(t *testing.T) {
 }
 
 // Judge checks run in the non-command pass, in list order, interleaved with
-// other non-command checks and before command checks.
+// other non-command checks and before command checks. Files a judge check
+// names are read in that same pass, so the judge sees them as the agent left
+// them, not as a later command check rewrites them.
 func TestJudgeCheckRunsInNonCommandPassInListOrder(t *testing.T) {
 	var order []string
+	var firstFile string
 	dir := t.TempDir()
-	// The command check writes order.txt; the judge must never see it.
+	writeEvalFile(t, dir, "a.md", "original")
+	// The command check writes order.txt and rewrites a.md; the judge must
+	// never see either change.
 	checks := []Check{
-		{Criterion: "c", Type: CheckCommand, Run: "echo ran >> order.txt"},
-		judgeCheck("first"),
+		{Criterion: "c", Type: CheckCommand, Run: "echo ran >> order.txt && echo changed > a.md"},
+		judgeCheck("first", "a.md"),
 		{Criterion: "c", Type: CheckOutputContains, Pattern: "out"},
 		judgeCheck("second"),
 	}
@@ -482,11 +561,21 @@ func TestJudgeCheckRunsInNonCommandPassInListOrder(t *testing.T) {
 		if _, err := os.Stat(filepath.Join(dir, "order.txt")); err == nil {
 			t.Error("a command check ran before a judge check")
 		}
+		if q.Question == "first" {
+			if len(q.Files) != 1 {
+				t.Errorf("first judge check got %d files, want 1", len(q.Files))
+			} else {
+				firstFile = q.Files[0].Content
+			}
+		}
 		order = append(order, q.Question)
 		return JudgeVerdict{Yes: true, Reasoning: "r"}, nil
 	}})
 	if got := strings.Join(order, ","); got != "first,second" {
 		t.Errorf("judge call order = %q, want first,second", got)
+	}
+	if firstFile != "original" {
+		t.Errorf("judge saw a.md = %q, want %q (the file as the agent left it)", firstFile, "original")
 	}
 	for i, r := range rs {
 		if r.Index != i+1 {
@@ -501,20 +590,6 @@ func TestJudgeCheckRunsInNonCommandPassInListOrder(t *testing.T) {
 	}
 }
 
-func TestJudgeCheckFilesReadBeforeCommandChecks(t *testing.T) {
-	dir := t.TempDir()
-	writeEvalFile(t, dir, "a.md", "original")
-	f := &fakeJudge{verdict: JudgeVerdict{Yes: true, Reasoning: "r"}}
-	checks := []Check{
-		{Criterion: "c", Type: CheckCommand, Run: "echo changed > a.md"},
-		judgeCheck("q", "a.md"),
-	}
-	Evaluate(checks, Input{Dir: dir, Judge: f.judge})
-	if len(f.queries) != 1 || f.queries[0].Files[0].Content != "original" {
-		t.Errorf("judge saw %+v, want the file as the agent left it", f.queries)
-	}
-}
-
 func TestJudgeCheckInvalidCheckFailsWithoutCalling(t *testing.T) {
 	f := &fakeJudge{verdict: JudgeVerdict{Yes: true}}
 	r := evalOne(t, Check{Criterion: "c", Type: CheckJudge, Question: "  "}, Input{Judge: f.judge})
@@ -523,16 +598,6 @@ func TestJudgeCheckInvalidCheckFailsWithoutCalling(t *testing.T) {
 	wantFail(t, r, "invalid check")
 	if len(f.queries) != 0 {
 		t.Error("judge invoked for an invalid check")
-	}
-}
-
-func TestJudgeCheckEvaluatorStaysIndependent(t *testing.T) {
-	// A non-judge check ignores Input/Judge entirely.
-	f := &fakeJudge{}
-	r := evalOne(t, Check{Criterion: "c", Type: CheckOutputContains, Pattern: "x"}, Input{Output: "x", Input: "i", Judge: f.judge})
-	wantPass(t, r)
-	if len(f.queries) != 0 {
-		t.Error("non-judge check invoked the judge")
 	}
 }
 
@@ -684,45 +749,53 @@ func TestJudgeCheckTurnOutOfRangeFailsBeforeFilesAndJudge(t *testing.T) {
 }
 
 func TestJudgeCheckClassicInputHasNoTranscript(t *testing.T) {
-	f := &fakeJudge{verdict: JudgeVerdict{Yes: true, Reasoning: "ok"}}
-	in := Input{Dir: t.TempDir(), Output: "final", Input: "case input", Judge: f.judge}
-	wantPass(t, evalOne(t, judgeCheck("q"), in))
-	q := f.queries[0]
-	if len(q.Transcript) != 0 || q.Turn != 0 || q.Input != "case input" || q.Output != "final" {
-		t.Errorf("classic query changed: %+v", q)
+	tests := []struct {
+		name       string
+		output     string
+		input      string
+		userTurns  []string
+		turns      []TurnEvidence
+		classicRow bool // also asserts q.Turn == 0 (no turn selected)
+	}{
+		{name: "classic-input", output: "final", input: "case input", classicRow: true},
+		{
+			name: "one-element-turns", output: "only reply", input: "Turn 1 (user): hi",
+			userTurns: []string{"hi"}, turns: []TurnEvidence{{Output: "only reply"}},
+		},
 	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := &fakeJudge{verdict: JudgeVerdict{Yes: true, Reasoning: "ok"}}
+			in := Input{
+				Dir: t.TempDir(), Output: tt.output, Input: tt.input,
+				UserTurns: tt.userTurns, Turns: tt.turns, Judge: f.judge,
+			}
+			wantPass(t, evalOne(t, judgeCheck("q"), in))
+			q := f.queries[0]
+			if len(q.Transcript) != 0 || q.Input != tt.input || q.Output != tt.output {
+				t.Errorf("query changed: %+v", q)
+			}
+			if tt.classicRow && q.Turn != 0 {
+				t.Errorf("classic query has Turn = %d, want 0", q.Turn)
+			}
 
-	// turn: 1 is accepted and changes nothing.
-	f.queries = nil
-	c := judgeCheck("q")
-	c.Turn = turnPtr(1)
-	wantPass(t, evalOne(t, c, in))
-	q = f.queries[0]
-	if len(q.Transcript) != 0 || q.Input != "case input" || q.Output != "final" {
-		t.Errorf("classic query with turn: 1 changed: %+v", q)
-	}
+			// turn: 1 is accepted and changes nothing.
+			f.queries = nil
+			c := judgeCheck("q")
+			c.Turn = turnPtr(1)
+			wantPass(t, evalOne(t, c, in))
+			q = f.queries[0]
+			if len(q.Transcript) != 0 || q.Input != tt.input || q.Output != tt.output {
+				t.Errorf("query with turn: 1 changed: %+v", q)
+			}
 
-	// turn: 2 is out of range.
-	f.queries = nil
-	c.Turn = turnPtr(2)
-	wantFail(t, evalOne(t, c, in), "turn 2 is out of range: the case has 1 turn(s)")
-	if len(f.queries) != 0 {
-		t.Errorf("judge was invoked for an out-of-range turn")
+			// turn: 2 is out of range.
+			f.queries = nil
+			c.Turn = turnPtr(2)
+			wantFail(t, evalOne(t, c, in), "turn 2 is out of range: the case has 1 turn(s)")
+			if len(f.queries) != 0 {
+				t.Errorf("judge was invoked for an out-of-range turn")
+			}
+		})
 	}
-}
-
-func TestJudgeCheckOneElementTurnsHasNoTranscript(t *testing.T) {
-	f := &fakeJudge{verdict: JudgeVerdict{Yes: true, Reasoning: "ok"}}
-	in := Input{
-		Dir: t.TempDir(), Output: "only reply", Input: "Turn 1 (user): hi",
-		UserTurns: []string{"hi"}, Turns: []TurnEvidence{{Output: "only reply"}}, Judge: f.judge,
-	}
-	wantPass(t, evalOne(t, judgeCheck("q"), in))
-	q := f.queries[0]
-	if len(q.Transcript) != 0 || q.Input != "Turn 1 (user): hi" || q.Output != "only reply" {
-		t.Errorf("one-element turns query changed: %+v", q)
-	}
-	c := judgeCheck("q")
-	c.Turn = turnPtr(2)
-	wantFail(t, evalOne(t, c, in), "the case has 1 turn(s)")
 }

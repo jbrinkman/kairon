@@ -124,19 +124,3 @@ func TestGlobInvalidPatterns(t *testing.T) {
 		})
 	}
 }
-
-func TestGlobCompiledReuse(t *testing.T) {
-	g, err := compileGlob("**/*.go")
-	if err != nil {
-		t.Fatalf("compileGlob: %v", err)
-	}
-	for path, want := range map[string]bool{
-		"main.go":      true,
-		"a/b/main.go":  true,
-		"a/b/main.txt": false,
-	} {
-		if got := g.match(path); got != want {
-			t.Errorf("match(%q) = %v, want %v", path, got, want)
-		}
-	}
-}

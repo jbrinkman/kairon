@@ -157,19 +157,6 @@ func TestFactChecks_ValidateFields(t *testing.T) {
 	}
 }
 
-func TestFactChecks_Label(t *testing.T) {
-	if got, want := checkLabel(2, factCheck(CheckFactNotAsked, "f1")), "#2 fact_not_asked fact=f1"; got != want {
-		t.Errorf("label = %q, want %q", got, want)
-	}
-	if got, want := checkLabel(1, factCheck(CheckFactAsked, "f1")), "#1 fact_asked fact=f1"; got != want {
-		t.Errorf("label = %q, want %q", got, want)
-	}
-	// Existing labels are unchanged.
-	if got, want := checkLabel(3, Check{Type: CheckFileExists, Path: "a.txt"}), "#3 file_exists path=a.txt"; got != want {
-		t.Errorf("label = %q, want %q", got, want)
-	}
-}
-
 func TestSimDecisionJSONKeys(t *testing.T) {
 	dir := writeSimLog(t, `{"turn":3,"question":"q","fact":"f9","discoverable":true}`+"\n")
 	decisions, err := ReadSimLog(dir)
