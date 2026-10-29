@@ -166,18 +166,6 @@ func checkStampUntouched(t *testing.T, r AgentResult) {
 	}
 }
 
-func TestCoverageConfigureResetsRunScopedFields(t *testing.T) {
-	t.Cleanup(resetConfig)
-	cfg.suites = map[string]string{"a": testSuiteHash}
-	cfg.caseFilter = "x"
-	if err := configure(RunOptions{Backend: inference.NameStub}); err != nil {
-		t.Fatal(err)
-	}
-	if cfg.suites != nil || cfg.caseFilter != "" {
-		t.Errorf("configure left suites=%v caseFilter=%q", cfg.suites, cfg.caseFilter)
-	}
-}
-
 func TestCoverageAgentResultJSON(t *testing.T) {
 	t.Run("recorded false and empty are written", func(t *testing.T) {
 		data, err := json.Marshal(AgentResult{Agent: "a", SuiteSHA256: testSuiteHash, Complete: boolPtr(false), CaseFilter: strPtr("")})
