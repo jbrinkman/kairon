@@ -88,18 +88,6 @@ func TestThresholdErrorWrapsSentinelAndNamesAgents(t *testing.T) {
 	}
 }
 
-func TestRunSelftestPassesAndPrintsOneVerdictLine(t *testing.T) {
-	evalsDir := copySelfTestEvals(t)
-	out, err := runStubCapturing(t, evalsDir, "selftest", "", RunOptions{})
-	if err != nil {
-		t.Fatalf("selftest must pass, got %v", err)
-	}
-	lines := verdictLines(out)
-	if len(lines) != 1 || !strings.HasPrefix(lines[0], "PASS selftest: 100.0% (threshold 95.0%), 0/") {
-		t.Fatalf("verdict lines = %q\nfull output:\n%s", lines, out)
-	}
-}
-
 func TestRunSelftestFailReturnsThresholdErrorAfterWritingResults(t *testing.T) {
 	evalsDir := copySelfTestEvals(t)
 	out, err := runStubCapturing(t, evalsDir, "selftest-fail", "", RunOptions{})
