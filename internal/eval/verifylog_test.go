@@ -568,56 +568,55 @@ func TestVerifyLogFixtureRunsRecordCoverage(t *testing.T) {
 
 // ---------- score tolerance ----------
 
-func TestVerifyLogScoreTolerance(t *testing.T) {
+func TestVerifyLogBaselineScoreToleranceBoundary(t *testing.T) {
+	// The runs record baseline 60.0 (r0) and result 72.5 (r1). A claim within
+	// 0.1 of the recorded score passes; 60.1 against 60.0 is
+	// 0.10000000000000142 in float64 and must still pass as "exactly 0.1".
 	tests := []struct {
 		name    string
-		claimed string // result_score for r1 (recorded 72.5)
+		field   string // "baseline_score" or "result_score"
+		claimed string
 		wantErr bool
 	}{
-		{"exact", "72.5", false},
-		{"0.1 above passes", "72.6", false},
-		{"0.1 below passes", "72.4", false},
-		{"0.2 above fails", "72.7", true},
-		{"0.2 below fails", "72.3", true},
+		{"baseline_score 60.1 passes (0.1 away)", "baseline_score", "60.1", false},
+		{"baseline_score 60.2 fails (0.2 away)", "baseline_score", "60.2", true},
+		{"result_score 72.5 passes (exact)", "result_score", "72.5", false},
+		{"result_score 72.6 passes (0.1 above)", "result_score", "72.6", false},
+		{"result_score 72.4 passes (0.1 below)", "result_score", "72.4", false},
+		{"result_score 72.7 fails (0.2 above)", "result_score", "72.7", true},
+		{"result_score 72.3 fails (0.2 below)", "result_score", "72.3", true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			bs, rs := "60.0", "72.5"
+			if tt.field == "baseline_score" {
+				bs = tt.claimed
+			} else {
+				rs = tt.claimed
+			}
 			opts := vlSetup(t, map[string]string{
-				"iteration-00.md": vlDoc(vlFM(0, "2026-07-01", "prompt", "r0", "r1", "60.0", tt.claimed), vlBody),
+				"iteration-00.md": vlDoc(vlFM(0, "2026-07-01", "prompt", "r0", "r1", bs, rs), vlBody),
 			})
 			_, err := vlRunVerify(t, opts)
 			if !tt.wantErr {
 				if err != nil {
-					t.Fatalf("unexpected error: %v", err)
+					t.Fatalf("%s %s should pass: %v", tt.field, tt.claimed, err)
 				}
 				return
 			}
 			v := vlExpectOnly(t, err, "score-match", "iteration-00.md")
+			if tt.field == "baseline_score" {
+				if !strings.Contains(v.Message, "baseline_score") {
+					t.Errorf("message %q should name baseline_score", v.Message)
+				}
+				return
+			}
 			for _, s := range []string{"result_score", tt.claimed, "72.5", "r1"} {
 				if !strings.Contains(v.Message, s) {
 					t.Errorf("message %q should mention %q", v.Message, s)
 				}
 			}
 		})
-	}
-}
-
-func TestVerifyLogBaselineScoreToleranceBoundary(t *testing.T) {
-	// 60.1 against a recorded 60.0 is 0.10000000000000142 in float64; it must
-	// still pass as "exactly 0.1".
-	opts := vlSetup(t, map[string]string{
-		"iteration-00.md": vlDoc(vlFM(0, "2026-07-01", "prompt", "r0", "r1", "60.1", "72.5"), vlBody),
-	})
-	if _, err := vlRunVerify(t, opts); err != nil {
-		t.Fatalf("0.1 away should pass: %v", err)
-	}
-	opts = vlSetup(t, map[string]string{
-		"iteration-00.md": vlDoc(vlFM(0, "2026-07-01", "prompt", "r0", "r1", "60.2", "72.5"), vlBody),
-	})
-	_, err := vlRunVerify(t, opts)
-	v := vlExpectOnly(t, err, "score-match", "iteration-00.md")
-	if !strings.Contains(v.Message, "baseline_score") {
-		t.Errorf("message %q should name baseline_score", v.Message)
 	}
 }
 
@@ -1530,31 +1529,6 @@ func TestVerifyLogDefaultsAreUsed(t *testing.T) {
 
 // ---------- no-logs, min-iterations, options ----------
 
-func TestVerifyLogNoLogs(t *testing.T) {
-	t.Run("missing directory", func(t *testing.T) {
-		opts := vlSetup(t, nil)
-		opts.IterationsDir = filepath.Join(t.TempDir(), "absent")
-		_, err := vlRunVerify(t, opts)
-		vlExpectOnly(t, err, "no-logs", "")
-	})
-	t.Run("empty directory", func(t *testing.T) {
-		opts := vlSetup(t, nil)
-		_, err := vlRunVerify(t, opts)
-		vlExpectOnly(t, err, "no-logs", vlAgent)
-	})
-	t.Run("only non-log files", func(t *testing.T) {
-		opts := vlSetup(t, map[string]string{"v2.md": "candidate", "notes.txt": "n"})
-		_, err := vlRunVerify(t, opts)
-		vlExpectOnly(t, err, "no-logs", vlAgent)
-	})
-	t.Run("reported even when min-iterations is 0", func(t *testing.T) {
-		opts := vlSetup(t, nil)
-		opts.MinIterations = 0
-		_, err := vlRunVerify(t, opts)
-		vlExpectOnly(t, err, "no-logs", "")
-	})
-}
-
 func TestVerifyLogMinIterations(t *testing.T) {
 	logs := map[string]string{"iteration-00.md": vlDoc(vlGoodFM(), vlBody)}
 	t.Run("below minimum", func(t *testing.T) {
@@ -1762,17 +1736,20 @@ func vlPhaseViolations(t *testing.T, logs map[string]string) []LogViolation {
 	return vlViolations(t, err)
 }
 
-func TestVerifyLogPhaseMissing(t *testing.T) {
-	fm := vlFMPhase("", 0, "2026-07-01", "prompt", "r0", "r1", "60.0", "72.5")
-	_, err := vlRunVerify(t, vlSetup(t, map[string]string{"iteration-00.md": vlDoc(fm, vlBody)}))
-	v := vlExpectOnly(t, err, "phase", "iteration-00.md")
-	vlMustMention(t, v.Message, "phase", "baseline", "red", "green", "refactor")
-}
-
 func TestVerifyLogPhaseUnknownValue(t *testing.T) {
-	for _, bad := range []string{"tweak", "Red", "3", `""`} {
-		t.Run(bad, func(t *testing.T) {
-			fm := vlFMPhase(bad, 0, "2026-07-01", "prompt", "r0", "r1", "60.0", "72.5")
+	tests := []struct {
+		name  string
+		phase string // "" leaves the phase key out of the front-matter
+	}{
+		{"tweak", "tweak"},
+		{"Red", "Red"},
+		{"3", "3"},
+		{`""`, `""`},
+		{"key absent", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fm := vlFMPhase(tt.phase, 0, "2026-07-01", "prompt", "r0", "r1", "60.0", "72.5")
 			_, err := vlRunVerify(t, vlSetup(t, map[string]string{"iteration-00.md": vlDoc(fm, vlBody)}))
 			v := vlExpectOnly(t, err, "phase", "iteration-00.md")
 			vlMustMention(t, v.Message, "phase", "baseline", "red", "green", "refactor")
@@ -2304,25 +2281,36 @@ func TestVerifyLogCycleIsSetLevel(t *testing.T) {
 }
 
 func TestVerifyLogCycleNoLogsReportsOnlyNoLogs(t *testing.T) {
-	t.Run("missing directory", func(t *testing.T) {
-		opts := vlSetup(t, nil)
-		opts.IterationsDir = filepath.Join(t.TempDir(), "absent")
-		opts.RequireCycle = true
-		_, err := vlRunVerify(t, opts)
-		vlExpectOnly(t, err, "no-logs", "")
-	})
-	t.Run("empty directory", func(t *testing.T) {
-		opts := vlSetup(t, nil)
-		opts.RequireCycle = true
-		_, err := vlRunVerify(t, opts)
-		vlExpectOnly(t, err, "no-logs", vlAgent)
-	})
-	t.Run("only non-log files", func(t *testing.T) {
-		opts := vlSetup(t, map[string]string{"notes.txt": "n"})
-		opts.RequireCycle = true
-		_, err := vlRunVerify(t, opts)
-		vlExpectOnly(t, err, "no-logs", vlAgent)
-	})
+	for _, requireCycle := range []bool{false, true} {
+		t.Run(fmt.Sprintf("RequireCycle=%t", requireCycle), func(t *testing.T) {
+			t.Run("missing directory", func(t *testing.T) {
+				opts := vlSetup(t, nil)
+				opts.IterationsDir = filepath.Join(t.TempDir(), "absent")
+				opts.RequireCycle = requireCycle
+				_, err := vlRunVerify(t, opts)
+				vlExpectOnly(t, err, "no-logs", "")
+			})
+			t.Run("empty directory", func(t *testing.T) {
+				opts := vlSetup(t, nil)
+				opts.RequireCycle = requireCycle
+				_, err := vlRunVerify(t, opts)
+				vlExpectOnly(t, err, "no-logs", vlAgent)
+			})
+			t.Run("only non-log files", func(t *testing.T) {
+				opts := vlSetup(t, map[string]string{"v2.md": "candidate", "notes.txt": "n"})
+				opts.RequireCycle = requireCycle
+				_, err := vlRunVerify(t, opts)
+				vlExpectOnly(t, err, "no-logs", vlAgent)
+			})
+			t.Run("reported even when min-iterations is 0", func(t *testing.T) {
+				opts := vlSetup(t, nil)
+				opts.MinIterations = 0
+				opts.RequireCycle = requireCycle
+				_, err := vlRunVerify(t, opts)
+				vlExpectOnly(t, err, "no-logs", "")
+			})
+		})
+	}
 }
 
 func TestVerifyLogCycleFixtureSets(t *testing.T) {
