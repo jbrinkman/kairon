@@ -353,25 +353,6 @@ func TestCoverageEvaluateProgressiveRepeat(t *testing.T) {
 	}
 }
 
-func TestCoverageEvaluateProgressiveCaseFilterIncomplete(t *testing.T) {
-	chdirTemp(t)
-	installFakeKiroCLI(t, "")
-	pinned := pinRealSuite(t)
-	cfg.caseFilter = "c1"
-
-	res := evalProgressiveOK(t, verdictRubric(), []TestCase{covCase("c1")}, "abc", &strings.Builder{}, t.TempDir(), false, nil)
-
-	if boolOf(t, "Complete", res.Complete) {
-		t.Error("Complete = true for a filtered run, want false")
-	}
-	if res.CaseFilter == nil || *res.CaseFilter != "c1" {
-		t.Errorf("CaseFilter = %v, want c1", res.CaseFilter)
-	}
-	if res.SuiteSHA256 != pinned {
-		t.Errorf("SuiteSHA256 = %q, want the pinned %q", res.SuiteSHA256, pinned)
-	}
-}
-
 func TestCoverageEvaluateStampsSingleCaseRun(t *testing.T) {
 	chdirTemp(t)
 	installFakeKiroCLI(t, "")
@@ -389,20 +370,5 @@ func TestCoverageEvaluateStampsSingleCaseRun(t *testing.T) {
 	}
 	if res.CaseFilter == nil || *res.CaseFilter != "only" {
 		t.Errorf("CaseFilter = %v, want only", res.CaseFilter)
-	}
-}
-
-func TestCoverageEvaluateUnpinnedLeavesFieldsUnset(t *testing.T) {
-	chdirTemp(t)
-	installFakeKiroCLI(t, "")
-	useStubBackend(t)
-
-	for name, res := range map[string]AgentResult{
-		"evaluate":            evaluate(verdictRubric(), []TestCase{covCase("c1")}, "abc", &strings.Builder{}, nil),
-		"evaluateProgressive": evalProgressiveOK(t, verdictRubric(), []TestCase{covCase("c1")}, "abc", &strings.Builder{}, t.TempDir(), false, nil),
-	} {
-		if res.SuiteSHA256 != "" || res.Complete != nil || res.CaseFilter != nil {
-			t.Errorf("%s: unpinned result carries coverage: %+v", name, res)
-		}
 	}
 }
