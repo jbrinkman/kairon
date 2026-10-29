@@ -297,24 +297,21 @@ func TestEvalUnknownBackendRejected(t *testing.T) {
 		args  []string
 		perf  bool
 		clean bool
-		// flag, when set, names the --flag in the failure message, as the
-		// former TestEvalUnknownBackendRejectedForPerfAndCleanup did.
-		flag string
 		// want lists substrings the error must contain.
 		want []string
 	}{
 		{
 			name: "selftest", args: []string{"selftest"},
-			want: []string{"nope", inference.NameKiroCLI, inference.NameStub},
+			want: []string{"unknown backend", "nope", inference.NameKiroCLI, inference.NameStub},
 		},
 		{
 			// --perf and --cleanup go through RunWithOptions, so configuration
 			// (and backend validation) applies before any work is done.
-			name: "perf", perf: true, flag: "perf",
+			name: "perf", perf: true,
 			want: []string{"unknown backend"},
 		},
 		{
-			name: "cleanup", clean: true, flag: "cleanup",
+			name: "cleanup", clean: true,
 			want: []string{"unknown backend"},
 		},
 	}
@@ -325,20 +322,12 @@ func TestEvalUnknownBackendRejected(t *testing.T) {
 			evalBackend, evalPerf, evalCleanup = "nope", tc.perf, tc.clean
 
 			err := evalCmd.RunE(evalCmd, tc.args)
-			if tc.flag != "" {
-				for _, want := range tc.want {
-					if err == nil || !strings.Contains(err.Error(), want) {
-						t.Errorf("--%s with bad backend: err = %v, want unknown backend error", tc.flag, err)
-					}
-				}
-				return
-			}
 			if err == nil {
-				t.Fatal("expected error for unknown backend")
+				t.Fatalf("%s: expected error for unknown backend", tc.name)
 			}
 			for _, want := range tc.want {
 				if !strings.Contains(err.Error(), want) {
-					t.Errorf("error %q does not mention %q", err.Error(), want)
+					t.Errorf("%s: error %q does not mention %q", tc.name, err.Error(), want)
 				}
 			}
 		})
