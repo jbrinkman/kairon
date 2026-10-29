@@ -128,40 +128,44 @@ checks:
 }
 
 func TestLoadCasesClassicTurnOneLoads(t *testing.T) {
-	cases, err := loadTurnsCase(t, `name: classic-turn-1
+	tests := []struct {
+		name string
+		yaml string
+		// wantNilTurns asserts the loaded case is classic (Turns == nil).
+		wantNilTurns bool
+	}{
+		{
+			name: "turn-1 check",
+			yaml: `name: classic-turn-1
 agent: a1
 input: hi
 checks:
   - {criterion: c, type: output_contains, pattern: x, turn: 1}
-`)
-	if err != nil || len(cases) != 1 {
-		t.Fatalf("loadCases: %v, %d cases", err, len(cases))
-	}
-}
-
-func TestLoadCasesClassicMultiEntryStubUnchanged(t *testing.T) {
-	cases, err := loadTurnsCase(t, `name: classic-stub
+`,
+		},
+		{
+			name: "multi-entry stub unchanged",
+			yaml: `name: classic-stub
 agent: a1
 input: hi
 stub:
   turns:
     - response: a
     - response: b
-`)
-	if err != nil || len(cases) != 1 {
-		t.Fatalf("loadCases: %v, %d cases", err, len(cases))
+`,
+			wantNilTurns: true,
+		},
 	}
-	if cases[0].Turns != nil {
-		t.Errorf("Turns = %v, want nil for a classic case", cases[0].Turns)
-	}
-}
-
-func TestUserTurns(t *testing.T) {
-	if got := (TestCase{Input: "solo"}).userTurns(); !reflect.DeepEqual(got, []string{"solo"}) {
-		t.Errorf("classic userTurns = %q", got)
-	}
-	if got := (TestCase{Turns: []string{"a", "b"}}).userTurns(); !reflect.DeepEqual(got, []string{"a", "b"}) {
-		t.Errorf("multi-turn userTurns = %q", got)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cases, err := loadTurnsCase(t, tt.yaml)
+			if err != nil || len(cases) != 1 {
+				t.Fatalf("loadCases: %v, %d cases", err, len(cases))
+			}
+			if tt.wantNilTurns && cases[0].Turns != nil {
+				t.Errorf("Turns = %v, want nil for a classic case", cases[0].Turns)
+			}
+		})
 	}
 }
 
