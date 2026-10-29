@@ -3,44 +3,80 @@ package hotkey
 import (
 	"os"
 	"testing"
+
+	tea "charm.land/bubbletea/v2"
 )
 
-func TestIsKaironContext(t *testing.T) {
-	// Test without environment variable
-	os.Unsetenv("KAIRON_WATCHER_PID")
-	if IsKaironContext() {
-		t.Error("Expected IsKaironContext to return false when KAIRON_WATCHER_PID is not set")
-	}
+func TestHandleKeyMsg(t *testing.T) {
+	const errText = "hotkey toggle not available outside kairon context"
 
-	// Test with environment variable
-	os.Setenv("KAIRON_WATCHER_PID", "12345")
-	if !IsKaironContext() {
-		t.Error("Expected IsKaironContext to return true when KAIRON_WATCHER_PID is set")
-	}
+	ctrlAltP := tea.KeyPressMsg{Code: 'p', Mod: tea.ModCtrl | tea.ModAlt}
 
-	// Cleanup
-	os.Unsetenv("KAIRON_WATCHER_PID")
-}
-
-func TestIsCtrlOptionP(t *testing.T) {
 	tests := []struct {
-		name     string
-		keyStr   string
-		expected bool
+		name       string
+		key        tea.KeyPressMsg
+		inContext  bool
+		wantCmd    bool
+		wantTrig   bool   // cmd yields HotkeyTriggeredMsg
+		wantErrMsg string // cmd yields HotkeyErrorMsg with this text
 	}{
-		{"Ctrl+Alt+P", "ctrl+alt+p", true},
-		{"Ctrl+C", "ctrl+c", false},
-		{"Regular P", "p", false},
-		{"Alt+P", "alt+p", false},
-		{"Ctrl+P", "ctrl+p", false},
+		{name: "ctrl+alt+p in kairon context", key: ctrlAltP, inContext: true, wantCmd: true, wantTrig: true},
+		{name: "ctrl+alt+p outside kairon context", key: ctrlAltP, inContext: false, wantCmd: true, wantErrMsg: errText},
+		{name: "ctrl+c in kairon context", key: tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl}, inContext: true},
+		{name: "ctrl+c outside kairon context", key: tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl}, inContext: false},
+		{name: "ctrl+p in kairon context", key: tea.KeyPressMsg{Code: 'p', Mod: tea.ModCtrl}, inContext: true},
+		{name: "ctrl+p outside kairon context", key: tea.KeyPressMsg{Code: 'p', Mod: tea.ModCtrl}, inContext: false},
+		{name: "alt+p in kairon context", key: tea.KeyPressMsg{Code: 'p', Mod: tea.ModAlt}, inContext: true},
+		{name: "alt+p outside kairon context", key: tea.KeyPressMsg{Code: 'p', Mod: tea.ModAlt}, inContext: false},
+		{name: "plain p in kairon context", key: tea.KeyPressMsg{Code: 'p', Text: "p"}, inContext: true},
+		{name: "plain p outside kairon context", key: tea.KeyPressMsg{Code: 'p', Text: "p"}, inContext: false},
+		{name: "empty key in kairon context", key: tea.KeyPressMsg{}, inContext: true},
+		{name: "empty key outside kairon context", key: tea.KeyPressMsg{}, inContext: false},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// Test the string matching logic directly
-			result := tt.keyStr == "ctrl+alt+p"
-			if result != tt.expected {
-				t.Errorf("Expected %v for %s, got %v", tt.expected, tt.keyStr, result)
+			// t.Setenv registers cleanup that restores the original value.
+			if tt.inContext {
+				t.Setenv("KAIRON_WATCHER_PID", "12345")
+			} else {
+				t.Setenv("KAIRON_WATCHER_PID", "")
+				if err := os.Unsetenv("KAIRON_WATCHER_PID"); err != nil {
+					t.Fatalf("unset KAIRON_WATCHER_PID: %v", err)
+				}
+			}
+
+			cmd := HandleKeyMsg(tt.key)
+
+			if !tt.wantCmd {
+				if cmd != nil {
+					t.Fatalf("HandleKeyMsg(%q) inContext=%v: expected nil cmd, got non-nil", tt.key.String(), tt.inContext)
+				}
+				return
+			}
+
+			if cmd == nil {
+				t.Fatalf("HandleKeyMsg(%q) inContext=%v: expected non-nil cmd, got nil", tt.key.String(), tt.inContext)
+			}
+
+			switch got := cmd().(type) {
+			case HotkeyTriggeredMsg:
+				if !tt.wantTrig {
+					t.Errorf("HandleKeyMsg(%q) inContext=%v: got HotkeyTriggeredMsg, want error %q", tt.key.String(), tt.inContext, tt.wantErrMsg)
+				}
+			case HotkeyErrorMsg:
+				if tt.wantTrig {
+					t.Errorf("HandleKeyMsg(%q) inContext=%v: got HotkeyErrorMsg, want HotkeyTriggeredMsg", tt.key.String(), tt.inContext)
+					return
+				}
+				if got.Err == nil {
+					t.Fatalf("HandleKeyMsg(%q) inContext=%v: HotkeyErrorMsg has nil Err", tt.key.String(), tt.inContext)
+				}
+				if got.Err.Error() != tt.wantErrMsg {
+					t.Errorf("HandleKeyMsg(%q) inContext=%v: error = %q, want %q", tt.key.String(), tt.inContext, got.Err.Error(), tt.wantErrMsg)
+				}
+			default:
+				t.Errorf("HandleKeyMsg(%q) inContext=%v: cmd yielded unexpected message %T", tt.key.String(), tt.inContext, got)
 			}
 		})
 	}
