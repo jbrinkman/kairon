@@ -60,6 +60,17 @@ type rawIssue struct {
 // the newest issues wait rather than the oldest being starved.
 const listIssueLimit = 50
 
+// listPageSize is the number of issues one `gh api graphql` page requests. It
+// is a page size, not a cap on the total: fetchOpenIssues follows the cursor
+// until every open labeled issue has been read.
+//
+// Deviates from spec "Change to selectIssues": the spec adds listPageSize in
+// the wire-select-issues task. fetchOpenIssues (issuelist.go, built first)
+// formats it into its query and cannot compile without it, so the
+// fetch-open-issues task adds this constant and leaves listIssueLimit in place
+// for wire-select-issues to delete.
+const listPageSize = 50
+
 // listCommentCap is the number of comments `gh issue list --json comments`
 // returns per issue at most (oldest first). An issue whose list page is at the
 // cap is re-read in full so a newer punch-out marker is not missed.
