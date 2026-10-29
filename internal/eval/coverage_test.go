@@ -73,68 +73,96 @@ func TestCoverageCasesCovered(t *testing.T) {
 
 func TestCoverageStampFullRun(t *testing.T) {
 	t.Cleanup(resetConfig)
-	cfg = runConfig{suites: map[string]string{"selftest": testSuiteHash}}
-	r := AgentResult{Agent: "selftest", Cases: covResults(map[string][]int{"a": {1}})}
-
-	stampCoverage(&r, covCases("a"))
-
-	if r.SuiteSHA256 != testSuiteHash {
-		t.Errorf("SuiteSHA256 = %q, want %q", r.SuiteSHA256, testSuiteHash)
+	tests := []struct {
+		name    string
+		cfg     runConfig
+		results map[string][]int
+		cases   []TestCase
+		check   func(t *testing.T, r AgentResult)
+	}{
+		{
+			name:    "full-run",
+			cfg:     runConfig{suites: map[string]string{"selftest": testSuiteHash}},
+			results: map[string][]int{"a": {1}},
+			cases:   covCases("a"),
+			check: func(t *testing.T, r AgentResult) {
+				if r.SuiteSHA256 != testSuiteHash {
+					t.Errorf("SuiteSHA256 = %q, want %q", r.SuiteSHA256, testSuiteHash)
+				}
+				if !boolOf(t, "Complete", r.Complete) {
+					t.Error("Complete = false, want true for a covered full run")
+				}
+				if r.CaseFilter == nil || *r.CaseFilter != "" {
+					t.Errorf("CaseFilter = %v, want a recorded empty string", r.CaseFilter)
+				}
+			},
+		},
+		{
+			name:    "uncovered-case-is-incomplete",
+			cfg:     runConfig{suites: map[string]string{"selftest": testSuiteHash}},
+			results: map[string][]int{"a": {1}},
+			cases:   covCases("a", "b"),
+			check: func(t *testing.T, r AgentResult) {
+				if boolOf(t, "Complete", r.Complete) {
+					t.Error("Complete = true with case b uncovered, want false")
+				}
+			},
+		},
+		{
+			// The agent has exactly one case and it is covered, yet a
+			// filtered run is not a full run.
+			name:    "case-filter-is-never-complete",
+			cfg:     runConfig{suites: map[string]string{"selftest": testSuiteHash}, caseFilter: "only"},
+			results: map[string][]int{"only": {1}},
+			cases:   covCases("only"),
+			check: func(t *testing.T, r AgentResult) {
+				if boolOf(t, "Complete", r.Complete) {
+					t.Error("Complete = true for a --case run, want false")
+				}
+				if r.CaseFilter == nil || *r.CaseFilter != "only" {
+					t.Errorf("CaseFilter = %v, want only", r.CaseFilter)
+				}
+			},
+		},
+		{
+			name:    "no-suite-entry-nil-map",
+			cfg:     runConfig{suites: nil, caseFilter: "x"},
+			results: map[string][]int{"a": {1}},
+			cases:   covCases("a"),
+			check:   checkStampUntouched,
+		},
+		{
+			name:    "no-suite-entry-other-agent",
+			cfg:     runConfig{suites: map[string]string{"someone-else": testSuiteHash}, caseFilter: "x"},
+			results: map[string][]int{"a": {1}},
+			cases:   covCases("a"),
+			check:   checkStampUntouched,
+		},
+		{
+			name:    "no-suite-entry-empty-map",
+			cfg:     runConfig{suites: map[string]string{}, caseFilter: "x"},
+			results: map[string][]int{"a": {1}},
+			cases:   covCases("a"),
+			check:   checkStampUntouched,
+		},
 	}
-	if !boolOf(t, "Complete", r.Complete) {
-		t.Error("Complete = false, want true for a covered full run")
-	}
-	if r.CaseFilter == nil || *r.CaseFilter != "" {
-		t.Errorf("CaseFilter = %v, want a recorded empty string", r.CaseFilter)
-	}
-}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg = tt.cfg
+			r := AgentResult{Agent: "selftest", Cases: covResults(tt.results)}
 
-func TestCoverageStampIncompleteRun(t *testing.T) {
-	t.Cleanup(resetConfig)
-	cfg = runConfig{suites: map[string]string{"selftest": testSuiteHash}}
-	r := AgentResult{Agent: "selftest", Cases: covResults(map[string][]int{"a": {1}})}
+			stampCoverage(&r, tt.cases)
 
-	stampCoverage(&r, covCases("a", "b"))
-
-	if boolOf(t, "Complete", r.Complete) {
-		t.Error("Complete = true with case b uncovered, want false")
-	}
-}
-
-func TestCoverageStampCaseFilterIsNeverComplete(t *testing.T) {
-	t.Cleanup(resetConfig)
-	cfg = runConfig{suites: map[string]string{"selftest": testSuiteHash}, caseFilter: "only"}
-	// The agent has exactly one case and it is covered, yet a filtered run is
-	// not a full run.
-	r := AgentResult{Agent: "selftest", Cases: covResults(map[string][]int{"only": {1}})}
-
-	stampCoverage(&r, covCases("only"))
-
-	if boolOf(t, "Complete", r.Complete) {
-		t.Error("Complete = true for a --case run, want false")
-	}
-	if r.CaseFilter == nil || *r.CaseFilter != "only" {
-		t.Errorf("CaseFilter = %v, want only", r.CaseFilter)
-	}
-}
-
-func TestCoverageStampNoOpWithoutSuiteEntry(t *testing.T) {
-	t.Cleanup(resetConfig)
-	for name, suites := range map[string]map[string]string{
-		"nil map":      nil,
-		"other agent":  {"someone-else": testSuiteHash},
-		"empty entry?": {},
-	} {
-		t.Run(name, func(t *testing.T) {
-			cfg = runConfig{suites: suites, caseFilter: "x"}
-			r := AgentResult{Agent: "selftest", Cases: covResults(map[string][]int{"a": {1}})}
-
-			stampCoverage(&r, covCases("a"))
-
-			if r.SuiteSHA256 != "" || r.Complete != nil || r.CaseFilter != nil {
-				t.Errorf("stampCoverage changed an unpinned result: %+v", r)
-			}
+			tt.check(t, r)
 		})
+	}
+}
+
+// checkStampUntouched asserts stampCoverage left an unpinned result alone.
+func checkStampUntouched(t *testing.T, r AgentResult) {
+	t.Helper()
+	if r.SuiteSHA256 != "" || r.Complete != nil || r.CaseFilter != nil {
+		t.Errorf("stampCoverage changed an unpinned result: %+v", r)
 	}
 }
 
