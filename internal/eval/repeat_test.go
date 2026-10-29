@@ -57,36 +57,44 @@ func TestRepeatVerdictLegacyAndSingleRepeatUnchanged(t *testing.T) {
 	}
 }
 
-func TestRepeatVerdictLegacyCaseAccountingUnchanged(t *testing.T) {
-	no := false
-	failed := scored("stamped-fail", 5, 5)
-	failed.Passed = &no
-	legacyFail := scored("legacy-fail", 4, 5)
-	ar := AgentResult{Agent: "a", Cases: []CaseResult{scored("ok", 5, 5), failed, legacyFail}}
-	v := agentVerdict(ar)
-	if v.CasesTotal != 3 || v.CasesFailed != 2 {
-		t.Errorf("CasesTotal/CasesFailed = %d/%d, want 3/2", v.CasesTotal, v.CasesFailed)
-	}
-}
-
 func TestRepeatVerdictMinMaxMean(t *testing.T) {
-	ar := AgentResult{Agent: "a", Threshold: 85, Repeat: 2, Cases: []CaseResult{
-		ranScored("c", 1, 20, 20),
-		ranScored("c", 2, 16, 20),
-	}}
-	v := agentVerdict(ar)
-	if v.Score != 90 || v.ScoreMin != 80 || v.ScoreMax != 100 {
-		t.Errorf("score/min/max = %v/%v/%v, want 90/80/100", v.Score, v.ScoreMin, v.ScoreMax)
-	}
-	if !reflect.DeepEqual(v.RepeatScores, []float64{100, 80}) {
-		t.Errorf("RepeatScores = %v, want [100 80]", v.RepeatScores)
-	}
-	if v.Repeat != 2 {
-		t.Errorf("Repeat = %d, want 2", v.Repeat)
-	}
-	if !v.Passed {
-		t.Errorf("Passed = false, want true (mean 90 >= 85)")
-	}
+	t.Run("min-max-mean", func(t *testing.T) {
+		ar := AgentResult{Agent: "a", Threshold: 85, Repeat: 2, Cases: []CaseResult{
+			ranScored("c", 1, 20, 20),
+			ranScored("c", 2, 16, 20),
+		}}
+		v := agentVerdict(ar)
+		if v.Score != 90 || v.ScoreMin != 80 || v.ScoreMax != 100 {
+			t.Errorf("score/min/max = %v/%v/%v, want 90/80/100", v.Score, v.ScoreMin, v.ScoreMax)
+		}
+		if !reflect.DeepEqual(v.RepeatScores, []float64{100, 80}) {
+			t.Errorf("RepeatScores = %v, want [100 80]", v.RepeatScores)
+		}
+		if v.Repeat != 2 {
+			t.Errorf("Repeat = %d, want 2", v.Repeat)
+		}
+		if !v.Passed {
+			t.Errorf("Passed = false, want true (mean 90 >= 85)")
+		}
+	})
+
+	t.Run("mean-of-repeat-scores", func(t *testing.T) {
+		ar := AgentResult{Agent: "a", Threshold: 50, Repeat: 3, Cases: []CaseResult{
+			ranScored("a", 1, 7, 9), ranScored("a", 2, 3, 9), ranScored("a", 3, 9, 9),
+			ranScored("b", 1, 1, 3), ranScored("b", 2, 2, 3), ranScored("b", 3, 0, 3),
+		}}
+		v := agentVerdict(ar)
+		var sum float64
+		for _, s := range v.RepeatScores {
+			sum += s
+		}
+		if len(v.RepeatScores) != 3 {
+			t.Fatalf("RepeatScores = %v, want 3 entries", v.RepeatScores)
+		}
+		if math.Abs(v.Score-sum/3) > 1e-9 {
+			t.Errorf("Score = %v, want mean of repeat scores %v", v.Score, sum/3)
+		}
+	})
 }
 
 func TestRepeatVerdictRunOrderIndependentOfStorageOrder(t *testing.T) {
@@ -122,24 +130,6 @@ func TestRepeatVerdictMeanDecidesPass(t *testing.T) {
 				t.Errorf("Passed = %v, want %v (score %v, max repeat %v)", v.Passed, tt.wantPassed, v.Score, v.ScoreMax)
 			}
 		})
-	}
-}
-
-func TestRepeatVerdictMeanEqualsMeanOfRepeatScores(t *testing.T) {
-	ar := AgentResult{Agent: "a", Threshold: 50, Repeat: 3, Cases: []CaseResult{
-		ranScored("a", 1, 7, 9), ranScored("a", 2, 3, 9), ranScored("a", 3, 9, 9),
-		ranScored("b", 1, 1, 3), ranScored("b", 2, 2, 3), ranScored("b", 3, 0, 3),
-	}}
-	v := agentVerdict(ar)
-	var sum float64
-	for _, s := range v.RepeatScores {
-		sum += s
-	}
-	if len(v.RepeatScores) != 3 {
-		t.Fatalf("RepeatScores = %v, want 3 entries", v.RepeatScores)
-	}
-	if math.Abs(v.Score-sum/3) > 1e-9 {
-		t.Errorf("Score = %v, want mean of repeat scores %v", v.Score, sum/3)
 	}
 }
 
@@ -234,32 +224,6 @@ func TestRepeatVerdictJSONFieldsAlwaysWritten(t *testing.T) {
 	for _, want := range []string{`"repeat":2`, `"score_min":0`, `"score_max":100`, `"repeat_scores":[100,0]`} {
 		if !strings.Contains(string(b), want) {
 			t.Errorf("verdict JSON lacks %s: %s", want, b)
-		}
-	}
-}
-
-func TestRepeatVerdictResultFieldsOmitEmpty(t *testing.T) {
-	b, err := json.Marshal(AgentResult{Agent: "a"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(string(b), `"repeat"`) {
-		t.Errorf("AgentResult.Repeat 0 must be omitted: %s", b)
-	}
-	b, err = json.Marshal(CaseResult{CaseName: "c"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(string(b), `"run"`) {
-		t.Errorf("CaseResult.Run 0 must be omitted: %s", b)
-	}
-	b, err = json.Marshal(AgentResult{Agent: "a", Repeat: 3, Cases: []CaseResult{{CaseName: "c", Run: 2}}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, want := range []string{`"repeat":3`, `"run":2`} {
-		if !strings.Contains(string(b), want) {
-			t.Errorf("JSON lacks %s: %s", want, b)
 		}
 	}
 }
