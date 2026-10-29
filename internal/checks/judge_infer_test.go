@@ -44,8 +44,6 @@ func TestInferenceJudgeRequest(t *testing.T) {
 		query     JudgeQuery
 		wantModel string
 		wantStub  *inference.StubScript
-		// wantFull also asserts Role, YesNo, Timeout and Prompt on the request.
-		wantFull bool
 	}{
 		{
 			name: "pinned-with-stub",
@@ -55,7 +53,6 @@ func TestInferenceJudgeRequest(t *testing.T) {
 			query:     q,
 			wantModel: "pinned",
 			wantStub:  stub,
-			wantFull:  true,
 		},
 		{
 			name:  "unpinned-no-stub",
@@ -80,8 +77,8 @@ func TestInferenceJudgeRequest(t *testing.T) {
 			if req.Model != tt.wantModel || req.Stub != tt.wantStub {
 				t.Errorf("request = %+v, want model %q and stub %p", req, tt.wantModel, tt.wantStub)
 			}
-			if tt.wantFull && (req.Role != inference.RoleJudge || !req.YesNo || req.Timeout != 2*time.Minute ||
-				req.Prompt != BuildYesNoPrompt(tt.query)) {
+			if req.Role != inference.RoleJudge || !req.YesNo || req.Timeout != 2*time.Minute ||
+				req.Prompt != BuildYesNoPrompt(tt.query) {
 				t.Errorf("request = %+v", req)
 			}
 		})
