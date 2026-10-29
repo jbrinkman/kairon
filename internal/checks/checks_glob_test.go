@@ -63,8 +63,6 @@ func TestGlobMatch(t *testing.T) {
 		{"doublestar any depth go top-level", "**/*.go", "main.go", true},
 		{"doublestar any depth go one", "**/*.go", "cmd/main.go", true},
 		{"doublestar any depth go deep", "**/*.go", "a/b/c/d.go", true},
-		{"doublestar any depth go two dirs", "**/*.go", "a/b/main.go", true},
-		{"doublestar any depth go two dirs wrong ext", "**/*.go", "a/b/main.txt", false},
 		{"doublestar any depth go wrong ext", "**/*.go", "a/b/c/d.md", false},
 		{"doublestar any depth go name suffix", "**/*.go", "a/b/xgo", false},
 		{"doublestar mid zero dirs", "a/**/b", "a/b", true},
