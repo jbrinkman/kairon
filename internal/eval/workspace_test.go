@@ -73,51 +73,52 @@ func newWS(t *testing.T, tc TestCase) *caseWorkspace {
 	return ws
 }
 
-func TestWorkspaceDefaultIsOneEmptyCommit(t *testing.T) {
-	wsEnv(t)
-	ws := newWS(t, TestCase{Name: "c"})
-
-	if got := wsGit(t, ws.Dir, "rev-list", "--count", "HEAD"); got != "1" {
-		t.Fatalf("commit count = %s, want 1", got)
-	}
-	if got := wsGit(t, ws.Dir, "ls-tree", "-r", "HEAD"); got != "" {
-		t.Fatalf("tree should be empty, got %q", got)
-	}
-	if got := wsGit(t, ws.Dir, "status", "--porcelain"); got != "" {
-		t.Fatalf("status not clean: %q", got)
-	}
-	info, err := os.Stat(ws.EvalDir)
-	if err != nil || !info.IsDir() {
-		t.Fatalf(".eval missing: %v", err)
-	}
-}
-
 func TestWorkspaceFixtureIsSingleCommitEqualToFixture(t *testing.T) {
-	wsEnv(t)
-	writeCfgFile(t, "evals/fixtures/workspaces/seeded/README.md", "hello\n")
-	writeCfgFile(t, "evals/fixtures/workspaces/seeded/pkg/deep/file.txt", "deep\n")
-	if err := os.WriteFile("evals/fixtures/workspaces/seeded/run.sh", []byte("#!/bin/sh\n"), 0o755); err != nil {
-		t.Fatal(err)
+	tests := []struct {
+		name      string
+		seed      bool
+		workspace string
+		wantTree  string
+	}{
+		{name: "no fixture", wantTree: ""},
+		{name: "seeded fixture", seed: true, workspace: "seeded", wantTree: "README.md\npkg/deep/file.txt\nrun.sh"},
 	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			wsEnv(t)
+			if tt.seed {
+				writeCfgFile(t, "evals/fixtures/workspaces/seeded/README.md", "hello\n")
+				writeCfgFile(t, "evals/fixtures/workspaces/seeded/pkg/deep/file.txt", "deep\n")
+				if err := os.WriteFile("evals/fixtures/workspaces/seeded/run.sh", []byte("#!/bin/sh\n"), 0o755); err != nil {
+					t.Fatal(err)
+				}
+			}
 
-	ws := newWS(t, TestCase{Name: "c", Workspace: "seeded"})
+			ws := newWS(t, TestCase{Name: "c", Workspace: tt.workspace})
 
-	if got := wsGit(t, ws.Dir, "rev-list", "--count", "HEAD"); got != "1" {
-		t.Fatalf("commit count = %s, want 1", got)
-	}
-	files := wsGit(t, ws.Dir, "ls-tree", "-r", "--name-only", "HEAD")
-	want := "README.md\npkg/deep/file.txt\nrun.sh"
-	if files != want {
-		t.Fatalf("tree = %q, want %q", files, want)
-	}
-	if got := readFileT(t, filepath.Join(ws.Dir, "pkg/deep/file.txt")); got != "deep\n" {
-		t.Fatalf("content = %q", got)
-	}
-	if got := wsGit(t, ws.Dir, "ls-tree", "HEAD", "run.sh"); !strings.HasPrefix(got, "100755") {
-		t.Fatalf("exec bit lost: %q", got)
-	}
-	if got := wsGit(t, ws.Dir, "status", "--porcelain"); got != "" {
-		t.Fatalf("status not clean: %q", got)
+			if got := wsGit(t, ws.Dir, "rev-list", "--count", "HEAD"); got != "1" {
+				t.Fatalf("commit count = %s, want 1", got)
+			}
+			if got := wsGit(t, ws.Dir, "ls-tree", "-r", "--name-only", "HEAD"); got != tt.wantTree {
+				t.Fatalf("tree = %q, want %q", got, tt.wantTree)
+			}
+			if tt.seed {
+				if got := readFileT(t, filepath.Join(ws.Dir, "pkg/deep/file.txt")); got != "deep\n" {
+					t.Fatalf("content = %q", got)
+				}
+				if got := wsGit(t, ws.Dir, "ls-tree", "HEAD", "run.sh"); !strings.HasPrefix(got, "100755") {
+					t.Fatalf("exec bit lost: %q", got)
+				}
+			} else {
+				info, err := os.Stat(ws.EvalDir)
+				if err != nil || !info.IsDir() {
+					t.Fatalf(".eval missing: %v", err)
+				}
+			}
+			if got := wsGit(t, ws.Dir, "status", "--porcelain"); got != "" {
+				t.Fatalf("status not clean: %q", got)
+			}
+		})
 	}
 }
 
@@ -465,44 +466,46 @@ func TestWorkspacePermissions(t *testing.T) {
 }
 
 func TestWorkspaceDirAbsoluteAndSymlinkResolved(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("symlinks")
-	}
-	wsEnv(t)
-	real := t.TempDir()
-	link := filepath.Join(t.TempDir(), "link")
-	if err := os.Symlink(real, link); err != nil {
-		t.Fatal(err)
-	}
-	t.Setenv(workspaceRootEnv, link)
+	t.Run("symlinked root", func(t *testing.T) {
+		if runtime.GOOS == "windows" {
+			t.Skip("symlinks")
+		}
+		wsEnv(t)
+		real := t.TempDir()
+		link := filepath.Join(t.TempDir(), "link")
+		if err := os.Symlink(real, link); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv(workspaceRootEnv, link)
 
-	ws := newWS(t, TestCase{Name: "c"})
-	if !filepath.IsAbs(ws.Dir) {
-		t.Fatalf("Dir not absolute: %s", ws.Dir)
-	}
-	resolved, err := filepath.EvalSymlinks(ws.Dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if resolved != ws.Dir {
-		t.Fatalf("Dir not symlink-resolved: %s vs %s", ws.Dir, resolved)
-	}
-	realResolved, _ := filepath.EvalSymlinks(real)
-	if !strings.HasPrefix(ws.Dir, realResolved+string(filepath.Separator)) {
-		t.Fatalf("KAIRON_EVAL_WORKSPACE_ROOT not honored: %s not under %s", ws.Dir, realResolved)
-	}
-	if ws.EvalDir != filepath.Join(ws.Dir, ".eval") || ws.KiroDir != filepath.Join(ws.Dir, ".kiro") {
-		t.Fatalf("unexpected sub paths: %s %s", ws.EvalDir, ws.KiroDir)
-	}
-}
+		ws := newWS(t, TestCase{Name: "c"})
+		if !filepath.IsAbs(ws.Dir) {
+			t.Fatalf("Dir not absolute: %s", ws.Dir)
+		}
+		resolved, err := filepath.EvalSymlinks(ws.Dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if resolved != ws.Dir {
+			t.Fatalf("Dir not symlink-resolved: %s vs %s", ws.Dir, resolved)
+		}
+		realResolved, _ := filepath.EvalSymlinks(real)
+		if !strings.HasPrefix(ws.Dir, realResolved+string(filepath.Separator)) {
+			t.Fatalf("KAIRON_EVAL_WORKSPACE_ROOT not honored: %s not under %s", ws.Dir, realResolved)
+		}
+		if ws.EvalDir != filepath.Join(ws.Dir, ".eval") || ws.KiroDir != filepath.Join(ws.Dir, ".kiro") {
+			t.Fatalf("unexpected sub paths: %s %s", ws.EvalDir, ws.KiroDir)
+		}
+	})
 
-func TestWorkspaceRelativeRootBecomesAbsolute(t *testing.T) {
-	wsEnv(t)
-	t.Setenv(workspaceRootEnv, "rel-root")
-	ws := newWS(t, TestCase{Name: "c"})
-	if !filepath.IsAbs(ws.Dir) {
-		t.Fatalf("Dir not absolute: %s", ws.Dir)
-	}
+	t.Run("relative root", func(t *testing.T) {
+		wsEnv(t)
+		t.Setenv(workspaceRootEnv, "rel-root")
+		ws := newWS(t, TestCase{Name: "c"})
+		if !filepath.IsAbs(ws.Dir) {
+			t.Fatalf("Dir not absolute: %s", ws.Dir)
+		}
+	})
 }
 
 func TestWorkspaceDefaultsToOSTempDir(t *testing.T) {
@@ -791,48 +794,50 @@ func TestChmodOpenOtherInfoErrorPropagates(t *testing.T) {
 	}
 }
 
-func TestPermWalkFuncSkipsNotExist(t *testing.T) {
-	root := filepath.Join(t.TempDir(), "root")
-	p := filepath.Join(root, "gone")
-	pe := &fs.PathError{Op: "lstat", Path: p, Err: syscall.ENOENT}
-	for name, in := range map[string]error{
-		"path error": pe,
-		"wrapped":    fmt.Errorf("walk: %w", pe),
-		"sentinel":   fs.ErrNotExist,
-	} {
-		t.Run(name, func(t *testing.T) {
-			if err := permWalkFunc(root, "", 0o666)(p, nil, in); err != nil {
-				t.Fatalf("callback = %v, want nil", err)
-			}
-		})
-	}
-}
-
 func TestPermWalkFuncPropagatesOtherErrors(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "root")
 	p := filepath.Join(root, "f")
-	for name, in := range map[string]error{
-		"permission": fs.ErrPermission,
-		"eio":        &fs.PathError{Op: "lstat", Path: p, Err: syscall.EIO},
-		"eacces":     &fs.PathError{Op: "open", Path: p, Err: syscall.EACCES},
-	} {
-		t.Run(name, func(t *testing.T) {
-			err := permWalkFunc(root, "", 0o666)(p, nil, in)
-			if !errors.Is(err, in) {
-				t.Fatalf("callback = %v, want %v", err, in)
+	gone := filepath.Join(root, "gone")
+	missing := filepath.Join(t.TempDir(), "missing")
+	eio := &fs.PathError{Op: "lstat", Path: p, Err: syscall.EIO}
+	eacces := &fs.PathError{Op: "open", Path: p, Err: syscall.EACCES}
+	enoent := &fs.PathError{Op: "lstat", Path: gone, Err: syscall.ENOENT}
+
+	// wantErr nil: the callback must swallow the error (a vanished entry).
+	// wantErr set: errors.Is(callback result, wantErr) must hold.
+	tests := []struct {
+		name    string
+		root    string
+		path    string
+		in      error
+		wantErr error
+	}{
+		{"permission", root, p, fs.ErrPermission, fs.ErrPermission},
+		{"eio", root, p, eio, eio},
+		{"eacces", root, p, eacces, eacces},
+		{"path error", root, gone, enoent, nil},
+		{"wrapped", root, gone, fmt.Errorf("walk: %w", enoent), nil},
+		{"sentinel", root, gone, fs.ErrNotExist, nil},
+		{"root not exist", missing, missing, fs.ErrNotExist, fs.ErrNotExist},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := permWalkFunc(tt.root, "", 0o666)(tt.path, nil, tt.in)
+			if tt.wantErr == nil {
+				if err != nil {
+					t.Fatalf("callback = %v, want nil", err)
+				}
+				return
+			}
+			if !errors.Is(err, tt.wantErr) {
+				t.Fatalf("callback = %v, want %v", err, tt.wantErr)
+			}
+			if tt.path == tt.root {
+				if err := filepath.WalkDir(tt.root, permWalkFunc(tt.root, "", 0o666)); err == nil {
+					t.Fatal("WalkDir over a missing root returned nil, want error")
+				}
 			}
 		})
-	}
-}
-
-func TestPermWalkFuncRootNotExistPropagates(t *testing.T) {
-	root := filepath.Join(t.TempDir(), "missing")
-	err := permWalkFunc(root, "", 0o666)(root, nil, fs.ErrNotExist)
-	if !errors.Is(err, fs.ErrNotExist) {
-		t.Fatalf("callback on missing root = %v, want fs.ErrNotExist", err)
-	}
-	if err := filepath.WalkDir(root, permWalkFunc(root, "", 0o666)); err == nil {
-		t.Fatal("WalkDir over a missing root returned nil, want error")
 	}
 }
 
