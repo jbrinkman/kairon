@@ -8,7 +8,6 @@ import (
 	"io"
 	"log"
 	"os/exec"
-	"strconv"
 	"strings"
 	"time"
 
@@ -40,7 +39,8 @@ func execGH(stdin string, args ...string) ([]byte, error) {
 	return out, nil
 }
 
-// rawComment is a comment as `gh issue list/view --json comments` returns it.
+// rawComment is a comment as `gh issue view --json comments` returns it, or as
+// fetchOpenIssues converts it from a GraphQL comment node.
 type rawComment struct {
 	Author struct {
 		Login string `json:"login"`
@@ -49,30 +49,20 @@ type rawComment struct {
 	CreatedAt time.Time `json:"createdAt"`
 }
 
-// rawIssue is an issue from `gh issue list --json number,title,body,labels,comments`.
+// rawIssue is an issue as fetchOpenIssues returns it from the GraphQL issues
+// connection.
 type rawIssue struct {
 	Issue
 	Comments []rawComment `json:"comments"`
 }
 
-// listIssueLimit is the most issues one poll fetches. gh defaults to 30,
-// newest first; issues are requested oldest first so that, past the limit,
-// the newest issues wait rather than the oldest being starved.
-const listIssueLimit = 50
-
 // listPageSize is the number of issues one `gh api graphql` page requests. It
 // is a page size, not a cap on the total: fetchOpenIssues follows the cursor
 // until every open labeled issue has been read.
-//
-// Deviates from spec "Change to selectIssues": the spec adds listPageSize in
-// the wire-select-issues task. fetchOpenIssues (issuelist.go, built first)
-// formats it into its query and cannot compile without it, so the
-// fetch-open-issues task adds this constant and leaves listIssueLimit in place
-// for wire-select-issues to delete.
 const listPageSize = 50
 
-// listCommentCap is the number of comments `gh issue list --json comments`
-// returns per issue at most (oldest first). An issue whose list page is at the
+// listCommentCap is the number of comments the issues query requests per issue
+// at most (oldest first). An issue whose list page is at the
 // cap is re-read in full so a newer punch-out marker is not missed.
 const listCommentCap = 100
 
@@ -340,22 +330,13 @@ func SelectIssues(repo, label, assignee string) (Selection, error) {
 }
 
 func selectIssues(run ghFunc, repo, label, assignee string) (Selection, error) {
-	args := []string{"issue", "list", "--repo", repo, "--label", label, "--state", "open",
-		"--json", "number,title,body,labels,comments",
-		"--limit", strconv.Itoa(listIssueLimit), "--search", "sort:created-asc"}
-	if assignee != "" {
-		args = append(args, "--assignee", assignee)
-	}
-	out, err := run("", args...)
+	// fetchOpenIssues pages through every open labeled issue and returns them
+	// ascending by number. It maps a rate limit to ErrRateLimited and returns
+	// nothing from pages that succeeded when a later page fails, so a failed
+	// poll never yields a partial Selection.
+	issues, err := fetchOpenIssues(run, repo, label, assignee)
 	if err != nil {
-		if isRateLimited(err) {
-			return Selection{}, ErrRateLimited
-		}
-		return Selection{}, fmt.Errorf("gh issue list failed: %w", err)
-	}
-	var issues []rawIssue
-	if err := json.Unmarshal(out, &issues); err != nil {
-		return Selection{}, fmt.Errorf("failed to parse gh output: %w", err)
+		return Selection{}, err
 	}
 
 	done, failed := failure.DoneLabel(label), failure.FailedLabel(label)
@@ -379,7 +360,7 @@ func selectIssues(run ghFunc, repo, label, assignee string) (Selection, error) {
 	var sel Selection
 	for _, ri := range issues {
 		if len(ri.Comments) >= listCommentCap {
-			// `gh issue list --json comments` returns only the oldest 100
+			// The issues query returns only the oldest listCommentCap
 			// comments, so a punch-out marker (always one of the newest) can be
 			// hidden on a long thread. Re-read the issue in full and classify
 			// from that. Fail closed: skip this poll on error rather than

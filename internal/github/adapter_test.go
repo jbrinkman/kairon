@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"os/exec"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -18,14 +19,21 @@ const (
 
 // fakeGH is a scripted gh. It records every call and never starts a process.
 type fakeGH struct {
-	list      string         // output of `gh issue list`
-	listErr   error          // error from `gh issue list`
+	list      string         // output of every `gh api graphql` call when pages is empty
+	listErr   error          // error from every `gh api graphql` call when pages is empty
+	pages     []fakePage     // replies to `gh api graphql`, served in call order when non-empty
 	view      map[int]string // issue number -> output of `gh issue view`
 	events    map[int]string // issue number -> output of the events call
 	eventsErr map[int]error  // issue number -> error from the events call
 	viewer    string         // output of `gh api user`
 	viewerErr error          // error from `gh api user`
 	calls     []fakeCall
+}
+
+// fakePage is one scripted reply to a `gh api graphql` call.
+type fakePage struct {
+	out string
+	err error
 }
 
 type fakeCall struct {
@@ -39,8 +47,16 @@ func (f *fakeGH) run(stdin string, args ...string) ([]byte, error) {
 	f.calls = append(f.calls, fakeCall{stdin: stdin, args: args})
 	j := strings.Join(args, " ")
 	switch {
-	case strings.HasPrefix(j, "issue list"):
-		return []byte(f.list), f.listErr
+	case strings.HasPrefix(j, "api graphql"):
+		if len(f.pages) == 0 {
+			return []byte(f.list), f.listErr
+		}
+		// The call was recorded above, so it is already counted.
+		i := f.count("api graphql") - 1
+		if i >= len(f.pages) {
+			return nil, fmt.Errorf("unexpected extra gh api graphql call %d", i+1)
+		}
+		return []byte(f.pages[i].out), f.pages[i].err
 	case strings.HasPrefix(j, "issue view"):
 		var n int
 		fmt.Sscanf(args[2], "%d", &n)
@@ -76,16 +92,37 @@ func plainComment(author, text, at string) string {
 	return fmt.Sprintf(`{"author":{"login":%q},"body":%q,"createdAt":%q}`, author, text, at)
 }
 
+// issueJSON returns one issue in the GraphQL node shape `gh api graphql`
+// returns for the issues connection.
 func issueJSON(n int, labels []string, comments ...string) string {
 	var ls []string
 	for _, l := range labels {
 		ls = append(ls, fmt.Sprintf(`{"name":%q}`, l))
 	}
-	return fmt.Sprintf(`{"number":%d,"title":"t%d","body":"b%d","labels":[%s],"comments":[%s]}`,
+	return fmt.Sprintf(`{"number":%d,"title":"t%d","body":"b%d","labels":{"nodes":[%s]},"comments":{"nodes":[%s]}}`,
 		n, n, n, strings.Join(ls, ","), strings.Join(comments, ","))
 }
 
-func listOf(issues ...string) string { return "[" + strings.Join(issues, ",") + "]" }
+// pageOf returns one GraphQL page holding issues. hasNextPage is true exactly
+// when endCursor is non-empty.
+func pageOf(endCursor string, issues ...string) string {
+	return fmt.Sprintf(`{"data":{"repository":{"issues":{"pageInfo":{"hasNextPage":%t,"endCursor":%q},"nodes":[%s]}}}}`,
+		endCursor != "", endCursor, strings.Join(issues, ","))
+}
+
+// listOf returns a complete single page: no next page.
+func listOf(issues ...string) string { return pageOf("", issues...) }
+
+// afterValue returns the after= variable of a recorded call, or "" if the call
+// has none.
+func afterValue(c fakeCall) string {
+	for i, a := range c.args {
+		if a == "-f" && i+1 < len(c.args) && strings.HasPrefix(c.args[i+1], "after=") {
+			return strings.TrimPrefix(c.args[i+1], "after=")
+		}
+	}
+	return ""
+}
 
 func numbers(issues []Issue) []int {
 	var out []int
@@ -269,19 +306,191 @@ func TestSelectIssues_NoViewerLookupWithoutMarkers(t *testing.T) {
 	}
 }
 
-func TestSelectIssues_ListArgs(t *testing.T) {
-	g := &fakeGH{list: "[]"}
+// TestSelectIssues_PageArgs pins the exact first `gh` call: one `api graphql`
+// call whose untrusted values (repo parts, label, assignee) travel as separate
+// -f variables, and no `issue list`, --search or --limit anywhere.
+func TestSelectIssues_PageArgs(t *testing.T) {
+	g := &fakeGH{list: listOf()}
 	if _, err := selectIssues(g.run, testRepo, "my-label", "alice"); err != nil {
 		t.Fatal(err)
 	}
 	if len(g.calls) != 1 {
 		t.Fatalf("calls = %d, want 1", len(g.calls))
 	}
-	want := []string{"issue", "list", "--repo", testRepo, "--label", "my-label", "--state", "open",
-		"--json", "number,title,body,labels,comments", "--limit", "50", "--search", "sort:created-asc",
-		"--assignee", "alice"}
-	if got := g.calls[0].args; strings.Join(got, "\x00") != strings.Join(want, "\x00") {
+	want := []string{"api", "graphql", "-f", "query=" + openIssuesQuery,
+		"-f", "owner=o", "-f", "name=r", "-f", "label=my-label", "-f", "assignee=alice"}
+	got := g.calls[0].args
+	if strings.Join(got, "\x00") != strings.Join(want, "\x00") {
 		t.Errorf("args = %v, want %v", got, want)
+	}
+	for _, a := range got {
+		if a == "issue" || a == "list" || strings.HasPrefix(a, "--") {
+			t.Errorf("arg %q must not appear in the page call", a)
+		}
+	}
+}
+
+// TestSelectIssues_MultiPageSelectsAllOldestFirst pins that more open labeled
+// issues than one page holds are all selected, oldest first, across three pages.
+func TestSelectIssues_MultiPageSelectsAllOldestFirst(t *testing.T) {
+	const (
+		total      = 2*listPageSize + 7
+		doneIssue  = 10                // on page 1
+		pendingIss = listPageSize + 10 // on page 2
+	)
+	nodes := make([]string, 0, total)
+	for n := 1; n <= total; n++ {
+		switch n {
+		case doneIssue:
+			nodes = append(nodes, issueJSON(n, []string{"kairon", "kairon-done"}))
+		case pendingIss:
+			nodes = append(nodes, issueJSON(n, []string{"kairon"}, markerComment(testViewer, "run1", "2026-01-01T10:00:00Z")))
+		default:
+			nodes = append(nodes, issueJSON(n, []string{"kairon"}))
+		}
+	}
+	g := &fakeGH{
+		viewer: testViewer,
+		events: map[int]string{pendingIss: ""},
+		pages: []fakePage{
+			{out: pageOf("c1", nodes[:listPageSize]...)},
+			{out: pageOf("c2", nodes[listPageSize:2*listPageSize]...)},
+			{out: pageOf("", nodes[2*listPageSize:]...)},
+		},
+	}
+
+	sel, err := selectIssues(g.run, testRepo, "kairon", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var want []int
+	for n := 1; n <= total; n++ {
+		if n != doneIssue && n != pendingIss {
+			want = append(want, n)
+		}
+	}
+	got := numbers(sel.Eligible)
+	if len(got) <= listPageSize {
+		t.Fatalf("selected %d issues, want more than one page (%d)", len(got), listPageSize)
+	}
+	if !eqInts(got, want) {
+		t.Errorf("Eligible = %v, want %v", got, want)
+	}
+	if got := numbers(sel.TerminalPending); !eqInts(got, []int{pendingIss}) {
+		t.Errorf("TerminalPending = %v, want [%d]", got, pendingIss)
+	}
+	if n := g.count("api graphql"); n != 3 {
+		t.Fatalf("api graphql calls = %d, want 3", n)
+	}
+	graphql := 0
+	for _, c := range g.calls {
+		if !strings.HasPrefix(c.joined(), "api graphql") {
+			continue
+		}
+		if wantAfter := []string{"", "c1", "c2"}[graphql]; afterValue(c) != wantAfter {
+			t.Errorf("page %d after = %q, want %q", graphql+1, afterValue(c), wantAfter)
+		}
+		graphql++
+	}
+}
+
+// TestSelectIssues_SecondPageFailureReturnsErrorAndEmptySelection pins that a
+// failed later page yields an error and nothing from the pages that succeeded.
+func TestSelectIssues_SecondPageFailureReturnsErrorAndEmptySelection(t *testing.T) {
+	cases := map[string]fakePage{
+		"page error":   {err: errors.New("boom")},
+		"invalid JSON": {out: "not json"},
+	}
+	for name, second := range cases {
+		t.Run(name, func(t *testing.T) {
+			g := &fakeGH{pages: []fakePage{
+				{out: pageOf("c1", issueJSON(1, []string{"kairon"}), issueJSON(2, []string{"kairon"}))},
+				second,
+			}}
+			sel, err := selectIssues(g.run, testRepo, "kairon", "")
+			if err == nil {
+				t.Fatal("want error from failed second page")
+			}
+			if !reflect.DeepEqual(sel, Selection{}) {
+				t.Errorf("Selection = %+v, want Selection{} (no partial result)", sel)
+			}
+			if n := g.count("api graphql"); n != 2 {
+				t.Errorf("api graphql calls = %d, want 2", n)
+			}
+		})
+	}
+}
+
+// TestSelectIssues_NeverUsesSearch pins that no gh call selectIssues makes
+// reads the search index, in a scenario that also triggers the viewer, events
+// and issue-view sub-calls.
+func TestSelectIssues_NeverUsesSearch(t *testing.T) {
+	view := `{"labels":[{"name":"kairon"}],"comments":[]}`
+	g := &fakeGH{
+		viewer: testViewer,
+		events: map[int]string{2: ""},
+		view:   map[int]string{3: view},
+		pages: []fakePage{
+			{out: pageOf("c1",
+				issueJSON(1, []string{"kairon"}),
+				issueJSON(2, []string{"kairon"}, markerComment(testViewer, "run1", "2026-01-01T10:00:00Z")))},
+			{out: pageOf("", issueJSON(3, []string{"kairon"}, nonMarkerComments(listCommentCap)...))},
+		},
+	}
+	sel, err := selectIssues(g.run, testRepo, "kairon", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := numbers(sel.Eligible); !eqInts(got, []int{1, 3}) {
+		t.Errorf("Eligible = %v, want [1 3]", got)
+	}
+
+	// Every sub-call must have run, or the assertions below prove too little.
+	for prefix, want := range map[string]int{"api graphql": 2, "api user": 1, "api repos/": 1, "issue view": 1} {
+		if n := g.count(prefix); n != want {
+			t.Errorf("%q calls = %d, want %d", prefix, n, want)
+		}
+	}
+	if n := g.count("issue list"); n != 0 {
+		t.Errorf("issue list calls = %d, want 0", n)
+	}
+	for _, c := range g.calls {
+		for _, a := range c.args {
+			if strings.Contains(a, "--search") {
+				t.Errorf("call %q has a --search argument", c.joined())
+			}
+			if strings.HasPrefix(a, "query=") && strings.Contains(a, "search(") {
+				t.Errorf("call uses the GraphQL search field: %q", a)
+			}
+		}
+	}
+}
+
+// TestSelectIssues_OutOfOrderPagesComeBackAscending pins that Eligible and
+// TerminalPending are each ascending by number whatever order the pages and
+// the issues within them arrive in.
+func TestSelectIssues_OutOfOrderPagesComeBackAscending(t *testing.T) {
+	pending := func(n int) string {
+		return issueJSON(n, []string{"kairon"}, markerComment(testViewer, "run1", "2026-01-01T10:00:00Z"))
+	}
+	g := &fakeGH{
+		viewer: testViewer,
+		events: map[int]string{7: "", 4: ""},
+		pages: []fakePage{
+			{out: pageOf("c1", issueJSON(9, []string{"kairon"}), issueJSON(3, []string{"kairon"}), pending(7))},
+			{out: pageOf("", issueJSON(5, []string{"kairon"}), issueJSON(1, []string{"kairon"}), pending(4))},
+		},
+	}
+	sel, err := selectIssues(g.run, testRepo, "kairon", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := numbers(sel.Eligible); !eqInts(got, []int{1, 3, 5, 9}) {
+		t.Errorf("Eligible = %v, want [1 3 5 9]", got)
+	}
+	if got := numbers(sel.TerminalPending); !eqInts(got, []int{4, 7}) {
+		t.Errorf("TerminalPending = %v, want [4 7]", got)
 	}
 }
 
@@ -374,7 +583,7 @@ func TestIssueState_ByViewerAndLabels(t *testing.T) {
 }
 
 // nonMarkerComments returns n comments, none of which is a punch-out marker,
-// so an issue built from them looks eligible from `gh issue list` alone.
+// so an issue built from them looks eligible from the issues page alone.
 func nonMarkerComments(n int) []string {
 	out := make([]string, n)
 	for i := range out {
@@ -383,8 +592,8 @@ func nonMarkerComments(n int) []string {
 	return out
 }
 
-// TestSelectIssues_RereadsIssueAtCommentCap pins that an issue whose `gh issue
-// list` comment page is at the cap is re-read in full (via CLI.State) so a
+// TestSelectIssues_RereadsIssueAtCommentCap pins that an issue whose issues-page
+// comment list is at the cap is re-read in full (via CLI.State) so a
 // punch-out marker posted beyond the first 100 comments is not missed. Without
 // the re-read the issue misclassifies as Eligible and the watcher re-spawns a
 // terminal-pending run.
