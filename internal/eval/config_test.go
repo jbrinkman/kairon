@@ -115,9 +115,32 @@ func TestConfigureUnknownBackend(t *testing.T) {
 
 func TestRunWithOptionsRejectsUnknownBackend(t *testing.T) {
 	t.Cleanup(resetConfig)
-	err := RunWithOptions("a", "", RunOptions{Backend: "nope"})
-	if err == nil || !strings.Contains(err.Error(), "valid backends") {
+	_, calls := installFakeKiroCLI(t, "")
+
+	// The backend is rejected in configure() before any agent or evals dir is
+	// read, so the agent and evals dir only matter for the result-dir check
+	// below, which needs a known evals dir.
+	resultsDir := filepath.Join(selftestEvalsDir, "results")
+	registerResultsCleanup(t, resultsDir)
+	before := snapshotDirs(t, resultsDir)
+
+	err := RunWithOptions("selftest", "", RunOptions{Backend: "nope", EvalsDir: selftestEvalsDir})
+	if err == nil {
+		t.Fatal("expected an error for unknown backend")
+	}
+	if !strings.Contains(err.Error(), "valid backends") {
 		t.Fatalf("expected unknown backend error, got %v", err)
+	}
+	for _, want := range []string{`"nope"`, "kiro-cli", "stub"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q does not mention %s", err, want)
+		}
+	}
+	if added := newRunDirs(t, resultsDir, before); len(added) != 0 {
+		t.Errorf("rejected run still created result dirs: %v", added)
+	}
+	if got := readCalls(t, calls); len(got) != 0 {
+		t.Errorf("kiro-cli invoked: %q", got)
 	}
 }
 
