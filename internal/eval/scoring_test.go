@@ -111,63 +111,58 @@ func TestPrintCaseResultStatuses(t *testing.T) {
 }
 
 func TestPrintCaseResultBreakdownOnlyBelowThreshold(t *testing.T) {
-	scores := []CriterionScore{
-		{Name: "low", Score: 1, MaxScore: 5},                        // 1 < 3 => shown
-		{Name: "edge", Score: 3, MaxScore: 5},                       // 3 < 5*3/4=3 false => omitted
-		{Name: "high", Score: 5, MaxScore: 5},                       // omitted
-		{Name: "skipped-low", Score: 0, MaxScore: 5, Skipped: true}, // skipped counts as 0/5 => shown
-		{Name: "just-under", Score: 2, MaxScore: 5},                 // 2 < 3 => shown
+	tests := []struct {
+		name   string
+		rubric Rubric
+		scores []CriterionScore
+		want   string
+		absent []string
+	}{
+		{
+			name:   "below-threshold-lists-weak-criteria",
+			rubric: Rubric{},
+			scores: []CriterionScore{
+				{Name: "low", Score: 1, MaxScore: 5},                        // 1 < 3 => shown
+				{Name: "edge", Score: 3, MaxScore: 5},                       // 3 < 5*3/4=3 false => omitted
+				{Name: "high", Score: 5, MaxScore: 5},                       // omitted
+				{Name: "skipped-low", Score: 0, MaxScore: 5, Skipped: true}, // skipped counts as 0/5 => shown
+				{Name: "just-under", Score: 2, MaxScore: 5},                 // 2 < 3 => shown
+			},
+			// total = 1+3+5+0+2 = 11 / 25 = 44% (skipped counted as 0/5) -> fail, below threshold.
+			want:   " ❌ 44% (threshold: 95%)\n      low: 1/5\n      skipped-low: 0/5\n      just-under: 2/5\n",
+			absent: []string{"edge", "high"},
+		},
+		{
+			name:   "passing-omits-breakdown",
+			rubric: Rubric{PassThreshold: floatPtr(80)},
+			// 17/20 = 85% >= the rubric's 80% pass_threshold, even though "weak" is below 3/4 of its max.
+			scores: []CriterionScore{
+				{Name: "weak", Score: 2, MaxScore: 5},
+				{Name: "strong", Score: 5, MaxScore: 5},
+				{Name: "strong2", Score: 5, MaxScore: 5},
+				{Name: "strong3", Score: 5, MaxScore: 5},
+			},
+			want: " ✅ 85% (threshold: 80%)\n",
+		},
 	}
-	// total = 1+3+5+0+2 = 11 / 25 = 44% (skipped counted as 0/5) -> fail, below threshold.
-	cr := CaseResult{ActualOutput: "out", Scores: scores}
 
-	var sb strings.Builder
-	printCaseResult(&sb, TestCase{Name: "c"}, Rubric{}, cr)
-	got := sb.String()
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cr := CaseResult{ActualOutput: "out", Scores: tt.scores}
 
-	want := " ❌ 44% (threshold: 95%)\n      low: 1/5\n      skipped-low: 0/5\n      just-under: 2/5\n"
-	if got != want {
-		t.Fatalf("output = %q, want %q", got, want)
-	}
-	for _, absent := range []string{"edge", "high"} {
-		if strings.Contains(got, absent) {
-			t.Errorf("breakdown unexpectedly contains %q: %q", absent, got)
-		}
-	}
-}
+			var sb strings.Builder
+			printCaseResult(&sb, TestCase{Name: "c"}, tt.rubric, cr)
+			got := sb.String()
 
-func TestPrintCaseResultNoBreakdownWhenPassing(t *testing.T) {
-	// 17/20 = 85% >= the rubric's 80% pass_threshold, even though "weak" is below 3/4 of its max.
-	cr := CaseResult{ActualOutput: "out", Scores: []CriterionScore{
-		{Name: "weak", Score: 2, MaxScore: 5},
-		{Name: "strong", Score: 5, MaxScore: 5},
-		{Name: "strong2", Score: 5, MaxScore: 5},
-		{Name: "strong3", Score: 5, MaxScore: 5},
-	}}
-	var sb strings.Builder
-	printCaseResult(&sb, TestCase{Name: "c"}, Rubric{PassThreshold: floatPtr(80)}, cr)
-	want := " ✅ 85% (threshold: 80%)\n"
-	if got := sb.String(); got != want {
-		t.Errorf("output = %q, want %q", got, want)
-	}
-}
-
-func TestScoreCaseSkipsCostCriterion(t *testing.T) {
-	chdirTemp(t)
-	useStubBackend(t)
-
-	rubric := Rubric{Agent: "a", Criteria: []Criterion{
-		{Name: "cost_budget", Scoring: "1-5", Type: "cost"},
-		{Name: "structural_completeness", Scoring: "1-5", Deterministic: true},
-	}}
-	cr := CaseResult{ActualOutput: "## H\n### S\ntext"}
-	scoreCase(rubric, TestCase{Name: "c"}, &cr)
-
-	if len(cr.Scores) != 1 {
-		t.Fatalf("scores = %+v, want exactly 1 (cost criterion skipped)", cr.Scores)
-	}
-	if cr.Scores[0].Name != "structural_completeness" {
-		t.Errorf("scored criterion = %q", cr.Scores[0].Name)
+			if got != tt.want {
+				t.Fatalf("output = %q, want %q", got, tt.want)
+			}
+			for _, absent := range tt.absent {
+				if strings.Contains(got, absent) {
+					t.Errorf("breakdown unexpectedly contains %q: %q", absent, got)
+				}
+			}
+		})
 	}
 }
 
@@ -197,48 +192,48 @@ func TestScoreCaseDeterministicPath(t *testing.T) {
 	}
 }
 
-func TestScoreCaseDeterministicEmptyOutputSkipped(t *testing.T) {
-	chdirTemp(t)
-	useStubBackend(t)
-
-	rubric := Rubric{Agent: "a", Criteria: []Criterion{
-		{Name: "structural_completeness", Scoring: "1-5", Deterministic: true},
-	}}
-	cr := CaseResult{}
-	scoreCase(rubric, TestCase{Name: "c"}, &cr)
-
-	if len(cr.Scores) != 1 || !cr.Scores[0].Skipped || cr.Scores[0].Score != 0 {
-		t.Errorf("scores = %+v, want one skipped zero score", cr.Scores)
-	}
-}
-
 func TestScoreCaseLLMJudgeEmptyOutputSkipped(t *testing.T) {
 	chdirTemp(t)
 	_, calls := installFakeKiroCLI(t, "")
 	useStubBackend(t)
 
-	rubric := Rubric{Agent: "a", Criteria: []Criterion{
-		{Name: "clarity", Scoring: "1-7"},
-	}}
-	cr := CaseResult{}
-	scoreCase(rubric, TestCase{Name: "c"}, &cr)
+	// llm-judge runs first: the fake kiro-cli call log is shared, so its readCalls check must run here.
+	t.Run("llm-judge", func(t *testing.T) {
+		rubric := Rubric{Agent: "a", Criteria: []Criterion{
+			{Name: "clarity", Scoring: "1-7"},
+		}}
+		cr := CaseResult{}
+		scoreCase(rubric, TestCase{Name: "c"}, &cr)
 
-	want := []CriterionScore{{
-		Name:      "clarity",
-		Score:     0,
-		MaxScore:  7,
-		Skipped:   true,
-		Reasoning: "no output available for LLM judging",
-	}}
-	if !reflect.DeepEqual(cr.Scores, want) {
-		t.Errorf("scores = %+v, want %+v", cr.Scores, want)
-	}
-	if !reflect.DeepEqual(cr.JudgeCost, CostInfo{}) {
-		t.Errorf("JudgeCost = %+v, want zero (judge must not run)", cr.JudgeCost)
-	}
-	if got := readCalls(t, calls); len(got) != 0 {
-		t.Errorf("kiro-cli invoked: %q", got)
-	}
+		want := []CriterionScore{{
+			Name:      "clarity",
+			Score:     0,
+			MaxScore:  7,
+			Skipped:   true,
+			Reasoning: "no output available for LLM judging",
+		}}
+		if !reflect.DeepEqual(cr.Scores, want) {
+			t.Errorf("scores = %+v, want %+v", cr.Scores, want)
+		}
+		if !reflect.DeepEqual(cr.JudgeCost, CostInfo{}) {
+			t.Errorf("JudgeCost = %+v, want zero (judge must not run)", cr.JudgeCost)
+		}
+		if got := readCalls(t, calls); len(got) != 0 {
+			t.Errorf("kiro-cli invoked: %q", got)
+		}
+	})
+
+	t.Run("deterministic", func(t *testing.T) {
+		rubric := Rubric{Agent: "a", Criteria: []Criterion{
+			{Name: "structural_completeness", Scoring: "1-5", Deterministic: true},
+		}}
+		cr := CaseResult{}
+		scoreCase(rubric, TestCase{Name: "c"}, &cr)
+
+		if len(cr.Scores) != 1 || !cr.Scores[0].Skipped || cr.Scores[0].Score != 0 {
+			t.Errorf("scores = %+v, want one skipped zero score", cr.Scores)
+		}
+	})
 }
 
 func TestScoreCaseLLMJudgeAccumulatesJudgeCost(t *testing.T) {
@@ -273,17 +268,39 @@ func TestScoreCaseNilScoresWhenNoNonCostCriteria(t *testing.T) {
 	chdirTemp(t)
 	useStubBackend(t)
 
-	for name, rubric := range map[string]Rubric{
-		"empty rubric": {Agent: "a"},
-		"cost only": {Agent: "a", Criteria: []Criterion{
+	// wantNames == nil means cr.Scores must be nil.
+	tests := []struct {
+		name      string
+		rubric    Rubric
+		output    string
+		wantNames []string
+	}{
+		{name: "empty rubric", rubric: Rubric{Agent: "a"}, output: "out"},
+		{name: "cost only", rubric: Rubric{Agent: "a", Criteria: []Criterion{
 			{Name: "cost_budget", Scoring: "1-5", Type: "cost"},
-		}},
-	} {
-		t.Run(name, func(t *testing.T) {
-			cr := CaseResult{ActualOutput: "out"}
-			scoreCase(rubric, TestCase{Name: "c"}, &cr)
-			if cr.Scores != nil {
-				t.Errorf("Scores = %#v, want nil", cr.Scores)
+		}}, output: "out"},
+		{name: "cost and deterministic", rubric: Rubric{Agent: "a", Criteria: []Criterion{
+			{Name: "cost_budget", Scoring: "1-5", Type: "cost"},
+			{Name: "structural_completeness", Scoring: "1-5", Deterministic: true},
+		}}, output: "## H\n### S\ntext", wantNames: []string{"structural_completeness"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cr := CaseResult{ActualOutput: tt.output}
+			scoreCase(tt.rubric, TestCase{Name: "c"}, &cr)
+			if tt.wantNames == nil {
+				if cr.Scores != nil {
+					t.Errorf("Scores = %#v, want nil", cr.Scores)
+				}
+				return
+			}
+			if len(cr.Scores) != len(tt.wantNames) {
+				t.Fatalf("scores = %+v, want exactly %d (cost criterion skipped)", cr.Scores, len(tt.wantNames))
+			}
+			for i, name := range tt.wantNames {
+				if cr.Scores[i].Name != name {
+					t.Errorf("scored criterion %d = %q, want %q", i, cr.Scores[i].Name, name)
+				}
 			}
 		})
 	}

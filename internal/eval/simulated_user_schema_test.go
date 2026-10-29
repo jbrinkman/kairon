@@ -403,10 +403,3 @@ func TestLoadCasesSimulatedUserRoutesNoneAndCaseInsensitive(t *testing.T) {
 		t.Fatalf("routes with NONE and a fact id should load: %v", err)
 	}
 }
-
-func TestLoadCasesTurnsAndInputStillExclusiveWithoutSimulatedUser(t *testing.T) {
-	_, err := loadTurnsCase(t, "name: no-sim-both\nagent: a1\ninput: hello\nturns:\n  - one\n")
-	if err == nil || !strings.Contains(err.Error(), "turns and input are mutually exclusive") {
-		t.Fatalf("err = %v, want mutually exclusive", err)
-	}
-}

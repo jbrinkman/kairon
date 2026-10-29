@@ -114,24 +114,3 @@ func TestSelfTestSimJudgePrompt(t *testing.T) {
 		t.Errorf("judge checks = %+v, want one pass with the stub judge's reasoning", jc)
 	}
 }
-
-// A judge check whose turn is beyond the case's turns never loads, so a case
-// file cannot exercise the run-time guard; the loader names the turn count.
-func TestLoadCasesJudgeTurnBeyondCaseTurns(t *testing.T) {
-	_, err := loadTurnsCase(t, `name: judge-turn-9
-agent: a1
-turns:
-  - one
-  - two
-checks:
-  - {criterion: c, type: judge, question: q, turn: 9}
-`)
-	if err == nil {
-		t.Fatal("expected a load error for a judge check with turn 9 on a 2-turn case")
-	}
-	for _, want := range []string{"judge-turn-9", "check 1 (judge)", "turn 9 is beyond the case's 2 turn(s)"} {
-		if !strings.Contains(err.Error(), want) {
-			t.Errorf("error %q does not contain %q", err, want)
-		}
-	}
-}

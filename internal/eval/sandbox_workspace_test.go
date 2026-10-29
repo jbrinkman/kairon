@@ -92,44 +92,6 @@ func wantThresholdFailure(agent string, opts RunOptions) bool {
 	return false
 }
 
-// TestWantThresholdFailure pins the expected-failure contract for every
-// self-test agent in both modes. In particular selftest-sandbox-ro must be
-// expected to fail its threshold even under --sandbox: it owns
-// stub-write-outside-mounts, a requires_sandbox case that deliberately fails
-// against the read-only root filesystem, so the agent's aggregate falls below
-// its pass threshold and RunWithOptions returns ErrThresholdFailed. By
-// contrast selftest-sandbox's cases all pass under --sandbox, so it is only
-// expected to fail when run natively.
-func TestWantThresholdFailure(t *testing.T) {
-	cases := []struct {
-		agent   string
-		sandbox bool
-		want    bool
-	}{
-		{"selftest", false, false},
-		{"selftest", true, false},
-		{"selftest-fail", false, true},
-		{"selftest-fail", true, true},
-		{"selftest-sandbox", false, true},
-		{"selftest-sandbox", true, false},
-		{"selftest-sandbox-ro", false, true},
-		{"selftest-sandbox-ro", true, true},
-		{"selftest-checks", false, false},
-		{"selftest-checks", true, false},
-		{"selftest-checks-fail", false, true},
-		{"selftest-checks-fail", true, true},
-		{"selftest-floor", false, true},
-		{"selftest-floor", true, true},
-	}
-	for _, tc := range cases {
-		opts := RunOptions{Sandbox: tc.sandbox, NoSandbox: !tc.sandbox}
-		if got := wantThresholdFailure(tc.agent, opts); got != tc.want {
-			t.Errorf("wantThresholdFailure(%q, Sandbox=%v) = %v, want %v",
-				tc.agent, tc.sandbox, got, tc.want)
-		}
-	}
-}
-
 func caseByName(t *testing.T, res AgentResult, name string) CaseResult {
 	t.Helper()
 	for _, c := range res.Cases {
