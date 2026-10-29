@@ -278,7 +278,8 @@ func TestSelectIssues_ListArgs(t *testing.T) {
 		t.Fatalf("calls = %d, want 1", len(g.calls))
 	}
 	want := []string{"issue", "list", "--repo", testRepo, "--label", "my-label", "--state", "open",
-		"--json", "number,title,body,labels,comments", "--assignee", "alice"}
+		"--json", "number,title,body,labels,comments", "--limit", "50", "--search", "sort:created-asc",
+		"--assignee", "alice"}
 	if got := g.calls[0].args; strings.Join(got, "\x00") != strings.Join(want, "\x00") {
 		t.Errorf("args = %v, want %v", got, want)
 	}
