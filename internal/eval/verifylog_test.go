@@ -1609,40 +1609,65 @@ func TestVerifyLogRejectsBadAgentNames(t *testing.T) {
 	}
 }
 
-func TestVerifyLogRejectsRunNamesOutsideResults(t *testing.T) {
-	for _, run := range []string{"../outside", "..", "a/b", `a\b`, "r0/../r1"} {
-		t.Run(run, func(t *testing.T) {
-			opts := vlSetup(t, map[string]string{
-				"iteration-00.md": vlDoc(vlFM(0, "2026-07-01", "prompt", run, "r1", "60.0", "72.5"), vlBody),
-			})
-			// A perfectly good run just outside results/ that a traversal
-			// would reach: it must never be read.
-			vlWriteFile(t, filepath.Join(opts.EvalsDir, "outside", "summary.json"), vlVerdictSummary(60.0, vlShaA))
-			vlWriteFile(t, filepath.Join(opts.EvalsDir, "outside", vlAgent+".json"), vlAgentJSON(vlShaA))
+// TestVerifyLogRunNameEscapeRejected covers a run name that would escape
+// results/. Each row holds the front matter, the decoy files written outside
+// results/ (a perfectly good run a traversal would reach, which must never be
+// read), the run names to try and the front-matter field the single
+// violation must name.
+func TestVerifyLogRunNameEscapeRejected(t *testing.T) {
+	tests := []struct {
+		name  string
+		field string
+		runs  []string
+		fm    func(run string) string
+		decoy func(t *testing.T, evalsDir string)
+	}{
+		{
+			name:  "RejectsRunNamesOutsideResults",
+			field: "baseline_run",
+			runs:  []string{"../outside", "..", "a/b", `a\b`, "r0/../r1"},
+			fm: func(run string) string {
+				return vlFM(0, "2026-07-01", "prompt", run, "r1", "60.0", "72.5")
+			},
+			decoy: func(t *testing.T, evalsDir string) {
+				vlWriteFile(t, filepath.Join(evalsDir, "outside", "summary.json"), vlVerdictSummary(60.0, vlShaA))
+				vlWriteFile(t, filepath.Join(evalsDir, "outside", vlAgent+".json"), vlAgentJSON(vlShaA))
+			},
+		},
+		{
+			// The result_run escape is rejected too, and a score file outside
+			// results never satisfies score-match.
+			name:  "DoesNotFollowRunNameOutOfResults",
+			field: "result_run",
+			runs:  []string{"../outside"},
+			fm: func(run string) string {
+				return vlFM(0, "2026-07-01", "prompt", "r0", run, "60.0", "50.0")
+			},
+			decoy: func(t *testing.T, evalsDir string) {
+				vlWriteFile(t, filepath.Join(evalsDir, "outside", "summary.json"), vlVerdictSummary(50.0, vlShaB))
+			},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, run := range tc.runs {
+				t.Run(run, func(t *testing.T) {
+					opts := vlSetup(t, map[string]string{
+						"iteration-00.md": vlDoc(tc.fm(run), vlBody),
+					})
+					tc.decoy(t, opts.EvalsDir)
 
-			_, err := vlRunVerify(t, opts)
-			vs := vlViolations(t, err)
-			if len(vs) != 1 || vs[0].Rule != "front-matter" {
-				t.Fatalf("expected a single front-matter violation, got %v", vs)
-			}
-			if !strings.Contains(vs[0].Message, "baseline_run") {
-				t.Errorf("message %q should name baseline_run", vs[0].Message)
+					_, err := vlRunVerify(t, opts)
+					vs := vlViolations(t, err)
+					if len(vs) != 1 || vs[0].Rule != "front-matter" {
+						t.Fatalf("expected a single front-matter violation, got %v", vs)
+					}
+					if !strings.Contains(vs[0].Message, tc.field) {
+						t.Errorf("message %q should name %s", vs[0].Message, tc.field)
+					}
+				})
 			}
 		})
-	}
-}
-
-func TestVerifyLogDoesNotFollowRunNameOutOfResults(t *testing.T) {
-	// The result_run escape is rejected too, and a score file outside results
-	// never satisfies score-match.
-	opts := vlSetup(t, map[string]string{
-		"iteration-00.md": vlDoc(vlFM(0, "2026-07-01", "prompt", "r0", "../outside", "60.0", "50.0"), vlBody),
-	})
-	vlWriteFile(t, filepath.Join(opts.EvalsDir, "outside", "summary.json"), vlVerdictSummary(50.0, vlShaB))
-	_, err := vlRunVerify(t, opts)
-	vs := vlViolations(t, err)
-	if len(vs) != 1 || vs[0].Rule != "front-matter" || !strings.Contains(vs[0].Message, "result_run") {
-		t.Fatalf("expected one front-matter violation naming result_run, got %v", vs)
 	}
 }
 
