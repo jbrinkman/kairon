@@ -65,39 +65,30 @@ func TestAgentVerdictFloorFailsLowCriterionDespiteScore(t *testing.T) {
 func TestAgentVerdictFloorBoundary(t *testing.T) {
 	tests := []struct {
 		name       string
-		score, max int
+		scores     []CriterionScore
 		wantPassed bool
 		wantBelow  []string
 		floor      float64
 	}{
-		{"exactly at the floor passes", 1, 2, true, nil, 50},
-		{"49 of 100 fails a floor of 50", 49, 100, false, []string{"x"}, 50},
-		{"50 of 100 passes", 50, 100, true, nil, 50},
-		{"fractional floor, exact", 19, 20, true, nil, 95},
+		{"exactly at the floor passes", []CriterionScore{cs("x", 1, 2)}, true, nil, 50},
+		{"49 of 100 fails a floor of 50", []CriterionScore{cs("x", 49, 100)}, false, []string{"x"}, 50},
+		{"50 of 100 passes", []CriterionScore{cs("x", 50, 100)}, true, nil, 50},
+		{"fractional floor, exact", []CriterionScore{cs("x", 19, 20)}, true, nil, 95},
+		// Several criteria below the floor are all named, in criteria order,
+		// and the passing one between them is skipped.
+		{"several-criteria-named-in-criteria-order", []CriterionScore{cs("a", 1, 10), cs("ok", 5, 5), cs("b", 0, 1)}, false, []string{"a", "b"}, 50},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			ar := floorResult(floatPtr(tt.floor), 1, floorCase("c", 0, cs("x", tt.score, tt.max)))
+			ar := floorResult(floatPtr(tt.floor), 1, floorCase("c", 0, tt.scores...))
 			v := agentVerdict(ar)
 			if v.Passed != tt.wantPassed {
 				t.Errorf("Passed = %v, want %v", v.Passed, tt.wantPassed)
 			}
 			if !reflect.DeepEqual(v.CriteriaBelowFloor, tt.wantBelow) {
-				t.Errorf("CriteriaBelowFloor = %v, want %v", v.CriteriaBelowFloor, tt.wantBelow)
+				t.Errorf("CriteriaBelowFloor = %v, want %v (criteria order)", v.CriteriaBelowFloor, tt.wantBelow)
 			}
 		})
-	}
-}
-
-func TestAgentVerdictFloorNamesSeveralCriteriaInOrder(t *testing.T) {
-	ar := floorResult(floatPtr(50), 1,
-		floorCase("c", 0, cs("a", 1, 10), cs("ok", 5, 5), cs("b", 0, 1)))
-	v := agentVerdict(ar)
-	if want := []string{"a", "b"}; !reflect.DeepEqual(v.CriteriaBelowFloor, want) {
-		t.Errorf("CriteriaBelowFloor = %v, want %v (criteria order)", v.CriteriaBelowFloor, want)
-	}
-	if v.Passed {
-		t.Error("Passed = true, want false")
 	}
 }
 
