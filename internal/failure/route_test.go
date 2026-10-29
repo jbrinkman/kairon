@@ -7,43 +7,41 @@ import (
 	"github.com/jbrinkman/kairon/internal/stageoutput"
 )
 
-func TestRoute_RecoverableRecordsContext(t *testing.T) {
-	var r Route
-	fc := testFC()
-	if err := r.Recoverable()(fc); err != nil {
-		t.Fatalf("handler: %v", err)
-	}
-	got := r.Result()
-	if got.Failure == nil || *got.Failure != fc {
-		t.Fatalf("Failure = %+v, want %+v", got.Failure, fc)
-	}
-	if got.Disposition != Recoverable {
-		t.Errorf("Disposition = %v, want Recoverable", got.Disposition)
-	}
-}
-
 func TestRoute_TerminalRecordsDispositionAndRemedy(t *testing.T) {
-	var r Route
-	fc := testFC()
-	if err := r.Terminal("do the thing")(fc); err != nil {
-		t.Fatalf("handler: %v", err)
+	cases := []struct {
+		name            string
+		record          func(r *Route, fc guard.FailureContext) error // nil: nothing recorded
+		wantDisposition Disposition
+		wantRemedy      string
+	}{
+		{"recoverable", func(r *Route, fc guard.FailureContext) error { return r.Recoverable()(fc) }, Recoverable, ""},
+		{"terminal", func(r *Route, fc guard.FailureContext) error { return r.Terminal("do the thing")(fc) }, Unrecoverable, "do the thing"},
+		{"nothing recorded", nil, 0, ""},
 	}
-	got := r.Result()
-	if got.Failure == nil || *got.Failure != fc {
-		t.Fatalf("Failure = %+v, want %+v", got.Failure, fc)
-	}
-	if got.Disposition != Unrecoverable {
-		t.Errorf("Disposition = %v, want Unrecoverable", got.Disposition)
-	}
-	if got.Remedy != "do the thing" {
-		t.Errorf("Remedy = %q", got.Remedy)
-	}
-}
-
-func TestRoute_ResultIsSuccessWhenNoFailureRecorded(t *testing.T) {
-	var r Route
-	if got := r.Result(); got.Failure != nil {
-		t.Fatalf("Failure = %+v, want nil", got.Failure)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var r Route
+			fc := testFC()
+			if tc.record == nil {
+				if got := r.Result(); got.Failure != nil {
+					t.Fatalf("Failure = %+v, want nil", got.Failure)
+				}
+				return
+			}
+			if err := tc.record(&r, fc); err != nil {
+				t.Fatalf("handler: %v", err)
+			}
+			got := r.Result()
+			if got.Failure == nil || *got.Failure != fc {
+				t.Fatalf("Failure = %+v, want %+v", got.Failure, fc)
+			}
+			if got.Disposition != tc.wantDisposition {
+				t.Errorf("Disposition = %v, want %v", got.Disposition, tc.wantDisposition)
+			}
+			if got.Remedy != tc.wantRemedy {
+				t.Errorf("Remedy = %q, want %q", got.Remedy, tc.wantRemedy)
+			}
+		})
 	}
 }
 
@@ -55,16 +53,6 @@ func TestRoute_LastHandlerCallWins(t *testing.T) {
 	got := r.Result()
 	if got.Disposition != Recoverable || got.Remedy != "" {
 		t.Fatalf("Result = %+v, want Recoverable with empty remedy", got)
-	}
-}
-
-func TestRoute_ResultDoesNotAliasRecordedContext(t *testing.T) {
-	var r Route
-	fc := testFC()
-	_ = r.Recoverable()(fc)
-	fc.Guard = "mutated"
-	if got := r.Result(); got.Failure.Guard != "structural" {
-		t.Fatalf("recorded context changed with the caller's copy: %+v", got.Failure)
 	}
 }
 

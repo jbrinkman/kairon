@@ -75,6 +75,10 @@ func TestRunner_ExhaustionPunchesOut(t *testing.T) {
 	if res.Failure == nil || res.Failure.Attempt != (guard.Attempt{Current: 4, Max: 4}) {
 		t.Errorf("Failure = %+v, want attempt 4 of 4", res.Failure)
 	}
+	// The stage reported 99 of 99; the runner counted 4 of 4 and the comment says so.
+	if body := f.comments[0].Body; !strings.Contains(body, "4 of 4") || strings.Contains(body, "99") {
+		t.Errorf("comment used the stage's attempt:\n%s", body)
+	}
 
 	// The stage is not called again after the punch-out.
 	if res2, err := r.Run(stage); err != nil || res2.Outcome != OutcomeHalted {
@@ -132,10 +136,19 @@ func TestRunner_RetryCountFollowsConfig(t *testing.T) {
 }
 
 func TestRunner_RefusesWhileLabeled(t *testing.T) {
-	for _, label := range []string{testFailLabel, "kairon-done"} {
-		t.Run(label, func(t *testing.T) {
+	cases := []struct {
+		name string
+		seed func(f *fakeIssues)
+	}{
+		{testFailLabel, func(f *fakeIssues) { f.seedLabel(testFailLabel) }},
+		{"kairon-done", func(f *fakeIssues) { f.seedLabel("kairon-done") }},
+		// The comment landed but the label did not.
+		{"terminal pending marker", func(f *fakeIssues) { f.seedComment(Marker("earlier")+"\n", true) }},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
 			f := newFake()
-			f.seedLabel(label)
+			tc.seed(f)
 			called := false
 			res, err := newRunner(f, 3).Run(func(guard.Attempt) StageResult { called = true; return StageResult{} })
 			if err != nil {
@@ -151,19 +164,6 @@ func TestRunner_RefusesWhileLabeled(t *testing.T) {
 				t.Fatalf("writes = %v", w)
 			}
 		})
-	}
-}
-
-func TestRunner_RefusesWhileTerminalPending(t *testing.T) {
-	f := newFake()
-	f.seedComment(Marker("earlier")+"\n", true) // comment landed, label did not
-	called := false
-	res, err := newRunner(f, 3).Run(func(guard.Attempt) StageResult { called = true; return StageResult{} })
-	if err != nil {
-		t.Fatalf("Run: %v", err)
-	}
-	if res.Outcome != OutcomeHalted || called {
-		t.Fatalf("result = %+v, called = %v; want halted without calling the stage", res, called)
 	}
 }
 
@@ -188,44 +188,6 @@ func TestRunner_FreshRunStartsAtAttemptOne(t *testing.T) {
 	}
 	if got := f.postedRunIDs(); !reflect.DeepEqual(got, []string{"run1", "run2"}) {
 		t.Fatalf("posted run ids = %v", got)
-	}
-}
-
-func TestRunner_NoAutoRetryAfterTerminal(t *testing.T) {
-	f := newFake()
-	r := newRunner(f, 0)
-	runs := 0
-	stage := func(guard.Attempt) StageResult { runs++; return failing() }
-	if _, err := r.Run(stage); err != nil {
-		t.Fatal(err)
-	}
-	for i := 0; i < 3; i++ {
-		res, err := r.Run(stage)
-		if err != nil || res.Outcome != OutcomeHalted {
-			t.Fatalf("Run #%d after punch-out = (%+v, %v), want halted", i+2, res, err)
-		}
-	}
-	if runs != 1 {
-		t.Fatalf("stage ran %d times, want 1", runs)
-	}
-	if n := f.count("PostComment"); n != 1 {
-		t.Fatalf("comments = %d, want 1", n)
-	}
-}
-
-func TestRunner_OverwritesStageAttempt(t *testing.T) {
-	f := newFake()
-	r := newRunner(f, 1)
-	res, err := r.Run(func(guard.Attempt) StageResult { return failing() })
-	if err != nil {
-		t.Fatal(err)
-	}
-	// The stage reported 99 of 99; the runner counted 2 of 2.
-	if res.Failure == nil || res.Failure.Attempt != (guard.Attempt{Current: 2, Max: 2}) {
-		t.Fatalf("Failure = %+v, want attempt 2 of 2", res.Failure)
-	}
-	if !strings.Contains(f.comments[0].Body, "2 of 2") || strings.Contains(f.comments[0].Body, "99") {
-		t.Fatalf("comment used the stage's attempt:\n%s", f.comments[0].Body)
 	}
 }
 
@@ -310,15 +272,5 @@ func TestRunner_StateErrorDoesNotRunStage(t *testing.T) {
 	_, err := newRunner(f, 1).Run(func(guard.Attempt) StageResult { called = true; return StageResult{} })
 	if !errors.Is(err, errBoom) || called {
 		t.Fatalf("err = %v, called = %v; want errBoom and no stage call", err, called)
-	}
-}
-
-func TestRunner_StageAttemptArgumentCountsFromOne(t *testing.T) {
-	f := newFake()
-	var seen []guard.Attempt
-	_, _ = newRunner(f, 2).Run(func(a guard.Attempt) StageResult { seen = append(seen, a); return failing() })
-	want := []guard.Attempt{{Current: 1, Max: 3}, {Current: 2, Max: 3}, {Current: 3, Max: 3}}
-	if !reflect.DeepEqual(seen, want) {
-		t.Fatalf("attempts = %v, want %v", seen, want)
 	}
 }

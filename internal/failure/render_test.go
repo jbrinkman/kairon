@@ -1,7 +1,6 @@
 package failure
 
 import (
-	"regexp"
 	"strings"
 	"testing"
 
@@ -21,6 +20,7 @@ func renderFC() guard.FailureContext {
 
 func TestRenderComment_ContainsStageAttemptsExpectedActualRemedy(t *testing.T) {
 	fc := renderFC()
+	fc.Attempt = guard.Attempt{Current: 2, Max: 3}
 	got := RenderComment(fc, "run-1", "Read .kairon/logs/issue-5.log, fix the cause.", "kairon-failed")
 
 	if first, _, _ := strings.Cut(got, "\n"); first != Marker("run-1") {
@@ -32,7 +32,7 @@ func TestRenderComment_ContainsStageAttemptsExpectedActualRemedy(t *testing.T) {
 	for _, want := range []string{
 		"krew-lead",
 		"implementation-run",
-		"4 of 4",
+		"2 of 3",
 		fc.Expected,
 		fc.Actual,
 		"Read .kairon/logs/issue-5.log, fix the cause.",
@@ -41,14 +41,6 @@ func TestRenderComment_ContainsStageAttemptsExpectedActualRemedy(t *testing.T) {
 		if !strings.Contains(got, want) {
 			t.Errorf("rendered comment missing %q:\n%s", want, got)
 		}
-	}
-}
-
-func TestRenderComment_AttemptsReflectContext(t *testing.T) {
-	fc := renderFC()
-	fc.Attempt = guard.Attempt{Current: 2, Max: 3}
-	if got := RenderComment(fc, "r", "x", "kairon-failed"); !strings.Contains(got, "2 of 3") {
-		t.Errorf("want %q in:\n%s", "2 of 3", got)
 	}
 }
 
@@ -195,12 +187,4 @@ func TestRenderComment_NeutralizesUntrustedValues(t *testing.T) {
 			t.Errorf("guard or label injected a line:\n%s", got)
 		}
 	})
-}
-
-func TestRenderComment_FirstLineIsOnlyMarker(t *testing.T) {
-	got := RenderComment(renderFC(), "run-9", "x", "kairon-failed")
-	re := regexp.MustCompile(`^<!-- kairon:punch-out run=run-9 -->\n`)
-	if !re.MatchString(got) {
-		t.Errorf("unexpected start: %.80q", got)
-	}
 }

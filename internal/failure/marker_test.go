@@ -64,24 +64,10 @@ func TestMarker_RoundTrip(t *testing.T) {
 	}
 }
 
-func TestParseMarker_RejectsNonFirstLine(t *testing.T) {
-	m := Marker("abc")
-	bodies := []string{
-		"text\n" + m,
-		"\n" + m,
-		" " + m,
-		"quote: " + m,
-		"> " + m,
-		"intro\n\n" + m + "\nmore",
-	}
-	for _, b := range bodies {
-		if id, ok := ParseMarker(b); ok {
-			t.Errorf("ParseMarker(%q) = %q, true; want rejection", b, id)
-		}
-	}
-}
-
+// TestParseMarker_RejectsMalformed covers both malformed markers and valid
+// markers that are not alone on the first line (the trust rule).
 func TestParseMarker_RejectsMalformed(t *testing.T) {
+	m := Marker("abc")
 	bodies := []string{
 		"",
 		"hello",
@@ -93,6 +79,13 @@ func TestParseMarker_RejectsMalformed(t *testing.T) {
 		"<!--kairon:punch-out run=abc-->",
 		"<!-- kairon:other run=abc -->",
 		"<!-- kairon:punch-out run=" + strings.Repeat("a", 129) + " -->",
+		// A valid marker anywhere but alone on the first line is rejected.
+		"text\n" + m,
+		"\n" + m,
+		" " + m,
+		"quote: " + m,
+		"> " + m,
+		"intro\n\n" + m + "\nmore",
 	}
 	for _, b := range bodies {
 		if id, ok := ParseMarker(b); ok {

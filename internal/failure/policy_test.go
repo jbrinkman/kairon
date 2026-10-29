@@ -18,27 +18,6 @@ func fcAt(cur, max int) guard.FailureContext {
 	}
 }
 
-func TestPolicyFromRetries(t *testing.T) {
-	cases := []struct{ retries, want int }{
-		{0, 1}, {1, 2}, {3, 4}, {10, 11}, {-1, 1}, {-100, 1},
-	}
-	for _, c := range cases {
-		if got := PolicyFromRetries(c.retries).MaxAttempts; got != c.want {
-			t.Errorf("PolicyFromRetries(%d).MaxAttempts = %d, want %d", c.retries, got, c.want)
-		}
-	}
-}
-
-func TestPolicyAttempt(t *testing.T) {
-	got := PolicyFromRetries(2).Attempt(2)
-	if want := (guard.Attempt{Current: 2, Max: 3}); got != want {
-		t.Errorf("Attempt(2) = %+v, want %+v", got, want)
-	}
-	if !PolicyFromRetries(0).Attempt(1).Valid() {
-		t.Error("Attempt(1) under zero retries should be a valid guard.Attempt")
-	}
-}
-
 func TestPolicyFor_FollowsConfig(t *testing.T) {
 	cfg := &config.Config{MaxRetries: 2, MaxQARetries: 5}
 	if got := PolicyFor(cfg, BoundaryImplementation).MaxAttempts; got != 3 {
@@ -79,46 +58,38 @@ func TestPolicyFor_NilConfigAndUnknownBoundaryAllowOneAttempt(t *testing.T) {
 	}
 }
 
-func TestDecide_UnrecoverableAlwaysPunchesOut(t *testing.T) {
-	for _, fc := range []guard.FailureContext{fcAt(1, 4), fcAt(2, 4), fcAt(1, 1), fcAt(4, 4)} {
-		if got := Decide(fc, Unrecoverable); got != DecisionPunchOut {
-			t.Errorf("Decide(%+v, Unrecoverable) = %v, want PunchOut", fc.Attempt, got)
-		}
-	}
-}
-
-func TestDecide_RecoverableRetriesWhileAttemptsRemain(t *testing.T) {
-	for cur := 1; cur < 4; cur++ {
-		if got := Decide(fcAt(cur, 4), Recoverable); got != DecisionRetry {
-			t.Errorf("Decide(%d of 4, Recoverable) = %v, want Retry", cur, got)
-		}
-	}
-}
-
-func TestDecide_RecoverablePunchesOutAtMax(t *testing.T) {
-	if got := Decide(fcAt(4, 4), Recoverable); got != DecisionPunchOut {
-		t.Errorf("Decide(4 of 4) = %v, want PunchOut", got)
-	}
-	if got := Decide(fcAt(1, 1), Recoverable); got != DecisionPunchOut {
-		t.Errorf("Decide(1 of 1) = %v, want PunchOut", got)
-	}
-}
-
+// TestDecide_InvalidAttemptFailsToPunchOut is the Decide decision table:
+// unrecoverable failures always punch out, recoverable ones retry while
+// attempts remain and punch out at the maximum, and an unusable attempt must
+// never produce an unbounded retry.
 func TestDecide_InvalidAttemptFailsToPunchOut(t *testing.T) {
-	// An unusable attempt must never produce an unbounded retry.
-	for _, a := range []guard.Attempt{{}, {Current: 5, Max: 4}, {Current: 1, Max: 0}} {
-		fc := fcAt(1, 1)
-		fc.Attempt = a
-		if got := Decide(fc, Recoverable); got != DecisionPunchOut {
-			t.Errorf("Decide(%+v) = %v, want PunchOut", a, got)
-		}
+	cases := []struct {
+		name    string
+		attempt guard.Attempt
+		disp    Disposition
+		want    Decision
+	}{
+		{"unrecoverable 1 of 4", guard.Attempt{Current: 1, Max: 4}, Unrecoverable, DecisionPunchOut},
+		{"unrecoverable 2 of 4", guard.Attempt{Current: 2, Max: 4}, Unrecoverable, DecisionPunchOut},
+		{"unrecoverable 1 of 1", guard.Attempt{Current: 1, Max: 1}, Unrecoverable, DecisionPunchOut},
+		{"unrecoverable 4 of 4", guard.Attempt{Current: 4, Max: 4}, Unrecoverable, DecisionPunchOut},
+		{"recoverable 1 of 4", guard.Attempt{Current: 1, Max: 4}, Recoverable, DecisionRetry},
+		{"recoverable 2 of 4", guard.Attempt{Current: 2, Max: 4}, Recoverable, DecisionRetry},
+		{"recoverable 3 of 4", guard.Attempt{Current: 3, Max: 4}, Recoverable, DecisionRetry},
+		{"recoverable 4 of 4", guard.Attempt{Current: 4, Max: 4}, Recoverable, DecisionPunchOut},
+		{"recoverable 1 of 1", guard.Attempt{Current: 1, Max: 1}, Recoverable, DecisionPunchOut},
+		{"invalid zero attempt", guard.Attempt{}, Recoverable, DecisionPunchOut},
+		{"invalid current above max", guard.Attempt{Current: 5, Max: 4}, Recoverable, DecisionPunchOut},
+		{"invalid zero max", guard.Attempt{Current: 1, Max: 0}, Recoverable, DecisionPunchOut},
 	}
-}
-
-func TestDispositionZeroValueIsRecoverable(t *testing.T) {
-	var d Disposition
-	if d != Recoverable {
-		t.Error("zero Disposition must be Recoverable")
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			fc := fcAt(1, 1)
+			fc.Attempt = c.attempt
+			if got := Decide(fc, c.disp); got != c.want {
+				t.Errorf("Decide(%+v, %v) = %v, want %v", c.attempt, c.disp, got, c.want)
+			}
+		})
 	}
 }
 

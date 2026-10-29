@@ -91,23 +91,6 @@ func TestPunchOut_LabelAlreadyPresentIsNoop(t *testing.T) {
 	}
 }
 
-func TestPunchOut_NewRunIDPostsFreshComment(t *testing.T) {
-	f := newFake()
-	if err := PunchOut(f, testTarget, "run1", testFC(), ""); err != nil {
-		t.Fatalf("run1: %v", err)
-	}
-	f.clearLabel(testFailLabel) // a human fixes the cause and removes the label
-	if err := PunchOut(f, testTarget, "run2", testFC(), ""); err != nil {
-		t.Fatalf("run2: %v", err)
-	}
-	if got := f.postedRunIDs(); !reflect.DeepEqual(got, []string{"run1", "run2"}) {
-		t.Fatalf("posted run ids = %v, want [run1 run2]", got)
-	}
-	if !reflect.DeepEqual(f.labels, []string{testFailLabel}) {
-		t.Fatalf("labels = %v, want the fail label applied again", f.labels)
-	}
-}
-
 func TestPunchOut_IgnoresMarkerNotByViewer(t *testing.T) {
 	f := newFake()
 	f.seedComment(Marker("run1")+"\n\npasted by someone else", false)
@@ -122,6 +105,10 @@ func TestPunchOut_IgnoresMarkerNotByViewer(t *testing.T) {
 func TestPunchOut_InvalidInputWritesNothing(t *testing.T) {
 	badFC := testFC()
 	badFC.Expected = ""
+	// The state error row is the only one that reaches GitHub: it makes the
+	// State read, which fails, and PunchOut must then write nothing.
+	stateFail := newFake()
+	stateFail.failNext("State", 1)
 	cases := []struct {
 		name   string
 		iss    Issues
@@ -136,6 +123,7 @@ func TestPunchOut_InvalidInputWritesNothing(t *testing.T) {
 		{"zero issue", newFake(), Target{Repo: "o/r", FailLabel: testFailLabel}, "run1", testFC()},
 		{"empty fail label", newFake(), Target{Repo: "o/r", Issue: 7}, "run1", testFC()},
 		{"nil issues", nil, testTarget, "run1", testFC()},
+		{"state error", stateFail, testTarget, "run1", testFC()},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -143,21 +131,24 @@ func TestPunchOut_InvalidInputWritesNothing(t *testing.T) {
 			if err == nil {
 				t.Fatal("want an error")
 			}
-			if f, ok := tc.iss.(*fakeIssues); ok && len(f.calls) != 0 {
+			f, ok := tc.iss.(*fakeIssues)
+			if !ok {
+				return
+			}
+			if f == stateFail {
+				// A State read is expected here, so only writes are forbidden.
+				if !errors.Is(err, errBoom) {
+					t.Fatalf("err = %v, want errBoom", err)
+				}
+				if w := f.writes(); len(w) != 0 {
+					t.Fatalf("writes after State error = %v", w)
+				}
+				return
+			}
+			if len(f.calls) != 0 {
 				t.Fatalf("invalid input touched GitHub: %v", f.calls)
 			}
 		})
-	}
-}
-
-func TestPunchOut_StateErrorWritesNothing(t *testing.T) {
-	f := newFake()
-	f.failNext("State", 1)
-	if err := PunchOut(f, testTarget, "run1", testFC(), ""); !errors.Is(err, errBoom) {
-		t.Fatalf("err = %v, want errBoom", err)
-	}
-	if w := f.writes(); len(w) != 0 {
-		t.Fatalf("writes after State error = %v", w)
 	}
 }
 
