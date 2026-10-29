@@ -1,0 +1,16 @@
+schema_version: 1
+stage: planner
+result: punch_out
+source:
+  kind: github_issue
+  ref: "142"
+generated: 2026-10-20T20:00:00Z
+unresolved:
+  - slot: acceptance_criteria
+    reason: >-
+      The issue states the goal ("make export faster") but gives no measurable target;
+      a materially different acceptance criterion follows from each plausible target.
+  - slot: scope.external_contract
+    reason: >-
+      Whether the v2 API must stay backward compatible is a product decision the
+      repository cannot settle.

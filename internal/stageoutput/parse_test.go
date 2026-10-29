@@ -3,7 +3,7 @@ package stageoutput
 import (
 	"errors"
 	"os"
-	"regexp"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -263,23 +263,20 @@ unresolved:
 	})
 }
 
-// specFence returns the first fenced yaml block that follows marker in the
-// planner-requirements design document.
-func specFence(t *testing.T, marker string) string {
+// The two example documents below are copies of the examples in the planner
+// design document, kept in testdata/ so the tests do not read the document
+// itself. They pin the parser against the shapes the design describes.
+
+// readTestdata returns the contents of testdata/<name>.
+func readTestdata(t *testing.T, name string) string {
 	t.Helper()
-	raw, err := os.ReadFile("../../.kairon/research/maturity-model/planner-requirements.md")
+	raw, err := os.ReadFile(filepath.Join("testdata", name))
 	require.NoError(t, err)
-	text := string(raw)
-	idx := strings.Index(text, marker)
-	require.GreaterOrEqual(t, idx, 0, "marker %q not found", marker)
-	re := regexp.MustCompile("(?s)```yaml\n(.*?)\n```")
-	m := re.FindStringSubmatch(text[idx:])
-	require.NotNil(t, m, "no yaml fence after %q", marker)
-	return m[1] + "\n"
+	return string(raw)
 }
 
 func TestParse_CanonicalExampleFromSpec(t *testing.T) {
-	in := specFence(t, "#### 3.1.1 Canonical envelope shape")
+	in := readTestdata(t, "canonical-example.yaml")
 	got, err := Parse([]byte(in))
 	require.NoError(t, err)
 	assert.Equal(t, 1, got.SchemaVersion)
@@ -294,7 +291,7 @@ func TestParse_CanonicalExampleFromSpec(t *testing.T) {
 }
 
 func TestParse_PunchOutExampleFromSpec(t *testing.T) {
-	in := specFence(t, "A complete `result: punch_out` document:")
+	in := readTestdata(t, "punch-out-example.yaml")
 	got, err := Parse([]byte(in))
 	require.NoError(t, err)
 	assert.Equal(t, ResultPunchOut, got.Result)
