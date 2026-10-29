@@ -156,11 +156,7 @@ func TestJudgeCheckLabel(t *testing.T) {
 			name:  "file-exists-no-turn",
 			index: 1,
 			check: Check{Type: CheckFileExists, Path: "a.txt"},
-			verify: func(t *testing.T, got string) {
-				if strings.Contains(got, "turn") {
-					t.Errorf("label %q for a check without turn must not mention turn", got)
-				}
-			},
+			want:  "#1 file_exists path=a.txt",
 		},
 	}
 	for _, tc := range cases {
