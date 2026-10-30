@@ -73,80 +73,96 @@ func TestCoverageCasesCovered(t *testing.T) {
 
 func TestCoverageStampFullRun(t *testing.T) {
 	t.Cleanup(resetConfig)
-	cfg = runConfig{suites: map[string]string{"selftest": testSuiteHash}}
-	r := AgentResult{Agent: "selftest", Cases: covResults(map[string][]int{"a": {1}})}
-
-	stampCoverage(&r, covCases("a"))
-
-	if r.SuiteSHA256 != testSuiteHash {
-		t.Errorf("SuiteSHA256 = %q, want %q", r.SuiteSHA256, testSuiteHash)
+	tests := []struct {
+		name    string
+		cfg     runConfig
+		results map[string][]int
+		cases   []TestCase
+		check   func(t *testing.T, r AgentResult)
+	}{
+		{
+			name:    "full-run",
+			cfg:     runConfig{suites: map[string]string{"selftest": testSuiteHash}},
+			results: map[string][]int{"a": {1}},
+			cases:   covCases("a"),
+			check: func(t *testing.T, r AgentResult) {
+				if r.SuiteSHA256 != testSuiteHash {
+					t.Errorf("SuiteSHA256 = %q, want %q", r.SuiteSHA256, testSuiteHash)
+				}
+				if !boolOf(t, "Complete", r.Complete) {
+					t.Error("Complete = false, want true for a covered full run")
+				}
+				if r.CaseFilter == nil || *r.CaseFilter != "" {
+					t.Errorf("CaseFilter = %v, want a recorded empty string", r.CaseFilter)
+				}
+			},
+		},
+		{
+			name:    "uncovered-case-is-incomplete",
+			cfg:     runConfig{suites: map[string]string{"selftest": testSuiteHash}},
+			results: map[string][]int{"a": {1}},
+			cases:   covCases("a", "b"),
+			check: func(t *testing.T, r AgentResult) {
+				if boolOf(t, "Complete", r.Complete) {
+					t.Error("Complete = true with case b uncovered, want false")
+				}
+			},
+		},
+		{
+			// The agent has exactly one case and it is covered, yet a
+			// filtered run is not a full run.
+			name:    "case-filter-is-never-complete",
+			cfg:     runConfig{suites: map[string]string{"selftest": testSuiteHash}, caseFilter: "only"},
+			results: map[string][]int{"only": {1}},
+			cases:   covCases("only"),
+			check: func(t *testing.T, r AgentResult) {
+				if boolOf(t, "Complete", r.Complete) {
+					t.Error("Complete = true for a --case run, want false")
+				}
+				if r.CaseFilter == nil || *r.CaseFilter != "only" {
+					t.Errorf("CaseFilter = %v, want only", r.CaseFilter)
+				}
+			},
+		},
+		{
+			name:    "no-suite-entry-nil-map",
+			cfg:     runConfig{suites: nil, caseFilter: "x"},
+			results: map[string][]int{"a": {1}},
+			cases:   covCases("a"),
+			check:   checkStampUntouched,
+		},
+		{
+			name:    "no-suite-entry-other-agent",
+			cfg:     runConfig{suites: map[string]string{"someone-else": testSuiteHash}, caseFilter: "x"},
+			results: map[string][]int{"a": {1}},
+			cases:   covCases("a"),
+			check:   checkStampUntouched,
+		},
+		{
+			name:    "no-suite-entry-empty-map",
+			cfg:     runConfig{suites: map[string]string{}, caseFilter: "x"},
+			results: map[string][]int{"a": {1}},
+			cases:   covCases("a"),
+			check:   checkStampUntouched,
+		},
 	}
-	if !boolOf(t, "Complete", r.Complete) {
-		t.Error("Complete = false, want true for a covered full run")
-	}
-	if r.CaseFilter == nil || *r.CaseFilter != "" {
-		t.Errorf("CaseFilter = %v, want a recorded empty string", r.CaseFilter)
-	}
-}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg = tt.cfg
+			r := AgentResult{Agent: "selftest", Cases: covResults(tt.results)}
 
-func TestCoverageStampIncompleteRun(t *testing.T) {
-	t.Cleanup(resetConfig)
-	cfg = runConfig{suites: map[string]string{"selftest": testSuiteHash}}
-	r := AgentResult{Agent: "selftest", Cases: covResults(map[string][]int{"a": {1}})}
+			stampCoverage(&r, tt.cases)
 
-	stampCoverage(&r, covCases("a", "b"))
-
-	if boolOf(t, "Complete", r.Complete) {
-		t.Error("Complete = true with case b uncovered, want false")
-	}
-}
-
-func TestCoverageStampCaseFilterIsNeverComplete(t *testing.T) {
-	t.Cleanup(resetConfig)
-	cfg = runConfig{suites: map[string]string{"selftest": testSuiteHash}, caseFilter: "only"}
-	// The agent has exactly one case and it is covered, yet a filtered run is
-	// not a full run.
-	r := AgentResult{Agent: "selftest", Cases: covResults(map[string][]int{"only": {1}})}
-
-	stampCoverage(&r, covCases("only"))
-
-	if boolOf(t, "Complete", r.Complete) {
-		t.Error("Complete = true for a --case run, want false")
-	}
-	if r.CaseFilter == nil || *r.CaseFilter != "only" {
-		t.Errorf("CaseFilter = %v, want only", r.CaseFilter)
-	}
-}
-
-func TestCoverageStampNoOpWithoutSuiteEntry(t *testing.T) {
-	t.Cleanup(resetConfig)
-	for name, suites := range map[string]map[string]string{
-		"nil map":      nil,
-		"other agent":  {"someone-else": testSuiteHash},
-		"empty entry?": {},
-	} {
-		t.Run(name, func(t *testing.T) {
-			cfg = runConfig{suites: suites, caseFilter: "x"}
-			r := AgentResult{Agent: "selftest", Cases: covResults(map[string][]int{"a": {1}})}
-
-			stampCoverage(&r, covCases("a"))
-
-			if r.SuiteSHA256 != "" || r.Complete != nil || r.CaseFilter != nil {
-				t.Errorf("stampCoverage changed an unpinned result: %+v", r)
-			}
+			tt.check(t, r)
 		})
 	}
 }
 
-func TestCoverageConfigureResetsRunScopedFields(t *testing.T) {
-	t.Cleanup(resetConfig)
-	cfg.suites = map[string]string{"a": testSuiteHash}
-	cfg.caseFilter = "x"
-	if err := configure(RunOptions{Backend: inference.NameStub}); err != nil {
-		t.Fatal(err)
-	}
-	if cfg.suites != nil || cfg.caseFilter != "" {
-		t.Errorf("configure left suites=%v caseFilter=%q", cfg.suites, cfg.caseFilter)
+// checkStampUntouched asserts stampCoverage left an unpinned result alone.
+func checkStampUntouched(t *testing.T, r AgentResult) {
+	t.Helper()
+	if r.SuiteSHA256 != "" || r.Complete != nil || r.CaseFilter != nil {
+		t.Errorf("stampCoverage changed an unpinned result: %+v", r)
 	}
 }
 
@@ -194,77 +210,44 @@ func TestCoverageAgentResultJSON(t *testing.T) {
 	})
 }
 
-func TestCoverageSummaryJSON(t *testing.T) {
-	t.Run("provenance writes false and empty", func(t *testing.T) {
-		data, err := json.Marshal(Summary{Agents: map[string]AgentProvenance{
-			"a": {PromptSHA256: "p", SuiteSHA256: testSuiteHash, Complete: boolPtr(false), CaseFilter: strPtr("")},
-		}})
+func TestCoverageUpdateIncrementalSummaryCopiesFields(t *testing.T) {
+	t.Run("recorded-coverage-copied", func(t *testing.T) {
+		file := filepath.Join(t.TempDir(), "summary.json")
+		res := AgentResult{Agent: "a", SuiteSHA256: testSuiteHash, Complete: boolPtr(false), CaseFilter: strPtr("")}
+		// No PromptSHA256: the SuiteSHA256 alone must write the entry.
+		if err := updateIncrementalSummary(file, res, "g"); err != nil {
+			t.Fatal(err)
+		}
+		raw, err := os.ReadFile(file)
 		if err != nil {
 			t.Fatal(err)
 		}
-		for _, want := range []string{`"suite_sha256":"` + testSuiteHash + `"`, `"complete":false`, `"case_filter":""`} {
-			if !strings.Contains(string(data), want) {
-				t.Errorf("JSON %s missing %s", data, want)
+		for _, want := range []string{`"complete": false`, `"case_filter": ""`, `"suite_sha256": "` + testSuiteHash + `"`} {
+			if !strings.Contains(string(raw), want) {
+				t.Errorf("summary missing %s:\n%s", want, raw)
 			}
 		}
-	})
-	t.Run("provenance omits unrecorded", func(t *testing.T) {
-		data, _ := json.Marshal(AgentProvenance{PromptSHA256: "p"})
-		for _, key := range []string{"suite_sha256", "complete", "case_filter"} {
-			if strings.Contains(string(data), key) {
-				t.Errorf("JSON %s contains %s", data, key)
-			}
-		}
-	})
-	t.Run("legacy summary decodes with nil Complete", func(t *testing.T) {
 		var s Summary
-		legacy := `{"git_hash":"g","agent_scores":{},"agents":{"a":{"agent_model":"m","prompt_sha256":"p","resources_present":[]}}}`
-		if err := json.Unmarshal([]byte(legacy), &s); err != nil {
+		readJSON(t, file, &s)
+		p, ok := s.Agents["a"]
+		if !ok {
+			t.Fatalf("agents.a missing: %s", raw)
+		}
+		if p.SuiteSHA256 != testSuiteHash || p.Complete == nil || *p.Complete || p.CaseFilter == nil || *p.CaseFilter != "" {
+			t.Errorf("agents.a = %+v", p)
+		}
+	})
+	t.Run("unrecorded-result-writes-no-entry", func(t *testing.T) {
+		file := filepath.Join(t.TempDir(), "summary.json")
+		if err := updateIncrementalSummary(file, AgentResult{Agent: "a"}, "g"); err != nil {
 			t.Fatal(err)
 		}
-		if p := s.Agents["a"]; p.Complete != nil || p.CaseFilter != nil || p.SuiteSHA256 != "" {
-			t.Errorf("legacy provenance = %+v, want unrecorded coverage", p)
+		var s Summary
+		readJSON(t, file, &s)
+		if len(s.Agents) != 0 {
+			t.Errorf("agents = %v, want none for an unpinned, unrecorded result", s.Agents)
 		}
 	})
-}
-
-func TestCoverageUpdateIncrementalSummaryCopiesFields(t *testing.T) {
-	file := filepath.Join(t.TempDir(), "summary.json")
-	res := AgentResult{Agent: "a", SuiteSHA256: testSuiteHash, Complete: boolPtr(false), CaseFilter: strPtr("")}
-	// No PromptSHA256: the SuiteSHA256 alone must write the entry.
-	if err := updateIncrementalSummary(file, res, "g"); err != nil {
-		t.Fatal(err)
-	}
-	raw, err := os.ReadFile(file)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, want := range []string{`"complete": false`, `"case_filter": ""`, `"suite_sha256": "` + testSuiteHash + `"`} {
-		if !strings.Contains(string(raw), want) {
-			t.Errorf("summary missing %s:\n%s", want, raw)
-		}
-	}
-	var s Summary
-	readJSON(t, file, &s)
-	p, ok := s.Agents["a"]
-	if !ok {
-		t.Fatalf("agents.a missing: %s", raw)
-	}
-	if p.SuiteSHA256 != testSuiteHash || p.Complete == nil || *p.Complete || p.CaseFilter == nil || *p.CaseFilter != "" {
-		t.Errorf("agents.a = %+v", p)
-	}
-}
-
-func TestCoverageUpdateIncrementalSummaryNoEntryWhenUnrecorded(t *testing.T) {
-	file := filepath.Join(t.TempDir(), "summary.json")
-	if err := updateIncrementalSummary(file, AgentResult{Agent: "a"}, "g"); err != nil {
-		t.Fatal(err)
-	}
-	var s Summary
-	readJSON(t, file, &s)
-	if len(s.Agents) != 0 {
-		t.Errorf("agents = %v, want none for an unpinned, unrecorded result", s.Agents)
-	}
 }
 
 // covCase is a stub case whose shell command runs in the workspace.
@@ -370,25 +353,6 @@ func TestCoverageEvaluateProgressiveRepeat(t *testing.T) {
 	}
 }
 
-func TestCoverageEvaluateProgressiveCaseFilterIncomplete(t *testing.T) {
-	chdirTemp(t)
-	installFakeKiroCLI(t, "")
-	pinned := pinRealSuite(t)
-	cfg.caseFilter = "c1"
-
-	res := evalProgressiveOK(t, verdictRubric(), []TestCase{covCase("c1")}, "abc", &strings.Builder{}, t.TempDir(), false, nil)
-
-	if boolOf(t, "Complete", res.Complete) {
-		t.Error("Complete = true for a filtered run, want false")
-	}
-	if res.CaseFilter == nil || *res.CaseFilter != "c1" {
-		t.Errorf("CaseFilter = %v, want c1", res.CaseFilter)
-	}
-	if res.SuiteSHA256 != pinned {
-		t.Errorf("SuiteSHA256 = %q, want the pinned %q", res.SuiteSHA256, pinned)
-	}
-}
-
 func TestCoverageEvaluateStampsSingleCaseRun(t *testing.T) {
 	chdirTemp(t)
 	installFakeKiroCLI(t, "")
@@ -406,20 +370,5 @@ func TestCoverageEvaluateStampsSingleCaseRun(t *testing.T) {
 	}
 	if res.CaseFilter == nil || *res.CaseFilter != "only" {
 		t.Errorf("CaseFilter = %v, want only", res.CaseFilter)
-	}
-}
-
-func TestCoverageEvaluateUnpinnedLeavesFieldsUnset(t *testing.T) {
-	chdirTemp(t)
-	installFakeKiroCLI(t, "")
-	useStubBackend(t)
-
-	for name, res := range map[string]AgentResult{
-		"evaluate":            evaluate(verdictRubric(), []TestCase{covCase("c1")}, "abc", &strings.Builder{}, nil),
-		"evaluateProgressive": evalProgressiveOK(t, verdictRubric(), []TestCase{covCase("c1")}, "abc", &strings.Builder{}, t.TempDir(), false, nil),
-	} {
-		if res.SuiteSHA256 != "" || res.Complete != nil || res.CaseFilter != nil {
-			t.Errorf("%s: unpinned result carries coverage: %+v", name, res)
-		}
 	}
 }

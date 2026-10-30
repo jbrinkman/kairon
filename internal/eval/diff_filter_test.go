@@ -116,6 +116,13 @@ func TestDiffFilterReportsOnlyMatchingCases(t *testing.T) {
 		"  Cost:   +0.010000 USD\n",
 		"  Agent tokens:  20 → 40 (+20)\n",
 		"  Judge tokens:  2 → 4 (+2)\n",
+		// Quality per dollar from the filtered cost: 0.500 / 0.01 = 50.00 and
+		// 1.000 / 0.02 = 50.00.
+		"  r1: 50.00 quality/$\n",
+		"  r2: 50.00 quality/$\n",
+		// The Cases block lists only the matching case.
+		"  Cases:\n",
+		"    fast-1 [skill=cli, speed=fast]  0.500 → 1.000\n",
 	)
 	requireAbsent(t, out, "slow-1", "0.750", "+0.250")
 }
@@ -136,16 +143,6 @@ func TestDiffFilterCostSectionsIgnoreSummaryTotals(t *testing.T) {
 	requireAbsent(t, out, "fast-1", "90.0", "+18000")
 }
 
-func TestDiffFilterQualityPerDollarUsesFilteredCost(t *testing.T) {
-	chdirTemp(t)
-	writeFilterRuns(t, metaFast, metaSlow)
-
-	out := runDiffFiltered(t, "r1", "r2", "speed==fast")
-
-	// 0.500 / 0.01 = 50.00 and 1.000 / 0.02 = 50.00 quality per dollar.
-	requireContains(t, out, "  r1: 50.00 quality/$\n", "  r2: 50.00 quality/$\n")
-}
-
 func TestDiffFilterSideWithNoMatchesPrintsDash(t *testing.T) {
 	chdirTemp(t)
 	writeFilterRuns(t, metaFast, metaSlow)
@@ -160,16 +157,6 @@ func TestDiffFilterSideWithNoMatchesPrintsDash(t *testing.T) {
 	requireAbsent(t, out, "↑", "↓", "output changed")
 }
 
-func TestDiffFilterNoMatchOnEitherSideOmitsAgent(t *testing.T) {
-	chdirTemp(t)
-	writeFilterRuns(t, metaFast, metaSlow)
-
-	out := runDiffFiltered(t, "r1", "r2", "speed==nothing")
-
-	requireContains(t, out, "Filter: speed==nothing\n", "Cost Delta:", "  Tokens: +0\n")
-	requireAbsent(t, out, "a1:", "acc")
-}
-
 func TestDiffFilterBuiltInAgentAndNameKeys(t *testing.T) {
 	chdirTemp(t)
 	writeFilterRuns(t, metaFast, metaSlow)
@@ -180,8 +167,18 @@ func TestDiffFilterBuiltInAgentAndNameKeys(t *testing.T) {
 	byAgent := runDiffFiltered(t, "r1", "r2", "agent==a1", "speed==fast")
 	requireContains(t, byAgent, "Filter: agent==a1 AND speed==fast\n", "a1: 0.500 → 1.000")
 
-	otherAgent := runDiffFiltered(t, "r1", "r2", "agent==zz")
-	requireAbsent(t, otherAgent, "a1:")
+	// A filter that matches nothing on either side omits the agent but still
+	// prints the filter line and the (zero) cost delta.
+	t.Run("no-match-agent-key", func(t *testing.T) {
+		out := runDiffFiltered(t, "r1", "r2", "agent==zz")
+		requireContains(t, out, "Filter: agent==zz\n", "Cost Delta:", "  Tokens: +0\n")
+		requireAbsent(t, out, "a1:", "acc")
+	})
+	t.Run("no-match-metadata-key", func(t *testing.T) {
+		out := runDiffFiltered(t, "r1", "r2", "speed==nothing")
+		requireContains(t, out, "Filter: speed==nothing\n", "Cost Delta:", "  Tokens: +0\n")
+		requireAbsent(t, out, "a1:", "acc")
+	})
 }
 
 // Results saved before metadata existed match only agent and name filters.
@@ -249,16 +246,6 @@ func TestDiffShowsCasesBlockAndMarkersWhenMetadataPresent(t *testing.T) {
 	)
 	// slow-1's output did not change.
 	requireAbsent(t, out, "Case 'slow-1' output changed")
-}
-
-func TestDiffCasesBlockOnlyListsMatchingCasesWithFilter(t *testing.T) {
-	chdirTemp(t)
-	writeFilterRuns(t, metaFast, metaSlow)
-
-	out := runDiffFiltered(t, "r1", "r2", "speed==fast")
-
-	requireContains(t, out, "  Cases:\n", "    fast-1 [skill=cli, speed=fast]  0.500 → 1.000\n")
-	requireAbsent(t, out, "slow-1")
 }
 
 func TestDiffCasesBlockMarksMissingSideAndFallsBackToOtherMetadata(t *testing.T) {

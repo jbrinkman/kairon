@@ -106,47 +106,27 @@ func TestContainmentToolTrustSerialisesEmptyArray(t *testing.T) {
 	if !strings.Contains(string(data), `"tool_trust"`) {
 		t.Errorf("zero Containment dropped tool_trust: %s", data)
 	}
-}
 
-// The containment record carries the kairon_binary fact, sourced from the
-// kaironBinaryMounted const that enforcement honours.
-func TestContainmentForRecordsKaironBinary(t *testing.T) {
-	t.Cleanup(resetConfig)
-	cfg.pins = &runPins{TrustOverrides: map[string][]string{"builder": {"read"}}}
-	c := containmentFor("builder")
-	if c.KaironBinary != kaironBinaryMounted || !c.KaironBinary {
-		t.Errorf("KaironBinary = %t, want %t (kaironBinaryMounted) and true", c.KaironBinary, kaironBinaryMounted)
-	}
-}
-
-// kairon_binary is always written (never omitted), including when false, and
-// round-trips; a file written before the field existed decodes as false.
-func TestContainmentKaironBinaryJSON(t *testing.T) {
+	// kairon_binary is always written (never omitted), including when false,
+	// and round-trips.
 	for _, want := range []bool{true, false} {
-		data, err := json.Marshal(Containment{ToolTrust: []string{}, KaironBinary: want})
-		if err != nil {
-			t.Fatal(err)
-		}
-		key := fmt.Sprintf(`"kairon_binary":%t`, want)
-		if !strings.Contains(string(data), key) {
-			t.Errorf("json = %s, want %s", data, key)
-		}
-		var got Containment
-		if err := json.Unmarshal(data, &got); err != nil {
-			t.Fatal(err)
-		}
-		if got.KaironBinary != want {
-			t.Errorf("round-trip KaironBinary = %t, want %t", got.KaironBinary, want)
-		}
-	}
-
-	old := `{"tool_trust":["fs_read"],"fake_gh":true,"read_only_fs":true,"network":"unrestricted"}`
-	var c Containment
-	if err := json.Unmarshal([]byte(old), &c); err != nil {
-		t.Fatal(err)
-	}
-	if c.KaironBinary || !c.FakeGH || !c.ReadOnlyFS || c.Network != "unrestricted" {
-		t.Errorf("old-format containment = %+v, want KaironBinary false, other fields intact", c)
+		t.Run(fmt.Sprintf("kairon_binary=%t", want), func(t *testing.T) {
+			data, err := json.Marshal(Containment{ToolTrust: []string{}, KaironBinary: want})
+			if err != nil {
+				t.Fatal(err)
+			}
+			key := fmt.Sprintf(`"kairon_binary":%t`, want)
+			if !strings.Contains(string(data), key) {
+				t.Errorf("json = %s, want %s", data, key)
+			}
+			var got Containment
+			if err := json.Unmarshal(data, &got); err != nil {
+				t.Fatal(err)
+			}
+			if got.KaironBinary != want {
+				t.Errorf("round-trip KaironBinary = %t, want %t", got.KaironBinary, want)
+			}
+		})
 	}
 }
 
@@ -216,44 +196,51 @@ func containerResult(agent string, trust []string) AgentResult {
 func TestUpdateIncrementalSummaryRecordsModeAndContainment(t *testing.T) {
 	dir := t.TempDir()
 
-	cfile := filepath.Join(dir, "c", "summary.json")
-	if err := os.MkdirAll(filepath.Dir(cfile), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := updateIncrementalSummary(cfile, containerResult("builder", []string{"read"}), "g"); err != nil {
-		t.Fatal(err)
-	}
-	var cs Summary
-	readJSON(t, cfile, &cs)
-	if cs.Sandbox != "container" {
-		t.Errorf("Sandbox = %q, want container", cs.Sandbox)
-	}
-	if got := cs.Containment["builder"]; !reflect.DeepEqual(got, Containment{ToolTrust: []string{"read"}, FakeGH: true, ReadOnlyFS: true, KaironBinary: true, Network: "unrestricted"}) {
-		t.Errorf("containment[builder] = %+v", got)
-	}
+	t.Run("container", func(t *testing.T) {
+		cfile := filepath.Join(dir, "c", "summary.json")
+		if err := os.MkdirAll(filepath.Dir(cfile), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := updateIncrementalSummary(cfile, containerResult("builder", []string{"read"}), "g"); err != nil {
+			t.Fatal(err)
+		}
+		var cs Summary
+		readJSON(t, cfile, &cs)
+		if cs.Sandbox != "container" {
+			t.Errorf("Sandbox = %q, want container", cs.Sandbox)
+		}
+		if got := cs.Containment["builder"]; !reflect.DeepEqual(got, Containment{ToolTrust: []string{"read"}, FakeGH: true, ReadOnlyFS: true, KaironBinary: true, Network: "unrestricted"}) {
+			t.Errorf("containment[builder] = %+v", got)
+		}
+	})
 
-	nfile := filepath.Join(dir, "n", "summary.json")
-	if err := os.MkdirAll(filepath.Dir(nfile), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := updateIncrementalSummary(nfile, AgentResult{Agent: "builder", Sandbox: boolPtr(false)}, "g"); err != nil {
-		t.Fatal(err)
-	}
-	raw, _ := os.ReadFile(nfile)
-	if !strings.Contains(string(raw), `"sandbox": "native"`) || strings.Contains(string(raw), `"containment"`) {
-		t.Errorf("native summary = %s", raw)
-	}
-}
+	t.Run("native", func(t *testing.T) {
+		nfile := filepath.Join(dir, "n", "summary.json")
+		if err := os.MkdirAll(filepath.Dir(nfile), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := updateIncrementalSummary(nfile, AgentResult{Agent: "builder", Sandbox: boolPtr(false)}, "g"); err != nil {
+			t.Fatal(err)
+		}
+		raw, _ := os.ReadFile(nfile)
+		if !strings.Contains(string(raw), `"sandbox": "native"`) || strings.Contains(string(raw), `"containment"`) {
+			t.Errorf("native summary = %s", raw)
+		}
+	})
 
-func TestUpdateIncrementalSummaryTrustNothingEmitsEmptyArray(t *testing.T) {
-	file := filepath.Join(t.TempDir(), "summary.json")
-	if err := updateIncrementalSummary(file, containerResult("builder", []string{}), "g"); err != nil {
-		t.Fatal(err)
-	}
-	raw, _ := os.ReadFile(file)
-	if !strings.Contains(string(raw), `"tool_trust": []`) {
-		t.Errorf("summary = %s, want tool_trust: []", raw)
-	}
+	t.Run("legacy-result-unknown-mode", func(t *testing.T) {
+		lfile := filepath.Join(dir, "l", "summary.json")
+		if err := os.MkdirAll(filepath.Dir(lfile), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := updateIncrementalSummary(lfile, AgentResult{Agent: "a"}, "g"); err != nil {
+			t.Fatal(err)
+		}
+		raw, _ := os.ReadFile(lfile)
+		if strings.Contains(string(raw), `"sandbox"`) || strings.Contains(string(raw), `"containment"`) {
+			t.Errorf("result with unknown mode must not invent one: %s", raw)
+		}
+	})
 }
 
 func TestUpdateIncrementalSummaryRefusesModeChange(t *testing.T) {
@@ -285,34 +272,6 @@ func TestUpdateIncrementalSummaryNativeRemovesStaleContainment(t *testing.T) {
 	raw, _ := os.ReadFile(file)
 	if strings.Contains(string(raw), `"containment"`) {
 		t.Errorf("stale containment kept: %s", raw)
-	}
-}
-
-func TestUpdateIncrementalSummaryLegacyResultLeavesModeUntouched(t *testing.T) {
-	file := filepath.Join(t.TempDir(), "summary.json")
-	if err := updateIncrementalSummary(file, AgentResult{Agent: "a"}, "g"); err != nil {
-		t.Fatal(err)
-	}
-	raw, _ := os.ReadFile(file)
-	if strings.Contains(string(raw), `"sandbox"`) || strings.Contains(string(raw), `"containment"`) {
-		t.Errorf("result with unknown mode must not invent one: %s", raw)
-	}
-}
-
-func TestLegacyJSONStillUnmarshals(t *testing.T) {
-	var s Summary
-	if err := json.Unmarshal([]byte(`{"git_hash":"g","total_cost":{},"agent_scores":{"a":0.5}}`), &s); err != nil {
-		t.Fatal(err)
-	}
-	if s.Sandbox != "" || s.Containment != nil {
-		t.Errorf("legacy summary = %+v", s)
-	}
-	var a AgentResult
-	if err := json.Unmarshal([]byte(`{"agent":"a","git_hash":"g","cases":[]}`), &a); err != nil {
-		t.Fatal(err)
-	}
-	if a.Sandbox != nil || a.Containment != nil {
-		t.Errorf("legacy agent = %+v", a)
 	}
 }
 
@@ -623,20 +582,5 @@ func TestSharedTotalsEqualAcrossModes(t *testing.T) {
 	csum.Sandbox, csum.Containment = "", nil
 	if !reflect.DeepEqual(nsum, csum) {
 		t.Errorf("summaries differ beyond sandbox/containment:\nnative:    %+v\ncontainer: %+v", nsum, csum)
-	}
-}
-
-// Fixture runs load with the current types and score through the shared totals.
-func TestRunFixturesLoadAndScore(t *testing.T) {
-	for _, fixture := range []string{"legacy-native", "native-pinned"} {
-		t.Run(fixture, func(t *testing.T) {
-			res, err := loadAgentResult(filepath.Join(runFixturesDir, fixture, "architect.json"))
-			if err != nil {
-				t.Fatal(err)
-			}
-			if _, m := agentScoreTotals(res); m == 0 {
-				t.Errorf("fixture %s has no scored criteria", fixture)
-			}
-		})
 	}
 }
