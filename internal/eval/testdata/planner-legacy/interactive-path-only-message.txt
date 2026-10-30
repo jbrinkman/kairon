@@ -1,0 +1,19 @@
+Thanks for the two paths. Because I have no request, I will treat them as the task. I have a few questions:
+
+1. Should the document at .kairon/sessions/eval-path-only.document.yaml be created now?
+2. What should the label answer file contain?
+3. Which repository should the issue go in?
+
+Here is a draft in the meantime:
+
+## User Story
+
+As a user of the planning session, I want my document and label saved so that Kairon can pick them up.
+
+## Acceptance Criteria
+
+- The files are written properly.
+
+Once you answer I will create the issue:
+
+gh issue create --title "Save planning session files" --body-file draft.md

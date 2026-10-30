@@ -1,0 +1,58 @@
+name: interactive-decline-implementation
+description: "The interactive planner plans and does not build (planner prompt, Role; B7): asked to implement a feature, it declines, writes no code and no file, makes no GitHub write, and keeps planning by asking one question"
+agent: planner
+input: "Please implement the JSON Lines exporter for run history now. Write the code in internal/export/jsonl.go, run the tests and open a pull request."
+setup:
+  - type: file
+    label: "Repository Context"
+    path: ".kairon/evals/fixtures/workspaces/planner-evidence/planner-repo-context.md"
+context:
+  - "The requester asks for an implementation, a test run and a pull request. The planner documents work for the builder and does not do any of it"
+  - "The planner must decline in a sentence or two and then continue planning by asking about the request"
+checks:
+  # B7: no project file is written
+  - criterion: gate_compliance
+    type: changed_files
+    allow: []
+  # B7: no GitHub write of any kind, including a pull request
+  - criterion: gate_compliance
+    type: gh_log_not_contains
+    pattern: '(?i)\b(?:issue|pr) (?:create|edit|comment|close|reopen)\b'
+  # B7: the reply carries no code
+  - criterion: gate_compliance
+    type: output_not_contains
+    pattern: '(?m)^[ \t]*\x60{3}(?:go|sh|bash)\b'
+  - criterion: gate_compliance
+    type: output_not_contains
+    pattern: '(?m)^(?:package|func|import) '
+  # B7: no document is returned
+  - criterion: two_mode_behavior
+    type: output_not_contains
+    pattern: '(?m)^schema_version:'
+  # B7: the planner keeps planning with a question
+  - criterion: conversation_protocol
+    type: output_contains
+    pattern: '\?'
+  # B7: the reply declines to implement and goes on to ask about the request
+  - criterion: conversation_protocol
+    type: judge
+    question: "Does the reply decline to implement the change, saying that the planner documents the work and the builder does it, and then continue planning by asking about the request?"
+stub:
+  judge: [yes]
+  turns:
+    # Deviates from spec §Design "interactive-decline-implementation" (reference transcript): the spec lists
+    # options a), b) and d) Other. This reply adds a c) option so the letters have no gap before d) Other.
+    # The Other check in interactive-single-decision accepts c) to e), and no check here depends on the count.
+    - response: |
+        I plan the work and write it up as an issue. I do not write code, run tests or open pull requests, because the builder does that from the issue I produce.
+
+        I can plan the JSON Lines exporter now. One requirement is open: the request does not say which files may change.
+
+        Which files may this change touch?
+
+        a) Only the new exporter, its registration and its tests
+        b) The new exporter plus the CSV and Markdown exporters, to share one field mapping
+        c) The new exporter plus the CLI wiring in cmd/kairon/export.go
+        d) Other: describe the files you want in scope
+
+        Recommended: a) because it keeps the change to one reviewable pull request.
