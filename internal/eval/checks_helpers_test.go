@@ -7,12 +7,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"testing"
 )
-
-var yamlFence = regexp.MustCompile("(?s)```yaml\n(.*?)\n```")
 
 // evalOne evaluates a single check and returns its only result.
 func evalOne(t *testing.T, c Check, in CheckInput) CheckResult {
@@ -70,21 +67,3 @@ func chkGit(t *testing.T, dir string, args ...string) string {
 func turnPtr(n int) *int { return &n }
 
 func intp(n int) *int { return &n }
-
-// docYAMLBlocks returns the contents of every ```yaml fenced block in doc.
-func docYAMLBlocks(doc string) []string {
-	var blocks []string
-	for _, m := range yamlFence.FindAllStringSubmatch(doc, -1) {
-		blocks = append(blocks, m[1])
-	}
-	return blocks
-}
-
-func readEvaluationDoc(t *testing.T) string {
-	t.Helper()
-	data, err := os.ReadFile(filepath.Join("..", "..", "docs", "evaluation.md"))
-	if err != nil {
-		t.Fatalf("reading docs/evaluation.md: %v", err)
-	}
-	return string(data)
-}

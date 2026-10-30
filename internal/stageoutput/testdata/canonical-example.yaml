@@ -1,0 +1,16 @@
+# A stage-output document: a YAML mapping carrying a metadata envelope plus a body.
+schema_version: 1                 # integer, REQUIRED. The output-contract version; ties to the §3.4 rule.
+stage: planner                    # string enum, REQUIRED. One of:
+                                  #   planner | architect | krew-lead | builder | validator | documenter
+result: canonical                 # string enum, REQUIRED. canonical | punch_out (see §3.5).
+source:                           # mapping, REQUIRED. Identifies the input this output was derived from.
+  kind: github_issue              #   string enum, REQUIRED: github_issue | document
+  ref: "142"                      #   string, REQUIRED: the issue number, or the upstream document's identity
+generated: 2026-10-20T20:00:00Z   # string, REQUIRED. ISO-8601 / RFC 3339 timestamp, UTC.
+body: |                           # string, REQUIRED when result=canonical. The substantive content, block scalar.
+  ## Problem
+  ...the canonical issue text per §5-§8...
+inferences:                       # list, OPTIONAL. Present when automated intake filled slots by inference (§10.2).
+  - slot: edge_cases              #   string, REQUIRED: the slot that was filled by inference.
+    inferred: handle empty input as a no-op          # string, REQUIRED: what was inferred.
+    evidence: existing exporters in internal/export/*.go all treat empty input as a no-op  # string, REQUIRED.
