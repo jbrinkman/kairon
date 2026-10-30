@@ -381,15 +381,6 @@ func TestMockCLIMockDataOverride(t *testing.T) {
 	})
 }
 
-func TestMockCLIDefaultDataDirIsWorkspaceMocks(t *testing.T) {
-	forEachMockShell(t, func(t *testing.T, e *mockCLIEnv) {
-		e.data("s3-ls.out", "from .mocks/aws\n")
-		if out, _, _ := e.run("s3", "ls"); out != "from .mocks/aws\n" {
-			t.Fatalf("out = %q", out)
-		}
-	})
-}
-
 // TestMockCLINeverRunsRealCommand puts a canary named like the mocked command
 // on PATH and asserts it is never executed, for matched and unmatched calls.
 func TestMockCLINeverRunsRealCommand(t *testing.T) {

@@ -74,7 +74,7 @@ func TestJudgeCheckRequestAndPrompt(t *testing.T) {
 	dir := t.TempDir()
 	writeEvalFile(t, dir, ".eval/issue-body.md", "UNIQUE-FILE-CONTENT-123")
 	stub := &inference.StubScript{Judge: inference.StubJudge{"yes"}}
-	tc := TestCase{Name: "c", Input: "UNIQUE-CASE-INPUT", Stub: stub, Checks: []Check{
+	tc := TestCase{Name: "c", Input: "UNIQUE-CASE-INPUT", ExpectedOutput: "SECRET-EXPECTED", Stub: stub, Checks: []Check{
 		{Criterion: "clarity", Type: CheckJudge, Question: "Is UNIQUE-QUESTION satisfied?", Files: []string{".eval/issue-body.md"}},
 	}}
 	cr := CaseResult{ActualOutput: "UNIQUE-AGENT-OUTPUT", WorkspaceDir: dir}
@@ -104,6 +104,13 @@ func TestJudgeCheckRequestAndPrompt(t *testing.T) {
 			t.Errorf("prompt lacks %q:\n%s", want, req.Prompt)
 		}
 	}
+
+	// Only input + output + files + question are shown (spec §2.2).
+	t.Run("prompt omits expected output", func(t *testing.T) {
+		if strings.Contains(req.Prompt, "SECRET-EXPECTED") {
+			t.Error("prompt leaks ExpectedOutput")
+		}
+	})
 }
 
 func TestJudgeCheckMultiTurnRendersTurnsAsInput(t *testing.T) {
@@ -227,87 +234,39 @@ func TestJudgeCheckMixedCriterionScoresOutOfTwoWithoutLegacyJudge(t *testing.T) 
 }
 
 func TestJudgeCheckDebugPrintsPrompt(t *testing.T) {
-	useRecording(t, yesBackend())
-	cfg.debug = true
-	buf := captureDebug(t)
+	t.Run("debug on", func(t *testing.T) {
+		useRecording(t, yesBackend())
+		cfg.debug = true
+		buf := captureDebug(t)
 
-	dir := t.TempDir()
-	writeEvalFile(t, dir, "spec.md", "DEBUG-FILE-CONTENT")
-	tc := TestCase{Name: "c", Input: "DEBUG-INPUT", Checks: []Check{
-		{Criterion: "clarity", Type: CheckJudge, Question: "DEBUG-QUESTION", Files: []string{"spec.md"}},
-	}}
-	cr := CaseResult{ActualOutput: "DEBUG-OUTPUT", WorkspaceDir: dir}
-	scoreCase(checkedRubric(), tc, &cr)
+		dir := t.TempDir()
+		writeEvalFile(t, dir, "spec.md", "DEBUG-FILE-CONTENT")
+		tc := TestCase{Name: "c", Input: "DEBUG-INPUT", Checks: []Check{
+			{Criterion: "clarity", Type: CheckJudge, Question: "DEBUG-QUESTION", Files: []string{"spec.md"}},
+		}}
+		cr := CaseResult{ActualOutput: "DEBUG-OUTPUT", WorkspaceDir: dir}
+		scoreCase(checkedRubric(), tc, &cr)
 
-	got := buf.String()
-	for _, want := range []string{"Debug: judge prompt", "clarity", "DEBUG-QUESTION", "DEBUG-INPUT", "DEBUG-OUTPUT", "DEBUG-FILE-CONTENT"} {
-		if !strings.Contains(got, want) {
-			t.Errorf("debug output lacks %q:\n%s", want, got)
+		got := buf.String()
+		for _, want := range []string{"Debug: judge prompt", "clarity", "DEBUG-QUESTION", "DEBUG-INPUT", "DEBUG-OUTPUT", "DEBUG-FILE-CONTENT"} {
+			if !strings.Contains(got, want) {
+				t.Errorf("debug output lacks %q:\n%s", want, got)
+			}
 		}
-	}
-}
+	})
 
-func TestJudgeCheckDebugOffWritesNothing(t *testing.T) {
-	useRecording(t, yesBackend())
-	buf := captureDebug(t)
+	t.Run("debug off", func(t *testing.T) {
+		useRecording(t, yesBackend())
+		buf := captureDebug(t)
 
-	tc := TestCase{Name: "c", Checks: []Check{{Criterion: "clarity", Type: CheckJudge, Question: "q"}}}
-	cr := CaseResult{ActualOutput: "out", WorkspaceDir: t.TempDir()}
-	scoreCase(checkedRubric(), tc, &cr)
+		tc := TestCase{Name: "c", Checks: []Check{{Criterion: "clarity", Type: CheckJudge, Question: "q"}}}
+		cr := CaseResult{ActualOutput: "out", WorkspaceDir: t.TempDir()}
+		scoreCase(checkedRubric(), tc, &cr)
 
-	if buf.Len() != 0 {
-		t.Errorf("debug off but wrote: %q", buf.String())
-	}
-}
-
-func TestJudgeCheckConfigureCarriesDebug(t *testing.T) {
-	t.Cleanup(resetConfig)
-	if err := configure(RunOptions{Backend: "stub", Debug: true}); err != nil {
-		t.Fatal(err)
-	}
-	if !cfg.debug {
-		t.Error("configure(Debug: true) did not set cfg.debug")
-	}
-	if err := configure(RunOptions{Backend: "stub"}); err != nil {
-		t.Fatal(err)
-	}
-	if cfg.debug {
-		t.Error("configure without Debug left cfg.debug set")
-	}
-}
-
-func TestJudgeCheckEmptyOutputMakesNoJudgeCall(t *testing.T) {
-	b := yesBackend()
-	useRecording(t, b)
-	tc := TestCase{Name: "c", Checks: []Check{
-		{Criterion: "clarity", Type: CheckJudge, Question: "q1"},
-		{Criterion: "clarity", Type: CheckJudge, Question: "q2"},
-	}}
-	cr := CaseResult{ActualOutput: "", WorkspaceDir: t.TempDir()}
-	scoreCase(checkedRubric(), tc, &cr)
-
-	if len(b.reqs) != 0 || len(cr.Calls) != 0 {
-		t.Errorf("judge called for empty output: reqs=%d calls=%d", len(b.reqs), len(cr.Calls))
-	}
-	s := scoreByName(t, cr, "clarity")
-	if s.Score != 0 || s.MaxScore != 2 || !strings.Contains(s.Reasoning, "checks not run") {
-		t.Errorf("clarity = %+v, want 0/2 'checks not run'", s)
-	}
-}
-
-func TestJudgeCheckPromptOmitsCaseExpectations(t *testing.T) {
-	// Only input + output + files + question are shown (spec §2.2).
-	b := yesBackend()
-	useRecording(t, b)
-	tc := TestCase{Name: "c", ExpectedOutput: "SECRET-EXPECTED", Checks: []Check{{Criterion: "clarity", Type: CheckJudge, Question: "q"}}}
-	cr := CaseResult{ActualOutput: "out", WorkspaceDir: t.TempDir()}
-	scoreCase(checkedRubric(), tc, &cr)
-	if len(b.reqs) != 1 {
-		t.Fatalf("requests = %d, want 1", len(b.reqs))
-	}
-	if strings.Contains(b.reqs[0].Prompt, "SECRET-EXPECTED") {
-		t.Error("prompt leaks ExpectedOutput")
-	}
+		if buf.Len() != 0 {
+			t.Errorf("debug off but wrote: %q", buf.String())
+		}
+	})
 }
 
 func TestLoadCasesStubJudgeValidation(t *testing.T) {

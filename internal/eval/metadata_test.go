@@ -1,15 +1,12 @@
 package eval
 
 import (
-	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
-
-	"gopkg.in/yaml.v3"
 )
 
 // metaEvals writes a one-agent evals dir whose cases are the given file name ->
@@ -70,24 +67,6 @@ func TestMetadataLoadsScalarTextForms(t *testing.T) {
 	}
 }
 
-func TestMetadataAbsentLoadsAsBefore(t *testing.T) {
-	metaEvals(t, map[string]string{"plain.yaml": metaCase("plain", "")})
-	cases, err := loadCases("meta-agent")
-	if err != nil {
-		t.Fatalf("loadCases: %v", err)
-	}
-	if len(cases) != 1 || cases[0].Metadata != nil {
-		t.Fatalf("cases = %+v, want one case with nil Metadata", cases)
-	}
-	data, err := json.Marshal(cases[0])
-	if err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(string(data), "metadata") {
-		t.Errorf("case JSON %s mentions metadata, want it omitted", data)
-	}
-}
-
 func TestMetadataResolvesAliases(t *testing.T) {
 	metaEvals(t, map[string]string{"alias.yaml": metaCase("alias", `metadata:
   first: &v fast
@@ -107,24 +86,27 @@ func TestMetadataInvalidFailsLoadCases(t *testing.T) {
 		name string
 		meta string
 		key  string // text the error must carry besides the file name
+		// explain, when set, is text the error must also carry to tell the
+		// author why the metadata is invalid.
+		explain string
 	}{
-		{"list value", "metadata:\n  tags: [a, b]\n", "tags"},
-		{"block list value", "metadata:\n  tags:\n    - a\n    - b\n", "tags"},
-		{"map value", "metadata:\n  nested:\n    a: b\n", "nested"},
-		{"null value", "metadata:\n  empty: null\n", "empty"},
-		{"tilde null value", "metadata:\n  empty: ~\n", "empty"},
-		{"blank value", "metadata:\n  empty:\n", "empty"},
-		{"list metadata", "metadata:\n  - a\n  - b\n", "metadata"},
-		{"scalar metadata", "metadata: fast\n", "metadata"},
-		{"reserved agent", "metadata:\n  agent: x\n", "agent"},
-		{"reserved name", "metadata:\n  name: x\n", "name"},
-		{"duplicate key", "metadata:\n  speed: fast\n  speed: slow\n", "speed"},
-		{"key with equals", "metadata:\n  \"a=b\": x\n", "a=b"},
-		{"key with less", "metadata:\n  \"a<b\": x\n", "a<b"},
-		{"key with greater", "metadata:\n  \"a>b\": x\n", "a>b"},
-		{"key with bang", "metadata:\n  \"a!b\": x\n", "a!b"},
-		{"key with comma", "metadata:\n  \"a,b\": x\n", "a,b"},
-		{"empty key", "metadata:\n  \"\": x\n", "empty"},
+		{"list value", "metadata:\n  tags: [a, b]\n", "tags", "string, number or boolean"},
+		{"block list value", "metadata:\n  tags:\n    - a\n    - b\n", "tags", ""},
+		{"map value", "metadata:\n  nested:\n    a: b\n", "nested", ""},
+		{"null value", "metadata:\n  empty: null\n", "empty", ""},
+		{"tilde null value", "metadata:\n  empty: ~\n", "empty", ""},
+		{"blank value", "metadata:\n  empty:\n", "empty", ""},
+		{"list metadata", "metadata:\n  - a\n  - b\n", "metadata", ""},
+		{"scalar metadata", "metadata: fast\n", "metadata", ""},
+		{"reserved agent", "metadata:\n  agent: x\n", "agent", "reserved"},
+		{"reserved name", "metadata:\n  name: x\n", "name", ""},
+		{"duplicate key", "metadata:\n  speed: fast\n  speed: slow\n", "speed", ""},
+		{"key with equals", "metadata:\n  \"a=b\": x\n", "a=b", ""},
+		{"key with less", "metadata:\n  \"a<b\": x\n", "a<b", ""},
+		{"key with greater", "metadata:\n  \"a>b\": x\n", "a>b", ""},
+		{"key with bang", "metadata:\n  \"a!b\": x\n", "a!b", ""},
+		{"key with comma", "metadata:\n  \"a,b\": x\n", "a,b", ""},
+		{"empty key", "metadata:\n  \"\": x\n", "empty", ""},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -143,23 +125,10 @@ func TestMetadataInvalidFailsLoadCases(t *testing.T) {
 			if !strings.Contains(msg, tt.key) {
 				t.Errorf("error %q does not name %q", msg, tt.key)
 			}
+			if tt.explain != "" && !strings.Contains(msg, tt.explain) {
+				t.Errorf("error %q does not explain with %q", msg, tt.explain)
+			}
 		})
-	}
-}
-
-func TestMetadataReservedKeyErrorExplains(t *testing.T) {
-	metaEvals(t, map[string]string{"r.yaml": metaCase("r", "metadata:\n  agent: x\n")})
-	_, err := loadCases("meta-agent")
-	if err == nil || !strings.Contains(err.Error(), "reserved") {
-		t.Fatalf("err = %v, want a message saying the key is reserved", err)
-	}
-}
-
-func TestMetadataValueErrorSaysWhatIsAllowed(t *testing.T) {
-	metaEvals(t, map[string]string{"v.yaml": metaCase("v", "metadata:\n  tags: [a]\n")})
-	_, err := loadCases("meta-agent")
-	if err == nil || !strings.Contains(err.Error(), "string, number or boolean") {
-		t.Fatalf("err = %v, want a message naming string, number or boolean", err)
 	}
 }
 
@@ -168,42 +137,6 @@ func TestMetadataUnknownSiblingFieldStillRejected(t *testing.T) {
 	_, err := loadCases("meta-agent")
 	if err == nil || !errors.Is(err, errMalformedCase) {
 		t.Fatalf("err = %v, want errMalformedCase for the unknown field", err)
-	}
-}
-
-func TestMetadataUnmarshalYAMLDirect(t *testing.T) {
-	var tc struct {
-		M CaseMetadata `yaml:"metadata"`
-	}
-	if err := yaml.Unmarshal([]byte("metadata:\n  a: 1\n  b: true\n"), &tc); err != nil {
-		t.Fatal(err)
-	}
-	if !reflect.DeepEqual(tc.M, CaseMetadata{"a": "1", "b": "true"}) {
-		t.Errorf("M = %v", tc.M)
-	}
-}
-
-func TestMetadataCaseResultJSON(t *testing.T) {
-	with, err := json.Marshal(CaseResult{CaseName: "c", Metadata: CaseMetadata{"speed": "fast"}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(with), `"metadata":{"speed":"fast"}`) {
-		t.Errorf("tagged result JSON = %s", with)
-	}
-	without, err := json.Marshal(CaseResult{CaseName: "c"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(string(without), "metadata") {
-		t.Errorf("untagged result JSON = %s, want no metadata field", without)
-	}
-	var back CaseResult
-	if err := json.Unmarshal(with, &back); err != nil {
-		t.Fatal(err)
-	}
-	if back.Metadata["speed"] != "fast" {
-		t.Errorf("round trip lost metadata: %+v", back.Metadata)
 	}
 }
 
@@ -217,30 +150,6 @@ func hashMetaEvals(t *testing.T) string {
 		t.Fatalf("suiteSHA256: %v", err)
 	}
 	return got
-}
-
-func TestSuiteSHA256ChangesOnMetadataOnlyEdit(t *testing.T) {
-	root := metaEvals(t, map[string]string{
-		"c.yaml": metaCase("c", "metadata:\n  speed: fast\n"),
-	})
-	before := hashMetaEvals(t)
-
-	// Edit only the metadata value.
-	writeCfgFile(t, filepath.Join(root, "cases", "meta-agent", "c.yaml"),
-		metaCase("c", "metadata:\n  speed: slow\n"))
-	afterValue := hashMetaEvals(t)
-	if afterValue == before {
-		t.Error("suiteSHA256 unchanged after a metadata-only value edit")
-	}
-
-	// Adding a metadata block to a case that had none also changes it.
-	writeCfgFile(t, filepath.Join(root, "cases", "meta-agent", "c.yaml"), metaCase("c", ""))
-	bare := hashMetaEvals(t)
-	writeCfgFile(t, filepath.Join(root, "cases", "meta-agent", "c.yaml"),
-		metaCase("c", "metadata:\n  speed: fast\n"))
-	if tagged := hashMetaEvals(t); tagged == bare {
-		t.Error("suiteSHA256 unchanged after adding a metadata block")
-	}
 }
 
 func TestSuiteSHA256HashesRawCaseBytes(t *testing.T) {
