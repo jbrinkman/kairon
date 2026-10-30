@@ -248,6 +248,26 @@ func TestCoverageUpdateIncrementalSummaryCopiesFields(t *testing.T) {
 			t.Errorf("agents = %v, want none for an unpinned, unrecorded result", s.Agents)
 		}
 	})
+	t.Run("prompt-only-entry-omits-coverage-keys", func(t *testing.T) {
+		file := filepath.Join(t.TempDir(), "summary.json")
+		// The PromptSHA256 writes the entry; no coverage was recorded, so the
+		// entry must not carry the coverage keys.
+		if err := updateIncrementalSummary(file, AgentResult{Agent: "a", PromptSHA256: "p"}, "g"); err != nil {
+			t.Fatal(err)
+		}
+		raw, err := os.ReadFile(file)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(raw), `"prompt_sha256": "p"`) {
+			t.Fatalf("summary has no agents.a entry:\n%s", raw)
+		}
+		for _, key := range []string{"suite_sha256", "complete", "case_filter"} {
+			if strings.Contains(string(raw), `"`+key+`"`) {
+				t.Errorf("summary contains %s for an unrecorded result:\n%s", key, raw)
+			}
+		}
+	})
 }
 
 // covCase is a stub case whose shell command runs in the workspace.
