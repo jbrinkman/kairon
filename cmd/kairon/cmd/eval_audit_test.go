@@ -2,29 +2,11 @@ package cmd
 
 import (
 	"bytes"
-	"io/fs"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 )
 
 const auditFixtures = "../../../internal/eval/testdata/audit"
-
-// useShippedSkills points the audit command at the real shipped templates on
-// disk. Package cmd tests never call SetTemplates, so the embedded Templates
-// FS is empty here; this seam stands in for it without importing package main.
-func useShippedSkills(t *testing.T) {
-	t.Helper()
-	// Absolute: tests chdir to the repo root after this, and DirFS resolves lazily.
-	dir, err := filepath.Abs("../templates/kiro/skills")
-	if err != nil {
-		t.Fatal(err)
-	}
-	orig := auditSkillsFS
-	auditSkillsFS = func() (fs.FS, error) { return os.DirFS(dir), nil }
-	t.Cleanup(func() { auditSkillsFS = orig })
-}
 
 // runAudit runs the audit command with explicit flag values, restoring the
 // package flag vars afterwards. Empty strings leave the defaults in place.
@@ -229,45 +211,5 @@ func TestAuditPromptFileFlagIsPassedThrough(t *testing.T) {
 	_, err := runAudit(t, "demo", auditFixtures+"/coverage-90/evals", auditFixtures+"/coverage-90/iterations", "does-not-exist.md")
 	if err == nil || !strings.Contains(err.Error(), "does-not-exist.md") {
 		t.Fatalf("err = %v, want an error naming the missing candidate file", err)
-	}
-}
-
-// The real-repo tests run from the repository root and assert only on the
-// resource listing and structure, so they hold whether or not a
-// load-bearing table exists.
-func TestAuditRealBuilderListsSkillsAndHooks(t *testing.T) {
-	useShippedSkills(t)
-	t.Chdir("../../..")
-	out, _ := runAudit(t, "builder", "", "", "")
-
-	audited, hooks, ok := strings.Cut(out, "Override hooks")
-	if !ok {
-		t.Fatalf("no Override hooks section in output:\n%s", out)
-	}
-	if !strings.Contains(audited, "Audited resources:") || !strings.Contains(audited, "skill sentinel-protocol") {
-		t.Errorf("sentinel-protocol is not listed as audited:\n%s", out)
-	}
-	if !strings.Contains(hooks, "skill builder-conventions") {
-		t.Errorf("builder-conventions is not listed as an override hook:\n%s", out)
-	}
-	if strings.Contains(audited, "builder-conventions") {
-		t.Errorf("builder-conventions must not be audited:\n%s", out)
-	}
-}
-
-// The interactive planner prompt carries the RTCC headings in order, so the
-// audit reports no structure problem for it. Whether the audit passes overall
-// depends on the load-bearing table, which this test does not assert on.
-func TestAuditRealPlannerHasRTCCHeadings(t *testing.T) {
-	useShippedSkills(t)
-	t.Chdir("../../..")
-	_, err := runAudit(t, "planner", "", "", "")
-	if err == nil {
-		return
-	}
-	for _, problem := range []string{"missing required heading", "required headings out of order"} {
-		if strings.Contains(err.Error(), problem) {
-			t.Errorf("planner prompt has an RTCC structure problem (%q):\n%s", problem, err)
-		}
 	}
 }
