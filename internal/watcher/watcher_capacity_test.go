@@ -279,7 +279,11 @@ func TestCheckIssues_RetryHoldsOnlySlot(t *testing.T) {
 	// before it starts, so this poll runs inside the gap.
 	p.m.HandleExit(p.implAgentID(10), 1)
 	p.w.checkIssues()
-	p.wantStarts(10)
+	// The retry may already have started if this goroutine stalled past the
+	// one-second delay, so only check that no other issue started.
+	if slices.Contains(p.starts(), 11) {
+		t.Fatalf("starts = %v: issue #11 started during the retry gap", p.starts())
+	}
 	p.wantSlots(1, 1)
 	p.wantTracked(10)
 	if fileExists(".kairon/retries/issue-11.count") {
