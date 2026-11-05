@@ -116,6 +116,10 @@ type Options struct {
 	// PRExists replaces the check HandleExit runs before it marks an exit-0 run
 	// done. Nil means github.PRExistsForIssue.
 	PRExists func(repo string, issue int) (bool, error)
+	// Cleanup replaces the cleanup HandleExit starts in the background when a
+	// run ends for good. Nil means the production cleanup (worktree, retry file
+	// and input document removal, all relative to the working directory).
+	Cleanup func(issue, pid int)
 }
 
 type Manager struct {
@@ -221,6 +225,9 @@ func NewManagerWithOptions(cfg *config.Config, opts Options) *Manager {
 	}
 	if opts.PRExists != nil {
 		m.prExists = opts.PRExists
+	}
+	if opts.Cleanup != nil {
+		m.cleanup = opts.Cleanup
 	}
 	return m
 }

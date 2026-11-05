@@ -28,7 +28,8 @@ import (
 // always finds a PR (so HandleExit(id, 0) completes a run without gh) and a
 // retry budget of 2. It is a sibling of newPipelineHere so the existing
 // fixtures keep their behavior. The manager is the production constructor;
-// only the worktree, the process start and the process monitor are stubbed.
+// only the worktree, the process start, the process monitor and the
+// background cleanup are stubbed.
 func newCapPipeline(t *testing.T, maxAgents int) *pipeline {
 	t.Helper()
 	t.Chdir(t.TempDir())
@@ -56,6 +57,11 @@ func newCapPipeline(t *testing.T, maxAgents int) *pipeline {
 		},
 		MonitorAgent: func(*agent.Agent, *exec.Cmd) {},
 		PRExists:     func(string, int) (bool, error) { return true, nil },
+		// HandleExit runs cleanup in a goroutine nobody joins. The production
+		// cleanup deletes cwd-relative files, so one still running after
+		// t.Chdir restores the directory could delete a later test's
+		// same-numbered retry or input file. These tests do not check cleanup.
+		Cleanup: func(int, int) {},
 	})
 	p.w = New(cfg, p.m, "")
 	p.w.selectIssues = func(_, label, _ string) (github.Selection, error) { return gh.Select(label), nil }
