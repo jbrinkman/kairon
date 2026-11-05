@@ -32,6 +32,10 @@ type LoggingConfig struct {
 	LogDir         string `yaml:"log_dir"`
 }
 
+// DefaultMaxAgents is the number of agents allowed to run at once when
+// max_agents is not set.
+const DefaultMaxAgents = 3
+
 type Config struct {
 	Repo                string               `yaml:"repo"`
 	Label               string               `yaml:"label"`
@@ -39,6 +43,7 @@ type Config struct {
 	BaseBranch          string               `yaml:"base_branch"` // Optional base branch for new worktrees (auto-detects if empty)
 	PollInterval        time.Duration        `yaml:"poll_interval"`
 	MaxRetries          int                  `yaml:"max_retries"`
+	MaxAgents           int                  `yaml:"max_agents"`
 	MaxQARetries        int                  `yaml:"max_qa_retries"`
 	MaxActivityLines    int                  `yaml:"max_activity_lines"`
 	ConsoleLogging      bool                 `yaml:"console_logging"`
@@ -52,6 +57,17 @@ type Config struct {
 	LoadedTheme         *Theme               `yaml:"-"`
 }
 
+// EffectiveMaxAgents returns the number of agents allowed to run at once.
+// Load rejects non-positive values, but a Config built by hand may leave
+// MaxAgents unset, so a non-positive value falls back to DefaultMaxAgents.
+// There is no setting that means unlimited.
+func (c *Config) EffectiveMaxAgents() int {
+	if c.MaxAgents > 0 {
+		return c.MaxAgents
+	}
+	return DefaultMaxAgents
+}
+
 func extractLeadingWhitespace(line string) string {
 	return line[:len(line)-len(strings.TrimLeft(line, " \t"))]
 }
@@ -61,6 +77,7 @@ func Load() (*Config, error) {
 		Label:               "kairon",
 		PollInterval:        5 * time.Minute,
 		MaxRetries:          3,
+		MaxAgents:           DefaultMaxAgents,
 		MaxQARetries:        3,
 		MaxActivityLines:    1000,
 		ConsoleLogging:      false,
@@ -109,6 +126,11 @@ func Load() (*Config, error) {
 		return nil, err
 	}
 	cfg.Pricing = pricing
+
+	// Validate max_agents. Zero or negative is an error, never "unlimited".
+	if cfg.MaxAgents <= 0 {
+		return nil, fmt.Errorf("max_agents must be greater than 0 (got %d); there is no unlimited setting", cfg.MaxAgents)
+	}
 
 	// Validate session config
 	if cfg.Session.MaxHistoryMessages <= 0 {
