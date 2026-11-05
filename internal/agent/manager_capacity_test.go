@@ -329,6 +329,47 @@ func TestSpawn_SecondRunForHeldIssueRefused(t *testing.T) {
 	}
 }
 
+// With the table full, a second Spawn for the issue that holds the only slot
+// must be refused as ErrNotAdmitted (a run is already going), not as
+// ErrAtCapacity, and must do no admission work. This pins the held-issue
+// branch of earlyCapacityCheck: on a 1/3 table the reservation maps the same
+// error, so only a full table tells the two refusals apart.
+func TestSpawn_HeldIssueAtFullTableRefusedAsNotAdmitted(t *testing.T) {
+	h := newCapHarness(t, 1, 1)
+	h.put(1)
+	h.mustSpawn(1)
+	h.wantSlots(1, 1)
+
+	// Replace the input document with a marker so a rewrite is detectable.
+	const marker = "marker: untouched\n"
+	if err := os.WriteFile(inputDocumentPath(1), []byte(marker), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	calls, worktrees, starts := len(h.gh.Calls()), h.worktrees.Load(), h.starts.Load()
+
+	_, err := h.m.Spawn(1, testRepo)
+
+	if !errors.Is(err, ErrNotAdmitted) {
+		t.Fatalf("second Spawn = %v, want ErrNotAdmitted", err)
+	}
+	if errors.Is(err, ErrAtCapacity) {
+		t.Errorf("second Spawn = %v, must not be ErrAtCapacity for a held issue", err)
+	}
+	if got := h.gh.Calls(); len(got) != calls {
+		t.Errorf("GitHub calls after the refusal = %v, want none beyond the first %d", got[calls:], calls)
+	}
+	if b, rerr := os.ReadFile(inputDocumentPath(1)); rerr != nil || string(b) != marker {
+		t.Errorf("input document = %q, %v; want it left untouched", b, rerr)
+	}
+	if n := h.worktrees.Load(); n != worktrees {
+		t.Errorf("CreateWorktree ran %d more times for a held issue", n-worktrees)
+	}
+	if n := h.starts.Load(); n != starts {
+		t.Errorf("StartAgent ran %d more times for a held issue", n-starts)
+	}
+	h.wantSlots(1, 1)
+}
+
 func TestRetryHoldsSlotAcrossFailedGap(t *testing.T) {
 	h := newCapHarness(t, 1, 3)
 	h.put(1, 2)
