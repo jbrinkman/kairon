@@ -69,8 +69,9 @@ func TestContainerSessionThreeTurnsOneOpenOneClose(t *testing.T) {
 	f := &fakeSession{}
 	opens := useFakeSession(t, f)
 
+	cConfig := testContainerConfig()
 	var out bytes.Buffer
-	cr := executeCase(execRubric(), containerTurnsCase("three", "one", "two", "three"), testContainerConfig(), &out, false)
+	cr := executeCase(execRubric(), containerTurnsCase("three", "one", "two", "three"), cConfig, &out, false)
 
 	if len(*opens) != 1 {
 		t.Fatalf("opens = %d, want 1\n%s", len(*opens), out.String())
@@ -81,6 +82,21 @@ func TestContainerSessionThreeTurnsOneOpenOneClose(t *testing.T) {
 	for i, req := range f.reqs {
 		if req.Turn != i {
 			t.Errorf("Run %d: Turn = %d, want %d", i, req.Turn, i)
+		}
+		if req.Timeout != 45*time.Second {
+			t.Errorf("turn %d: Timeout = %v, want the case timeout 45s", i, req.Timeout)
+		}
+		if req.WorkDir != cConfig.WorkspaceDir {
+			t.Errorf("turn %d: WorkDir = %q, want %q", i, req.WorkDir, cConfig.WorkspaceDir)
+		}
+		if req.AgentConfigDir != "" {
+			t.Errorf("turn %d: AgentConfigDir = %q, want empty (host path)", i, req.AgentConfigDir)
+		}
+		if req.ToolTrust == nil {
+			t.Errorf("turn %d: ToolTrust not resolved", i)
+		}
+		if want := []string{"one", "two", "three"}[i]; req.Prompt != want {
+			t.Errorf("turn %d: Prompt = %q, want %q", i, req.Prompt, want)
 		}
 	}
 	if len(f.closed) != 1 || f.closed[0] {
@@ -143,36 +159,6 @@ func TestContainerSessionTurnFailureClosesFailedAndStops(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "turn 2/3") {
 		t.Errorf("output lacks 'turn 2/3':\n%s", out.String())
-	}
-}
-
-func TestContainerSessionPerTurnRequestSetup(t *testing.T) {
-	sessionEnv(t)
-	f := &fakeSession{}
-	useFakeSession(t, f)
-
-	cConfig := testContainerConfig()
-	executeCase(execRubric(), containerTurnsCase("per-turn", "one", "two", "three"), cConfig, &bytes.Buffer{}, false)
-
-	if len(f.reqs) != 3 {
-		t.Fatalf("Run calls = %d, want 3", len(f.reqs))
-	}
-	for i, req := range f.reqs {
-		if req.Timeout != 45*time.Second {
-			t.Errorf("turn %d: Timeout = %v, want the case timeout 45s", i, req.Timeout)
-		}
-		if req.WorkDir != cConfig.WorkspaceDir {
-			t.Errorf("turn %d: WorkDir = %q, want %q", i, req.WorkDir, cConfig.WorkspaceDir)
-		}
-		if req.AgentConfigDir != "" {
-			t.Errorf("turn %d: AgentConfigDir = %q, want empty (host path)", i, req.AgentConfigDir)
-		}
-		if req.ToolTrust == nil {
-			t.Errorf("turn %d: ToolTrust not resolved", i)
-		}
-		if want := []string{"one", "two", "three"}[i]; req.Prompt != want {
-			t.Errorf("turn %d: Prompt = %q, want %q", i, req.Prompt, want)
-		}
 	}
 }
 

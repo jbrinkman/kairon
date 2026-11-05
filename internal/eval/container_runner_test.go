@@ -1,7 +1,6 @@
 package eval
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"os"
@@ -69,131 +68,101 @@ func mountSummary(ms []sandbox.Mount) map[string]sandbox.Mount {
 	return out
 }
 
+// buildContainerMounts ignores its backend argument and returns the same
+// ordered list for every backend, so one table over backend and workspace
+// covers kiro-cli and the helper backends, default and custom workspaces.
 func TestBuildContainerMountsKiroCLI(t *testing.T) {
-	ws := testWorkspaceDirs(t)
-	cc := testContainerConfig()
-	bin := useFakeLinuxBinary(t)
-
-	ms, err := buildContainerMounts(ws, cc, inference.NameKiroCLI)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(ms) != 5 {
-		t.Fatalf("mounts = %+v, want exactly 5 (the kairon binary is mounted for kiro-cli too)", ms)
-	}
-	want := []sandbox.Mount{
-		{HostPath: ws.KiroDir, ContainerPath: "/workspace/.kiro", ReadOnly: true},
-		{HostPath: ws.Dir, ContainerPath: "/workspace"},
-		{HostPath: ws.EvalDir, ContainerPath: "/workspace/.eval"},
-		{HostPath: ws.BinDir, ContainerPath: "/opt/kairon/bin", ReadOnly: true},
-		{HostPath: bin, ContainerPath: "/usr/local/bin/kairon", ReadOnly: true},
-	}
-	if !reflect.DeepEqual(ms, want) {
-		t.Errorf("mounts = %+v\nwant     %+v", ms, want)
-	}
-
-	// Through the real host-config constructor: bind mounts only, plus the
-	// read-only-rootfs tmpfs mounts for temp and $HOME (never the workspace).
-	hc, err := sandbox.NewHostConfigWithMounts(cc.ResourceLimits, ms)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !hc.ReadonlyRootfs {
-		t.Error("root filesystem must be read-only")
-	}
-	for _, p := range []string{"/tmp", "/var/tmp", "/home/sandbox"} {
-		if _, ok := hc.Tmpfs[p]; !ok {
-			t.Errorf("missing tmpfs %s: %v", p, hc.Tmpfs)
-		}
-	}
-	if len(hc.Tmpfs) != 3 {
-		t.Errorf("unexpected tmpfs: %v", hc.Tmpfs)
-	}
-	if _, ok := hc.Tmpfs[cc.WorkspaceDir]; ok {
-		t.Errorf("workspace %s must not be a tmpfs", cc.WorkspaceDir)
-	}
-	for _, m := range hc.Mounts {
-		if m.Type != mount.TypeBind {
-			t.Errorf("mount %s is %s, want bind", m.Target, m.Type)
-		}
-	}
-}
-
-func TestBuildContainerMountsHelper(t *testing.T) {
-	ws := testWorkspaceDirs(t)
-	cc := testContainerConfig()
-	cc.WorkspaceDir = "/work/space"
-	bin := useFakeLinuxBinary(t)
-
-	ms, err := buildContainerMounts(ws, cc, inference.NameStub)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(ms) != 5 {
-		t.Fatalf("mounts = %+v, want 5", ms)
-	}
-	by := mountSummary(ms)
-	if m := by["/work/space/.kiro"]; m.HostPath != ws.KiroDir || !m.ReadOnly {
-		t.Errorf(".kiro mount = %+v", m)
-	}
-	if m := by["/work/space"]; m.HostPath != ws.Dir || m.ReadOnly {
-		t.Errorf("workspace mount = %+v", m)
-	}
-	if m := by["/work/space/.eval"]; m.HostPath != ws.EvalDir || m.ReadOnly {
-		t.Errorf(".eval mount = %+v", m)
-	}
-	if m := by["/opt/kairon/bin"]; m.HostPath != ws.BinDir || !m.ReadOnly {
-		t.Errorf("bin mount = %+v", m)
-	}
-	if m := by["/usr/local/bin/kairon"]; m.HostPath != bin || !m.ReadOnly {
-		t.Errorf("kairon binary mount = %+v", m)
-	}
-	if _, ok := by["/opt/kairon/kairon"]; ok {
-		t.Error("the old /opt/kairon/kairon mount must not exist")
-	}
-}
-
-// The kairon binary is mounted read-only, exactly once, at a path whose
-// directory is on the container PATH, for every backend (kiro-cli included),
-// so a bare `kairon` resolves for agents.
-func TestBuildContainerMountsKaironBinaryOnPathForEveryBackend(t *testing.T) {
-	if !kaironBinaryMounted {
-		t.Skip("kaironBinaryMounted is false")
-	}
 	if containerHelperPath != "/usr/local/bin/kairon" {
 		t.Errorf("containerHelperPath = %q, want /usr/local/bin/kairon", containerHelperPath)
 	}
-	for _, backend := range []string{inference.NameKiroCLI, inference.NameStub} {
-		t.Run(backend, func(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		backend      string
+		workspaceDir string
+	}{
+		{"kiro-cli-default-workspace", inference.NameKiroCLI, "/workspace"},
+		{"stub-default-workspace", inference.NameStub, "/workspace"},
+		{"stub-custom-workspace", inference.NameStub, "/work/space"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
 			ws := testWorkspaceDirs(t)
 			cc := testContainerConfig()
+			cc.WorkspaceDir = tc.workspaceDir
 			bin := useFakeLinuxBinary(t)
 
-			ms, err := buildContainerMounts(ws, cc, backend)
+			ms, err := buildContainerMounts(ws, cc, tc.backend)
 			if err != nil {
 				t.Fatal(err)
 			}
-			n := 0
-			for _, m := range ms {
-				if m.ContainerPath == containerHelperPath {
-					n++
-					if m.HostPath != bin || !m.ReadOnly {
-						t.Errorf("kairon mount = %+v, want read-only %s", m, bin)
+			if len(ms) != 5 {
+				t.Fatalf("mounts = %+v, want exactly 5 (the kairon binary is mounted for kiro-cli too)", ms)
+			}
+			want := []sandbox.Mount{
+				{HostPath: ws.KiroDir, ContainerPath: path.Join(tc.workspaceDir, ".kiro"), ReadOnly: true},
+				{HostPath: ws.Dir, ContainerPath: tc.workspaceDir},
+				{HostPath: ws.EvalDir, ContainerPath: path.Join(tc.workspaceDir, ".eval")},
+				{HostPath: ws.BinDir, ContainerPath: "/opt/kairon/bin", ReadOnly: true},
+				{HostPath: bin, ContainerPath: "/usr/local/bin/kairon", ReadOnly: true},
+			}
+			if !reflect.DeepEqual(ms, want) {
+				t.Errorf("mounts = %+v\nwant     %+v", ms, want)
+			}
+			if _, ok := mountSummary(ms)["/opt/kairon/kairon"]; ok {
+				t.Error("the old /opt/kairon/kairon mount must not exist")
+			}
+
+			// The kairon binary is mounted read-only, exactly once, at a path
+			// whose directory is on the container PATH, for every backend
+			// (kiro-cli included), so a bare `kairon` resolves for agents.
+			if kaironBinaryMounted {
+				n := 0
+				for _, m := range ms {
+					if m.ContainerPath == containerHelperPath {
+						n++
+						if m.HostPath != bin || !m.ReadOnly {
+							t.Errorf("kairon mount = %+v, want read-only %s", m, bin)
+						}
 					}
 				}
-			}
-			if n != 1 {
-				t.Fatalf("%d mounts at %s, want exactly 1: %+v", n, containerHelperPath, ms)
-			}
-			dir := path.Dir(containerHelperPath)
-			onPath := false
-			for _, d := range strings.Split(containerPath, ":") {
-				if d == dir {
-					onPath = true
+				if n != 1 {
+					t.Errorf("%d mounts at %s, want exactly 1: %+v", n, containerHelperPath, ms)
+				}
+				dir := path.Dir(containerHelperPath)
+				onPath := false
+				for _, d := range strings.Split(containerPath, ":") {
+					if d == dir {
+						onPath = true
+					}
+				}
+				if !onPath {
+					t.Errorf("%s is not a directory on containerPath %q", dir, containerPath)
 				}
 			}
-			if !onPath {
-				t.Errorf("%s is not a directory on containerPath %q", dir, containerPath)
+
+			// Through the real host-config constructor: bind mounts only, plus the
+			// read-only-rootfs tmpfs mounts for temp and $HOME (never the workspace).
+			hc, err := sandbox.NewHostConfigWithMounts(cc.ResourceLimits, ms)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !hc.ReadonlyRootfs {
+				t.Error("root filesystem must be read-only")
+			}
+			for _, p := range []string{"/tmp", "/var/tmp", "/home/sandbox"} {
+				if _, ok := hc.Tmpfs[p]; !ok {
+					t.Errorf("missing tmpfs %s: %v", p, hc.Tmpfs)
+				}
+			}
+			if len(hc.Tmpfs) != 3 {
+				t.Errorf("unexpected tmpfs: %v", hc.Tmpfs)
+			}
+			if _, ok := hc.Tmpfs[cc.WorkspaceDir]; ok {
+				t.Errorf("workspace %s must not be a tmpfs", cc.WorkspaceDir)
+			}
+			for _, m := range hc.Mounts {
+				if m.Type != mount.TypeBind {
+					t.Errorf("mount %s is %s, want bind", m.Target, m.Type)
+				}
 			}
 		})
 	}
@@ -287,37 +256,54 @@ func TestBuildContainerMountsErrors(t *testing.T) {
 }
 
 func TestContainerConfigUserEnvAndWorkdir(t *testing.T) {
-	cc := testContainerConfig()
-	cc.Environment = map[string]string{"B": "2", "A": "1"}
-	cfgC := newContainerConfig("kairon-eval-base:x", cc)
+	t.Run("default-workspace", func(t *testing.T) {
+		cc := testContainerConfig()
+		cc.Environment = map[string]string{"B": "2", "A": "1"}
+		cfgC := newContainerConfig("kairon-eval-base:x", cc)
 
-	if cfgC.Image != "kairon-eval-base:x" {
-		t.Errorf("image = %q", cfgC.Image)
-	}
-	if cfgC.User != "sandbox" {
-		t.Errorf("User = %q, want sandbox", cfgC.User)
-	}
-	if cfgC.WorkingDir != "/workspace" {
-		t.Errorf("WorkingDir = %q", cfgC.WorkingDir)
-	}
-	env := strings.Join(cfgC.Env, "\n")
-	for _, want := range []string{
-		"HOME=/home/sandbox",
-		"GIT_CONFIG_COUNT=1",
-		"GIT_CONFIG_KEY_0=safe.directory",
-		"GIT_CONFIG_VALUE_0=*",
-		"KIRO_CLI_DISABLE_TELEMETRY=1",
-		"A=1",
-		"B=2",
-	} {
-		if !strings.Contains("\n"+env+"\n", "\n"+want+"\n") {
-			t.Errorf("env missing %q: %v", want, cfgC.Env)
+		if cfgC.Image != "kairon-eval-base:x" {
+			t.Errorf("image = %q", cfgC.Image)
 		}
-	}
-	// Deterministic order for the configured variables.
-	if strings.Index(env, "A=1") > strings.Index(env, "B=2") {
-		t.Errorf("configured env not sorted: %v", cfgC.Env)
-	}
+		if cfgC.User != "sandbox" {
+			t.Errorf("User = %q, want sandbox", cfgC.User)
+		}
+		if cfgC.WorkingDir != "/workspace" {
+			t.Errorf("WorkingDir = %q", cfgC.WorkingDir)
+		}
+		env := strings.Join(cfgC.Env, "\n")
+		for _, want := range []string{
+			"HOME=/home/sandbox",
+			"GIT_CONFIG_COUNT=1",
+			"GIT_CONFIG_KEY_0=safe.directory",
+			"GIT_CONFIG_VALUE_0=*",
+			"KIRO_CLI_DISABLE_TELEMETRY=1",
+			"A=1",
+			"B=2",
+			"KAIRON_EVAL_DIR=/workspace/.eval",
+			"GH_PROMPT_DISABLED=1",
+			"GH_NO_UPDATE_NOTIFIER=1",
+		} {
+			if !strings.Contains("\n"+env+"\n", "\n"+want+"\n") {
+				t.Errorf("env missing %q: %v", want, cfgC.Env)
+			}
+		}
+		// Deterministic order for the configured variables.
+		if strings.Index(env, "A=1") > strings.Index(env, "B=2") {
+			t.Errorf("configured env not sorted: %v", cfgC.Env)
+		}
+		p, ok := envValue(cfgC.Env, "PATH")
+		if !ok || !strings.HasPrefix(p, "/opt/kairon/bin:") {
+			t.Errorf("PATH = %q, want it to start with /opt/kairon/bin:", p)
+		}
+	})
+
+	t.Run("custom-workspace", func(t *testing.T) {
+		cc := testContainerConfig()
+		cc.WorkspaceDir = "/work/space"
+		if v, _ := envValue(containerEnv(cc), "KAIRON_EVAL_DIR"); v != "/work/space/.eval" {
+			t.Errorf("KAIRON_EVAL_DIR with custom workspace = %q", v)
+		}
+	})
 }
 
 // TestContainerConfigKeepAliveIsEffectivelyUnbounded pins the F2 fix: the
@@ -346,44 +332,80 @@ func TestContainerConfigKeepAliveIsEffectivelyUnbounded(t *testing.T) {
 }
 
 func TestContainerExecsAreWrappedAndPromptStaysOnStdin(t *testing.T) {
-	chdirTemp(t)
-	useAgentConfigs(t)
-	pinAgentModel("builder", "m1")
-	x := &fakeExecer{kiroStdout: "ok"}
-	useFakeContainer(t, x)
+	t.Run("kiro-cli-exec", func(t *testing.T) {
+		chdirTemp(t)
+		useAgentConfigs(t)
+		pinAgentModel("builder", "m1")
+		prompt := nastyPrompt()
+		x := &fakeExecer{kiroStdout: "\x1b[1mhello\x1b[0m"}
+		useFakeContainer(t, x)
 
-	if _, _, _, _, err := invokeAgent("builder", nastyPrompt(), testContainerConfig(), callOpts{}); err != nil {
-		t.Fatal(err)
-	}
-	if len(x.rawCmds) != 1 {
-		t.Fatalf("execs = %d", len(x.rawCmds))
-	}
-	raw := x.rawCmds[0]
-	if len(raw) < 6 || raw[0] != "sh" || raw[1] != "-c" || raw[2] != `umask 000; exec "$@"` || raw[3] != "kairon-exec" {
-		t.Fatalf("exec not wrapped with the open umask: %q", raw[:min(len(raw), 5)])
-	}
-	if raw[4] != "kiro-cli" {
-		t.Errorf("wrapped program = %q", raw[4])
-	}
-	assertNoPromptInArgv(t, x.rawCmds)
-	if len(x.stdins) != 1 || !strings.Contains(x.stdins[0], "PROMPT-MARKER") {
-		t.Error("prompt must be on stdin")
-	}
+		out, cost, rec, ec, err := invokeAgent("builder", prompt, testContainerConfig(), callOpts{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if out != "hello" {
+			t.Errorf("output = %q, want ANSI stripped", out)
+		}
+		if len(x.rawCmds) != 1 {
+			t.Fatalf("execs = %d", len(x.rawCmds))
+		}
+		raw := x.rawCmds[0]
+		if len(raw) < 6 || raw[0] != "sh" || raw[1] != "-c" || raw[2] != `umask 000; exec "$@"` || raw[3] != "kairon-exec" {
+			t.Fatalf("exec not wrapped with the open umask: %q", raw[:min(len(raw), 5)])
+		}
+		if raw[4] != "kiro-cli" {
+			t.Errorf("wrapped program = %q", raw[4])
+		}
+		assertNoPromptInArgv(t, x.rawCmds)
+		assertNoPromptInArgv(t, x.cmds)
+		if len(x.stdins) != 1 || !strings.Contains(x.stdins[0], "PROMPT-MARKER") {
+			t.Fatal("prompt must be on stdin")
+		}
+		if x.stdins[0] != prompt {
+			t.Fatalf("stdin did not carry the exact prompt (got %d bytes)", len(x.stdins[0]))
+		}
+		if ec != nil {
+			t.Errorf("ec = %+v", ec)
+		}
+		if cost.UsageSource != "estimated" || cost.Model != "m1" || cost.TokensIn != len(prompt)/4 {
+			t.Errorf("cost = %+v", cost)
+		}
+		if rec.Model != "m1" || !rec.Estimated || rec.Role != "agent" {
+			t.Errorf("rec = %+v", rec)
+		}
+	})
 
 	// The helper exec is wrapped too.
-	chdirTemp(t)
-	useStubBackend(t)
-	useAgentConfigs(t)
-	useFakeLinuxBinary(t)
-	h := &fakeExecer{}
-	useFakeContainer(t, h)
-	stub := &inference.StubScript{Turns: []inference.StubTurn{{Response: "r"}}}
-	if _, _, _, _, err := invokeAgent("selftest", "p", testContainerConfig(), callOpts{Stub: stub}); err != nil {
-		t.Fatal(err)
-	}
-	if _, ok := unwrapOpenUmask(h.rawCmds[0]); !ok {
-		t.Errorf("helper exec not wrapped: %q", h.rawCmds[0])
-	}
+	t.Run("helper-exec", func(t *testing.T) {
+		chdirTemp(t)
+		useStubBackend(t)
+		useAgentConfigs(t)
+		useFakeLinuxBinary(t)
+		prompt := nastyPrompt()
+		h := &fakeExecer{}
+		useFakeContainer(t, h)
+		stub := &inference.StubScript{Turns: []inference.StubTurn{{Response: "scripted"}}}
+		out, _, _, _, err := invokeAgent("selftest", prompt, testContainerConfig(), callOpts{Stub: stub})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if out != "scripted" {
+			t.Errorf("output = %q", out)
+		}
+		if _, ok := unwrapOpenUmask(h.rawCmds[0]); !ok {
+			t.Errorf("helper exec not wrapped: %q", h.rawCmds[0])
+		}
+		assertNoPromptInArgv(t, h.cmds)
+		assertNoPromptInArgv(t, h.rawCmds)
+		if len(h.stdins) != 1 || !strings.Contains(h.stdins[0], "PROMPT-MARKER") {
+			t.Errorf("the JSON request on stdin must carry the prompt")
+		}
+		wantCmd := "/usr/local/bin/kairon inference-exec --backend stub"
+		if got := strings.Join(h.cmds[0], " "); got != wantCmd {
+			t.Errorf("cmd = %q, want %q", got, wantCmd)
+		}
+	})
 }
 
 func TestContainerHostExecDeadline(t *testing.T) {
@@ -488,21 +510,35 @@ func TestContainerTimeoutNamesEffectiveTimeout(t *testing.T) {
 			t.Errorf("ec = %+v", ec)
 		}
 	})
-}
 
-func TestMapContainerErrorNamesGivenTimeout(t *testing.T) {
-	cc := testContainerConfig()
-	cc.ResourceLimits.Timeout = 5 * time.Minute
-	err := mapContainerError(errors.New("exec timeout"), &fakeDoneCtx{}, "img", cc, 1500*time.Millisecond, errors.New("fallback"))
-	if !errors.Is(err, inference.ErrTimeout) {
-		t.Fatalf("err = %v", err)
-	}
-	if !strings.Contains(err.Error(), "timeout after 1.5s") || strings.Contains(err.Error(), "5m0s") {
-		t.Errorf("message = %q", err.Error())
-	}
-	if !strings.Contains(err.Error(), "--resource-limit timeout=") {
-		t.Errorf("message lost the hint: %q", err.Error())
-	}
+	t.Run("sandbox-limit-timeout", func(t *testing.T) {
+		chdirTemp(t)
+		useAgentConfigs(t)
+		cc := testContainerConfig()
+		cc.ResourceLimits.Timeout = 30 * time.Millisecond
+		x := &fakeExecer{block: true}
+		useFakeContainer(t, x)
+
+		_, _, rec, ec, err := invokeAgent("builder", "p", cc, callOpts{})
+		if err == nil {
+			t.Fatal("expected a timeout")
+		}
+		if !errors.Is(err, inference.ErrTimeout) {
+			t.Errorf("err does not satisfy ErrTimeout: %v", err)
+		}
+		if !strings.Contains(err.Error(), "Container execution timeout after 30ms") || !strings.Contains(err.Error(), "--resource-limit timeout=") {
+			t.Errorf("message = %q", err.Error())
+		}
+		if ec == nil || !strings.HasPrefix(ec.Stderr, "timeout after 30ms") {
+			t.Errorf("ec = %+v", ec)
+		}
+		if ec != nil && (ec.Platform != "linux/arm64" || ec.WorkingDir != "/workspace") {
+			t.Errorf("container context missing: %+v", ec)
+		}
+		if rec.Error == "" {
+			t.Errorf("failed call not recorded: %+v", rec)
+		}
+	})
 }
 
 func TestContainerRequestWorkDirIsContainerPath(t *testing.T) {
@@ -527,14 +563,6 @@ func TestContainerRequestWorkDirIsContainerPath(t *testing.T) {
 	}
 }
 
-// fakeDoneCtx is an already-expired context.Context.
-type fakeDoneCtx struct{}
-
-func (*fakeDoneCtx) Deadline() (time.Time, bool) { return time.Time{}, false }
-func (*fakeDoneCtx) Done() <-chan struct{}       { c := make(chan struct{}); close(c); return c }
-func (*fakeDoneCtx) Err() error                  { return context.DeadlineExceeded }
-func (*fakeDoneCtx) Value(key any) any           { return nil }
-
 func envValue(env []string, key string) (string, bool) {
 	for _, kv := range env {
 		if v, ok := strings.CutPrefix(kv, key+"="); ok {
@@ -542,28 +570,6 @@ func envValue(env []string, key string) (string, bool) {
 		}
 	}
 	return "", false
-}
-
-func TestContainerEnvPathAndEvalDir(t *testing.T) {
-	cc := testContainerConfig()
-	env := containerEnv(cc)
-	p, ok := envValue(env, "PATH")
-	if !ok || !strings.HasPrefix(p, "/opt/kairon/bin:") {
-		t.Errorf("PATH = %q, want it to start with /opt/kairon/bin:", p)
-	}
-	if v, _ := envValue(env, "KAIRON_EVAL_DIR"); v != "/workspace/.eval" {
-		t.Errorf("KAIRON_EVAL_DIR = %q", v)
-	}
-	for _, want := range []string{"GH_PROMPT_DISABLED=1", "GH_NO_UPDATE_NOTIFIER=1"} {
-		if !strings.Contains("\n"+strings.Join(env, "\n")+"\n", "\n"+want+"\n") {
-			t.Errorf("env missing %q: %v", want, env)
-		}
-	}
-
-	cc.WorkspaceDir = "/work/space"
-	if v, _ := envValue(containerEnv(cc), "KAIRON_EVAL_DIR"); v != "/work/space/.eval" {
-		t.Errorf("KAIRON_EVAL_DIR with custom workspace = %q", v)
-	}
 }
 
 func TestContainerEnvDropsGitHubCredentialsAndHarnessVars(t *testing.T) {

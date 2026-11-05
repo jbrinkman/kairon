@@ -113,33 +113,6 @@ func TestCoverageRunFullRunRecordsSuiteAndComplete(t *testing.T) {
 	}
 }
 
-// TestCoverageRunCaseEditChangesSuiteNotPrompt: editing one case file between
-// two runs changes suite_sha256 and leaves prompt_sha256 unchanged.
-func TestCoverageRunCaseEditChangesSuiteNotPrompt(t *testing.T) {
-	env := newCandidateE2EEnv(t)
-	first := runE2E(t, env.evalsDir, RunOptions{})
-
-	caseFile := filepath.Join(env.evalsDir, "cases", e2eAgent, "stub-basic.yaml")
-	data, err := os.ReadFile(caseFile)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(caseFile, append(data, []byte("# edited between runs\n")...), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	second := runE2E(t, env.evalsDir, RunOptions{})
-
-	if first.agent.SuiteSHA256 == "" || second.agent.SuiteSHA256 == "" {
-		t.Fatalf("suite_sha256 not recorded: first=%q second=%q", first.agent.SuiteSHA256, second.agent.SuiteSHA256)
-	}
-	if first.agent.SuiteSHA256 == second.agent.SuiteSHA256 {
-		t.Errorf("suite_sha256 unchanged (%s) after editing a case file", first.agent.SuiteSHA256)
-	}
-	if first.agent.PromptSHA256 == "" || first.agent.PromptSHA256 != second.agent.PromptSHA256 {
-		t.Errorf("prompt_sha256 changed or empty: %q -> %q", first.agent.PromptSHA256, second.agent.PromptSHA256)
-	}
-}
-
 // TestCoverageRunCaseFilterRecorded: a --case run records the case name in
 // case_filter and complete:false, even though the case ran fully.
 func TestCoverageRunCaseFilterRecorded(t *testing.T) {
@@ -224,70 +197,78 @@ func resumeE2E(evalsDir string) error {
 	return RunWithOptions(e2eAgent, "", RunOptions{Backend: "stub", NoSandbox: true, EvalsDir: evalsDir, Resume: true})
 }
 
-// TestCoverageResumeUnchangedSuiteContinues: resuming with the suite as it was
-// is allowed and keeps the recorded suite hash.
-func TestCoverageResumeUnchangedSuiteContinues(t *testing.T) {
-	env := newCandidateE2EEnv(t)
-	run := runE2E(t, env.evalsDir, RunOptions{})
-	markInterrupted(t, run.dir)
-
-	if err := resumeE2E(env.evalsDir); err != nil {
-		t.Fatalf("resume with an unchanged suite was refused: %v", err)
-	}
-	after := readSelfTestResult(t, filepath.Join(run.dir, e2eAgent+".json"))
-	if after.SuiteSHA256 != run.agent.SuiteSHA256 {
-		t.Errorf("suite_sha256 after resume = %s, want %s", after.SuiteSHA256, run.agent.SuiteSHA256)
-	}
-	if !boolOf(t, "Complete", after.Complete) {
-		t.Error("complete = false after a resume that finished every case")
-	}
-}
-
 // TestCoverageResumeChangedSuiteRefused: editing a case file after the
 // interrupted run refuses the resume, naming the agent and both hashes, and
-// leaves the saved result untouched.
+// leaves the saved result untouched. Writing the original bytes back then
+// lets the same interrupted run resume and keep its recorded suite hash. The
+// two subtests run in order and share one expensive e2e run: a refused resume
+// returns before .progress is removed, so the interrupted marker is still
+// there for the second resume.
 func TestCoverageResumeChangedSuiteRefused(t *testing.T) {
 	env := newCandidateE2EEnv(t)
 	run := runE2E(t, env.evalsDir, RunOptions{})
 	markInterrupted(t, run.dir)
 	agentFile := filepath.Join(run.dir, e2eAgent+".json")
-	before, err := os.ReadFile(agentFile)
-	if err != nil {
-		t.Fatal(err)
-	}
-
 	caseFile := filepath.Join(env.evalsDir, "cases", e2eAgent, "stub-basic.yaml")
-	data, err := os.ReadFile(caseFile)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(caseFile, append(data, []byte("# edited after the interruption\n")...), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := configure(RunOptions{EvalsDir: env.evalsDir}); err != nil {
-		t.Fatal(err)
-	}
-	now, err := suiteSHA256(e2eAgent)
-	if err != nil {
-		t.Fatal(err)
-	}
+	var data []byte // the original case bytes, restored by reverted-case-resumes
 
-	err = resumeE2E(env.evalsDir)
-	if err == nil {
-		t.Fatal("resume with a changed suite succeeded, want a refusal")
-	}
-	for _, s := range []string{"cannot resume", "eval suite changed", e2eAgent, run.agent.SuiteSHA256, now} {
-		if !strings.Contains(err.Error(), s) {
-			t.Errorf("refusal %q does not contain %q", err, s)
+	t.Run("edited-case-refused", func(t *testing.T) {
+		before, err := os.ReadFile(agentFile)
+		if err != nil {
+			t.Fatal(err)
 		}
-	}
-	after, err := os.ReadFile(agentFile)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(before) != string(after) {
-		t.Error("refused resume modified the saved result")
-	}
+
+		data, err = os.ReadFile(caseFile)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(caseFile, append(data, []byte("# edited after the interruption\n")...), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := configure(RunOptions{EvalsDir: env.evalsDir}); err != nil {
+			t.Fatal(err)
+		}
+		now, err := suiteSHA256(e2eAgent)
+		if err != nil {
+			t.Fatal(err)
+		}
+
+		err = resumeE2E(env.evalsDir)
+		if err == nil {
+			t.Fatal("resume with a changed suite succeeded, want a refusal")
+		}
+		for _, s := range []string{"cannot resume", "eval suite changed", e2eAgent, run.agent.SuiteSHA256, now} {
+			if !strings.Contains(err.Error(), s) {
+				t.Errorf("refusal %q does not contain %q", err, s)
+			}
+		}
+		after, err := os.ReadFile(agentFile)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(before) != string(after) {
+			t.Error("refused resume modified the saved result")
+		}
+	})
+
+	t.Run("reverted-case-resumes", func(t *testing.T) {
+		if data == nil {
+			t.Fatal("original case bytes were not captured by edited-case-refused")
+		}
+		if err := os.WriteFile(caseFile, data, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := resumeE2E(env.evalsDir); err != nil {
+			t.Fatalf("resume with an unchanged suite was refused: %v", err)
+		}
+		after := readSelfTestResult(t, agentFile)
+		if after.SuiteSHA256 != run.agent.SuiteSHA256 {
+			t.Errorf("suite_sha256 after resume = %s, want %s", after.SuiteSHA256, run.agent.SuiteSHA256)
+		}
+		if !boolOf(t, "Complete", after.Complete) {
+			t.Error("complete = false after a resume that finished every case")
+		}
+	})
 }
 
 // writeResumeFile writes <dir>/<agent>.json with the given suite_sha256

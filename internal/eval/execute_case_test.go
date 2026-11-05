@@ -202,38 +202,57 @@ func TestExecuteCaseWorkspaceFailureIsRecorded(t *testing.T) {
 }
 
 func TestConfigureKeepWorkspaces(t *testing.T) {
-	t.Run("keep workspaces", func(t *testing.T) {
-		chdirTemp(t)
-		t.Cleanup(resetConfig)
-		if err := configure(RunOptions{KeepWorkspaces: true}); err != nil {
-			t.Fatal(err)
-		}
-		if !cfg.keepWorkspaces {
-			t.Fatal("keepWorkspaces not applied")
-		}
-		if err := configure(RunOptions{}); err != nil {
-			t.Fatal(err)
-		}
-		if cfg.keepWorkspaces {
-			t.Fatal("keepWorkspaces leaked into the next configure")
-		}
-	})
-
-	t.Run("debug flag", func(t *testing.T) {
-		t.Cleanup(resetConfig)
-		if err := configure(RunOptions{Backend: "stub", Debug: true}); err != nil {
-			t.Fatal(err)
-		}
-		if !cfg.debug {
-			t.Error("configure(Debug: true) did not set cfg.debug")
-		}
-		if err := configure(RunOptions{Backend: "stub"}); err != nil {
-			t.Fatal(err)
-		}
-		if cfg.debug {
-			t.Error("configure without Debug left cfg.debug set")
-		}
-	})
+	tests := []struct {
+		name    string
+		dirty   func()
+		opts    RunOptions
+		applied func() bool
+		cleared func() bool
+	}{
+		{
+			name:    "keepWorkspaces",
+			opts:    RunOptions{KeepWorkspaces: true},
+			applied: func() bool { return cfg.keepWorkspaces },
+			cleared: func() bool { return !cfg.keepWorkspaces },
+		},
+		{
+			name:    "debug",
+			opts:    RunOptions{Debug: true},
+			applied: func() bool { return cfg.debug },
+			cleared: func() bool { return !cfg.debug },
+		},
+		{
+			name:    "suites",
+			dirty:   func() { cfg.suites = map[string]string{"a": testSuiteHash} },
+			cleared: func() bool { return cfg.suites == nil },
+		},
+		{
+			name:    "caseFilter",
+			dirty:   func() { cfg.caseFilter = "x" },
+			cleared: func() bool { return cfg.caseFilter == "" },
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			chdirTemp(t)
+			t.Cleanup(resetConfig)
+			if tt.dirty != nil {
+				tt.dirty()
+			}
+			if err := configure(tt.opts); err != nil {
+				t.Fatal(err)
+			}
+			if tt.applied != nil && !tt.applied() {
+				t.Fatalf("%s not applied", tt.name)
+			}
+			if err := configure(RunOptions{}); err != nil {
+				t.Fatal(err)
+			}
+			if !tt.cleared() {
+				t.Fatalf("%s leaked into the next configure", tt.name)
+			}
+		})
+	}
 }
 
 // evaluateProgressive goes through the same executeCase path.

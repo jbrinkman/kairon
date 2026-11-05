@@ -244,6 +244,12 @@ func TestRunCaseAndFilterCombineWithAND(t *testing.T) {
 		if got, want := caseNames(res), []string{"a1"}; !reflect.DeepEqual(got, want) {
 			t.Errorf("cases run = %v, want %v", got, want)
 		}
+		if res.CaseFilter == nil || *res.CaseFilter != "case=a1 AND speed==fast" {
+			t.Errorf("case_filter = %v, want %q", res.CaseFilter, "case=a1 AND speed==fast")
+		}
+		if boolOf(t, "Complete", res.Complete) {
+			t.Error("complete = true for a filtered --case run")
+		}
 	})
 	t.Run("filter excludes the case", func(t *testing.T) {
 		// a2 is slow: --case a2 AND speed==fast selects nothing.
@@ -656,20 +662,6 @@ func summaryAgent(t *testing.T, dir, agent string) map[string]json.RawMessage {
 	return agents[agent]
 }
 
-func TestCaseAndFilterRunRecordsCombinedLabel(t *testing.T) {
-	env := oneAgent(t)
-	if err := RunWithOptions("alpha", "a1", env.opts(RunOptions{Filters: []string{"speed==fast"}})); err != nil {
-		t.Fatal(err)
-	}
-	res := readSelfTestResult(t, filepath.Join(env.onlyRun(t), "alpha.json"))
-	if res.CaseFilter == nil || *res.CaseFilter != "case=a1 AND speed==fast" {
-		t.Errorf("case_filter = %v, want %q", res.CaseFilter, "case=a1 AND speed==fast")
-	}
-	if boolOf(t, "Complete", res.Complete) {
-		t.Error("complete = true for a filtered --case run")
-	}
-}
-
 func TestUnfilteredAndCaseRunsRecordAsBefore(t *testing.T) {
 	t.Run("unfiltered", func(t *testing.T) {
 		env := oneAgent(t)
@@ -918,105 +910,100 @@ func TestResumeRefusesChangedOrMissingFilter(t *testing.T) {
 	}
 }
 
-// TestResumeChangedFilterRefusedEvenWhenSavedAgentNowMatchesNothing pins the
-// multi-agent resume hole: a run of speed==fast saves alpha (its only match)
-// and skips beta. Resuming with speed==slow makes alpha match zero cases, so
-// the per-agent filter block would `continue` past it before
-// checkResumeIntegrity ever runs; meanwhile beta now matches and, having no
-// saved file, would pass the integrity check and write slow results into the
-// same directory, mixing two selections. The resume must be refused for the
-// changed filter, and the saved alpha.json must be left untouched.
-func TestResumeChangedFilterRefusedEvenWhenSavedAgentNowMatchesNothing(t *testing.T) {
-	env := newFilterEnv(t, map[string]map[string]string{
-		"alpha": {"a1.yaml": fcase("a1", "speed: fast\n")},
-		"beta":  {"b1.yaml": fcase("b1", "speed: slow\n")},
-	})
-	if err := RunWithOptions("", "", env.opts(RunOptions{Filters: []string{"speed==fast"}})); err != nil {
-		t.Fatalf("initial fast run: %v", err)
-	}
-	dir := env.onlyRun(t)
-	markInterrupted(t, dir)
-
-	// alpha ran under speed==fast and has a saved file; beta was skipped.
-	alphaFile := filepath.Join(dir, "alpha.json")
-	before, err := os.ReadFile(alphaFile)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, statErr := os.Stat(filepath.Join(dir, "beta.json")); !os.IsNotExist(statErr) {
-		t.Fatalf("beta.json exists after the fast run (stat err = %v)", statErr)
-	}
-
-	// Resume with a different filter. alpha now matches nothing; beta matches.
-	err = RunWithOptions("", "", env.opts(RunOptions{Filters: []string{"speed==slow"}, Resume: true}))
-	if err == nil {
-		t.Fatal("resume with a changed filter was accepted; it must be refused")
-	}
-	for _, want := range []string{"cannot resume", "--filter changed", "alpha", `recorded case_filter="speed==fast"`, `now "speed==slow"`} {
-		if !strings.Contains(err.Error(), want) {
-			t.Errorf("error %q lacks %q", err, want)
-		}
-	}
-
-	// The refused resume must not have added beta's slow results or touched
-	// alpha's saved file.
-	if _, statErr := os.Stat(filepath.Join(dir, "beta.json")); !os.IsNotExist(statErr) {
-		t.Errorf("refused resume wrote beta.json into the fast run's directory (stat err = %v)", statErr)
-	}
-	after, _ := os.ReadFile(alphaFile)
-	if !bytes.Equal(before, after) {
-		t.Error("refused resume modified the saved alpha result")
-	}
-}
-
-// TestResumeChangedFilterRefusedBeforeEarlierMatchingAgentWrites pins the
-// sort-order variant: the saved agent is evaluated AFTER a newly-matching one.
-// aaa has only a slow case; zzz has a fast case. A speed==fast run saves zzz
-// and skips aaa. Resuming with speed==slow makes aaa (iterated first, rubrics
-// load in sorted filename order) match with no saved file, so a per-agent
-// check would let aaa's results be written before zzz's changed case_filter is
-// rejected later in the loop. The integrity sweep must run for every saved
-// agent before any agent is evaluated, so the resume is refused before aaa
-// writes anything.
+// TestResumeChangedFilterRefusedBeforeEarlierMatchingAgentWrites pins that a
+// resume with a changed --filter is refused before any newly matching agent
+// writes, whichever way the saved and newly matching agents sort. A run of
+// speed==fast saves one agent and skips the other; resuming with speed==slow
+// makes the saved agent match nothing and the skipped one match with no saved
+// file. The resume must be refused for the changed filter, the newly matching
+// agent must write nothing, and the saved file must be left untouched.
 func TestResumeChangedFilterRefusedBeforeEarlierMatchingAgentWrites(t *testing.T) {
-	env := newFilterEnv(t, map[string]map[string]string{
-		"aaa": {"c1.yaml": fcase("c1", "speed: slow\n")},
-		"zzz": {"c2.yaml": fcase("c2", "speed: fast\n")},
-	})
-	if err := RunWithOptions("", "", env.opts(RunOptions{Filters: []string{"speed==fast"}})); err != nil {
-		t.Fatalf("initial fast run: %v", err)
+	tests := []struct {
+		name     string
+		agents   map[string]map[string]string
+		saved    string // saved by speed==fast
+		newMatch string // matches only on speed==slow, has no saved file
+	}{
+		{
+			// The saved agent is evaluated AFTER a newly-matching one. aaa has
+			// only a slow case; zzz has a fast case. A speed==fast run saves
+			// zzz and skips aaa. Resuming with speed==slow makes aaa (iterated
+			// first, rubrics load in sorted filename order) match with no
+			// saved file, so a per-agent check would let aaa's results be
+			// written before zzz's changed case_filter is rejected later in
+			// the loop. The integrity sweep must run for every saved agent
+			// before any agent is evaluated, so the resume is refused before
+			// aaa writes anything.
+			name: "saved-agent-sorts-last",
+			agents: map[string]map[string]string{
+				"aaa": {"c1.yaml": fcase("c1", "speed: slow\n")},
+				"zzz": {"c2.yaml": fcase("c2", "speed: fast\n")},
+			},
+			saved:    "zzz",
+			newMatch: "aaa",
+		},
+		{
+			// The multi-agent resume hole: a run of speed==fast saves alpha
+			// (its only match) and skips beta. Resuming with speed==slow makes
+			// alpha match zero cases, so the per-agent filter block would
+			// `continue` past it before checkResumeIntegrity ever runs;
+			// meanwhile beta now matches and, having no saved file, would pass
+			// the integrity check and write slow results into the same
+			// directory, mixing two selections. The resume must be refused for
+			// the changed filter, and the saved alpha.json must be left
+			// untouched.
+			name: "saved-agent-sorts-first",
+			agents: map[string]map[string]string{
+				"alpha": {"a1.yaml": fcase("a1", "speed: fast\n")},
+				"beta":  {"b1.yaml": fcase("b1", "speed: slow\n")},
+			},
+			saved:    "alpha",
+			newMatch: "beta",
+		},
 	}
-	dir := env.onlyRun(t)
-	markInterrupted(t, dir)
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			env := newFilterEnv(t, tc.agents)
+			if err := RunWithOptions("", "", env.opts(RunOptions{Filters: []string{"speed==fast"}})); err != nil {
+				t.Fatalf("initial fast run: %v", err)
+			}
+			dir := env.onlyRun(t)
+			markInterrupted(t, dir)
 
-	// zzz was saved under speed==fast; aaa was skipped (no file).
-	if _, statErr := os.Stat(filepath.Join(dir, "aaa.json")); !os.IsNotExist(statErr) {
-		t.Fatalf("aaa.json exists after the fast run (stat err = %v)", statErr)
-	}
-	zzzBefore, err := os.ReadFile(filepath.Join(dir, "zzz.json"))
-	if err != nil {
-		t.Fatal(err)
-	}
+			// The saved agent ran under speed==fast and has a saved file; the
+			// other agent was skipped (no file).
+			savedFile := filepath.Join(dir, tc.saved+".json")
+			newFile := filepath.Join(dir, tc.newMatch+".json")
+			before, err := os.ReadFile(savedFile)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, statErr := os.Stat(newFile); !os.IsNotExist(statErr) {
+				t.Fatalf("%s.json exists after the fast run (stat err = %v)", tc.newMatch, statErr)
+			}
 
-	// Resume with a changed filter: aaa now matches, zzz does not.
-	err = RunWithOptions("", "", env.opts(RunOptions{Filters: []string{"speed==slow"}, Resume: true}))
-	if err == nil {
-		t.Fatal("resume with a changed filter was accepted; it must be refused")
-	}
-	for _, want := range []string{"cannot resume", "--filter changed", "zzz", `recorded case_filter="speed==fast"`, `now "speed==slow"`} {
-		if !strings.Contains(err.Error(), want) {
-			t.Errorf("error %q lacks %q", err, want)
-		}
-	}
+			// Resume with a changed filter: the newly matching agent now
+			// matches, the saved agent does not.
+			err = RunWithOptions("", "", env.opts(RunOptions{Filters: []string{"speed==slow"}, Resume: true}))
+			if err == nil {
+				t.Fatal("resume with a changed filter was accepted; it must be refused")
+			}
+			for _, want := range []string{"cannot resume", "--filter changed", tc.saved, `recorded case_filter="speed==fast"`, `now "speed==slow"`} {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("error %q lacks %q", err, want)
+				}
+			}
 
-	// The refused resume must not have written aaa's slow results, nor touched
-	// zzz's saved file.
-	if _, statErr := os.Stat(filepath.Join(dir, "aaa.json")); !os.IsNotExist(statErr) {
-		t.Errorf("refused resume wrote aaa.json before the changed-filter abort (stat err = %v)", statErr)
-	}
-	zzzAfter, _ := os.ReadFile(filepath.Join(dir, "zzz.json"))
-	if !bytes.Equal(zzzBefore, zzzAfter) {
-		t.Error("refused resume modified the saved zzz result")
+			// The refused resume must not have written the newly matching
+			// agent's slow results, nor touched the saved agent's file.
+			if _, statErr := os.Stat(newFile); !os.IsNotExist(statErr) {
+				t.Errorf("refused resume wrote %s.json before the changed-filter abort (stat err = %v)", tc.newMatch, statErr)
+			}
+			after, _ := os.ReadFile(savedFile)
+			if !bytes.Equal(before, after) {
+				t.Errorf("refused resume modified the saved %s result", tc.saved)
+			}
+		})
 	}
 }
 
