@@ -67,7 +67,10 @@ func TestImplementationRunRecordsAndClearsPIDMarker(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		cmd.Path, cmd.Args = sleep, []string{"sleep", "30"}
+		// exec.Command looked up kiro-cli when the command was built; where
+		// it is not installed that lookup error is in cmd.Err and Start
+		// would return it, so clear it along with the swap.
+		cmd.Path, cmd.Args, cmd.Err = sleep, []string{"sleep", "30"}, nil
 		if err := cmd.Start(); err != nil {
 			return err
 		}
