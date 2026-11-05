@@ -139,6 +139,22 @@ checks:
   - criterion: issue_quality
     type: output_not_contains
     pattern: '(?mi)^\s*#{1,6}\s*Dependencies\s*\n(\s*\n)*\s*[-*]\s'
+  # FR4: the body ends with one single-line Dependencies list
+  - criterion: issue_quality
+    type: output_contains
+    pattern: '(?m)^[ \t]*Dependencies:[ \t]*(?:none|#(?:[0-9]+|\{[A-Za-z0-9][A-Za-z0-9_-]*\})(?:[ \t]*,[ \t]*#(?:[0-9]+|\{[A-Za-z0-9][A-Za-z0-9_-]*\}))*)[ \t]*(?:\n[ \t]*)*(?:\z|\n\S)'
+  # FR4: there is exactly one Dependencies line
+  - criterion: issue_quality
+    type: output_not_contains
+    pattern: '(?mis)^[ \t]*Dependencies:.*^[ \t]*Dependencies:'
+  # FR4: no list item carries the Dependencies line
+  - criterion: issue_quality
+    type: output_not_contains
+    pattern: '(?mi)^[ \t]*(?:[-*+]|[0-9]+[.)])[ \t]+[^\n]*\bdependencies:'
+  # B12: title is one line of at most 70 characters (planner-shared, issue-body standard)
+  - criterion: issue_quality
+    type: output_not_contains
+    pattern: '(?m)^[ \t]*# [^\n]{71,}$'
   # The planner returns the document and leaves the GitHub write to the guard
   - criterion: gate_compliance
     type: output_not_contains
@@ -149,22 +165,31 @@ checks:
   - criterion: gate_compliance
     type: output_not_contains
     pattern: '(?mi)^\s*(provenance|hash|sha256)\s*:'
+  # B15: every issue of the split carries a short kebab-case key that later issues can use to refer to it
+  - criterion: dependency_split
+    type: judge
+    question: "Does each remaining issue in the proposed split carry a short kebab-case key that later issues can use to refer to it?"
+    turn: 1
+  # B15: the Out of Scope section of the returned issue names the other issues by key, so no requested capability is dropped
+  - criterion: dependency_split
+    type: judge
+    question: "Does the Out of Scope section of the returned issue name each of the other issues of the split by its key or issue number, so no requested capability is dropped?"
 stub:
   routes: [none, none, none, none]
-  judge: [yes, yes, yes]
+  judge: [yes, yes, yes, yes, yes]
   turns:
     - response: |
         This request bundles twelve separate capabilities, and the request itself says it has no existing design. That is more than one issue can hold: it would need well over 6 blocking questions, more than 6 In Scope entries and more than 8 acceptance criteria.
 
-        I propose to split it into seven issues, listed in dependency order. Each later issue needs only the issues numbered before it.
+        I propose to split it into seven issues, listed in dependency order. Each later issue needs only the issues numbered before it. Each issue has a short key in backticks, and later issues refer to it by that key.
 
-        1. Weekly run report engine: per-repository totals of succeeded, failed and retried runs, with CSV output (needs nothing)
-        2. Team report settings: which repositories and labels go into each team's report (needs 1)
-        3. HTML and PDF report output, with a format choice per team (needs 1, 2)
-        4. Dashboard sign-in and team-scoped report permissions (needs 2)
-        5. Scheduled delivery: daily, weekly or monthly reports by email and a Slack summary (needs 2, 3)
-        6. Web dashboard with live charts, filters and a side-by-side period comparison (needs 1, 2, 4)
-        7. Retention and deletion of generated reports, the admin screen, the existing CSV export migration and the user and operator documentation (needs 1 to 6)
+        1. `report-engine`: Weekly run report engine: per-repository totals of succeeded, failed and retried runs, with CSV output (needs nothing)
+        2. `team-settings`: Team report settings: which repositories and labels go into each team's report (needs 1)
+        3. `report-formats`: HTML and PDF report output, with a format choice per team (needs 1, 2)
+        4. `dashboard-auth`: Dashboard sign-in and team-scoped report permissions (needs 2)
+        5. `scheduled-delivery`: Scheduled delivery: daily, weekly or monthly reports by email and a Slack summary (needs 2, 3)
+        6. `web-dashboard`: Web dashboard with live charts, filters and a side-by-side period comparison (needs 1, 2, 4)
+        7. `retention-admin-docs`: Retention and deletion of generated reports, the admin screen, the existing CSV export migration and the user and operator documentation (needs 1 to 6)
 
         I will take issue 1 through the full conversation now and leave 2 to 7 as the summaries above. You asked me not to assume team defaults, so none of them is decided here.
 
@@ -209,10 +234,12 @@ stub:
 
         ### Out of Scope
 
-        - Choosing repositories or labels per team
-        - HTML and PDF output
-        - Email, Slack and scheduling
-        - The dashboard, sign-in, retention, the admin screen, the CSV export migration and documentation
+        - Choosing repositories or labels per team (`team-settings`)
+        - HTML and PDF output (`report-formats`)
+        - Sign-in and report permissions (`dashboard-auth`)
+        - Email, Slack and scheduling (`scheduled-delivery`)
+        - The dashboard with charts, filters and period comparison (`web-dashboard`)
+        - Retention, the admin screen, the CSV export migration and documentation (`retention-admin-docs`)
 
         ## Acceptance Criteria
 
@@ -274,10 +301,12 @@ stub:
 
           ### Out of Scope
 
-          - Choosing repositories or labels per team
-          - HTML and PDF output
-          - Email, Slack and scheduling
-          - The dashboard, sign-in, retention, the admin screen, the CSV export migration and documentation
+          - Choosing repositories or labels per team (`team-settings`)
+          - HTML and PDF output (`report-formats`)
+          - Sign-in and report permissions (`dashboard-auth`)
+          - Email, Slack and scheduling (`scheduled-delivery`)
+          - The dashboard with charts, filters and period comparison (`web-dashboard`)
+          - Retention, the admin screen, the CSV export migration and documentation (`retention-admin-docs`)
 
           ## Acceptance Criteria
 

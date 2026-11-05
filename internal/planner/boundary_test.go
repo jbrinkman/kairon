@@ -269,8 +269,12 @@ func referenceReply(t *testing.T, caseName string) (string, bool) {
 var plannerCaseNames = []string{
 	"automated-best-effort-fill",
 	"automated-bug-classification",
+	"automated-dependencies-line",
 	"automated-punch-out",
+	"interactive-decline-implementation",
+	"interactive-document-handoff",
 	"interactive-option-rules",
+	"interactive-path-only-message",
 	"interactive-return-document",
 	"interactive-single-decision",
 	"multi-issue-split",
@@ -361,6 +365,8 @@ func TestBoundaryReferenceCanonicalRepliesCommit(t *testing.T) {
 	for _, name := range []string{
 		"automated-best-effort-fill",
 		"automated-bug-classification",
+		"automated-dependencies-line",
+		"interactive-document-handoff",
 		"interactive-return-document",
 		"multi-issue-split",
 	} {
@@ -984,7 +990,9 @@ func TestSameContractReferenceRepliesParseToPlannerDocuments(t *testing.T) {
 	wantDocument := map[string]stageoutput.Result{
 		"automated-best-effort-fill":   stageoutput.ResultCanonical,
 		"automated-bug-classification": stageoutput.ResultCanonical,
+		"automated-dependencies-line":  stageoutput.ResultCanonical,
 		"automated-punch-out":          stageoutput.ResultPunchOut,
+		"interactive-document-handoff": stageoutput.ResultCanonical,
 		"interactive-return-document":  stageoutput.ResultCanonical,
 		"multi-issue-split":            stageoutput.ResultCanonical,
 	}

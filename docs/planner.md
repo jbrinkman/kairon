@@ -311,13 +311,13 @@ touched.
 ## Eval driver
 
 The planner eval suite from #380 (`.kairon/evals/rubrics/planner.yaml` and `.kairon/evals/cases/planner/*.yaml`) has
-seven cases. The harness keys a suite by its directory name, so every case runs as an agent called `planner`. The
+eleven cases. The harness keys a suite by its directory name, so every case runs as an agent called `planner`. The
 suite is therefore run in two halves, each against the agent of its mode:
 
 | Half | Cases | Agent |
 |------|-------|-------|
-| Interactive | `interactive-single-decision`, `interactive-option-rules`, `interactive-return-document`, `multi-issue-split` | `planner`, unchanged |
-| Automated | `automated-best-effort-fill`, `automated-bug-classification`, `automated-punch-out` | `planner-automated`, run as `planner` through an `--evals-dir` overlay |
+| Interactive | `interactive-single-decision`, `interactive-option-rules`, `interactive-return-document`, `multi-issue-split`, `interactive-document-handoff`, `interactive-path-only-message`, `interactive-decline-implementation` | `planner`, unchanged |
+| Automated | `automated-best-effort-fill`, `automated-bug-classification`, `automated-punch-out`, `automated-dependencies-line` | `planner-automated`, run as `planner` through an `--evals-dir` overlay |
 
 The overlay is a copy of `.kairon/evals` without `results/`, in which `agents/planner.json` is the
 `planner-automated` manifest with only `name` changed to `planner`, plus the `planner-automated` prompt. The shared

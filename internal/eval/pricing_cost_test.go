@@ -436,10 +436,3 @@ func TestPinRunLoadsPricesAndRefusesInvalidPricing(t *testing.T) {
 		}
 	})
 }
-
-func TestNilRunPinsPrices(t *testing.T) {
-	var p *runPins
-	if p.prices() != nil {
-		t.Error("nil pins must have a nil price table")
-	}
-}

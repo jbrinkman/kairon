@@ -208,6 +208,27 @@ func TestChecksScoringNoOutputOrWorkspaceScoresZero(t *testing.T) {
 			}
 		})
 	}
+
+	// Judge checks are not run either: no backend request, no call record.
+	// Deterministic is not asserted: it is not forced for judge criteria.
+	t.Run("empty output with judge checks makes no judge call", func(t *testing.T) {
+		b := yesBackend()
+		useRecording(t, b)
+		tc := TestCase{Name: "c", Checks: []Check{
+			{Criterion: "clarity", Type: CheckJudge, Question: "q1"},
+			{Criterion: "clarity", Type: CheckJudge, Question: "q2"},
+		}}
+		cr := CaseResult{ActualOutput: "", WorkspaceDir: t.TempDir()}
+		scoreCase(checkedRubric(), tc, &cr)
+
+		if len(b.reqs) != 0 || len(cr.Calls) != 0 {
+			t.Errorf("judge called for empty output: reqs=%d calls=%d", len(b.reqs), len(cr.Calls))
+		}
+		s := scoreByName(t, cr, "clarity")
+		if s.Score != 0 || s.MaxScore != 2 || !strings.Contains(s.Reasoning, "checks not run") {
+			t.Errorf("clarity = %+v, want 0/2 'checks not run'", s)
+		}
+	})
 }
 
 // The command runner lives in internal/checks, so this observes the side

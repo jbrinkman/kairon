@@ -1,0 +1,285 @@
+name: interactive-document-handoff
+description: "The interactive planner hands its work to Kairon through two files (FR1; planner prompt: Document path and Label answer path): it records the requester's label answer at the Label answer path, writes the approved document to the Document path with the same content as its reply, writes no other project file and creates nothing on GitHub"
+agent: planner
+workspace: planner-evidence
+input: |
+  Document path: .kairon/sessions/eval-handoff.document.yaml
+  Label answer path: .kairon/sessions/eval-handoff.label
+
+  I want to add a JSON Lines exporter for run history.
+setup:
+  - type: file
+    label: "Repository Context"
+    path: ".kairon/evals/fixtures/workspaces/planner-evidence/planner-repo-context.md"
+simulated_user:
+  facts:
+    - id: duration_format
+      answer: "Write the duration as an integer number of milliseconds."
+      discoverable: false
+  default_reply: "Use the recommended option for everything. Approved. If you ask whether to add the label, the answer is yes."
+  stop_when: '(?m)^schema_version:'
+  max_turns: 6
+context:
+  - "The input has the exact shape Kairon sends (internal/tui/planning_handoff.go planningPrompt): a Document path line, a Label answer path line, a blank line, then the request"
+  - "The simulated user takes the recommended option for every decision, approves the draft and answers yes to the label question. The planner's recommended answer is not to add the label, so a label file that says yes proves the planner recorded the requester's answer and did not write a default"
+  - "The final turn is the turn whose output matches stop_when, so checks without a turn read the document the planner replied with"
+checks:
+  # FR1 (B2): the requester's label answer is recorded at the Label answer path
+  - criterion: gate_compliance
+    type: file_exists
+    path: ".kairon/sessions/eval-handoff.label"
+  # FR1 (B2): the answer is the single word yes, which is how readLabelFile (internal/tui/planning_handoff.go) reads it
+  - criterion: gate_compliance
+    type: file_contains
+    path: ".kairon/sessions/eval-handoff.label"
+    pattern: '(?i)\A\s*yes\s*\z'
+  # FR1 (B1): the approved document is written to the Document path
+  - criterion: gate_compliance
+    type: file_exists
+    path: ".kairon/sessions/eval-handoff.document.yaml"
+  # FR1 (B1): the file holds a canonical stage-output document
+  - criterion: gate_compliance
+    type: file_contains
+    path: ".kairon/sessions/eval-handoff.document.yaml"
+    pattern: '(?m)^schema_version: 1\s*$'
+  - criterion: gate_compliance
+    type: file_contains
+    path: ".kairon/sessions/eval-handoff.document.yaml"
+    pattern: '(?m)^stage: planner\s*$'
+  - criterion: gate_compliance
+    type: file_contains
+    path: ".kairon/sessions/eval-handoff.document.yaml"
+    pattern: '(?m)^result: canonical\s*$'
+  - criterion: gate_compliance
+    type: file_contains
+    path: ".kairon/sessions/eval-handoff.document.yaml"
+    pattern: '(?m)^body: \|'
+  # FR1 (B18): the planner stamps no provenance in the file
+  - criterion: gate_compliance
+    type: file_not_contains
+    path: ".kairon/sessions/eval-handoff.document.yaml"
+    pattern: '(?mi)^(provenance|hash|sha256)\s*:'
+  # FR1 (B4): the two hand-off files are the only paths the planner changes
+  - criterion: gate_compliance
+    type: changed_files
+    allow:
+      - ".kairon/sessions/eval-handoff.document.yaml"
+      - ".kairon/sessions/eval-handoff.label"
+  # FR1 (B1): the file holds the same document as the reply
+  - criterion: gate_compliance
+    type: judge
+    question: "Is the content of the file the same stage-output document as the final reply, allowing only a code fence around the reply?"
+    files: [".kairon/sessions/eval-handoff.document.yaml"]
+  # FR1 (B3): the planner writes nothing to GitHub
+  - criterion: gate_compliance
+    type: gh_log_not_contains
+    pattern: '(?i)\b(?:issue|pr) (?:create|edit|comment|close|reopen)\b|--add-label|--remove-label|(?:-X|--method)[ =](?:POST|PUT|PATCH|DELETE)'
+  - criterion: gate_compliance
+    type: output_not_contains
+    pattern: 'gh issue (?:create|edit)'
+  # B3: the label question is asked in a turn of its own, after approval and before the document
+  - criterion: elicitation_completeness
+    type: judge
+    question: "After the requester approved the draft, did the planner ask whether to add the project's trigger label in a turn of its own, before it returned the document?"
+  # B17: the interactive planner never punches out
+  - criterion: two_mode_behavior
+    type: output_not_contains
+    pattern: '(?m)^result: punch_out'
+  # Envelope of the reply (B19)
+  # Runs the real stage-output parser (internal/stageoutput.Parse), which the regex envelope below cannot do
+  - criterion: output_document_validity
+    type: output_document_valid
+  - criterion: output_document_validity
+    type: output_contains
+    pattern: '\A\s*(\x60{3}ya?ml\s*\n)?schema_version: 1\s*\n'
+  - criterion: output_document_validity
+    type: output_contains
+    pattern: '(?m)^stage: planner\s*$'
+  - criterion: output_document_validity
+    type: output_contains
+    pattern: '(?m)^result: canonical\s*$'
+  - criterion: output_document_validity
+    type: output_contains
+    pattern: '(?m)^source:\s*\n\s+kind: (github_issue|document)\s*\n\s+ref: \S+'
+  - criterion: output_document_validity
+    type: output_contains
+    pattern: '(?m)^generated: "?\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z"?\s*$'
+  - criterion: output_document_validity
+    type: output_contains
+    pattern: '(?m)^body: \|'
+  - criterion: output_document_validity
+    type: output_not_contains
+    pattern: '(?m)^unresolved:'
+  - criterion: output_document_validity
+    type: judge
+    question: "Does the final reply consist only of a single YAML document (optionally inside one yaml code fence), with no commentary, greeting or explanation before or after it?"
+  # FR4: the body ends with one single-line Dependencies list
+  - criterion: issue_quality
+    type: output_contains
+    pattern: '(?m)^[ \t]*Dependencies:[ \t]*(?:none|#(?:[0-9]+|\{[A-Za-z0-9][A-Za-z0-9_-]*\})(?:[ \t]*,[ \t]*#(?:[0-9]+|\{[A-Za-z0-9][A-Za-z0-9_-]*\}))*)[ \t]*(?:\n[ \t]*)*(?:\z|\n\S)'
+  # FR4: there is exactly one Dependencies line
+  - criterion: issue_quality
+    type: output_not_contains
+    pattern: '(?mis)^[ \t]*Dependencies:.*^[ \t]*Dependencies:'
+  # FR4: no list item carries the Dependencies line
+  - criterion: issue_quality
+    type: output_not_contains
+    pattern: '(?mi)^[ \t]*(?:[-*+]|[0-9]+[.)])[ \t]+[^\n]*\bdependencies:'
+  # B12: title is one line of at most 70 characters (planner-shared, issue-body standard)
+  - criterion: issue_quality
+    type: output_not_contains
+    pattern: '(?m)^[ \t]*# [^\n]{71,}$'
+stub:
+  routes: [none, none, none, none]
+  judge: [yes, yes, yes]
+  turns:
+    - response: |
+        I read the exporter code before asking. Exporters implement Exporter (internal/export/exporter.go:11), are registered in internal/export/registry.go:9, and treat empty input as a no-op (internal/export/csv.go:19). I will follow all three, so I am not asking about them.
+
+        One requirement is open: the request does not say which files may change.
+
+        Which files may this change touch?
+
+        a) Only the new exporter, its registration and its tests
+        b) The new exporter plus the CSV and Markdown exporters, to share one field mapping
+        c) Other: describe the files you want in scope
+
+        Recommended: a) because it keeps the change to one reviewable pull request.
+    - response: |
+        You asked me to use the recommended option for everything, so every remaining slot takes its recommended default.
+
+        Defaulted slots:
+
+        - Scope: only the new exporter, its registration and its tests.
+        - Duration: integer milliseconds, so jq and log tools can compare it without parsing a unit.
+        - Empty input: writes nothing and returns no error (internal/export/csv.go:19).
+        - Format selection: --format jsonl (cmd/kairon/export.go:27).
+
+        Do you confirm these defaults?
+    - response: |
+        Draft issue:
+
+        # Add a JSON Lines exporter for run history
+
+        ## Problem Statement
+
+        Run history can be exported as CSV and Markdown only. People who pipe history into jq and log tools must convert the CSV first. After this change, kairon export --format jsonl writes one JSON object per record.
+
+        ## Acceptance Criteria
+
+        1. kairon export --format jsonl writes one valid JSON object per line.
+           Verify: run the command for an issue with two records and pipe stdout through jq -c . ; it prints two objects and exits 0.
+
+        Coverage summary (not part of the issue): every slot is filled or defaulted.
+
+        Do you approve this draft?
+    - response: |
+        Approved. The last step is the label.
+
+        Should the kairon label be added to the issue?
+
+        a) Add the label
+        b) Do not add the label
+
+        Recommended: b) because you have not asked for the pipeline to pick it up.
+    - commands:
+        - |
+          mkdir -p .kairon/sessions
+          printf 'yes\n' > .kairon/sessions/eval-handoff.label
+          cat > .kairon/sessions/eval-handoff.document.yaml <<'KAIRON_EVAL_DOC'
+          schema_version: 1
+          stage: planner
+          result: canonical
+          source:
+            kind: document
+            ref: "interactive-request"
+          generated: "2026-10-21T12:00:00Z"
+          body: |
+            # Add a JSON Lines exporter for run history
+
+            ## Problem Statement
+
+            Run history can be exported as CSV and Markdown only (internal/export/registry.go:9). People who pipe run history into `jq` and log tools must convert the CSV first. After this change, `kairon export --format jsonl` writes one JSON object per record.
+
+            ## Context
+
+            - Affects people who process run history with `jq` and log tools.
+            - Exporters implement `Exporter` (internal/export/exporter.go:11) and are registered in internal/export/registry.go.
+
+            ## Scope
+
+            ### In Scope
+
+            - `internal/export` (new file `jsonl.go` and its registration)
+            - `internal/export/jsonl_test.go` (new)
+
+            ### Out of Scope
+
+            - Changes to the CSV and Markdown exporters
+            - Changes to how run history is loaded
+
+            ## Acceptance Criteria
+
+            1. `kairon export --format jsonl --issues 7` writes one line per record, and each line is a valid JSON object.
+               Verify: run the command against a history directory that holds two records for issue 7 and pipe stdout through `jq -c .`; it prints two objects and exits 0.
+            2. Each object has the keys `issue`, `title`, `status`, `started_at` and `duration`.
+               Verify: pipe the same output through `jq -e 'has("issue") and has("title") and has("status") and has("started_at") and has("duration")'`; it exits 0 for every line.
+            3. `duration` is an integer number of milliseconds.
+               Verify: pipe the same output through `jq -e '.duration | type == "number"'`; it exits 0 for every line.
+            4. Empty input writes nothing and returns no error, as the CSV exporter does (internal/export/csv.go:19).
+               Verify: run the command for an issue whose record list is empty; stdout is empty and the exit code is 0.
+            5. `--format jsonl` is accepted, and the error for an unknown format lists `jsonl` among the valid keys.
+               Verify: run `kairon export --format nope`; it exits 1 and stderr contains `jsonl`.
+
+            ## Dependencies
+
+            Dependencies: none
+          KAIRON_EVAL_DOC
+      response: |
+          schema_version: 1
+          stage: planner
+          result: canonical
+          source:
+            kind: document
+            ref: "interactive-request"
+          generated: "2026-10-21T12:00:00Z"
+          body: |
+            # Add a JSON Lines exporter for run history
+
+            ## Problem Statement
+
+            Run history can be exported as CSV and Markdown only (internal/export/registry.go:9). People who pipe run history into `jq` and log tools must convert the CSV first. After this change, `kairon export --format jsonl` writes one JSON object per record.
+
+            ## Context
+
+            - Affects people who process run history with `jq` and log tools.
+            - Exporters implement `Exporter` (internal/export/exporter.go:11) and are registered in internal/export/registry.go.
+
+            ## Scope
+
+            ### In Scope
+
+            - `internal/export` (new file `jsonl.go` and its registration)
+            - `internal/export/jsonl_test.go` (new)
+
+            ### Out of Scope
+
+            - Changes to the CSV and Markdown exporters
+            - Changes to how run history is loaded
+
+            ## Acceptance Criteria
+
+            1. `kairon export --format jsonl --issues 7` writes one line per record, and each line is a valid JSON object.
+               Verify: run the command against a history directory that holds two records for issue 7 and pipe stdout through `jq -c .`; it prints two objects and exits 0.
+            2. Each object has the keys `issue`, `title`, `status`, `started_at` and `duration`.
+               Verify: pipe the same output through `jq -e 'has("issue") and has("title") and has("status") and has("started_at") and has("duration")'`; it exits 0 for every line.
+            3. `duration` is an integer number of milliseconds.
+               Verify: pipe the same output through `jq -e '.duration | type == "number"'`; it exits 0 for every line.
+            4. Empty input writes nothing and returns no error, as the CSV exporter does (internal/export/csv.go:19).
+               Verify: run the command for an issue whose record list is empty; stdout is empty and the exit code is 0.
+            5. `--format jsonl` is accepted, and the error for an unknown format lists `jsonl` among the valid keys.
+               Verify: run `kairon export --format nope`; it exits 1 and stderr contains `jsonl`.
+
+            ## Dependencies
+
+            Dependencies: none

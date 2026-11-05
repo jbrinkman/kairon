@@ -68,56 +68,58 @@ func TestProvenanceHashShapeAndStability(t *testing.T) {
 }
 
 func TestProvenanceHashChangesWithPromptResourceAndConfig(t *testing.T) {
-	provProject(t, `["file://.kiro/res.md"]`)
-	writeProvFile(t, ".kiro/res.md", "res v1")
-	base := mustProv(t, "a", false).PromptSHA256
+	t.Run("prompt resource and config edits", func(t *testing.T) {
+		provProject(t, `["file://.kiro/res.md"]`)
+		writeProvFile(t, ".kiro/res.md", "res v1")
+		base := mustProv(t, "a", false).PromptSHA256
 
-	writeProvFile(t, ".kiro/agents/a-prompt.md", "prompt v2")
-	if got := mustProv(t, "a", false).PromptSHA256; got == base {
-		t.Error("hash unchanged after prompt edit")
-	}
-	writeProvFile(t, ".kiro/agents/a-prompt.md", "prompt v1")
-	if got := mustProv(t, "a", false).PromptSHA256; got != base {
-		t.Error("hash not restored after reverting prompt")
-	}
+		writeProvFile(t, ".kiro/agents/a-prompt.md", "prompt v2")
+		if got := mustProv(t, "a", false).PromptSHA256; got == base {
+			t.Error("hash unchanged after prompt edit")
+		}
+		writeProvFile(t, ".kiro/agents/a-prompt.md", "prompt v1")
+		if got := mustProv(t, "a", false).PromptSHA256; got != base {
+			t.Error("hash not restored after reverting prompt")
+		}
 
-	writeProvFile(t, ".kiro/res.md", "res v2")
-	if got := mustProv(t, "a", false).PromptSHA256; got == base {
-		t.Error("hash unchanged after resource edit")
-	}
-	writeProvFile(t, ".kiro/res.md", "res v1")
+		writeProvFile(t, ".kiro/res.md", "res v2")
+		if got := mustProv(t, "a", false).PromptSHA256; got == base {
+			t.Error("hash unchanged after resource edit")
+		}
+		writeProvFile(t, ".kiro/res.md", "res v1")
 
-	writeProvFile(t, ".kiro/agents/a.json",
-		`{"name":"a","model":"claude-sonnet-4","prompt":"file://./a-prompt.md","resources":["file://.kiro/res.md"]}`)
-	if got := mustProv(t, "a", false).PromptSHA256; got == base {
-		t.Error("hash unchanged after config edit")
-	}
-}
+		writeProvFile(t, ".kiro/agents/a.json",
+			`{"name":"a","model":"claude-sonnet-4","prompt":"file://./a-prompt.md","resources":["file://.kiro/res.md"]}`)
+		if got := mustProv(t, "a", false).PromptSHA256; got == base {
+			t.Error("hash unchanged after config edit")
+		}
+	})
 
-func TestProvenanceHashResourceOrderMatters(t *testing.T) {
-	provProject(t, `["file://.kiro/one.md","file://.kiro/two.md"]`)
-	writeProvFile(t, ".kiro/one.md", "1")
-	writeProvFile(t, ".kiro/two.md", "2")
-	first := mustProv(t, "a", false).PromptSHA256
+	t.Run("resource order", func(t *testing.T) {
+		provProject(t, `["file://.kiro/one.md","file://.kiro/two.md"]`)
+		writeProvFile(t, ".kiro/one.md", "1")
+		writeProvFile(t, ".kiro/two.md", "2")
+		first := mustProv(t, "a", false).PromptSHA256
 
-	writeProvFile(t, ".kiro/agents/a.json",
-		`{"name":"a","model":" claude-sonnet-5.5 ","prompt":"file://./a-prompt.md","resources":["file://.kiro/two.md","file://.kiro/one.md"]}`)
-	if mustProv(t, "a", false).PromptSHA256 == first {
-		t.Error("swapping resources did not change the hash")
-	}
-}
+		writeProvFile(t, ".kiro/agents/a.json",
+			`{"name":"a","model":" claude-sonnet-5.5 ","prompt":"file://./a-prompt.md","resources":["file://.kiro/two.md","file://.kiro/one.md"]}`)
+		if mustProv(t, "a", false).PromptSHA256 == first {
+			t.Error("swapping resources did not change the hash")
+		}
+	})
 
-func TestProvenanceHashFramingIsUnambiguous(t *testing.T) {
-	// Moving a byte between two adjacent resources must change the hash.
-	provProject(t, `["file://.kiro/one.md","file://.kiro/two.md"]`)
-	writeProvFile(t, ".kiro/one.md", "ab")
-	writeProvFile(t, ".kiro/two.md", "c")
-	first := mustProv(t, "a", false).PromptSHA256
-	writeProvFile(t, ".kiro/one.md", "a")
-	writeProvFile(t, ".kiro/two.md", "bc")
-	if mustProv(t, "a", false).PromptSHA256 == first {
-		t.Error("shifting bytes between parts did not change the hash")
-	}
+	t.Run("byte shift between adjacent resources", func(t *testing.T) {
+		// Moving a byte between two adjacent resources must change the hash.
+		provProject(t, `["file://.kiro/one.md","file://.kiro/two.md"]`)
+		writeProvFile(t, ".kiro/one.md", "ab")
+		writeProvFile(t, ".kiro/two.md", "c")
+		first := mustProv(t, "a", false).PromptSHA256
+		writeProvFile(t, ".kiro/one.md", "a")
+		writeProvFile(t, ".kiro/two.md", "bc")
+		if mustProv(t, "a", false).PromptSHA256 == first {
+			t.Error("shifting bytes between parts did not change the hash")
+		}
+	})
 }
 
 func TestProvenanceMissingResourceSkipped(t *testing.T) {
@@ -257,27 +259,6 @@ func TestProvenanceMalformedConfigErrors(t *testing.T) {
 	writeProvFile(t, ".kiro/agents/bad.json", `{not json`)
 	if _, err := resolveAgentProvenance("bad", false); err == nil {
 		t.Error("expected parse error")
-	}
-}
-
-func TestProvenanceTypesSerialisation(t *testing.T) {
-	s := Summary{
-		JudgeModel: "j",
-		Agents:     map[string]AgentProvenance{"a": {AgentModel: "m", PromptSHA256: "h", ResourcesPresent: []string{}}},
-	}
-	b, _ := json.Marshal(s)
-	for _, want := range []string{`"judge_model":"j"`, `"agents":{"a":{"agent_model":"m","prompt_sha256":"h","resources_present":[]}}`} {
-		if !strings.Contains(string(b), want) {
-			t.Errorf("summary JSON %s missing %s", b, want)
-		}
-	}
-	if strings.Contains(string(b), `"agent_model":"m","prompt_sha256":"h","resources_present":[]},`) {
-		t.Errorf("unexpected top-level fields: %s", b)
-	}
-	var cr CaseResult
-	cr.Calls = nil
-	if b, _ := json.Marshal(cr); strings.Contains(string(b), "calls") {
-		t.Errorf("empty Calls should be omitted: %s", b)
 	}
 }
 

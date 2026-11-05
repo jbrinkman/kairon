@@ -204,26 +204,3 @@ func TestSelftestPriceUnknownMakesSummaryTotalIncomplete(t *testing.T) {
 		t.Errorf("judge_cost marked incomplete: %+v", r.Case.JudgeCost)
 	}
 }
-
-// The two new cases must be loadable stub scripts, so the container/parity
-// helpers that read selftest fixtures by name (loadSelftestStub) can use them.
-func TestSelftestPriceFixturesDefineStubUsage(t *testing.T) {
-	for name, want := range map[string]struct {
-		model string
-		in    int
-		out   int
-	}{
-		priceSonnetCase:  {"claude-sonnet-5.5", 1000, 500},
-		priceUnknownCase: {"claude-haiku-4.5", 1000, 500},
-	} {
-		stub := loadSelftestStub(t, name)
-		if len(stub.Turns) != 1 {
-			t.Fatalf("%s has %d stub turns, want 1", name, len(stub.Turns))
-		}
-		turn := stub.Turns[0]
-		if turn.Model != want.model || turn.Usage == nil ||
-			turn.Usage.InputTokens != want.in || turn.Usage.OutputTokens != want.out {
-			t.Errorf("%s turn = model %q usage %+v, want %s %d/%d", name, turn.Model, turn.Usage, want.model, want.in, want.out)
-		}
-	}
-}

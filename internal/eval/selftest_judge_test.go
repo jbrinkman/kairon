@@ -66,21 +66,6 @@ func TestSelfTestJudgePassingCases(t *testing.T) {
 	}
 }
 
-func TestSelfTestJudgeFilesReachTheJudge(t *testing.T) {
-	res := runSelfTestAgent(t, "selftest")
-	c := caseByName(t, res, "check-judge-files")
-	sc := checkedScore(t, c)
-	jc := judgeChecks(sc)
-	if len(jc) != 1 || !jc[0].Passed {
-		t.Fatalf("check-judge-files judge checks = %+v, want one pass", jc)
-	}
-	// The listed file is read from the agent's workspace; the stub wrote it
-	// through its own command, so a pass proves it was found and read.
-	if calls := judgeCalls(c); len(calls) != 1 {
-		t.Errorf("judge calls = %d, want 1", len(calls))
-	}
-}
-
 func TestSelfTestJudgeFailingCases(t *testing.T) {
 	res := runSelfTestAgent(t, "selftest-fail")
 

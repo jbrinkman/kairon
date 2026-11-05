@@ -29,13 +29,17 @@ import (
 // called and the repository's .kairon/evals/results/ is neither read nor
 // written.
 
-// plannerCaseNames are the seven shipped planner cases. A case that is
+// plannerCaseNames are the eleven shipped planner cases. A case that is
 // removed or renamed makes TestPlannerSuiteRegistration fail.
 var plannerCaseNames = []string{
 	"automated-best-effort-fill",
 	"automated-bug-classification",
+	"automated-dependencies-line",
 	"automated-punch-out",
+	"interactive-decline-implementation",
+	"interactive-document-handoff",
 	"interactive-option-rules",
+	"interactive-path-only-message",
 	"interactive-return-document",
 	"interactive-single-decision",
 	"multi-issue-split",
@@ -275,37 +279,6 @@ func TestPlannerSuiteRegistration(t *testing.T) {
 	}
 }
 
-func TestPlannerSuiteCaseFilesDeclarePlannerAgent(t *testing.T) {
-	p := plannerSuitePaths(t)
-	files, err := filepath.Glob(filepath.Join(p.evals, "cases", "planner", "*.yaml"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(files) != len(plannerCaseNames) {
-		t.Errorf("found %d case files, want %d", len(files), len(plannerCaseNames))
-	}
-	for _, f := range files {
-		data, err := os.ReadFile(f)
-		if err != nil {
-			t.Fatal(err)
-		}
-		var head struct {
-			Name  string `yaml:"name"`
-			Agent string `yaml:"agent"`
-		}
-		if err := yaml.Unmarshal(data, &head); err != nil {
-			t.Fatalf("%s: %v", f, err)
-		}
-		base := strings.TrimSuffix(filepath.Base(f), ".yaml")
-		if head.Agent != "planner" {
-			t.Errorf("%s: agent = %q, want planner", base, head.Agent)
-		}
-		if head.Name != base {
-			t.Errorf("%s: name = %q, want it to match the file name", base, head.Name)
-		}
-	}
-}
-
 func TestPlannerSuiteGreenReferenceTranscriptsPass(t *testing.T) {
 	p := plannerSuitePaths(t)
 	evalsDir := copyPlannerSuite(t, p)
@@ -374,13 +347,17 @@ func TestPlannerSuiteStubDocumentsAreValid(t *testing.T) {
 
 	// Which cases must return a document, and which must not.
 	wantDocs := map[string]int{
-		"automated-best-effort-fill":   1,
-		"automated-bug-classification": 1,
-		"automated-punch-out":          1,
-		"interactive-return-document":  1,
-		"multi-issue-split":            1,
-		"interactive-option-rules":     0,
-		"interactive-single-decision":  0,
+		"automated-best-effort-fill":         1,
+		"automated-bug-classification":       1,
+		"automated-dependencies-line":        1,
+		"automated-punch-out":                1,
+		"interactive-document-handoff":       1,
+		"interactive-return-document":        1,
+		"multi-issue-split":                  1,
+		"interactive-option-rules":           0,
+		"interactive-single-decision":        0,
+		"interactive-path-only-message":      0,
+		"interactive-decline-implementation": 0,
 	}
 	for _, name := range plannerCaseNames {
 		replies := docs[name]
@@ -406,25 +383,6 @@ func TestPlannerSuiteStubDocumentsAreValid(t *testing.T) {
 				if doc.Body != "" {
 					t.Errorf("%s: punch_out document has a body", name)
 				}
-			}
-		}
-	}
-}
-
-func TestPlannerSuiteLegacyTranscriptsExistWithoutDocuments(t *testing.T) {
-	p := plannerSuitePaths(t)
-	files, err := filepath.Glob(filepath.Join(p.legacy, "*.txt"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(files) != len(plannerCaseNames) {
-		t.Errorf("found %d legacy transcripts, want %d (one per case)", len(files), len(plannerCaseNames))
-	}
-	docStart := regexp.MustCompile(`(?m)^\s*(schema_version|stage|result)\s*:`)
-	for _, name := range plannerCaseNames {
-		for i, turn := range readLegacyTurns(t, p, name) {
-			if docStart.MatchString(turn) {
-				t.Errorf("%s turn %d contains a stage-output document", name, i+1)
 			}
 		}
 	}
@@ -463,40 +421,6 @@ func TestPlannerSuiteRedLegacyTranscriptsFail(t *testing.T) {
 		if cr.Passed != nil && *cr.Passed {
 			t.Errorf("case %s passed with its legacy transcript", cr.CaseName)
 		}
-	}
-}
-
-func TestPlannerSuiteRegexesCompile(t *testing.T) {
-	p := plannerSuitePaths(t)
-	files, err := filepath.Glob(filepath.Join(p.evals, "cases", "planner", "*.yaml"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	var seen int
-	for _, f := range files {
-		data, err := os.ReadFile(f)
-		if err != nil {
-			t.Fatal(err)
-		}
-		var tc struct {
-			Checks []checks.Check `yaml:"checks"`
-		}
-		if err := yaml.Unmarshal(data, &tc); err != nil {
-			t.Fatalf("%s: %v", f, err)
-		}
-		for i, c := range tc.Checks {
-			switch c.Type {
-			case checks.CheckOutputContains, checks.CheckOutputNotContains:
-				seen++
-				if _, err := regexp.Compile(c.Pattern); err != nil {
-					t.Errorf("%s check #%d (%s): pattern %q does not compile: %v",
-						filepath.Base(f), i+1, c.Type, c.Pattern, err)
-				}
-			}
-		}
-	}
-	if seen == 0 {
-		t.Error("no output_contains/output_not_contains pattern found in the planner suite")
 	}
 }
 

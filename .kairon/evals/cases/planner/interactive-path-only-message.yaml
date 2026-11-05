@@ -1,0 +1,50 @@
+name: interactive-path-only-message
+description: "A message that only names the Document path and the Label answer path is not a request (planner prompt, hand-off files; B6): the interactive planner asks what the requester wants to plan, returns no document and writes neither file"
+agent: planner
+input: |
+  Document path: .kairon/sessions/eval-path-only.document.yaml
+  Label answer path: .kairon/sessions/eval-path-only.label
+context:
+  - "The message holds the two path lines and no request. The planner has nothing to plan, so it must ask what the requester wants to plan"
+  - "Nothing was approved, so neither hand-off file may exist and no project file may change"
+checks:
+  # B6: no document is returned for a message that holds no request
+  - criterion: two_mode_behavior
+    type: output_not_contains
+    pattern: '(?m)^schema_version:'
+  # B6: the planner asks one question
+  - criterion: conversation_protocol
+    type: output_contains
+    pattern: '\?'
+  - criterion: conversation_protocol
+    type: output_not_contains
+    pattern: '(?s)\?[^?]*\?'
+  # B6: the question is about what to plan, and the two path lines are not treated as the request
+  - criterion: conversation_protocol
+    type: judge
+    question: "Does the reply ask the requester what they want to plan, instead of treating the two path lines as the request to plan?"
+  # FR1 (B6): neither hand-off file is written before there is anything to hand off
+  - criterion: gate_compliance
+    type: file_absent
+    path: ".kairon/sessions/eval-path-only.document.yaml"
+  - criterion: gate_compliance
+    type: file_absent
+    path: ".kairon/sessions/eval-path-only.label"
+  # B4: no project file changes
+  - criterion: gate_compliance
+    type: changed_files
+    allow: []
+  # B18: the planner creates no GitHub issue
+  - criterion: gate_compliance
+    type: output_not_contains
+    pattern: 'gh issue create'
+  - criterion: gate_compliance
+    type: gh_log_not_contains
+    pattern: 'issue create'
+stub:
+  judge: [yes]
+  turns:
+    - response: |
+        I have the two file paths, but no request yet, so there is nothing for me to plan.
+
+        What do you want to plan?

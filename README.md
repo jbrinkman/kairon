@@ -341,10 +341,18 @@ gh auth status
 ```
 
 The system calls:
-- `gh issue list` — poll for labeled issues
+- `gh api graphql` — poll for labeled issues (see below)
 - `gh issue view` — read issue details
 - `gh issue edit` — add labels (`kairon-done`, `kairon-failed`)
 - `gh pr create` — create pull requests
+
+### How the watcher polls
+
+Each poll makes one `gh api graphql` call per page and follows the cursor until GitHub reports no further page. A page holds 50 issues, but that is a page size, not a limit: the poll reads every open issue that carries the configured label (and, if set, the configured assignee), however many there are. Each page includes the issue's labels and its first 100 comments, so for most issues the done, failed and punch-out checks need no extra call. Three cases cost more. First, an issue with 100 or more comments is re-read in full with `gh issue view`, because a newer punch-out comment could be hidden past the first 100. Second, a punch-out comment needs a `gh api user` call to check who wrote it: the issues read from the page share one such call per poll, and each re-read issue that has a punch-out comment makes its own. Third, an issue that looks like it is waiting for its failed label (terminal-pending) gets one label-events lookup, and a re-read issue can make its own lookup too.
+
+- **Oldest first.** Issues are requested in ascending creation order and sorted by issue number before they are selected, so the oldest issue is always considered first.
+- **No `--search`.** The poll reads the issues connection directly and never uses GitHub's search index, which can lag behind label changes. An issue you just labeled is seen on the next poll.
+- **All or nothing.** If any page fails (a network error, a rate limit, a GraphQL error or an unreadable response), the whole poll fails and returns no issues. The watcher then leaves the issues it already tracks as they are and tries again on the next poll. A partial page set is never used, so a failed poll cannot make the watcher forget an issue or skip one.
 
 ## License
 

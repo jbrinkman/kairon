@@ -304,6 +304,10 @@ func TestRepeatExecutionRunOptionsValidation(t *testing.T) {
 	}{
 		{"negative repeat", RunOptions{Repeat: -1}, "repeat"},
 		{"repeat with list", RunOptions{Repeat: 2, List: true}, "repeat"},
+		// Cleanup and perf act on process-wide state (the container registry,
+		// the performance investigation) when they are not rejected.
+		{"repeat with cleanup", RunOptions{Repeat: 2, Cleanup: true}, "repeat"},
+		{"repeat with perf", RunOptions{Repeat: 2, Perf: true}, "repeat"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -315,30 +319,6 @@ func TestRepeatExecutionRunOptionsValidation(t *testing.T) {
 			err := RunWithOptions("selftest", "", opts)
 			if err == nil || !strings.Contains(err.Error(), tt.want) {
 				t.Fatalf("err = %v, want an error mentioning %q", err, tt.want)
-			}
-			if _, statErr := os.Stat(filepath.Join(evalsDir, "results")); !os.IsNotExist(statErr) {
-				t.Errorf("results directory was created (stat err = %v)", statErr)
-			}
-		})
-	}
-}
-
-// TestRepeatExecutionRejectsRepeatWithCleanupAndPerf is separate because both
-// modes act on process-wide state (the container registry, the performance
-// investigation) when they are not rejected.
-func TestRepeatExecutionRejectsRepeatWithCleanupAndPerf(t *testing.T) {
-	for name, opts := range map[string]RunOptions{
-		"cleanup": {Repeat: 2, Cleanup: true},
-		"perf":    {Repeat: 2, Perf: true},
-	} {
-		t.Run(name, func(t *testing.T) {
-			evalsDir := filepath.Join(t.TempDir(), "evals")
-			copyFixturesTo(t, evalsDir)
-			opts.Backend, opts.EvalsDir, opts.NoSandbox = "stub", evalsDir, true
-			t.Cleanup(resetConfig)
-			err := RunWithOptions("selftest", "", opts)
-			if err == nil || !strings.Contains(err.Error(), "repeat") {
-				t.Fatalf("err = %v, want an error mentioning repeat", err)
 			}
 			if _, statErr := os.Stat(filepath.Join(evalsDir, "results")); !os.IsNotExist(statErr) {
 				t.Errorf("results directory was created (stat err = %v)", statErr)

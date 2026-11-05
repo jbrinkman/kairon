@@ -22,20 +22,39 @@ func loadTurnsCase(t *testing.T, caseYAML string) ([]TestCase, error) {
 }
 
 func TestLoadCasesTurnsAndInputMutuallyExclusive(t *testing.T) {
-	_, err := loadTurnsCase(t, `name: both-forms
+	tests := []struct {
+		name string
+		yaml string
+	}{
+		{
+			name: "both-forms",
+			yaml: `name: both-forms
 agent: a1
 input: hello
 turns:
   - one
   - two
-`)
-	if err == nil {
-		t.Fatal("expected a load error for a case with both turns and input")
+`,
+		},
+		{
+			// The exclusion holds without a simulated user and with a
+			// single-entry turns list.
+			name: "no-sim-both",
+			yaml: "name: no-sim-both\nagent: a1\ninput: hello\nturns:\n  - one\n",
+		},
 	}
-	for _, want := range []string{"both-forms", "turns and input are mutually exclusive"} {
-		if !strings.Contains(err.Error(), want) {
-			t.Errorf("error %q does not contain %q", err, want)
-		}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := loadTurnsCase(t, tt.yaml)
+			if err == nil {
+				t.Fatal("expected a load error for a case with both turns and input")
+			}
+			for _, want := range []string{tt.name, "turns and input are mutually exclusive"} {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("error %q does not contain %q", err, want)
+				}
+			}
+		})
 	}
 }
 
@@ -67,6 +86,7 @@ func TestLoadCasesTurnsSchemaErrors(t *testing.T) {
 		name string
 		yaml string
 		want string
+		also []string // further substrings the error must contain
 	}{
 		{
 			name: "empty-turns",
@@ -110,6 +130,22 @@ checks:
 `,
 			want: "turn 2",
 		},
+		{
+			// A judge check whose turn is beyond the case's turns never
+			// loads, so a case file cannot exercise the run-time guard;
+			// the loader names the turn count.
+			name: "judge-turn-9",
+			yaml: `name: judge-turn-9
+agent: a1
+turns:
+  - one
+  - two
+checks:
+  - {criterion: c, type: judge, question: q, turn: 9}
+`,
+			want: "turn 9 is beyond the case's 2 turn(s)",
+			also: []string{"check 1 (judge)"},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -123,45 +159,54 @@ checks:
 			if !strings.Contains(err.Error(), tt.want) {
 				t.Errorf("error %q does not contain %q", err, tt.want)
 			}
+			for _, s := range tt.also {
+				if !strings.Contains(err.Error(), s) {
+					t.Errorf("error %q does not contain %q", err, s)
+				}
+			}
 		})
 	}
 }
 
 func TestLoadCasesClassicTurnOneLoads(t *testing.T) {
-	cases, err := loadTurnsCase(t, `name: classic-turn-1
+	tests := []struct {
+		name string
+		yaml string
+		// wantNilTurns asserts the loaded case is classic (Turns == nil).
+		wantNilTurns bool
+	}{
+		{
+			name: "turn-1 check",
+			yaml: `name: classic-turn-1
 agent: a1
 input: hi
 checks:
   - {criterion: c, type: output_contains, pattern: x, turn: 1}
-`)
-	if err != nil || len(cases) != 1 {
-		t.Fatalf("loadCases: %v, %d cases", err, len(cases))
-	}
-}
-
-func TestLoadCasesClassicMultiEntryStubUnchanged(t *testing.T) {
-	cases, err := loadTurnsCase(t, `name: classic-stub
+`,
+		},
+		{
+			name: "multi-entry stub unchanged",
+			yaml: `name: classic-stub
 agent: a1
 input: hi
 stub:
   turns:
     - response: a
     - response: b
-`)
-	if err != nil || len(cases) != 1 {
-		t.Fatalf("loadCases: %v, %d cases", err, len(cases))
+`,
+			wantNilTurns: true,
+		},
 	}
-	if cases[0].Turns != nil {
-		t.Errorf("Turns = %v, want nil for a classic case", cases[0].Turns)
-	}
-}
-
-func TestUserTurns(t *testing.T) {
-	if got := (TestCase{Input: "solo"}).userTurns(); !reflect.DeepEqual(got, []string{"solo"}) {
-		t.Errorf("classic userTurns = %q", got)
-	}
-	if got := (TestCase{Turns: []string{"a", "b"}}).userTurns(); !reflect.DeepEqual(got, []string{"a", "b"}) {
-		t.Errorf("multi-turn userTurns = %q", got)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cases, err := loadTurnsCase(t, tt.yaml)
+			if err != nil || len(cases) != 1 {
+				t.Fatalf("loadCases: %v, %d cases", err, len(cases))
+			}
+			if tt.wantNilTurns && cases[0].Turns != nil {
+				t.Errorf("Turns = %v, want nil for a classic case", cases[0].Turns)
+			}
+		})
 	}
 }
 

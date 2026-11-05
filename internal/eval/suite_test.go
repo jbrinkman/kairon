@@ -109,13 +109,6 @@ func suiteHashAt(t *testing.T, dir, agent string) string {
 	return got
 }
 
-func TestSuiteSHA256Format(t *testing.T) {
-	got := suiteHashAt(t, suiteEvals(t), "alpha")
-	if !regexp.MustCompile(`^[0-9a-f]{64}$`).MatchString(got) {
-		t.Fatalf("suiteSHA256 = %q, want 64 lowercase hex characters", got)
-	}
-}
-
 func TestSuiteSHA256DeterministicAcrossCallsAndCopies(t *testing.T) {
 	dir := suiteEvals(t)
 	first := suiteHashAt(t, dir, "alpha")

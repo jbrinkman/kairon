@@ -13,6 +13,7 @@ func TestCreateContainerConfig_WithSandboxConfig(t *testing.T) {
 		name           string
 		sandboxCfg     *config.SandboxConfig
 		resourceLimits map[string]string
+		debug          bool
 		expectConfig   ContainerConfig
 	}{
 		{
@@ -75,11 +76,94 @@ func TestCreateContainerConfig_WithSandboxConfig(t *testing.T) {
 				},
 			},
 		},
+		{
+			// A nil sandbox config yields every default.
+			name:           "nil sandbox config",
+			sandboxCfg:     nil,
+			resourceLimits: nil,
+			expectConfig: ContainerConfig{
+				WorkspaceDir: "/workspace",
+				Platform:     "", // Will be set by platform detection
+				Environment: map[string]string{
+					"KIRO_CLI_DISABLE_TELEMETRY": "1",
+				},
+				ResourceLimits: sandbox.ResourceLimits{
+					CPUQuota: 1000000,            // 1.0 cores * 1,000,000 microseconds
+					Memory:   1024 * 1024 * 1024, // 1024 MB in bytes
+					Timeout:  5 * time.Minute,
+				},
+			},
+		},
+		{
+			// Empty string values in the sandbox config fall back to defaults.
+			name: "empty workspace dir",
+			sandboxCfg: &config.SandboxConfig{
+				WorkspaceDir: "", // Empty - should use default
+				CPUCores:     2.0,
+				MemoryMB:     1024,
+				Timeout:      5 * time.Minute,
+			},
+			resourceLimits: nil,
+			expectConfig: ContainerConfig{
+				WorkspaceDir: "/workspace", // Default
+				Platform:     "",           // Will be set by platform detection
+				Environment: map[string]string{
+					"KIRO_CLI_DISABLE_TELEMETRY": "1",
+				},
+				ResourceLimits: sandbox.ResourceLimits{
+					CPUQuota: 2000000,            // 2.0 cores * 1,000,000 microseconds
+					Memory:   1024 * 1024 * 1024, // 1024 MB in bytes
+					Timeout:  5 * time.Minute,
+				},
+			},
+		},
+		{
+			// Zero values in the sandbox config fall back to defaults.
+			name: "zero cpu memory timeout",
+			sandboxCfg: &config.SandboxConfig{
+				WorkspaceDir: "/custom",
+				CPUCores:     0, // Zero - should use default
+				MemoryMB:     0, // Zero - should use default
+				Timeout:      0, // Zero - should use default
+			},
+			resourceLimits: nil,
+			expectConfig: ContainerConfig{
+				WorkspaceDir: "/custom",
+				Platform:     "", // Will be set by platform detection
+				Environment: map[string]string{
+					"KIRO_CLI_DISABLE_TELEMETRY": "1",
+				},
+				ResourceLimits: sandbox.ResourceLimits{
+					CPUQuota: 1000000,            // Default 1.0 cores
+					Memory:   1024 * 1024 * 1024, // Default 1024 MB
+					Timeout:  5 * time.Minute,    // Default timeout
+				},
+			},
+		},
+		{
+			// The debug flag is propagated to the container config.
+			name:           "debug enabled",
+			sandboxCfg:     nil,
+			resourceLimits: nil,
+			debug:          true,
+			expectConfig: ContainerConfig{
+				WorkspaceDir: "/workspace",
+				Platform:     "", // Will be set by platform detection
+				Environment: map[string]string{
+					"KIRO_CLI_DISABLE_TELEMETRY": "1",
+				},
+				ResourceLimits: sandbox.ResourceLimits{
+					CPUQuota: 1000000,            // 1.0 cores * 1,000,000 microseconds
+					Memory:   1024 * 1024 * 1024, // 1024 MB in bytes
+					Timeout:  5 * time.Minute,
+				},
+			},
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := createContainerConfig(tt.sandboxCfg, tt.resourceLimits, false)
+			result := createContainerConfig(tt.sandboxCfg, tt.resourceLimits, tt.debug)
 
 			// Compare all fields except Platform (which is dynamically detected)
 			if result.WorkspaceDir != tt.expectConfig.WorkspaceDir {
@@ -93,6 +177,10 @@ func TestCreateContainerConfig_WithSandboxConfig(t *testing.T) {
 			}
 			if result.ResourceLimits.Timeout != tt.expectConfig.ResourceLimits.Timeout {
 				t.Errorf("Timeout = %v, expected %v", result.ResourceLimits.Timeout, tt.expectConfig.ResourceLimits.Timeout)
+			}
+			// Verify the debug flag is propagated (true only when requested)
+			if result.Debug != tt.debug {
+				t.Errorf("Debug = %v, expected %v", result.Debug, tt.debug)
 			}
 			// Verify platform is set (non-empty)
 			if result.Platform == "" {
@@ -108,38 +196,6 @@ func TestCreateContainerConfig_WithSandboxConfig(t *testing.T) {
 				}
 			}
 		})
-	}
-}
-
-func TestCreateContainerConfig_NilSandboxConfig(t *testing.T) {
-	result := createContainerConfig(nil, nil, false)
-
-	expectedDefaults := ContainerConfig{
-		WorkspaceDir: "/workspace",
-		Environment: map[string]string{
-			"KIRO_CLI_DISABLE_TELEMETRY": "1",
-		},
-		ResourceLimits: sandbox.ResourceLimits{
-			CPUQuota: 1000000,            // 1.0 cores * 1,000,000 microseconds
-			Memory:   1024 * 1024 * 1024, // 1024 MB in bytes
-			Timeout:  5 * time.Minute,
-		},
-	}
-
-	if result.WorkspaceDir != expectedDefaults.WorkspaceDir {
-		t.Errorf("WorkspaceDir = %s, expected %s", result.WorkspaceDir, expectedDefaults.WorkspaceDir)
-	}
-	if result.ResourceLimits.CPUQuota != expectedDefaults.ResourceLimits.CPUQuota {
-		t.Errorf("CPUQuota = %d, expected %d", result.ResourceLimits.CPUQuota, expectedDefaults.ResourceLimits.CPUQuota)
-	}
-	if result.ResourceLimits.Memory != expectedDefaults.ResourceLimits.Memory {
-		t.Errorf("Memory = %d, expected %d", result.ResourceLimits.Memory, expectedDefaults.ResourceLimits.Memory)
-	}
-	if result.ResourceLimits.Timeout != expectedDefaults.ResourceLimits.Timeout {
-		t.Errorf("Timeout = %v, expected %v", result.ResourceLimits.Timeout, expectedDefaults.ResourceLimits.Timeout)
-	}
-	if result.Platform == "" {
-		t.Error("Platform should be detected and set")
 	}
 }
 
@@ -223,55 +279,5 @@ func TestCreateContainerConfig_ResourceLimitOverrides(t *testing.T) {
 				t.Errorf("Timeout = %v, expected %v", result.ResourceLimits.Timeout, tt.expectTimeout)
 			}
 		})
-	}
-}
-
-func TestCreateContainerConfig_EmptyStringValues(t *testing.T) {
-	// Test that empty string values in sandbox config fall back to defaults
-	sandboxCfg := &config.SandboxConfig{
-		WorkspaceDir: "", // Empty - should use default
-		CPUCores:     2.0,
-		MemoryMB:     1024,
-		Timeout:      5 * time.Minute,
-	}
-
-	result := createContainerConfig(sandboxCfg, nil, false)
-
-	if result.WorkspaceDir != "/workspace" {
-		t.Errorf("WorkspaceDir = %s, expected /workspace (default)", result.WorkspaceDir)
-	}
-}
-
-func TestCreateContainerConfig_ZeroValues(t *testing.T) {
-	// Test that zero values in sandbox config fall back to defaults
-	sandboxCfg := &config.SandboxConfig{
-		WorkspaceDir: "/custom",
-		CPUCores:     0, // Zero - should use default
-		MemoryMB:     0, // Zero - should use default
-		Timeout:      0, // Zero - should use default
-	}
-
-	result := createContainerConfig(sandboxCfg, nil, false)
-
-	if result.ResourceLimits.CPUQuota != 1000000 {
-		t.Errorf("CPUQuota = %d, expected 1000000 (default)", result.ResourceLimits.CPUQuota)
-	}
-	if result.ResourceLimits.Memory != 1024*1024*1024 {
-		t.Errorf("Memory = %d, expected %d (default)", result.ResourceLimits.Memory, 1024*1024*1024)
-	}
-	if result.ResourceLimits.Timeout != 5*time.Minute {
-		t.Errorf("Timeout = %v, expected 5m0s (default)", result.ResourceLimits.Timeout)
-	}
-}
-
-func TestCreateContainerConfig_DebugFlag(t *testing.T) {
-	result := createContainerConfig(nil, nil, true)
-	if !result.Debug {
-		t.Error("Debug should be propagated to container config")
-	}
-
-	result = createContainerConfig(nil, nil, false)
-	if result.Debug {
-		t.Error("Debug should be false when not enabled")
 	}
 }

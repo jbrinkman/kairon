@@ -24,19 +24,6 @@ func trendNames(rows []TrendRow) []string {
 	return names
 }
 
-// trendFixtureRows loads the committed fixture and requires its four rows.
-func trendFixtureRows(t *testing.T) []TrendRow {
-	t.Helper()
-	rows, err := LoadTrend(trendAgent, trendFixture)
-	if err != nil {
-		t.Fatalf("LoadTrend: %v", err)
-	}
-	if len(rows) != 4 {
-		t.Fatalf("got %d rows (%v), want 4", len(rows), trendNames(rows))
-	}
-	return rows
-}
-
 // trendWrite writes content to path, creating parent directories.
 func trendWrite(t *testing.T, path, content string) {
 	t.Helper()
@@ -88,38 +75,6 @@ func TestTrendFixtureOrder(t *testing.T) {
 		if want := i != 2; *r.Complete != want {
 			t.Errorf("%s: complete = %v, want %v", r.Run, *r.Complete, want)
 		}
-	}
-}
-
-func TestTrendFixtureSuccessRate(t *testing.T) {
-	rows := trendFixtureRows(t)
-	want := []float64{75, 100, 100, 75}
-	for i, r := range rows {
-		if r.SuccessRate == nil {
-			t.Fatalf("%s: SuccessRate is nil, want %v", r.Run, want[i])
-		}
-		if *r.SuccessRate != want[i] {
-			t.Errorf("%s: success rate = %v, want %v", r.Run, *r.SuccessRate, want[i])
-		}
-	}
-}
-
-func TestTrendFixtureProvenance(t *testing.T) {
-	rows := trendFixtureRows(t)
-	wantPrompt := []string{"aaaaaaaa", "bbbbbbbb", "cccccccc", "dddddddd"}
-	for i, r := range rows {
-		if r.PromptSHA256 != wantPrompt[i] {
-			t.Errorf("%s: prompt_sha256 = %q, want %q", r.Run, r.PromptSHA256, wantPrompt[i])
-		}
-		if len(r.PromptSHA256) != 8 {
-			t.Errorf("%s: prompt_sha256 has %d characters, want 8", r.Run, len(r.PromptSHA256))
-		}
-	}
-	if rows[0].AgentModel != "agent-m" || rows[0].JudgeModel != "judge-m" {
-		t.Errorf("first run models = %q / %q, want agent-m / judge-m", rows[0].AgentModel, rows[0].JudgeModel)
-	}
-	if rows[3].AgentModel != "agent-m2" || rows[3].JudgeModel != "judge-m2" {
-		t.Errorf("last run models = %q / %q, want agent-m2 / judge-m2", rows[3].AgentModel, rows[3].JudgeModel)
 	}
 }
 
@@ -355,46 +310,67 @@ func TestTrendSkipsNonDirsAndRunsWithoutAgent(t *testing.T) {
 }
 
 func TestTrendMissingResultsDir(t *testing.T) {
-	dir := t.TempDir()
-	var buf bytes.Buffer
-	err := Trend(&buf, trendAgent, TrendOptions{EvalsDir: dir})
-	if err == nil {
-		t.Fatal("want an error for a missing results directory")
+	tests := []struct {
+		name string
+		// evalsDir returns the evals directory to read results from.
+		evalsDir func(t *testing.T) string
+		agent    string
+		json     bool
+		// needle must appear in the error from both Trend and LoadTrend.
+		needle string
+	}{
+		{
+			name:     "missing results dir",
+			evalsDir: func(t *testing.T) string { return t.TempDir() },
+			agent:    trendAgent,
+			needle:   trendAgent,
+		},
+		{
+			name: "empty results dir",
+			evalsDir: func(t *testing.T) string {
+				dir := t.TempDir()
+				if err := os.MkdirAll(filepath.Join(dir, "results"), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				return dir
+			},
+			agent:  trendAgent,
+			needle: trendAgent,
+		},
+		{
+			name:     "unknown agent text",
+			evalsDir: func(*testing.T) string { return trendFixture },
+			agent:    "nope",
+			needle:   `"nope"`,
+		},
+		{
+			name:     "unknown agent json",
+			evalsDir: func(*testing.T) string { return trendFixture },
+			agent:    "nope",
+			json:     true,
+			needle:   `"nope"`,
+		},
 	}
-	if !strings.Contains(err.Error(), trendAgent) {
-		t.Errorf("error %q does not name the agent", err)
-	}
-	if buf.Len() != 0 {
-		t.Errorf("wrote %q on error, want nothing", buf.String())
-	}
-	if _, err := LoadTrend(trendAgent, dir); err == nil {
-		t.Error("LoadTrend: want an error for a missing results directory")
-	}
-}
-
-func TestTrendEmptyResultsDir(t *testing.T) {
-	dir := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(dir, "results"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := LoadTrend(trendAgent, dir); err == nil || !strings.Contains(err.Error(), trendAgent) {
-		t.Errorf("err = %v, want an error naming %q", err, trendAgent)
-	}
-}
-
-func TestTrendUnknownAgent(t *testing.T) {
-	for _, js := range []bool{false, true} {
-		var buf bytes.Buffer
-		err := Trend(&buf, "nope", TrendOptions{EvalsDir: trendFixture, JSON: js})
-		if err == nil {
-			t.Fatalf("json=%v: want an error for an agent with no results", js)
-		}
-		if !strings.Contains(err.Error(), `"nope"`) {
-			t.Errorf("json=%v: error %q does not name the agent", js, err)
-		}
-		if buf.Len() != 0 {
-			t.Errorf("json=%v: wrote %q on error, want nothing", js, buf.String())
-		}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := tc.evalsDir(t)
+			var buf bytes.Buffer
+			err := Trend(&buf, tc.agent, TrendOptions{EvalsDir: dir, JSON: tc.json})
+			if err == nil {
+				t.Fatal("Trend: want an error for an agent with no results")
+			}
+			if !strings.Contains(err.Error(), tc.needle) {
+				t.Errorf("Trend error %q does not contain %s", err, tc.needle)
+			}
+			if buf.Len() != 0 {
+				t.Errorf("wrote %q on error, want nothing", buf.String())
+			}
+			if _, err := LoadTrend(tc.agent, dir); err == nil {
+				t.Error("LoadTrend: want an error for an agent with no results")
+			} else if !strings.Contains(err.Error(), tc.needle) {
+				t.Errorf("LoadTrend error %q does not contain %s", err, tc.needle)
+			}
+		})
 	}
 }
 

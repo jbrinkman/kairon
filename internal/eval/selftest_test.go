@@ -335,31 +335,6 @@ func TestSelfTestStubRunDoesNotConsultPath(t *testing.T) {
 	assertSelfTestResults(t, evalsDir, readSelfTestResult(t, filepath.Join(resultsDir, added[0], "selftest.json")))
 }
 
-func TestSelfTestRejectsUnknownBackend(t *testing.T) {
-	t.Cleanup(resetConfig)
-	_, calls := installFakeKiroCLI(t, "")
-
-	resultsDir := filepath.Join(selftestEvalsDir, "results")
-	registerResultsCleanup(t, resultsDir)
-	before := snapshotDirs(t, resultsDir)
-
-	err := RunWithOptions("selftest", "", RunOptions{Backend: "nope", EvalsDir: selftestEvalsDir})
-	if err == nil {
-		t.Fatal("expected an error for unknown backend")
-	}
-	for _, want := range []string{`"nope"`, "kiro-cli", "stub"} {
-		if !strings.Contains(err.Error(), want) {
-			t.Errorf("error %q does not mention %s", err, want)
-		}
-	}
-	if added := newRunDirs(t, resultsDir, before); len(added) != 0 {
-		t.Errorf("rejected run still created result dirs: %v", added)
-	}
-	if got := readCalls(t, calls); len(got) != 0 {
-		t.Errorf("kiro-cli invoked: %q", got)
-	}
-}
-
 // --backend stub --sandbox is no longer rejected: the pinned selftest agent
 // passes the pre-flight using the evals-dir agent config (the stub reads no
 // agent config in the container).

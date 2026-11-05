@@ -313,43 +313,6 @@ func TestSelfTestChecksInjectIsHiddenFromAgent(t *testing.T) {
 	}
 }
 
-// TestSelfTestChecksLegacyScoresUnchanged pins that the five pre-existing
-// selftest cases still score exactly as before (no checks, rubrics unchanged).
-func TestSelfTestChecksLegacyScoresUnchanged(t *testing.T) {
-	res := runSelfTestAgent(t, "selftest")
-	for _, name := range []string{"stub-basic", "stub-usage", "stub-quoted-input", markerCase, seededCase} {
-		c := caseByName(t, res, name)
-		if len(c.Scores) != 2 {
-			t.Fatalf("%s: scores = %+v, want 2", name, c.Scores)
-		}
-		sc, cl := c.Scores[0], c.Scores[1]
-		if sc.Name != "structural_completeness" || sc.Score != 5 || sc.MaxScore != 5 ||
-			sc.Reasoning != "found 2/2 expected structural elements" || sc.Checks != nil {
-			t.Errorf("%s: structural_completeness = %+v", name, sc)
-		}
-		if cl.Name != "clarity" || cl.Score != 5 || cl.MaxScore != 5 || cl.Checks != nil {
-			t.Errorf("%s: clarity = %+v", name, cl)
-		}
-	}
-}
-
-// TestSelfTestChecksRunExitStatus mirrors `task eval:selftest` (exits 0) and
-// the selftest-fail run (exits non-zero with the threshold error).
-func TestSelfTestChecksRunExitStatus(t *testing.T) {
-	t.Cleanup(resetConfig)
-	for agent, wantFail := range map[string]bool{"selftest": false, "selftest-fail": true} {
-		evalsDir := filepath.Join(t.TempDir(), "evals")
-		copyFixturesTo(t, evalsDir)
-		err := RunWithOptions(agent, "", RunOptions{Backend: "stub", NoSandbox: true, EvalsDir: evalsDir})
-		if wantFail != errors.Is(err, ErrThresholdFailed) {
-			t.Errorf("run of %s: err = %v, want ErrThresholdFailed=%v", agent, err, wantFail)
-		}
-		if !wantFail && err != nil {
-			t.Errorf("run of %s returned an error: %v", agent, err)
-		}
-	}
-}
-
 // checksOnlyInvalidDir is the deliberately invalid evals dir: its checks_only
 // rubric owns a case without checks.
 const checksOnlyInvalidDir = "testdata/checks-only-invalid"

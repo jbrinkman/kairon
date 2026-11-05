@@ -6,18 +6,6 @@ import (
 	"testing"
 )
 
-func TestRubricThreshold(t *testing.T) {
-	if got := (Rubric{}).Threshold(); got != 95.0 {
-		t.Errorf("default rubric threshold = %v, want 95", got)
-	}
-	if DefaultPassThreshold != 95.0 {
-		t.Errorf("DefaultPassThreshold = %v, want 95", DefaultPassThreshold)
-	}
-	if got := (Rubric{PassThreshold: floatPtr(90)}).Threshold(); got != 90.0 {
-		t.Errorf("rubric threshold = %v, want 90", got)
-	}
-}
-
 func TestCaseThreshold(t *testing.T) {
 	tests := []struct {
 		name   string

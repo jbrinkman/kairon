@@ -1,0 +1,32 @@
+I read issue #520. Before I can write this up I need to ask you a few things.
+
+1. Which fields should each JSON line contain?
+2. What should happen when there is no run history to export?
+3. Are #512 and #519 both required before this can start?
+
+Here is my draft in the meantime:
+
+## User Story
+
+As a developer who pipes run history into jq, I want a JSON Lines exporter so that I can filter runs without converting the CSV first.
+
+## Acceptance Criteria
+
+- The exporter works properly for finished runs.
+- It is well tested.
+
+## Dependencies
+
+- #512
+- #519
+
+Which option do you prefer for selecting the format?
+
+a) A new --format jsonl value
+b) A separate command
+
+Recommended: a) because it reuses the existing --format flag.
+
+Once you answer I will create the issue:
+
+gh issue create --title "Add a JSON Lines exporter" --label kairon --body-file draft.md

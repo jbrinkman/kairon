@@ -90,18 +90,3 @@ func TestParallelAnalysis(t *testing.T) {
 		t.Errorf("Expected positive number of workers, got %d", analysis.RecommendedWorkers)
 	}
 }
-
-func TestStartupOverheadMeasurement(t *testing.T) {
-	// This test may fail in environments without kiro-cli
-	// Skip if kiro-cli is not available
-	overhead := MeasureStartupOverhead()
-
-	if overhead < 0 {
-		t.Error("Startup overhead should not be negative")
-	}
-
-	// Should be reasonable (less than 30 seconds even in worst case)
-	if overhead > 30*time.Second {
-		t.Errorf("Startup overhead seems too high: %v", overhead)
-	}
-}

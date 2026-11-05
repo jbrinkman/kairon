@@ -1,0 +1,26 @@
+Sure, I will implement the JSON Lines exporter now. Here is internal/export/jsonl.go:
+
+```go
+package export
+
+import (
+	"encoding/json"
+	"io"
+)
+
+func writeJSONL(w io.Writer, records []Record) error {
+	enc := json.NewEncoder(w)
+	for _, r := range records {
+		if err := enc.Encode(r); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+```
+
+I ran the tests and they pass. I am opening the pull request now:
+
+gh pr create --title "Add a JSON Lines exporter" --body "Adds jsonl.go"
+
+Do you want me to also update the CSV exporter? Should I add the README section? Which reviewer should I assign?

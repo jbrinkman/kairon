@@ -1,0 +1,204 @@
+name: automated-dependencies-line
+description: "Automated intake ends the body with one single-line Dependencies list when the request names prerequisites (planner-shared dependencies rule, issue #418 FR4): two prerequisites written as bullets in the issue become 'Dependencies: #512, #519' as the last body line, not a bullet list and not an unresolved placeholder"
+agent: planner
+input: |
+  AUTOMATED INTAKE: non-interactive, no human is available to answer questions. Do not ask questions and do not offer options.
+  Read the issue and the repository context below, fill every slot they ground by reasonable inference and record each inference with its evidence.
+  Return exactly one stage-output document as the whole reply, with nothing before or after it.
+  If a required slot cannot be reasonably inferred, return a punch_out document instead of guessing.
+setup:
+  - type: file
+    label: "Issue"
+    path: ".kairon/evals/fixtures/planner-intake-dependent-issue.md"
+  - type: file
+    label: "Repository Context"
+    path: ".kairon/evals/fixtures/workspaces/planner-evidence/planner-repo-context.md"
+context:
+  - "The issue asks for a JSON Lines exporter and lists two prerequisite issues, #512 and #519, as bullets under Notes"
+  - "The planner must carry both prerequisites into the body as one Dependencies line that ends the body, written 'Dependencies: #512, #519'"
+checks:
+  # Envelope: the reply is the document, from its first line
+  # Runs the real stage-output parser (internal/stageoutput.Parse), which the regex envelope below cannot do
+  - criterion: output_document_validity
+    type: output_document_valid
+  - criterion: output_document_validity
+    type: output_contains
+    pattern: '\A\s*(\x60{3}ya?ml\s*\n)?schema_version: 1\s*\n'
+  - criterion: output_document_validity
+    type: output_contains
+    pattern: '(?m)^stage: planner\s*$'
+  - criterion: output_document_validity
+    type: output_contains
+    pattern: '(?m)^result: canonical\s*$'
+  - criterion: output_document_validity
+    type: output_contains
+    pattern: '(?m)^source:\s*\n\s+kind: (github_issue|document)\s*\n\s+ref: \S+'
+  - criterion: output_document_validity
+    type: output_contains
+    pattern: '(?m)^generated: "?\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?Z"?\s*$'
+  - criterion: output_document_validity
+    type: output_contains
+    pattern: '(?m)^body: \|'
+  - criterion: output_document_validity
+    type: output_not_contains
+    pattern: '(?m)^unresolved:'
+  # Automated mode never asks and never offers options
+  - criterion: two_mode_behavior
+    type: output_not_contains
+    pattern: '(?m)\?\s*$'
+  - criterion: two_mode_behavior
+    type: output_not_contains
+    pattern: '(?m)^\s*a\)'
+  - criterion: two_mode_behavior
+    type: output_not_contains
+    pattern: '(?mi)^\s*recommended:'
+  # Automated mode asks the requester nothing, including inline questions the
+  # end-of-line '?' guard above cannot catch
+  - criterion: two_mode_behavior
+    type: judge
+    question: "This reply was produced in automated intake mode, where the planner must not ask the requester anything. Does the reply pose NO question to the requester (a '?' that merely appears inside a quoted string, an acceptance criterion or other document prose does not count as asking the requester)?"
+  - criterion: two_mode_behavior
+    type: output_not_contains
+    pattern: '(?m)^result: punch_out'
+  # Shared spine, in order
+  - criterion: issue_quality
+    type: output_contains
+    pattern: '(?ims)^\s*#{1,6}\s*Problem( Statement)?\b.*^\s*#{1,6}\s*Context\b.*^\s*#{1,6}\s*Scope\b.*^\s*#{1,6}\s*Acceptance Criteria\b.*^\s*(#{1,6}\s*)?Dependencies\b'
+  - criterion: issue_quality
+    type: output_contains
+    pattern: '(?i)out of scope'
+  - criterion: issue_quality
+    type: output_contains
+    pattern: '(?s)Verify:.*Verify:'
+  - criterion: issue_quality
+    type: output_contains
+    pattern: '(?m)^\s*Dependencies:\s*(#\d+(,\s*#\d+)*|none)\s*$'
+  - criterion: issue_quality
+    type: output_not_contains
+    pattern: '(?mi)^\s*#{1,6}\s*Dependencies\s*\n(\s*\n)*\s*[-*]\s'
+  - criterion: issue_quality
+    type: output_not_contains
+    pattern: '(?mi)^\s*#{1,6}\s*User Story'
+  - criterion: issue_quality
+    type: output_not_contains
+    pattern: '(?mi)^\s*#{1,6}\s*(Verification|Test Plan)\b'
+  - criterion: issue_quality
+    type: output_not_contains
+    pattern: '(?i)\b(properly|appropriate(ly)?|gracefully|robust(ly)?|as needed|should work|fast)\b|\betc\.'
+  # FR3: the parser rejects an inference whose slot, inferred or evidence is empty
+  - criterion: best_effort_then_punch_out
+    type: output_document_valid
+  # FR3: at least one inference is recorded, each with slot, inferred and evidence in that order
+  - criterion: best_effort_then_punch_out
+    type: output_contains
+    pattern: '(?m)^[ \t]+- slot: [^\n]+\n[ \t]+inferred: [^\n]+\n[ \t]+evidence: [^\n]+'
+  # FR3: no inference is left without an evidence line right after it
+  - criterion: best_effort_then_punch_out
+    type: output_not_contains
+    pattern: '(?m)^[ \t]+inferred:[^\n]*\n[ \t]*(?:- slot:|slot:|inferred:|body:|unresolved:|source:|generated:|stage:|result:|schema_version:)'
+  # FR3: evidence is not a placeholder
+  - criterion: best_effort_then_punch_out
+    type: output_not_contains
+    pattern: '(?mi)^[ \t]+evidence:[ \t]*["'']?(?:n/?a|none|unknown|tbd|todo|null|~|-)["'']?[ \t]*$'
+  # FR4: the body ends with one single-line Dependencies list
+  - criterion: issue_quality
+    type: output_contains
+    pattern: '(?m)^[ \t]*Dependencies:[ \t]*(?:none|#(?:[0-9]+|\{[A-Za-z0-9][A-Za-z0-9_-]*\})(?:[ \t]*,[ \t]*#(?:[0-9]+|\{[A-Za-z0-9][A-Za-z0-9_-]*\}))*)[ \t]*(?:\n[ \t]*)*(?:\z|\n\S)'
+  # FR4: there is exactly one Dependencies line
+  - criterion: issue_quality
+    type: output_not_contains
+    pattern: '(?mis)^[ \t]*Dependencies:.*^[ \t]*Dependencies:'
+  # FR4: no list item carries the Dependencies line
+  - criterion: issue_quality
+    type: output_not_contains
+    pattern: '(?mi)^[ \t]*(?:[-*+]|[0-9]+[.)])[ \t]+[^\n]*\bdependencies:'
+  # Title is one line of at most 70 characters (planner-shared, issue-body standard)
+  - criterion: issue_quality
+    type: output_not_contains
+    pattern: '(?m)^[ \t]*# [^\n]{71,}$'
+  # FR4: both prerequisites named in the issue are on the Dependencies line, which ends the body
+  - criterion: issue_quality
+    type: output_contains
+    pattern: '(?m)^[ \t]*Dependencies:[ \t]*(?:#512[ \t]*,[ \t]*#519|#519[ \t]*,[ \t]*#512)[ \t]*(?:\n[ \t]*)*(?:\z|\n\S)'
+  # FR4: no unresolved #{key} placeholder is left in the output
+  - criterion: issue_quality
+    type: output_not_contains
+    pattern: '#\{'
+  # The planner returns the document and leaves the GitHub write to the guard
+  - criterion: gate_compliance
+    type: output_not_contains
+    pattern: 'gh issue create'
+  - criterion: gate_compliance
+    type: gh_log_not_contains
+    pattern: 'issue create'
+  - criterion: gate_compliance
+    type: output_not_contains
+    pattern: '(?mi)^\s*(provenance|hash|sha256)\s*:'
+stub:
+  judge: [yes]
+  turns:
+    - response: |
+        schema_version: 1
+        stage: planner
+        result: canonical
+        source:
+          kind: github_issue
+          ref: "520"
+        generated: "2026-10-21T12:00:00Z"
+        inferences:
+          - slot: edge_cases.empty_input
+            inferred: "Empty input writes nothing and returns nil, as the other exporters do."
+            evidence: "internal/export/csv.go:19 and internal/export/markdown.go:22 both return nil for len(records) == 0."
+          - slot: interface.registration
+            inferred: "The exporter is registered under the key jsonl and selected with --format jsonl."
+            evidence: "internal/export/registry.go:9 keys exporters by Name(), and cmd/kairon/export.go:27 selects one with --format."
+          - slot: functional_requirements.fields
+            inferred: "Each line carries the Record fields issue, title, status, started_at and duration."
+            evidence: "internal/export/record.go:8 defines Record with those json tags, and the issue asks for the fields the other exporters show."
+          - slot: edge_cases.write_failure
+            inferred: "A write failure is returned wrapped with the record index."
+            evidence: "internal/export/csv.go:41 returns fmt.Errorf(\"export csv: record %d: %w\", i, err)."
+          - slot: dependencies.prerequisites
+            inferred: "The change cannot start until issues 512 and 519 are closed."
+            evidence: "The issue Notes section says the change builds on #512 (exporter registry rework) and #519 (history loader change) and cannot start until both are closed."
+        body: |
+          # Add a JSON Lines exporter for run history
+
+          ## Problem Statement
+
+          Run history can be exported as CSV and Markdown only (internal/export/registry.go:9). People who pipe run history into `jq` and log tooling must convert the CSV first. After this change, `kairon export --format jsonl` writes one JSON object per finished agent run.
+
+          ## Context
+
+          - Affects people who process run history with `jq` and log tooling.
+          - Exporters implement `Exporter` (internal/export/exporter.go:11) and are registered in internal/export/registry.go.
+          - The change builds on the exporter registry rework (#512) and the history loader change (#519), so it starts once both are closed.
+
+          ## Scope
+
+          ### In Scope
+
+          - `internal/export` (new file `jsonl.go` and its registration in `registry.go`)
+          - `internal/export/jsonl_test.go` (new)
+
+          ### Out of Scope
+
+          - Changes to the CSV and Markdown exporters
+          - The registry rework (#512) and the history loader change (#519)
+
+          ## Acceptance Criteria
+
+          1. `kairon export --format jsonl --issues 7` writes one line per record, and each line is a valid JSON object.
+             Verify: run the command against a history directory that holds two records for issue 7 and pipe stdout through `jq -c .`; it prints two objects and exits 0.
+          2. Each object has the keys `issue`, `title`, `status`, `started_at` and `duration`.
+             Verify: pipe the same output through `jq -e 'has("issue") and has("title") and has("status") and has("started_at") and has("duration")'`; it exits 0 for every line.
+          3. Empty input writes nothing and returns no error, as the CSV exporter does (internal/export/csv.go:19).
+             Verify: run the command for an issue whose record list is empty; stdout is empty and the exit code is 0.
+          4. A write failure is returned as an error that names the failing record index.
+             Verify: run the unit test that passes a writer which fails on the second write; the returned error contains `record 1`.
+          5. `jsonl` is a registered format, and the error for an unknown format lists `jsonl` among the valid keys.
+             Verify: run `kairon export --format nope`; it exits 1 and stderr contains `jsonl`.
+
+          ## Dependencies
+
+          Dependencies: #512, #519
