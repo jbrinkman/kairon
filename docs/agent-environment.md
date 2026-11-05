@@ -1,7 +1,8 @@
 # How agents find `kairon`
 
 Agent prompts run `kairon` subcommands, for example `kairon scope check` and `kairon plan parse` in krew-lead. An agent
-always reaches the **same `kairon` binary that started it**, whether or not any `kairon` is installed on your `PATH`.
+always reaches **the `kairon` binary file that started Kairon** (the path `os.Executable()` reports, symlinks
+resolved), whether or not any `kairon` is installed on your `PATH`.
 Running the watcher from a build that is not installed (for example `./dist/kairon`) works the same as running an
 installed one.
 
@@ -13,6 +14,10 @@ When the watcher and TUI start (`kairon` with no subcommand), Kairon:
 2. Creates `.kairon/bin/` under the project root if needed. The directory holds one entry, a `kairon` symlink to the
    running binary. Kairon replaces the symlink at every start, so a link left by an older binary is updated. Nothing
    else from the binary's own directory is exposed.
+
+The link names the binary's path, not a copy. If you rebuild that file in place while Kairon is running (for example
+`task build` over `./dist/kairon`), agents started afterwards run the new build; restart Kairon to bring the watcher
+itself up to date.
 
 Every `kiro-cli` agent process Kairon starts then gets this environment:
 
