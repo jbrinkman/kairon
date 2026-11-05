@@ -193,6 +193,18 @@ func (m *Manager) startIntake(issue int) (run *intakeRun, started bool, err erro
 		m.mu.Unlock()
 		return nil, false, nil
 	}
+	// The run holds the issue's slot until endIntake releases it, so the slot
+	// stays taken across attempt retries. Nothing below is created before the
+	// reservation succeeds.
+	if err := m.reserveSlotLocked(issue); err != nil {
+		m.mu.Unlock()
+		if errors.Is(err, errSlotHeld) {
+			// Another run holds the issue (a krew-lead retry waiting to
+			// start): the same answer as an active run.
+			return nil, false, nil
+		}
+		return nil, false, err
+	}
 	run = &intakeRun{
 		issue:   issue,
 		attempt: 1,
@@ -389,6 +401,9 @@ func (m *Manager) endIntake(a *Agent, res IntakeResult) {
 	} else {
 		a.Status = StatusFailed
 	}
+	// Every intake exit passes the status check above once, so the slot is
+	// released once, in the same critical section that ends the run.
+	m.releaseSlotLocked(run.issue)
 	res.Issue, res.Attempts = run.issue, run.attempt
 	run.result = res
 	m.statusGen.Add(1)
@@ -599,6 +614,43 @@ func livePIDMarker(issue int) bool {
 	}
 	removePIDMarker(issue)
 	return false
+}
+
+// orphanIntakeCountLocked counts intake processes that this manager does not
+// track: issues with a live PID marker that are not in the slot table. A run
+// the manager started is already in the table, so it is counted once. The
+// caller must hold m.mu.
+func (m *Manager) orphanIntakeCountLocked() int {
+	markers, err := filepath.Glob(filepath.Join(".kairon", "intake", "issue-*.pid"))
+	if err != nil {
+		return 0
+	}
+	n := 0
+	for _, path := range markers {
+		issue, ok := issueOfPIDMarker(path)
+		if !ok {
+			continue
+		}
+		if _, held := m.slots[issue]; held {
+			continue
+		}
+		if livePIDMarker(issue) {
+			n++
+		}
+	}
+	return n
+}
+
+// issueOfPIDMarker returns the issue number a PID marker path names. It
+// accepts only the exact name intakePIDPath writes.
+func issueOfPIDMarker(path string) (int, bool) {
+	name := filepath.Base(path)
+	digits := strings.TrimSuffix(strings.TrimPrefix(name, "issue-"), ".pid")
+	issue, err := strconv.Atoi(digits)
+	if err != nil || issue <= 0 || name != filepath.Base(intakePIDPath(issue)) {
+		return 0, false
+	}
+	return issue, true
 }
 
 func processAlive(pid int) bool {

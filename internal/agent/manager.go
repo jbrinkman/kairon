@@ -248,9 +248,11 @@ func (m *Manager) releaseSlotLocked(issue int) {
 	delete(m.slots, issue)
 }
 
-// usedLocked is the number of agent slots taken. The caller must hold m.mu.
+// usedLocked is the number of agent slots taken: the issues in the slot table,
+// plus intake processes left by a previous watcher, which are known only by a
+// live PID marker (see orphanIntakeCountLocked). The caller must hold m.mu.
 func (m *Manager) usedLocked() int {
-	return len(m.slots)
+	return len(m.slots) + m.orphanIntakeCountLocked()
 }
 
 // Slots reports how many agent slots are taken and the limit.
