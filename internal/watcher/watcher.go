@@ -199,6 +199,11 @@ func (w *Watcher) checkIssues() {
 	eligible := slices.Clone(sel.Eligible)
 	slices.SortStableFunc(eligible, func(a, b github.Issue) int { return cmp.Compare(a.Number, b.Number) })
 
+	// full records that an issue in this poll found no free slot, and the
+	// numbers it saw. See the capacity gate below.
+	var full bool
+	var fullUsed, fullMax int
+
 	for _, issue := range eligible {
 		w.mu.RLock()
 		tracked := w.tracked[issue.Number]
@@ -255,7 +260,21 @@ func (w *Watcher) checkIssues() {
 		// retry budget and is considered again on the next poll. The slots
 		// are re-read for each issue: one spawn can take a slot (an intake
 		// start does too), so the rest of the poll sees the new count.
+		//
+		// Deviation from spec "Watcher: sort, then fill free slots" ("the
+		// slots are re-read for each issue"): they are re-read only until an
+		// issue waits. After that every younger issue in the poll waits too,
+		// logged with the numbers the older one saw. Dependency validation
+		// reads GitHub between two gates, so a run can exit in between; a
+		// re-read would then hand the freed slot to a younger issue ahead of
+		// the older one still waiting, which breaks AC2 (free slots go to the
+		// oldest eligible issue). The older issue gets the slot next poll.
+		if full {
+			logWaiting(issue.Number, fullUsed, fullMax)
+			continue
+		}
 		if used, max := w.slots(); used >= max {
+			full, fullUsed, fullMax = true, used, max
 			logWaiting(issue.Number, used, max)
 			continue
 		}
@@ -294,6 +313,8 @@ func (w *Watcher) checkIssues() {
 				// it does not burn retry budget it never used.
 				if atCapacity {
 					used, max := w.slots()
+					// Younger issues wait behind this one; see the gate.
+					full, fullUsed, fullMax = true, used, max
 					logWaiting(issue.Number, used, max)
 				} else {
 					log.Printf("[watcher] issue #%d not admitted for implementation: %v", issue.Number, err)

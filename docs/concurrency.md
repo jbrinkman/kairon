@@ -64,6 +64,10 @@ Because the capacity check is last, an older issue that is blocked (for example 
 slot and is not reported as waiting. The next-oldest issue that could start does. The free count is read again before
 each issue, so when the first issue of a poll takes the last slot, the remaining issues wait in that same poll.
 
+Once an issue waits, every younger issue that could start waits too for the rest of that poll, even if a run ends and
+frees a slot before the watcher reaches it. The freed slot goes to the older waiting issue on the next poll, so a
+younger issue never starts ahead of an older one that is waiting.
+
 A freed slot is used by the next poll, not immediately. With the default `poll_interval` of `5m`, a waiting issue can
 start up to five minutes after a slot frees.
 
