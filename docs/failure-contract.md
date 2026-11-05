@@ -146,39 +146,56 @@ when the comment and the label are both in place.
 stage and guard, the attempts made, what was expected, what was actually found, the remedy, and how to restart.
 
 ````markdown
-<!-- kairon:punch-out run=3f9c2a71b0d44e5a8c61d2e7 -->
+<!-- kairon:punch-out run=run-1 -->
 
 **Kairon stopped work on this issue and needs a human.**
 
 - Stage: `krew-lead`
 - Guard: `implementation-run`
-- Attempts made: 4 of 4
+- Attempts made: 2 of 3
 
 **Expected**
 
-```
-krew-lead exits 0 and a pull request exists for issue #379
-```
+A pull request exists for issue `#42` and docs/issue-&lt;number>.md is written.
 
 **Actual**
 
-```
-krew-lead exited with code 1
-```
+krew-lead exited 1 after `@alice` restarted it.
+The log is .kairon/logs/issue-42.log.
 
 **Remedy**
 
-Read the agent log at .kairon/logs/issue-379.log to see why the run failed, fix the cause, then remove the `kairon-failed` label.
+Read .kairon/logs/issue-42.log and fix the cause.
 
-To restart this issue, fix the cause and remove the `kairon-failed` label. The workflow picks the issue up again with a fresh retry budget.
+To restart this issue, fix the cause and remove the `kairon-failed` label. The pipeline picks the issue up again with a fresh retry budget.
 ````
 
 If the caller supplies no remedy, the default is "Make this true, then remove the label" followed by the expected
-value.
+value, shown as text under the same rules as the Expected section.
 
 Expected, Actual and the default remedy can carry agent output, so they are treated as untrusted text. Each is
-truncated to 2000 runes and placed in a code fence that is longer than any run of backticks inside it, so the text
-cannot close the fence. The stage, guard and label are collapsed to one line with backticks removed.
+truncated to 2000 runes, and a truncated value is followed by a blank line and the note
+`_(truncated to 2000 characters)_`. A caller-supplied remedy is truncated the same way and written as is. The three
+values are rendered as Markdown text that shows as typed and cannot act:
+
+- **Paragraphs.** A blank line separates paragraphs, and a single newline inside a paragraph is a line break.
+- **Fences the value contains.** A fence is kept when its opener has no more than one leading space. If the cut to
+  2000 runes falls inside a kept fence, the fence is closed.
+- **Preformatted values.** If any line of the value starts with a tab or two or more spaces, the whole value goes in
+  one code fence that is longer than any run of backticks inside it. This includes a fence-looking line indented by 2
+  or 3 spaces, for example one under a list item, because such a fence would end early. A Go stack trace is the
+  usual case.
+- **Mentions, references and URLs.** `@name`, `@org/team`, `#N`, `GH-N`, `owner/repo#N` and bare URLs are wrapped in
+  inline code, so they show as typed and do not notify anyone or link to anything.
+- **Links and images.** Links, reference links and images are wrapped in inline code and show as typed. This covers
+  link text that holds brackets and links that run over several lines. A token that runs over several lines gets one
+  code span per line.
+- **Left brackets.** A `[` that is not part of a wrapped link or image (a shortcut reference, a definition line, link
+  text with no tail) is written `\[`, so it shows as typed and no link or reference definition can form.
+- **Angle brackets.** Outside code, `<` is written `&lt;`, so a placeholder such as `issue-<number>-<slug>.md`
+  shows as typed and no HTML or HTML comment acts.
+
+The stage, guard and label are collapsed to one line with backticks removed.
 
 ## Run id and marker
 

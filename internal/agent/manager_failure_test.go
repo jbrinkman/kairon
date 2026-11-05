@@ -194,7 +194,7 @@ func assertCommentThenLabel(t *testing.T, h *harness, wantAttempts string) {
 		t.Fatalf("writes = %v, want %v", got, want)
 	}
 	body := h.issues.comments[0].Body
-	for _, s := range []string{"krew-lead", wantAttempts, "issue #42", ".kairon/logs/issue-42.log", "kairon-failed"} {
+	for _, s := range []string{"krew-lead", wantAttempts, "issue `#42`", ".kairon/logs/issue-42.log", "kairon-failed"} {
 		if !strings.Contains(body, s) {
 			t.Errorf("comment missing %q:\n%s", s, body)
 		}
