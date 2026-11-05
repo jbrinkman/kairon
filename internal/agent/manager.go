@@ -74,6 +74,10 @@ var (
 	// ends on its own and calls the release callback; a later poll sees the
 	// stamped body.
 	ErrIntakePending = errors.New("agent: intake is running for the issue")
+	// ErrAtCapacity means every agent slot is taken. Nothing was spawned.
+	ErrAtCapacity = errors.New("agent: no free agent slot")
+	// errSlotHeld means the issue already holds a slot: a run for it is going.
+	errSlotHeld = errors.New("agent: issue already holds an agent slot")
 )
 
 // GitHub is every GitHub port the manager uses: the boundary's read, the
@@ -109,6 +113,9 @@ type Options struct {
 	CreateWorktree func(name string) (string, error)
 	StartAgent     func(*exec.Cmd) error
 	MonitorAgent   func(*Agent, *exec.Cmd)
+	// PRExists replaces the check HandleExit runs before it marks an exit-0 run
+	// done. Nil means github.PRExistsForIssue.
+	PRExists func(repo string, issue int) (bool, error)
 }
 
 type Manager struct {
@@ -157,6 +164,10 @@ type Manager struct {
 	// so no test launches kiro-cli.
 	start   func(*exec.Cmd) error
 	monitor func(*Agent, *exec.Cmd)
+
+	// maxAgents and slots are guarded by mu.
+	maxAgents int
+	slots     map[int]struct{}
 }
 
 func NewManager(cfg *config.Config) *Manager {
@@ -176,6 +187,8 @@ func NewManagerWithOptions(cfg *config.Config, opts Options) *Manager {
 		issues:        gh,
 		github:        gh,
 		prExists:      github.PRExistsForIssue,
+		maxAgents:     cfg.EffectiveMaxAgents(),
+		slots:         make(map[int]struct{}),
 	}
 	m.retry = m.retryAgent
 	m.cleanup = m.performCleanup
@@ -206,7 +219,74 @@ func NewManagerWithOptions(cfg *config.Config, opts Options) *Manager {
 	if opts.MonitorAgent != nil {
 		m.monitor = opts.MonitorAgent
 	}
+	if opts.PRExists != nil {
+		m.prExists = opts.PRExists
+	}
 	return m
+}
+
+// reserveSlotLocked takes the issue's agent slot. The count check and the
+// insert are one step under m.mu, so two callers cannot both take the last
+// slot. It returns errSlotHeld when the issue already holds a slot, and an
+// error wrapping ErrAtCapacity (with the used/max numbers) when the table is
+// full. The caller must hold m.mu.
+func (m *Manager) reserveSlotLocked(issue int) error {
+	if _, held := m.slots[issue]; held {
+		return errSlotHeld
+	}
+	if used := m.usedLocked(); used >= m.maxAgents {
+		return fmt.Errorf("%w (%d/%d running)", ErrAtCapacity, used, m.maxAgents)
+	}
+	m.slots[issue] = struct{}{}
+	return nil
+}
+
+// releaseSlotLocked frees the issue's slot. Releasing a slot that is not held
+// is a no-op, so a duplicated exit callback cannot release twice. The caller
+// must hold m.mu.
+func (m *Manager) releaseSlotLocked(issue int) {
+	delete(m.slots, issue)
+}
+
+// usedLocked is the number of agent slots taken. The caller must hold m.mu.
+func (m *Manager) usedLocked() int {
+	return len(m.slots)
+}
+
+// Slots reports how many agent slots are taken and the limit.
+func (m *Manager) Slots() (used, max int) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.usedLocked(), m.maxAgents
+}
+
+// earlyCapacityCheck is Spawn's cheap read-only check, made before admission so
+// a poll that races a full table does no GitHub read, writes no input document
+// and cannot start intake. It reserves nothing: the authoritative reservation
+// is the locked one after admission.
+//
+// Addition to spec "Chosen design" item 6 (the early check is capacity only):
+// an issue that already holds a slot is also refused here with ErrNotAdmitted,
+// the same answer item 4 gives at the reservation. Without it a second Spawn
+// for a held issue would read GitHub and rewrite the running agent's input
+// document (same path) before the reservation refused it. The reservation
+// still maps errSlotHeld, for the race where the slot is taken during admission.
+func (m *Manager) earlyCapacityCheck(issue int) error {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	if _, held := m.slots[issue]; held {
+		return errSlotHeldAsNotAdmitted()
+	}
+	if used := m.usedLocked(); used >= m.maxAgents {
+		return fmt.Errorf("%w (%d/%d running)", ErrAtCapacity, used, m.maxAgents)
+	}
+	return nil
+}
+
+// errSlotHeldAsNotAdmitted is the error Spawn returns for an issue that
+// already holds a slot.
+func errSlotHeldAsNotAdmitted() error {
+	return fmt.Errorf("%w: a run for the issue is already going", ErrNotAdmitted)
 }
 
 // SetUntrack wires the callback retryAgent invokes when a retry cannot start
@@ -376,11 +456,18 @@ func (m *Manager) ResumeOutputCapture() {
 // admitIssue runs the boundary for an issue. It returns the result and a nil
 // error only when the issue is admitted with a document. Otherwise the error
 // wraps ErrNotAdmitted (skipped or punch-out; res says which) or
-// ErrAdmissionUnavailable (the boundary could not decide; res is zero). It
+// ErrAdmissionUnavailable (the boundary could not decide; res is zero), or is
+// an ErrAtCapacity error unchanged (intake had no free slot). It
 // takes no lock and writes nothing: the caller enacts a punch-out.
 func (m *Manager) admitIssue(issueNumber int, repo string) (boundary.Result, error) {
 	res, err := m.admit(repo, issueNumber)
 	if err != nil {
+		// Intake could not start because every slot is taken. That is not an
+		// admission failure, so callers must see ErrAtCapacity itself.
+		if errors.Is(err, ErrAtCapacity) {
+			log.Printf("[agent] could not start intake for issue #%d: %v", issueNumber, err)
+			return boundary.Result{}, err
+		}
 		log.Printf("[agent] could not verify issue #%d: %v", issueNumber, err)
 		return boundary.Result{}, fmt.Errorf("%w: %v", ErrAdmissionUnavailable, err)
 	}
@@ -445,6 +532,11 @@ func (m *Manager) Spawn(issueNumber int, repo string) (*Agent, error) {
 	if m.IntakeActive(issueNumber) {
 		return nil, fmt.Errorf("%w: %s", ErrIntakePending, boundary.SkipIntakeRunning)
 	}
+	// Refuse before any GitHub read or file write when no slot is free, or the
+	// issue already has a run.
+	if err := m.earlyCapacityCheck(issueNumber); err != nil {
+		return nil, err
+	}
 	// Admission does GitHub I/O and may punch the issue out, so it runs before
 	// m.mu is taken and before anything (worktree, file, process) is created.
 	res, err := m.admitIssue(issueNumber, repo)
@@ -471,6 +563,26 @@ func (m *Manager) Spawn(issueNumber int, repo string) (*Agent, error) {
 		m.removeInputFile(issueNumber)
 		return nil, fmt.Errorf("%w: %s", ErrIntakePending, boundary.SkipIntakeRunning)
 	}
+
+	// Take the issue's slot before anything (worktree, log file, process) is
+	// created, in the same critical section as the intake check above.
+	if err := m.reserveSlotLocked(issueNumber); err != nil {
+		if errors.Is(err, errSlotHeld) {
+			// A run for the issue is going and owns the input document, so it
+			// is left in place.
+			return nil, errSlotHeldAsNotAdmitted()
+		}
+		m.removeInputFile(issueNumber)
+		return nil, err
+	}
+	// Every error return below gives the slot back. This deferred func runs
+	// before the deferred Unlock above (LIFO), so m.mu is still held.
+	spawned := false
+	defer func() {
+		if !spawned {
+			m.releaseSlotLocked(issueNumber)
+		}
+	}()
 
 	id := fmt.Sprintf("agent-%d-%d", issueNumber, time.Now().Unix())
 
@@ -525,6 +637,7 @@ func (m *Manager) Spawn(issueNumber int, repo string) (*Agent, error) {
 	}
 
 	m.agents[id] = agent
+	spawned = true // the slot stays held until the run ends for good
 	m.statusGen.Add(1)
 	log.Printf("[agent] spawned for issue #%d (worktree: %s, log: %s)", issueNumber, worktreeName, agentLogPath)
 
@@ -649,12 +762,13 @@ func (m *Manager) HandleExit(id string, exitCode int) {
 				return
 			}
 			updatedAgent.Status = StatusCompleted
+			m.releaseSlotLocked(issueNumber)
 			m.statusGen.Add(1)
 			log.Printf("[agent] %s completed successfully with PR (issue #%d)", id, updatedAgent.IssueNumber)
 			doneLabel := m.config.Label + "-done"
 			m.mu.Unlock()
 
-			if err := github.AddLabel(m.config.Repo, issueNumber, doneLabel); err != nil {
+			if err := m.issues.AddLabel(m.config.Repo, issueNumber, doneLabel); err != nil {
 				log.Printf("[agent] failed to add %s label to issue #%d: %v", doneLabel, issueNumber, err)
 			}
 			// Clean up only on a successful completion. The no-PR branch either
@@ -717,6 +831,9 @@ func (m *Manager) decideFailureLocked(id string, a *Agent, actual string) (punch
 		go m.retry(a)
 		return false, "", fc
 	}
+	// Terminal: the run ends here, so its slot is free. The retry branch above
+	// keeps the slot across the failed gap and the retry's sleep.
+	m.releaseSlotLocked(a.IssueNumber)
 	if a.RunID == "" {
 		a.RunID = failure.NewRunID()
 	}
@@ -829,6 +946,7 @@ func (m *Manager) retryAgent(agent *Agent) {
 	failRetry := func() {
 		m.mu.Lock()
 		agent.Status = StatusFailed
+		m.releaseSlotLocked(agent.IssueNumber)
 		m.statusGen.Add(1)
 		m.mu.Unlock()
 	}
