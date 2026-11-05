@@ -9,7 +9,9 @@ import (
 	"strings"
 )
 
-var Templates embed.FS
+// Templates is the tree Extract reads from: the binary's embedded templates in
+// production, any fs.FS in tests.
+var Templates fs.FS = embed.FS{}
 
 func SetTemplates(templates embed.FS) {
 	Templates = templates

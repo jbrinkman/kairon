@@ -9,7 +9,10 @@ var initCmd = &cobra.Command{
 	Use:   "init",
 	Short: "Extract project templates",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		return templates.Extract("templates", ".", false)
+		if err := templates.Extract("templates", ".", false); err != nil {
+			return err
+		}
+		return templates.EnsureIgnored(".")
 	},
 }
 

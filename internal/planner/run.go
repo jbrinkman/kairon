@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/jbrinkman/kairon/internal/guard"
+	"github.com/jbrinkman/kairon/internal/kaironbin"
 	"github.com/jbrinkman/kairon/internal/stageoutput"
 )
 
@@ -40,6 +41,7 @@ func KiroArgs(agent, prompt string) []string {
 func AutomatedCommand(prompt, dir string) *exec.Cmd {
 	cmd := exec.Command(KiroCommand, KiroArgs(AgentAutomated, prompt)...)
 	cmd.Dir = dir
+	cmd.Env = kaironbin.Environ()
 	return cmd
 }
 

@@ -19,6 +19,7 @@ import (
 	"github.com/jbrinkman/kairon/internal/failure"
 	"github.com/jbrinkman/kairon/internal/github"
 	"github.com/jbrinkman/kairon/internal/guard"
+	"github.com/jbrinkman/kairon/internal/kaironbin"
 	"github.com/jbrinkman/kairon/internal/planner"
 	"github.com/jbrinkman/kairon/internal/provenance"
 	"github.com/jbrinkman/kairon/internal/stageoutput"
@@ -430,7 +431,7 @@ func (m *Manager) agentCommand(issueNumber int, repo, worktreeName, worktreePath
 	outputWriter := io.MultiWriter(writers...)
 	cmd.Stdout = outputWriter
 	cmd.Stderr = outputWriter
-	cmd.Env = append(os.Environ(),
+	cmd.Env = append(kaironbin.Environ(),
 		fmt.Sprintf("ISSUE_NUMBER=%d", issueNumber),
 		fmt.Sprintf("REPO=%s", repo),
 		fmt.Sprintf("KAIRON_WATCHER_PID=%d", os.Getpid()),

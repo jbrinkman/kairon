@@ -10,6 +10,7 @@ import (
 	"github.com/jbrinkman/kairon/internal/agent"
 	"github.com/jbrinkman/kairon/internal/config"
 	"github.com/jbrinkman/kairon/internal/github"
+	"github.com/jbrinkman/kairon/internal/kaironbin"
 	"github.com/jbrinkman/kairon/internal/tui"
 	"github.com/jbrinkman/kairon/internal/version"
 	"github.com/jbrinkman/kairon/internal/watcher"
@@ -41,6 +42,13 @@ var rootCmd = &cobra.Command{
 		cfg, err := config.Load()
 		if err != nil {
 			return fmt.Errorf("failed to load config: %w", err)
+		}
+
+		// Point .kairon/bin/kairon at this binary before any agent can start,
+		// so agents that run kairon subcommands reach the binary that started
+		// them (internal/kaironbin).
+		if err := kaironbin.Install(); err != nil {
+			return fmt.Errorf("exposing kairon to agents: %w", err)
 		}
 
 		manager := agent.NewManager(cfg)

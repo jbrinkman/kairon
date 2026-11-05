@@ -184,7 +184,9 @@ Rules:
 
 The document carries content only. Everything operational is unchanged: the instruction sentence still names the issue,
 repo and worktree name, the process runs in the worktree directory, and the environment still has `ISSUE_NUMBER`,
-`REPO`, `KAIRON_WATCHER_PID` and `WORKTREE_PATH`. `KAIRON_INPUT_DOCUMENT` is the only addition.
+`REPO`, `KAIRON_WATCHER_PID` and `WORKTREE_PATH`. `KAIRON_INPUT_DOCUMENT` is the only addition from the boundary.
+(`PATH` and `KAIRON_BIN` are set for every agent process so it reaches the running `kairon`; see
+[agent-environment.md](agent-environment.md).)
 
 ## Out of scope
 
