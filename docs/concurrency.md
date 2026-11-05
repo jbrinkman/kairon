@@ -131,4 +131,5 @@ new starts until enough runs end.
 Exiting Kairon stops the agents it is running. Check `status` first, and wait until the agents you care about have
 finished. `exit` asks for confirmation while agents are still running.
 
-A higher value runs more issues in parallel, and each running issue is a separate `kiro-cli` agent in its own worktree.
+A higher value runs more issues in parallel. Each running issue is a separate `kiro-cli` agent: an implementation run
+works in its own worktree, and an intake run works in the directory Kairon was started from.
