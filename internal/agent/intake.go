@@ -586,8 +586,11 @@ func (m *Manager) releaseFailed(issue int, failedLabel string, pending bool) (bo
 }
 
 // pidMarker is one kind of PID marker: a file .kairon/<dir>/issue-<n>.pid
-// holding the process ID of a run for issue n. A marker outlives the watcher
-// that wrote it, so a restarted watcher can still see a run that is going.
+// holding "<pid> <start>" for a run of issue n, where <start> is the process's
+// start time (see processStart). A marker outlives the watcher that wrote it,
+// so a restarted watcher can still see a run that is going. The start time
+// tells that run apart from an unrelated process the OS later gave the same
+// PID. On a platform with no start time the marker holds the PID alone.
 type pidMarker struct{ dir string }
 
 var (
@@ -605,7 +608,11 @@ func (k pidMarker) write(issue, pid int) error {
 	if err := os.MkdirAll(k.dir, 0o755); err != nil {
 		return err
 	}
-	return os.WriteFile(k.path(issue), []byte(strconv.Itoa(pid)+"\n"), 0o644)
+	content := strconv.Itoa(pid)
+	if start, ok := processStart(pid); ok {
+		content += " " + start
+	}
+	return os.WriteFile(k.path(issue), []byte(content+"\n"), 0o644)
 }
 
 func (k pidMarker) remove(issue int) {
@@ -614,19 +621,35 @@ func (k pidMarker) remove(issue int) {
 	}
 }
 
-// live reports whether the issue's marker names a live process. A marker for a
-// dead process is stale and is removed.
+// live reports whether the issue's marker names a live process that is the one
+// it recorded. A marker for a dead process, or for a PID now held by a process
+// with a different start time, is stale and is removed. A marker with no start
+// time is checked for liveness only.
 func (k pidMarker) live(issue int) bool {
 	data, err := os.ReadFile(k.path(issue))
 	if err != nil {
 		return false
 	}
-	pid, err := strconv.Atoi(strings.TrimSpace(string(data)))
-	if err == nil && pid > 0 && processAlive(pid) {
+	if markerLive(strings.Fields(string(data))) {
 		return true
 	}
 	k.remove(issue)
 	return false
+}
+
+func markerLive(fields []string) bool {
+	if len(fields) < 1 || len(fields) > 2 {
+		return false
+	}
+	pid, err := strconv.Atoi(fields[0])
+	if err != nil || pid <= 0 || !processAlive(pid) {
+		return false
+	}
+	if len(fields) == 1 {
+		return true
+	}
+	start, ok := processStart(pid)
+	return !ok || start == fields[1]
 }
 
 // issues returns the issue numbers that have a marker file of this kind.

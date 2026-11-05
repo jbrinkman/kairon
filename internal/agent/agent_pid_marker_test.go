@@ -82,8 +82,8 @@ func TestImplementationRunRecordsAndClearsPIDMarker(t *testing.T) {
 	if err != nil {
 		t.Fatalf("no PID marker after start: %v", err)
 	}
-	if got := strings.TrimSpace(string(data)); got != strconv.Itoa(started.Process.Pid) {
-		t.Errorf("marker = %q, want pid %d", got, started.Process.Pid)
+	if got := strings.Fields(string(data)); len(got) == 0 || got[0] != strconv.Itoa(started.Process.Pid) {
+		t.Errorf("marker = %q, want it to start with pid %d", data, started.Process.Pid)
 	}
 
 	if err := started.Process.Kill(); err != nil {

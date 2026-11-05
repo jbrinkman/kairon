@@ -113,11 +113,16 @@ closed or done, or a run for the issue is already going.
 ## Runs left by a previous watcher
 
 An intake or implementation run can outlive the Kairon process that started it, for example when Kairon crashes or is
-killed. Such a run is known only by its PID marker, which holds the agent's process ID while that process runs:
-`.kairon/intake/issue-<number>.pid` for an intake run and `.kairon/agents/issue-<number>.pid` for an implementation
-run. A new Kairon counts each issue with a marker whose process is still alive as one taken slot, unless the issue is
-already in its own slot table, so a run is never counted twice. A marker whose process is dead is stale: it is removed
-and does not count. When the process ends, its marker is removed and the slot is free.
+killed. Such a run is known only by its PID marker, which holds the agent's process ID and start time while that
+process runs: `.kairon/intake/issue-<number>.pid` for an intake run and `.kairon/agents/issue-<number>.pid` for an
+implementation run. A new Kairon counts each issue with a marker whose process is still alive as one taken slot, unless
+the issue is already in its own slot table, so a run is never counted twice. A marker is stale when its process is dead,
+or when its process ID now belongs to a process with a different start time (the operating system reused the ID after
+the run ended). A stale marker is removed and does not count. When the process ends, its marker is removed and the slot
+is free.
+
+The start time is read from the operating system on macOS and Linux. On other platforms the marker holds the process ID
+alone and only liveness is checked.
 
 Without this count, a restart could run more than `max_agents` agents. If you lower `max_agents` while such runs are
 still going, the first number in the log line can be larger than the second (for example `4/3 running`), and nothing
