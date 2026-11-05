@@ -249,10 +249,10 @@ func (m *Manager) releaseSlotLocked(issue int) {
 }
 
 // usedLocked is the number of agent slots taken: the issues in the slot table,
-// plus intake processes left by a previous watcher, which are known only by a
-// live PID marker (see orphanIntakeCountLocked). The caller must hold m.mu.
+// plus runs left by a previous watcher, which are known only by a live PID
+// marker (see orphanCountLocked). The caller must hold m.mu.
 func (m *Manager) usedLocked() int {
-	return len(m.slots) + m.orphanIntakeCountLocked()
+	return len(m.slots) + m.orphanCountLocked()
 }
 
 // Slots reports how many agent slots are taken and the limit.
@@ -624,6 +624,7 @@ func (m *Manager) Spawn(issueNumber int, repo string) (*Agent, error) {
 		log.Printf("[agent] failed to spawn agent %s for issue #%d: %v", id, issueNumber, err)
 		return nil, fmt.Errorf("%w: failed to start agent: %v", ErrAdmissionUnavailable, err)
 	}
+	recordAgentProcess(issueNumber, cmd)
 
 	agent := &Agent{
 		ID:          id,
@@ -914,8 +915,42 @@ func (m *Manager) monitorAgent(agent *Agent, cmd *exec.Cmd) {
 		}
 	}()
 
-	err := cmd.Wait()
+	exitCode := m.waitAgent(agent, cmd)
 	close(done)
+
+	elapsed := time.Since(agent.StartTime).Truncate(time.Second)
+	if exitCode == 0 {
+		log.Printf("[agent] finished issue #%d (%s elapsed)", agent.IssueNumber, elapsed)
+	} else {
+		log.Printf("[agent] failed issue #%d (exit %d, %s elapsed)", agent.IssueNumber, exitCode, elapsed)
+	}
+
+	m.HandleExit(agent.ID, exitCode)
+}
+
+// recordAgentProcess writes the PID marker of a started implementation run, so
+// a watcher restarted after a crash still counts the run toward max_agents.
+//
+// Deviation from spec "Chosen design" item 5, which counts only intake runs
+// left by an earlier process: an implementation run outlives a crashed or
+// killed watcher just the same (nothing stops the kiro-cli process when its
+// parent dies), and without its marker a restarted watcher would run more than
+// max_agents agents, which AC1 forbids. The marker uses the intake marker
+// format under .kairon/agents/ and is counted by orphanCountLocked.
+func recordAgentProcess(issue int, cmd *exec.Cmd) {
+	if cmd.Process == nil {
+		return
+	}
+	if err := writeAgentPIDMarker(issue, cmd.Process.Pid); err != nil {
+		log.Printf("[agent] failed to write PID marker for issue #%d: %v", issue, err)
+	}
+}
+
+// waitAgent waits for an implementation run's process to exit, removes its PID
+// marker, closes its log file and returns its exit code.
+func (m *Manager) waitAgent(agent *Agent, cmd *exec.Cmd) int {
+	err := cmd.Wait()
+	agentMarkers.remove(agent.IssueNumber)
 
 	if agent.LogFile != nil {
 		agent.LogFile.Close()
@@ -929,15 +964,7 @@ func (m *Manager) monitorAgent(agent *Agent, cmd *exec.Cmd) {
 			exitCode = 1
 		}
 	}
-
-	elapsed := time.Since(agent.StartTime).Truncate(time.Second)
-	if exitCode == 0 {
-		log.Printf("[agent] finished issue #%d (%s elapsed)", agent.IssueNumber, elapsed)
-	} else {
-		log.Printf("[agent] failed issue #%d (exit %d, %s elapsed)", agent.IssueNumber, exitCode, elapsed)
-	}
-
-	m.HandleExit(agent.ID, exitCode)
+	return exitCode
 }
 
 func (m *Manager) retryAgent(agent *Agent) {
@@ -1056,6 +1083,7 @@ func (m *Manager) retryAgent(agent *Agent) {
 		recoverRetry()
 		return
 	}
+	recordAgentProcess(agent.IssueNumber, cmd)
 
 	m.mu.Lock()
 	agent.Process = cmd.Process

@@ -107,9 +107,7 @@ func intakeHaltsPath(issue int) string {
 	return filepath.Join(".kairon", "intake", fmt.Sprintf("issue-%d.halts", issue))
 }
 
-func intakePIDPath(issue int) string {
-	return filepath.Join(".kairon", "intake", fmt.Sprintf("issue-%d.pid", issue))
-}
+func intakePIDPath(issue int) string { return intakeMarkers.path(issue) }
 
 func intakeCommittedPath(issue int) string {
 	return filepath.Join(".kairon", "intake", fmt.Sprintf("issue-%d.committed", issue))
@@ -587,24 +585,39 @@ func (m *Manager) releaseFailed(issue int, failedLabel string, pending bool) (bo
 	return true, nil
 }
 
-// writePIDMarker records the intake process for issue.
-func writePIDMarker(issue, pid int) error {
-	if err := os.MkdirAll(filepath.Dir(intakePIDPath(issue)), 0o755); err != nil {
+// pidMarker is one kind of PID marker: a file .kairon/<dir>/issue-<n>.pid
+// holding the process ID of a run for issue n. A marker outlives the watcher
+// that wrote it, so a restarted watcher can still see a run that is going.
+type pidMarker struct{ dir string }
+
+var (
+	// intakeMarkers record intake (planner-automated) processes.
+	intakeMarkers = pidMarker{dir: filepath.Join(".kairon", "intake")}
+	// agentMarkers record implementation (krew-lead) processes.
+	agentMarkers = pidMarker{dir: filepath.Join(".kairon", "agents")}
+)
+
+func (k pidMarker) path(issue int) string {
+	return filepath.Join(k.dir, fmt.Sprintf("issue-%d.pid", issue))
+}
+
+func (k pidMarker) write(issue, pid int) error {
+	if err := os.MkdirAll(k.dir, 0o755); err != nil {
 		return err
 	}
-	return os.WriteFile(intakePIDPath(issue), []byte(strconv.Itoa(pid)+"\n"), 0o644)
+	return os.WriteFile(k.path(issue), []byte(strconv.Itoa(pid)+"\n"), 0o644)
 }
 
-func removePIDMarker(issue int) {
-	if err := os.Remove(intakePIDPath(issue)); err != nil && !os.IsNotExist(err) {
-		log.Printf("[intake] failed to remove PID marker for issue #%d: %v", issue, err)
+func (k pidMarker) remove(issue int) {
+	if err := os.Remove(k.path(issue)); err != nil && !os.IsNotExist(err) {
+		log.Printf("[agent] failed to remove PID marker %s: %v", k.path(issue), err)
 	}
 }
 
-// livePIDMarker reports whether the issue's PID marker names a live process. A
-// marker for a dead process is stale and is removed.
-func livePIDMarker(issue int) bool {
-	data, err := os.ReadFile(intakePIDPath(issue))
+// live reports whether the issue's marker names a live process. A marker for a
+// dead process is stale and is removed.
+func (k pidMarker) live(issue int) bool {
+	data, err := os.ReadFile(k.path(issue))
 	if err != nil {
 		return false
 	}
@@ -612,45 +625,63 @@ func livePIDMarker(issue int) bool {
 	if err == nil && pid > 0 && processAlive(pid) {
 		return true
 	}
-	removePIDMarker(issue)
+	k.remove(issue)
 	return false
 }
 
-// orphanIntakeCountLocked counts intake processes that this manager does not
-// track: issues with a live PID marker that are not in the slot table. A run
-// the manager started is already in the table, so it is counted once. The
-// caller must hold m.mu.
-func (m *Manager) orphanIntakeCountLocked() int {
-	markers, err := filepath.Glob(filepath.Join(".kairon", "intake", "issue-*.pid"))
+// issues returns the issue numbers that have a marker file of this kind.
+// Files whose names are not exactly issue-<n>.pid are ignored.
+func (k pidMarker) issues() []int {
+	paths, err := filepath.Glob(filepath.Join(k.dir, "issue-*.pid"))
 	if err != nil {
-		return 0
+		return nil
 	}
-	n := 0
-	for _, path := range markers {
-		issue, ok := issueOfPIDMarker(path)
-		if !ok {
+	var out []int
+	for _, path := range paths {
+		name := filepath.Base(path)
+		digits := strings.TrimSuffix(strings.TrimPrefix(name, "issue-"), ".pid")
+		issue, err := strconv.Atoi(digits)
+		if err != nil || issue <= 0 || name != filepath.Base(k.path(issue)) {
 			continue
 		}
-		if _, held := m.slots[issue]; held {
-			continue
-		}
-		if livePIDMarker(issue) {
-			n++
-		}
+		out = append(out, issue)
 	}
-	return n
+	return out
 }
 
-// issueOfPIDMarker returns the issue number a PID marker path names. It
-// accepts only the exact name intakePIDPath writes.
-func issueOfPIDMarker(path string) (int, bool) {
-	name := filepath.Base(path)
-	digits := strings.TrimSuffix(strings.TrimPrefix(name, "issue-"), ".pid")
-	issue, err := strconv.Atoi(digits)
-	if err != nil || issue <= 0 || name != filepath.Base(intakePIDPath(issue)) {
-		return 0, false
+// writePIDMarker records the intake process for issue.
+func writePIDMarker(issue, pid int) error { return intakeMarkers.write(issue, pid) }
+
+func removePIDMarker(issue int) { intakeMarkers.remove(issue) }
+
+// livePIDMarker reports whether the issue's intake marker names a live process.
+func livePIDMarker(issue int) bool { return intakeMarkers.live(issue) }
+
+// writeAgentPIDMarker records the implementation process for issue.
+func writeAgentPIDMarker(issue, pid int) error { return agentMarkers.write(issue, pid) }
+
+func agentPIDPath(issue int) string { return agentMarkers.path(issue) }
+
+// orphanCountLocked counts runs that this manager does not track: issues with a
+// live intake or implementation PID marker that are not in the slot table. A
+// run the manager started is already in the table, so it is counted once, and
+// an issue with both kinds of marker is counted once. The caller must hold m.mu.
+func (m *Manager) orphanCountLocked() int {
+	seen := map[int]bool{}
+	for _, kind := range []pidMarker{intakeMarkers, agentMarkers} {
+		for _, issue := range kind.issues() {
+			if seen[issue] {
+				continue
+			}
+			if _, held := m.slots[issue]; held {
+				continue
+			}
+			if kind.live(issue) {
+				seen[issue] = true
+			}
+		}
 	}
-	return issue, true
+	return len(seen)
 }
 
 func processAlive(pid int) bool {

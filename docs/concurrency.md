@@ -106,13 +106,14 @@ Run `validate` again after a slot frees. `validate` does not queue and does not 
 Results that do not start a run are reported as before and need no slot: the issue is already valid, the issue is
 closed or done, or a run for the issue is already going.
 
-## Intake runs left by a previous watcher
+## Runs left by a previous watcher
 
-An intake run can outlive the Kairon process that started it. Such a run is known only by its PID marker,
-`.kairon/intake/issue-<number>.pid`, which holds the planner process ID while that process runs. A new Kairon counts
-each marker whose process is still alive as one taken slot, unless the issue is already in its own slot table, so a run
-is never counted twice. A marker whose process is dead is stale: it is removed and does not count. When the process
-ends, its marker is removed and the slot is free.
+An intake or implementation run can outlive the Kairon process that started it, for example when Kairon crashes or is
+killed. Such a run is known only by its PID marker, which holds the agent's process ID while that process runs:
+`.kairon/intake/issue-<number>.pid` for an intake run and `.kairon/agents/issue-<number>.pid` for an implementation
+run. A new Kairon counts each issue with a marker whose process is still alive as one taken slot, unless the issue is
+already in its own slot table, so a run is never counted twice. A marker whose process is dead is stale: it is removed
+and does not count. When the process ends, its marker is removed and the slot is free.
 
 Without this count, a restart could run more than `max_agents` agents. If you lower `max_agents` while such runs are
 still going, the first number in the log line can be larger than the second (for example `4/3 running`), and nothing
