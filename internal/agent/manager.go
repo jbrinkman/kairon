@@ -549,12 +549,6 @@ func (m *Manager) Spawn(issueNumber int, repo string) (*Agent, error) {
 		return nil, err
 	}
 
-	inputPath, err := m.writeInput(issueNumber, res.Document)
-	if err != nil {
-		log.Printf("[agent] failed to write input document for issue #%d: %v", issueNumber, err)
-		return nil, fmt.Errorf("%w: failed to write input document: %v", ErrAdmissionUnavailable, err)
-	}
-
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -562,7 +556,6 @@ func (m *Manager) Spawn(issueNumber int, repo string) (*Agent, error) {
 	// unlocked. Checked under the lock startIntake takes, so the two runs
 	// never share the issue.
 	if m.intakeOwnsIssueLocked(issueNumber) {
-		m.removeInputFile(issueNumber)
 		return nil, fmt.Errorf("%w: %s", ErrIntakePending, boundary.SkipIntakeRunning)
 	}
 
@@ -570,11 +563,11 @@ func (m *Manager) Spawn(issueNumber int, repo string) (*Agent, error) {
 	// created, in the same critical section as the intake check above.
 	if err := m.reserveSlotLocked(issueNumber); err != nil {
 		if errors.Is(err, errSlotHeld) {
-			// A run for the issue is going and owns the input document, so it
-			// is left in place.
+			// A run for the issue is going and owns the input document. The
+			// document is written only after the reservation below, so this
+			// call has not touched it.
 			return nil, errSlotHeldAsNotAdmitted()
 		}
-		m.removeInputFile(issueNumber)
 		return nil, err
 	}
 	// Every error return below gives the slot back. This deferred func runs
@@ -585,6 +578,15 @@ func (m *Manager) Spawn(issueNumber int, repo string) (*Agent, error) {
 			m.releaseSlotLocked(issueNumber)
 		}
 	}()
+
+	// Written only once the slot is held, so a call refused above never
+	// replaces the document a running agent reads. The write is a small atomic
+	// rename, so holding m.mu for it is cheap.
+	inputPath, err := m.writeInput(issueNumber, res.Document)
+	if err != nil {
+		log.Printf("[agent] failed to write input document for issue #%d: %v", issueNumber, err)
+		return nil, fmt.Errorf("%w: failed to write input document: %v", ErrAdmissionUnavailable, err)
+	}
 
 	id := fmt.Sprintf("agent-%d-%d", issueNumber, time.Now().Unix())
 
