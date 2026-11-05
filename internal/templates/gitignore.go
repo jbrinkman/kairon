@@ -25,7 +25,9 @@ func EnsureIgnored(destDir string) error {
 	content := string(data)
 	lines := strings.Split(content, "\n")
 	for i := range lines {
-		lines[i] = strings.TrimSpace(lines[i])
+		// Git drops unescaped trailing spaces but keeps leading ones, so an
+		// indented line is a different pattern and must not count as present.
+		lines[i] = strings.TrimRight(lines[i], " \t\r")
 	}
 	var missing []string
 	for _, entry := range IgnoredPaths {

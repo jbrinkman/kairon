@@ -56,4 +56,31 @@ func TestInitIgnoresKaironBinDir(t *testing.T) {
 			t.Fatalf(".gitignore lines = %q, want %q", got, want)
 		}
 	})
+
+	// Git keeps leading spaces as part of a pattern but drops trailing ones,
+	// so only an exact match (ignoring trailing whitespace) counts as present.
+	t.Run("indented entry does not count, trailing whitespace does", func(t *testing.T) {
+		for _, tc := range []struct {
+			existing, want string
+		}{
+			{"  .kairon/bin/\n", "  .kairon/bin/\n.kairon/bin/\n"},
+			{".kairon/bin/ \r\n", ".kairon/bin/ \r\n"},
+		} {
+			t.Chdir(t.TempDir())
+			withTemplates(t, fstest.MapFS{"templates/kairon/config.yaml": {Data: []byte("x: 1\n")}})
+			if err := os.WriteFile(".gitignore", []byte(tc.existing), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if err := initCmd.RunE(initCmd, nil); err != nil {
+				t.Fatal(err)
+			}
+			data, err := os.ReadFile(".gitignore")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(data) != tc.want {
+				t.Errorf("existing %q: .gitignore = %q, want %q", tc.existing, data, tc.want)
+			}
+		}
+	})
 }
