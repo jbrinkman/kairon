@@ -16,6 +16,7 @@ import (
 	"github.com/jbrinkman/kairon/internal/github"
 	"github.com/jbrinkman/kairon/internal/guard"
 	"github.com/jbrinkman/kairon/internal/incidents"
+	"github.com/jbrinkman/kairon/internal/kaironbin"
 	"github.com/jbrinkman/kairon/internal/planner"
 	"github.com/jbrinkman/kairon/internal/session"
 )
@@ -436,7 +437,9 @@ func classicPlanningCmd(sessionID, prompt string) *exec.Cmd {
 	}
 	// Wrap in shell with clear and centered ASCII art banner
 	script := "clear && " + classicPlanningBanner + " && exec kiro-cli \"$@\""
-	return exec.Command("sh", append([]string{"-c", script, "sh"}, args...)...)
+	cmd := exec.Command("sh", append([]string{"-c", script, "sh"}, args...)...)
+	cmd.Env = kaironbin.Environ()
+	return cmd
 }
 
 // classicResume returns the Resume function for a classic planning session:

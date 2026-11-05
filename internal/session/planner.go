@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"sync"
 
+	"github.com/jbrinkman/kairon/internal/kaironbin"
 	"github.com/jbrinkman/kairon/internal/logging"
 )
 
@@ -22,13 +23,21 @@ type PlannerProcess struct {
 	cancel context.CancelFunc
 }
 
+// plannerCommand builds, without starting it, the kiro-cli chat process for a
+// planning session.
+func plannerCommand(ctx context.Context) *exec.Cmd {
+	cmd := exec.CommandContext(ctx, "kiro-cli", "chat")
+	cmd.Env = kaironbin.Environ()
+	return cmd
+}
+
 // NewPlannerProcess starts a new kiro-cli subprocess for planning
 func NewPlannerProcess() (*PlannerProcess, error) {
 	logging.Info("starting new planner process")
 
 	ctx, cancel := context.WithCancel(context.Background())
 
-	cmd := exec.CommandContext(ctx, "kiro-cli", "chat")
+	cmd := plannerCommand(ctx)
 
 	stdin, err := cmd.StdinPipe()
 	if err != nil {

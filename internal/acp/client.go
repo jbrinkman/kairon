@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/coder/acp-go-sdk"
+	"github.com/jbrinkman/kairon/internal/kaironbin"
 	"github.com/jbrinkman/kairon/internal/logging"
 )
 
@@ -153,6 +154,14 @@ func NewClient(config *ConnectionConfig) *KiroACPClient {
 	}
 }
 
+// command builds, without starting it, the kiro-cli process in ACP mode for
+// the configured agent.
+func (c *KiroACPClient) command(ctx context.Context) *exec.Cmd {
+	cmd := exec.CommandContext(ctx, c.config.KiroCLIPath, "acp", "--agent", c.config.Agent)
+	cmd.Env = kaironbin.Environ()
+	return cmd
+}
+
 // Connect establishes a connection to the ACP server via Kiro CLI
 func (c *KiroACPClient) Connect(ctx context.Context) error {
 	c.mu.Lock()
@@ -171,9 +180,7 @@ func (c *KiroACPClient) Connect(ctx context.Context) error {
 		return ErrAlreadyConnected
 	}
 
-	// Start kiro-cli in ACP mode with agent flag
-	args := []string{"acp", "--agent", c.config.Agent}
-	cmd := exec.CommandContext(ctx, c.config.KiroCLIPath, args...)
+	cmd := c.command(ctx)
 
 	// Get pipes for stdin/stdout communication
 	stdin, err := cmd.StdinPipe()
