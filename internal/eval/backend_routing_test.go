@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jbrinkman/kairon/internal/inference"
 )
@@ -94,10 +95,17 @@ func TestInvokeAgentDefaultBackendErrorContext(t *testing.T) {
 
 func TestInvokeAgentDefaultBackendTimeout(t *testing.T) {
 	chdirTemp(t)
-	installFakeKiroCLI(t, "sleep 5")
+	// The fake leaves a child (sleep 5 &) holding stdout, as a real kiro-cli
+	// does with an MCP server or tool process. Killing only the kiro-cli
+	// process would leave Wait blocked on the pipes until the child exits.
+	installFakeKiroCLI(t, "sleep 5 &\nwait")
 	t.Setenv("KAIRON_EVAL_TIMEOUT", "200ms")
 
+	start := time.Now()
 	_, _, _, ec, err := invokeAgent("builder", "p", nil, callOpts{})
+	if elapsed := time.Since(start); elapsed >= 1500*time.Millisecond {
+		t.Errorf("timed-out invokeAgent took %v, want < 1.5s", elapsed)
+	}
 	if err == nil || err.Error() != "kiro-cli timeout after 200ms" {
 		t.Fatalf("err = %v, want %q", err, "kiro-cli timeout after 200ms")
 	}
