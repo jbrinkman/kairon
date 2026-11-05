@@ -98,7 +98,8 @@ A stopped run is final for the watcher too (see bounded restarts above); run `va
 watcher, `validate` runs on an issue that carries the `<label>-failed` label, and removes that label after a commit, so
 the watcher picks the issue up on its next poll. It refuses a closed issue or one with the done label. On a body that is already `valid`
 it prints the hash and starts nothing; it does not remove the failed label, because that label may be there for a
-krew-lead failure.
+krew-lead failure. An intake run takes an agent slot like any other agent, so when no slot is free `validate` reports an
+error and starts nothing (see [concurrency.md](concurrency.md#validate-at-capacity)).
 
 ## Punch-outs
 

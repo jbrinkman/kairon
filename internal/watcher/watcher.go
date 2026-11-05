@@ -1,11 +1,13 @@
 package watcher
 
 import (
+	"cmp"
 	"errors"
 	"fmt"
 	"log"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -33,6 +35,8 @@ type Watcher struct {
 	selectIssues func(repo, label, assignee string) (github.Selection, error)
 	reconcile    func(repo string, issue int, failLabel string) error
 	spawn        func(issue int, repo string) (*agent.Agent, error)
+	// slots reports how many agent slots are taken and the limit.
+	slots func() (used, max int)
 }
 
 func New(cfg *config.Config, mgr *agent.Manager, user string) *Watcher {
@@ -48,6 +52,13 @@ func New(cfg *config.Config, mgr *agent.Manager, user string) *Watcher {
 		spawn: func(issue int, repo string) (*agent.Agent, error) {
 			return mgr.Spawn(issue, repo)
 		},
+	}
+	if mgr != nil {
+		w.slots = mgr.Slots
+	} else {
+		// A nil-manager watcher (tests that stub spawn) registers no agents,
+		// so none of the limit is ever used.
+		w.slots = func() (int, int) { return 0, cfg.EffectiveMaxAgents() }
 	}
 	// A retry that cannot start for a non-terminal reason hands the issue back
 	// here so a later poll reconsiders it: drop it from tracked and refund the
@@ -182,7 +193,18 @@ func (w *Watcher) checkIssues() {
 	w.reconcilePending(sel.TerminalPending)
 	w.untrackAbsent(sel.Eligible)
 
-	for _, issue := range sel.Eligible {
+	// Oldest first: free slots go to the lowest issue number. selectIssues
+	// already returns that order, but the loop must not depend on it. The sort
+	// is on a copy; untrackAbsent above keeps the caller's slice.
+	eligible := slices.Clone(sel.Eligible)
+	slices.SortStableFunc(eligible, func(a, b github.Issue) int { return cmp.Compare(a.Number, b.Number) })
+
+	// full records that an issue in this poll found no free slot, and the
+	// numbers it saw. See the capacity gate below.
+	var full bool
+	var fullUsed, fullMax int
+
+	for _, issue := range eligible {
 		w.mu.RLock()
 		tracked := w.tracked[issue.Number]
 		w.mu.RUnlock()
@@ -232,6 +254,31 @@ func (w *Watcher) checkIssues() {
 			continue
 		}
 
+		// Capacity gate. It sits after every filter above, so only an issue
+		// that would start right now is reported as waiting, and before the
+		// tracked set and the retry counter, so a waiting issue keeps its
+		// retry budget and is considered again on the next poll. The slots
+		// are re-read for each issue: one spawn can take a slot (an intake
+		// start does too), so the rest of the poll sees the new count.
+		//
+		// Deviation from spec "Watcher: sort, then fill free slots" ("the
+		// slots are re-read for each issue"): they are re-read only until an
+		// issue waits. After that every younger issue in the poll waits too,
+		// logged with the numbers the older one saw. Dependency validation
+		// reads GitHub between two gates, so a run can exit in between; a
+		// re-read would then hand the freed slot to a younger issue ahead of
+		// the older one still waiting, which breaks AC2 (free slots go to the
+		// oldest eligible issue). The older issue gets the slot next poll.
+		if full {
+			logWaiting(issue.Number, fullUsed, fullMax)
+			continue
+		}
+		if used, max := w.slots(); used >= max {
+			full, fullUsed, fullMax = true, used, max
+			logWaiting(issue.Number, used, max)
+			continue
+		}
+
 		w.mu.Lock()
 		w.tracked[issue.Number] = true
 		w.mu.Unlock()
@@ -257,11 +304,21 @@ func (w *Watcher) checkIssues() {
 				}
 				continue
 			}
-			if errors.Is(err, agent.ErrNotAdmitted) || errors.Is(err, agent.ErrAdmissionUnavailable) {
+			atCapacity := errors.Is(err, agent.ErrAtCapacity)
+			if atCapacity || errors.Is(err, agent.ErrNotAdmitted) || errors.Is(err, agent.ErrAdmissionUnavailable) {
 				// No agent ran: the issue was not implemented (or could not be
-				// verified). Untrack it so a later poll can reconsider it, and
-				// refund the attempt so it does not burn retry budget it never used.
-				log.Printf("[watcher] issue #%d not admitted for implementation: %v", issue.Number, err)
+				// verified, or another starter, such as validate, took the
+				// last slot between the gate and the reservation). Untrack it
+				// so a later poll can reconsider it, and refund the attempt so
+				// it does not burn retry budget it never used.
+				if atCapacity {
+					used, max := w.slots()
+					// Younger issues wait behind this one; see the gate.
+					full, fullUsed, fullMax = true, used, max
+					logWaiting(issue.Number, used, max)
+				} else {
+					log.Printf("[watcher] issue #%d not admitted for implementation: %v", issue.Number, err)
+				}
 				w.mu.Lock()
 				delete(w.tracked, issue.Number)
 				w.mu.Unlock()
@@ -271,6 +328,14 @@ func (w *Watcher) checkIssues() {
 			log.Printf("[watcher] failed to spawn agent for issue #%d: %v", issue.Number, err)
 		}
 	}
+}
+
+// logWaiting records that an issue is waiting for an agent slot. The watcher
+// has no leveled logger: it writes with the standard log package and tags the
+// level in the message text. logging.Info is a no-op unless the log viewer is
+// open, so it would drop this line in normal runs.
+func logWaiting(issue, used, max int) {
+	log.Printf("[watcher] INFO: issue #%d waiting for an agent slot (%d/%d running)", issue, used, max)
 }
 
 func (w *Watcher) cleanupOrphanedWorktrees() {

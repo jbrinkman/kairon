@@ -93,6 +93,7 @@ repo: owner/repo-name
 label: kairon
 poll_interval: 5m
 max_retries: 3
+max_agents: 3
 ```
 
 | Field | Description | Default |
@@ -101,7 +102,10 @@ max_retries: 3
 | `label` | Issue label to watch for | `kairon` |
 | `poll_interval` | How often to poll GitHub | `5m` |
 | `max_retries` | Max retry attempts per issue | `3` |
+| `max_agents` | Most agents Kairon runs at once. A positive integer; zero and negative values are rejected, and there is no unlimited setting | `3` |
 | `base_branch` | Integration branch that new issue worktrees are created from (optional) | auto-detect from `origin/HEAD`, else `main` |
+
+At most `max_agents` agents run at once. Implementation runs, retries and intake runs all count toward the limit. When more issues are ready than there are free slots, the oldest issue (lowest issue number) starts first. An issue that waits for a slot is not charged a retry attempt, and the next poll considers it again. Each poll logs every waiting issue at info level as `issue #N waiting for an agent slot (M/M running)`. See [docs/concurrency.md](docs/concurrency.md).
 
 ### 3. Run
 

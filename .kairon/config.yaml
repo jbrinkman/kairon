@@ -5,6 +5,13 @@ max_retries: 3
 console_logging: false
 enable_copilot_review: false
 
+# Maximum number of agents Kairon runs at once (optional, default 3).
+# Implementation runs, retries and intake runs all count toward the limit.
+# When more issues are ready than free slots, the oldest issue (lowest
+# number) starts first and the rest wait for the next poll without using up
+# a retry attempt. Must be a positive integer; there is no unlimited setting.
+max_agents: 3
+
 # Base branch for new issue worktrees (optional).
 # When unset, Kairon auto-detects the repository's default branch.
 # Uncomment to force a specific branch (e.g. main, develop).
