@@ -229,6 +229,24 @@ func TestLoad_MaxAgentsRejectsNonPositive(t *testing.T) {
 	}
 }
 
+// YAML decodes 1.5 into an int field as 1 without an error, so a fractional
+// (or non-numeric) max_agents must be rejected before it silently becomes a
+// different limit.
+func TestLoad_MaxAgentsRejectsNonInteger(t *testing.T) {
+	for _, value := range []string{"1.5", "2.0", `"3"`, "three"} {
+		t.Run("max_agents "+value, func(t *testing.T) {
+			writeProjectConfig(t, strPtr("repo: test/repo\nlabel: test-label\nmax_agents: "+value))
+			cfg, err := Load()
+			if err == nil {
+				t.Fatalf("Load() MaxAgents = %d, expected an error for max_agents: %s", cfg.MaxAgents, value)
+			}
+			if !strings.Contains(err.Error(), "max_agents must be a whole number") {
+				t.Errorf("error %q does not say max_agents must be a whole number", err)
+			}
+		})
+	}
+}
+
 func TestLoad_MaxAgentsAcceptsPositive(t *testing.T) {
 	runScalarCases(t, "MaxAgents", func(c *Config) any { return c.MaxAgents }, []scalarCase{
 		{

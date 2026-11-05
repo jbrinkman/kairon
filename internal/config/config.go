@@ -57,6 +57,26 @@ type Config struct {
 	LoadedTheme         *Theme               `yaml:"-"`
 }
 
+// checkMaxAgentsIsInteger rejects a max_agents value that is present but not a
+// YAML integer (1.5, 2.0, "3", three). An absent or null key is left to the
+// default.
+func checkMaxAgentsIsInteger(data []byte) error {
+	var raw struct {
+		MaxAgents yaml.Node `yaml:"max_agents"`
+	}
+	if err := yaml.Unmarshal(data, &raw); err != nil {
+		return fmt.Errorf("failed to parse config: %w", err)
+	}
+	n := raw.MaxAgents
+	if n.Kind == 0 || (n.Kind == yaml.ScalarNode && n.Tag == "!!null") {
+		return nil
+	}
+	if n.Kind != yaml.ScalarNode || n.Tag != "!!int" {
+		return fmt.Errorf("max_agents must be a whole number (got %q)", n.Value)
+	}
+	return nil
+}
+
 // EffectiveMaxAgents returns the number of agents allowed to run at once.
 // Load rejects non-positive values, but a Config built by hand may leave
 // MaxAgents unset, so a non-positive value falls back to DefaultMaxAgents.
@@ -108,6 +128,12 @@ func Load() (*Config, error) {
 	data, err := os.ReadFile(".kairon/config.yaml")
 	if err != nil {
 		return nil, fmt.Errorf("failed to read config file: %w", err)
+	}
+
+	// Checked before the main decode: yaml.v3 decodes 1.5 into an int as 1
+	// with no error, and reports a string without naming the setting.
+	if err := checkMaxAgentsIsInteger(data); err != nil {
+		return nil, err
 	}
 
 	if err := yaml.Unmarshal(data, cfg); err != nil {
