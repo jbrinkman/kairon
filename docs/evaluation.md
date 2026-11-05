@@ -2985,6 +2985,8 @@ A case's `timeout` takes precedence over the default for that case:
 
 The same value is sent to the backend as the request timeout, so a host-side and an in-container deadline agree. For the `kiro-cli` backend the container exec deadline equals the timeout. For helper-based backends such as `stub` the host deadline is the timeout plus 10 seconds, so the in-container backend normally reports the timeout itself and the host deadline is only a backstop. A timeout is recorded as an empty `actual_output`, an `error_context.stderr` beginning `timeout after <duration>` (the effective duration, for example `1s`, not the sandbox default), a call record with an `error`, and a failing score. The container error message names both the case `timeout` and `--resource-limit timeout=`.
 
+When a native `kiro-cli` call times out, Kairon kills the call's whole process group (on platforms that have process groups), so the call returns within one second of the timeout even if a descendant process still holds the output pipes.
+
 ## Self-Test
 
 The harness has a self-test that exercises the full workflow (rubric and case loading, prompt assembly, agent call, deterministic and judged scoring, cost accounting, result files) with no model calls and no `kiro-cli`:
