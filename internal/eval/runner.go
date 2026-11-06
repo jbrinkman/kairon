@@ -345,6 +345,12 @@ func runSingleTestCase(agent string, testcase string, cConfig *ContainerConfig) 
 	// Run evaluation on single test case.
 	result := evaluate(*rubric, []TestCase{*targetCase}, gitHash, os.Stdout, cConfig)
 
+	// Interrupted: the case was cut off, so write neither <agent>.json nor
+	// summary.json.
+	if err := runInterrupted(); err != nil {
+		return err
+	}
+
 	// Refuse to write a result stamped with a suite hash that no longer
 	// matches the suite the case ran against.
 	if err := checkSuiteUnchanged(agent); err != nil {
@@ -523,6 +529,10 @@ func evaluate(rubric Rubric, cases []TestCase, gitHash string, out io.Writer, cC
 	applyRunContext(&result, cConfig)
 
 	for i, tc := range cases {
+		// An interrupted run starts no further case.
+		if runInterrupted() != nil {
+			break
+		}
 		fmt.Fprintf(out, "   [%d/%d] %s", i+1, len(cases), tc.Name)
 
 		testStart := time.Now()
@@ -531,6 +541,14 @@ func evaluate(rubric Rubric, cases []TestCase, gitHash string, out io.Writer, cC
 		// call and criterion-by-criterion scoring in one shared path), once
 		// per --repeat.
 		crs := executeCaseRepeats(rubric, tc, cConfig, out)
+
+		// Cancelled mid-case: drop the cut-off case. Checked before
+		// crs[len(crs)-1], because an interrupted executeCaseRepeats can
+		// return no results.
+		if runInterrupted() != nil {
+			fmt.Fprintln(out)
+			break
+		}
 
 		// Task 4: Color-coded final status for the case (the last run; the
 		// earlier runs of a repeat were printed as they finished).
@@ -561,6 +579,12 @@ func executeCaseRepeats(rubric Rubric, tc TestCase, cConfig *ContainerConfig, ou
 	n := runRepeat()
 	crs := make([]CaseResult, 0, n)
 	for k := 1; k <= n; k++ {
+		// An interrupted run starts no further repeat. The result may then
+		// be shorter than n, even empty; callers check runInterrupted before
+		// they use it.
+		if runInterrupted() != nil {
+			break
+		}
 		if n > 1 {
 			if k == 1 {
 				fmt.Fprintln(out)
@@ -722,7 +746,7 @@ func invokeAgent(agent, prompt string, cConfig *ContainerConfig, opts callOpts) 
 	}
 
 	start := time.Now()
-	resp, err := cfg.backend.Invoke(context.Background(), req)
+	resp, err := cfg.backend.Invoke(cfg.callContext(), req)
 	return completeAgentCall(req, resp, err, time.Since(start), &ErrorContext{WorkingDir: workingDir, Environment: envVars})
 }
 
@@ -1647,7 +1671,7 @@ ACTUAL OUTPUT TO EVALUATE:
 		Model:   cfg.pins.judgeModel(),
 	}
 	wallStart := time.Now()
-	resp, err := cfg.backend.Invoke(context.Background(), req)
+	resp, err := cfg.backend.Invoke(cfg.callContext(), req)
 	rec := newCallRecord(req, resp, err, time.Since(wallStart), costFromUsage(servedModel(req, resp), resp.Usage))
 	rec.Criterion = criterion.Name
 	// On a failed or unparseable call this returns CostInfo{} (zero), so the
@@ -2380,6 +2404,11 @@ func evaluateProgressive(rubric Rubric, cases []TestCase, gitHash string, out io
 			continue
 		}
 
+		// An interrupted run starts no further case.
+		if err := runInterrupted(); err != nil {
+			return result, err
+		}
+
 		fmt.Fprintf(out, "   [%d/%d] %s", i+1, len(cases), tc.Name)
 
 		// Track test case start time for performance profiling
@@ -2388,6 +2417,17 @@ func evaluateProgressive(rubric Rubric, cases []TestCase, gitHash string, out io
 		// Execute and score the test case (shared per-case path), once per
 		// --repeat.
 		crs := executeCaseRepeats(rubric, tc, cConfig, out)
+
+		// Cancelled mid-case: return before the case is stored or saved.
+		// Every later Invoke would fail at once, so saving it would record a
+		// fast failure as a completed case and --resume would skip it. Cases
+		// saved earlier stay saved and .progress stays, so --resume re-runs
+		// this case from its first repeat. Checked before checkSuiteUnchanged
+		// and before crs[len(crs)-1], since crs can be empty.
+		if err := runInterrupted(); err != nil {
+			fmt.Fprintln(out)
+			return result, err
+		}
 
 		// Refuse before stamping and saving if the suite was edited since the
 		// pin: the case ran against it, but the save would record the pinned

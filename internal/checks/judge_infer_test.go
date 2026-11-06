@@ -63,7 +63,7 @@ func TestInferenceJudgeRequest(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			b := replying(testYesReply, nil)
-			v, err := tt.judge(b).Func()(tt.query)
+			v, err := tt.judge(b).Func(context.Background())(tt.query)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -103,7 +103,7 @@ func TestInferenceJudgeOnCall(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			var calls []JudgeCall
 			j := InferenceJudge{Backend: replying(tt.text, tt.err), OnCall: func(c JudgeCall) { calls = append(calls, c) }}
-			_, err := j.Func()(JudgeQuery{Criterion: "crit", Question: "q"})
+			_, err := j.Func(context.Background())(JudgeQuery{Criterion: "crit", Question: "q"})
 			if !tt.wantErr(err) {
 				t.Errorf("err = %v", err)
 			}
@@ -126,7 +126,7 @@ func TestInferenceJudgeOnCall(t *testing.T) {
 
 func TestInferenceJudgeDebug(t *testing.T) {
 	var buf bytes.Buffer
-	j := InferenceJudge{Backend: replying(testYesReply, nil), Debug: &buf}.Func()
+	j := InferenceJudge{Backend: replying(testYesReply, nil), Debug: &buf}.Func(context.Background())
 	q := JudgeQuery{Criterion: "crit", Question: "Is it good?"}
 	for range 2 {
 		if _, err := j(q); err != nil {
@@ -142,5 +142,47 @@ func TestInferenceJudgeDebug(t *testing.T) {
 		if !strings.Contains(out, want) {
 			t.Errorf("debug output missing %q:\n%s", want, out)
 		}
+	}
+}
+
+type judgeCtxKey struct{}
+
+// ctxRecordingBackend records the context of every Invoke.
+type ctxRecordingBackend struct {
+	ctxs []context.Context
+}
+
+func (b *ctxRecordingBackend) Name() string                { return "ctx-recording" }
+func (b *ctxRecordingBackend) Available() error            { return nil }
+func (b *ctxRecordingBackend) StartupProbe() time.Duration { return 0 }
+
+func (b *ctxRecordingBackend) Invoke(ctx context.Context, _ inference.Request) (inference.Response, error) {
+	b.ctxs = append(b.ctxs, ctx)
+	return inference.Response{Text: testYesReply}, nil
+}
+
+// TestInferenceJudge_PassesContextToBackend: the context given to Func reaches
+// Backend.Invoke (issue #490), so cancelling it cancels the in-flight call.
+func TestInferenceJudge_PassesContextToBackend(t *testing.T) {
+	b := &ctxRecordingBackend{}
+	ctx, cancel := context.WithCancel(context.WithValue(context.Background(), judgeCtxKey{}, "caller-value"))
+	defer cancel()
+
+	if _, err := (InferenceJudge{Backend: b}).Func(ctx)(JudgeQuery{Criterion: "c", Question: "q"}); err != nil {
+		t.Fatalf("judge call: %v", err)
+	}
+	if len(b.ctxs) != 1 {
+		t.Fatalf("backend got %d calls, want 1", len(b.ctxs))
+	}
+	got := b.ctxs[0]
+	if v := got.Value(judgeCtxKey{}); v != "caller-value" {
+		t.Errorf("backend context value = %v, want the caller's %q", v, "caller-value")
+	}
+	if err := got.Err(); err != nil {
+		t.Fatalf("backend context already done before cancel: %v", err)
+	}
+	cancel()
+	if !errors.Is(got.Err(), context.Canceled) {
+		t.Errorf("backend context Err after cancelling the caller's context = %v, want context.Canceled", got.Err())
 	}
 }

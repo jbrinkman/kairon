@@ -2987,6 +2987,16 @@ The same value is sent to the backend as the request timeout, so a host-side and
 
 When a native `kiro-cli` call times out, Kairon kills the call's whole process group (on platforms that have process groups), so the call returns within one second of the timeout even if a descendant process still holds the output pipes.
 
+### Interrupting a run
+
+`kairon eval` and `kairon check` stop on SIGINT (Ctrl-C) or SIGTERM. The first signal cancels every `kiro-cli` call that is in flight (the agent call, the legacy judge call, `judge` checks and the simulated-user routing call) and kills each call's whole process group, so no `kiro-cli` process or descendant is left running. A terminal Ctrl-C reaches only `kairon`, because every `kiro-cli` call runs in its own process group; the cancellation is what stops them. Kairon prints one line to stderr when the signal arrives: `kairon: signal received, cancelling in-flight calls (send it again to exit immediately)`.
+
+- **`kairon eval`** stops at once. It starts no further repeat or case and does not save the case that was cut off, so a cancelled call is never recorded as a failed case. Cases saved earlier stay saved, and the results directory keeps its `.progress` file, so `kairon eval --resume` continues the run and re-runs the interrupted case from its first repeat (see [Resume refusal](#resume-refusal) for what a resume checks). The run prints `❌ interrupted: context canceled` and exits `1`. A single-case run (`kairon eval <agent> <case>`) writes neither `<agent>.json` nor `summary.json`.
+- **`kairon check`** writes nothing to disk. The cancelled `judge` check prints a `FAIL` line whose detail is `judge call failed: …`, and a `judge` check that had not started fails the same way. The other checks are evaluated and printed as usual, followed by `Error: <n> of <m> checks failed`, and the command exits `1`.
+- **A second signal exits immediately.** After the first signal Kairon restores the default signal handling, so a second SIGINT or SIGTERM ends the process at once.
+- **Some work is not interrupted by the first signal.** A `command` check that is already running (`sh -c`, up to 5 minutes) and a `--sandbox` container agent call run to their own end. `kairon eval` then stops, and `kairon check` goes on to print its results. Send the signal a second time to exit without waiting for them. Judge calls are made on the host, so under `--sandbox` they are cancelled like any other.
+- **Platforms without process groups** keep the caveat above: cancellation kills only the direct `kiro-cli` process, so a descendant of a cancelled call can survive.
+
 ## Self-Test
 
 The harness has a self-test that exercises the full workflow (rubric and case loading, prompt assembly, agent call, deterministic and judged scoring, cost accounting, result files) with no model calls and no `kiro-cli`:

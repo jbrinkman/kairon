@@ -1,6 +1,7 @@
 package eval
 
 import (
+	"context"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -49,6 +50,30 @@ type runConfig struct {
 	// scopeAgents narrows agentsInScope to the agents that have a matching
 	// case; nil means no narrowing.
 	scopeAgents []string
+	// ctx is the run context (RunOptions.Context), set by configure. nil means
+	// context.Background(); read it through callContext.
+	ctx context.Context
+}
+
+// callContext is the context every Backend.Invoke call in this package uses.
+// It is the one place a nil run context becomes context.Background().
+func (c runConfig) callContext() context.Context {
+	if c.ctx == nil {
+		return context.Background()
+	}
+	return c.ctx
+}
+
+// runInterrupted returns nil while the run context is live, and an error
+// wrapping the context's error once it is done.
+func runInterrupted() error {
+	if cfg.ctx == nil {
+		return nil
+	}
+	if err := cfg.ctx.Err(); err != nil {
+		return fmt.Errorf("❌ interrupted: %w", err)
+	}
+	return nil
 }
 
 // cfg is the active run configuration. Call configure before use; tests
@@ -92,7 +117,7 @@ func configure(opts RunOptions) error {
 		dir = defaultEvalsDir
 	}
 
-	cfg = runConfig{evalsDir: dir, backend: backend, keepWorkspaces: opts.KeepWorkspaces, debug: opts.Debug, repeat: opts.Repeat} // pins reset to nil
+	cfg = runConfig{evalsDir: dir, backend: backend, keepWorkspaces: opts.KeepWorkspaces, debug: opts.Debug, repeat: opts.Repeat, ctx: opts.Context} // pins reset to nil
 	return nil
 }
 

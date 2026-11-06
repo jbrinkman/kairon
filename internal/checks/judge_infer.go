@@ -31,11 +31,12 @@ type InferenceJudge struct {
 	OnCall  func(JudgeCall)       // optional; called after every Invoke
 }
 
-// Func returns the JudgeFunc. Each call invokes Backend as a yes/no judge on
-// Model, reports the call through OnCall and parses the reply. A failed call
-// returns the Invoke error; an unparseable reply returns an error wrapping
-// ErrJudgeParse.
-func (j InferenceJudge) Func() JudgeFunc {
+// Func returns the JudgeFunc. ctx is passed to every Backend.Invoke, so
+// cancelling it aborts the in-flight judge call. Each call invokes Backend as
+// a yes/no judge on Model, reports the call through OnCall and parses the
+// reply. A failed call returns the Invoke error; an unparseable reply returns
+// an error wrapping ErrJudgeParse.
+func (j InferenceJudge) Func(ctx context.Context) JudgeFunc {
 	n := 0
 	return func(q JudgeQuery) (JudgeVerdict, error) {
 		n++
@@ -52,7 +53,7 @@ func (j InferenceJudge) Func() JudgeFunc {
 			YesNo:   true,
 		}
 		wallStart := time.Now()
-		resp, err := j.Backend.Invoke(context.Background(), req)
+		resp, err := j.Backend.Invoke(ctx, req)
 		call := JudgeCall{Criterion: q.Criterion, Request: req, Response: resp, Err: err, Wall: time.Since(wallStart)}
 		if err != nil {
 			j.report(call)

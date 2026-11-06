@@ -1,6 +1,7 @@
 package eval
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"regexp"
@@ -551,6 +552,12 @@ type RunOptions struct {
 
 	// Strict turns "the filters matched no case" into an error.
 	Strict bool
+
+	// Context is the run context. Every agent, judge and simulated-user
+	// Backend.Invoke call derives from it, so cancelling it (for example on
+	// SIGINT) cancels the in-flight kiro-cli call, and the run then stops
+	// without saving the cut-off case. nil means context.Background().
+	Context context.Context
 }
 
 // Summary holds aggregate results for an eval run.

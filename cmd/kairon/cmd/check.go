@@ -54,6 +54,11 @@ func runCheckCommand(cmd *cobra.Command, _ []string) error {
 	// Arguments are parsed; from here an error is a result, not a usage mistake.
 	cmd.SilenceUsage = true
 
+	// SIGINT or SIGTERM cancels the in-flight judge call, which kills the
+	// kiro-cli process group (issue #490).
+	ctx, cancel := signalContext(cmd.Context(), cmd.ErrOrStderr())
+	defer cancel()
+
 	backend, err := checkNewBackend(checkBackend)
 	if err != nil {
 		return err
@@ -129,7 +134,7 @@ func runCheckCommand(cmd *cobra.Command, _ []string) error {
 			// Test double: answer every judge check "yes" with no model call.
 			judge.Stub = &inference.StubScript{Judge: inference.StubJudge{"yes"}}
 		}
-		in.Judge = judge.Func()
+		in.Judge = judge.Func(ctx)
 	}
 
 	results := checks.Evaluate(list, in)

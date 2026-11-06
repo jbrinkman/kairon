@@ -38,5 +38,5 @@ func newCheckJudge(tc TestCase, cr *CaseResult) JudgeFunc {
 				cr.JudgeCost.Add(cost)
 			}
 		},
-	}.Func()
+	}.Func(cfg.callContext())
 }
