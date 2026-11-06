@@ -1,7 +1,6 @@
 package eval
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -243,7 +242,7 @@ func newRouter(tc TestCase, cr *CaseResult) routeFunc {
 			RouteSeq: seq,
 		}
 		wallStart := time.Now()
-		resp, err := cfg.backend.Invoke(context.Background(), req)
+		resp, err := cfg.backend.Invoke(cfg.callContext(), req)
 		cost := costFromUsage(servedModel(req, resp), resp.Usage)
 		rec := newCallRecord(req, resp, err, time.Since(wallStart), cost)
 		rec.Purpose = simPurpose

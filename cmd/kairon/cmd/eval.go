@@ -51,6 +51,12 @@ var evalCmd = &cobra.Command{
 		// example an agent below its pass threshold), not a usage mistake.
 		cmd.SilenceUsage = true
 
+		// SIGINT or SIGTERM cancels in-flight kiro-cli calls, which kills
+		// their process groups (a terminal Ctrl-C does not reach them). Only
+		// the run uses this context; diff does not.
+		ctx, cancel := signalContext(cmd.Context(), cmd.ErrOrStderr())
+		defer cancel()
+
 		var agent, testcase string
 		if len(args) > 0 {
 			agent = args[0]
@@ -89,6 +95,7 @@ var evalCmd = &cobra.Command{
 			Repeat:         evalRepeat,
 			Filters:        evalFilter,
 			Strict:         evalStrict,
+			Context:        ctx,
 		})
 	},
 }

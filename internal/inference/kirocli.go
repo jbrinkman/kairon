@@ -58,14 +58,14 @@ const kiroCLIWaitDelay = time.Second
 //   - WaitDelay bounds Wait for anything that escapes the group (for example a
 //     descendant that calls setsid).
 //
-// Behavior change: Setpgid moves kiro-cli out of the terminal's foreground
-// process group, so a Ctrl-C at the terminal reaches kairon but no longer
-// reaches kiro-cli directly. The eval and checks callers pass
-// context.Background(), so SIGINT has no cancellation path today; wiring
-// SIGINT into those contexts so cancellation kills the group is tracked in
-// #490. kiro-cli reads stdin from a string, runs with --no-interactive and
-// writes to pipes, so it does not need the terminal; until #490 lands, if
-// kairon exits, kiro-cli's next write to a closed pipe ends it.
+// Interrupt handling: Setpgid moves kiro-cli out of the terminal's foreground
+// process group, so a Ctrl-C at the terminal reaches kairon but not kiro-cli.
+// The kairon eval and kairon check commands pass a context that SIGINT and
+// SIGTERM cancel to Backend.Invoke. Cancelling that context kills the whole
+// kiro-cli process group through the setProcessGroup Cancel hook, so no
+// kiro-cli process or descendant outlives the interrupted command. kiro-cli
+// reads stdin from a string, runs with --no-interactive and writes to pipes,
+// so it does not need the terminal.
 //
 // setProcessGroup is a no-op on non-unix platforms (stubcmd_other.go). There
 // the call is still bounded by WaitDelay, but a descendant of a timed-out call
