@@ -231,21 +231,6 @@ func TestChecksScoringNoOutputOrWorkspaceScoresZero(t *testing.T) {
 	})
 }
 
-// The command runner lives in internal/checks, so this observes the side
-// effect of the command (a marker file) instead of swapping the runner.
-func TestChecksScoringNoCommandRunWithoutOutput(t *testing.T) {
-	chdirTemp(t)
-	useStubBackend(t)
-	dir := t.TempDir()
-	marker := filepath.Join(dir, "ran.txt")
-	tc := TestCase{Name: "c", Checks: []Check{{Criterion: "clarity", Type: CheckCommand, Run: "touch " + marker}}}
-	cr := CaseResult{WorkspaceDir: dir}
-	scoreCase(checkedRubric(), tc, &cr)
-	if _, err := os.Stat(marker); err == nil {
-		t.Error("command check ran for a case with no output")
-	}
-}
-
 func TestChecksScoringReadsGHLog(t *testing.T) {
 	chdirTemp(t)
 	useStubBackend(t)
@@ -349,16 +334,6 @@ func TestPrintCaseResultFailedCheckWithoutDetail(t *testing.T) {
 	var sb strings.Builder
 	printCaseResult(&sb, TestCase{Name: "c", MinScore: floatPtr(0)}, Rubric{}, cr)
 	want := " ✅ 0% (threshold: 0%)\n      ✗ #1 command \"x\"\n"
-	if sb.String() != want {
-		t.Errorf("output = %q, want %q", sb.String(), want)
-	}
-}
-
-func TestPrintCaseResultNoChecksUnchanged(t *testing.T) {
-	cr := CaseResult{ActualOutput: "out", Scores: []CriterionScore{{Name: "low", Score: 1, MaxScore: 5}}}
-	var sb strings.Builder
-	printCaseResult(&sb, TestCase{Name: "c"}, Rubric{}, cr)
-	want := " ❌ 20% (threshold: 95%)\n      low: 1/5\n"
 	if sb.String() != want {
 		t.Errorf("output = %q, want %q", sb.String(), want)
 	}

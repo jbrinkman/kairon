@@ -263,9 +263,12 @@ func liveEvalsPrompt(t *testing.T, evalsDir string) []byte {
 	return data
 }
 
-// TestCandidateE2EKeptWorkspacesHoldCandidate is AC1: with --keep-workspaces
-// every case's workspace has the candidate bytes at the agent's prompt path,
-// and the staged file is read-only like the rest of .kiro.
+// TestCandidateE2EKeptWorkspacesHoldCandidate covers AC1 and AC2 with one
+// run. AC1: with --keep-workspaces every case's workspace has the candidate
+// bytes at the agent's prompt path, and the staged file is read-only like the
+// rest of .kiro. AC2: the same candidate run leaves the project's .kiro/agents
+// tree and the evals-dir agents/ directory byte for byte identical, and git
+// sees no change under .kiro/agents.
 func TestCandidateE2EKeptWorkspacesHoldCandidate(t *testing.T) {
 	env := newCandidateE2EEnv(t)
 	t.Setenv("PATH", pathWithoutKiroCLI(t)) // no kiro-cli anywhere
@@ -275,52 +278,6 @@ func TestCandidateE2EKeptWorkspacesHoldCandidate(t *testing.T) {
 	if bytes.Equal(live, []byte(e2eCandidate)) {
 		t.Fatal("test candidate must differ from the live prompt")
 	}
-
-	run := runE2E(t, env.evalsDir, RunOptions{PromptFile: cand, KeepWorkspaces: true})
-	for _, c := range run.agent.Cases {
-		removeKeptWorkspace(t, c)
-	}
-	// Guard against a vacuous pass: the per-case loop below only proves
-	// anything if the run exercised the self-test cases. Assert completeness
-	// against the fixtures on disk rather than a hard-coded count, so adding
-	// cases never breaks this while a dropped case is still caught.
-	ranCase := map[string]bool{}
-	for _, c := range run.agent.Cases {
-		ranCase[c.CaseName] = true
-	}
-	for _, name := range selftestFixtureCaseNames(t, env.evalsDir) {
-		if !ranCase[name] {
-			t.Errorf("fixture case %q did not run (results have %d cases)", name, len(run.agent.Cases))
-		}
-	}
-
-	for _, c := range run.agent.Cases {
-		if c.WorkspaceDir == "" {
-			t.Errorf("case %s: no workspace_dir (workspaces were not kept)", c.CaseName)
-			continue
-		}
-		staged := filepath.Join(c.WorkspaceDir, ".kiro", "agents", e2ePromptName)
-		got, err := os.ReadFile(staged)
-		if err != nil {
-			t.Errorf("case %s: reading staged prompt: %v", c.CaseName, err)
-			continue
-		}
-		if string(got) != e2eCandidate {
-			t.Errorf("case %s: staged prompt = %q, want the candidate %q", c.CaseName, got, e2eCandidate)
-		}
-		info, err := os.Stat(staged)
-		if err == nil && info.Mode().Perm()&0o022 != 0 {
-			t.Errorf("case %s: staged prompt mode %v is group/other-writable", c.CaseName, info.Mode().Perm())
-		}
-	}
-}
-
-// TestCandidateE2ELiveAgentsUnchanged is AC2: a candidate run leaves the
-// project's .kiro/agents tree and the evals-dir agents/ directory byte for
-// byte identical, and git sees no change under .kiro/agents.
-func TestCandidateE2ELiveAgentsUnchanged(t *testing.T) {
-	env := newCandidateE2EEnv(t)
-	cand := writeE2ECandidate(t, e2eCandidate)
 
 	projectAgents := filepath.Join(env.repo, ".kiro", "agents")
 	evalsAgents := filepath.Join(env.evalsDir, "agents")
@@ -338,18 +295,57 @@ func TestCandidateE2ELiveAgentsUnchanged(t *testing.T) {
 	for _, c := range run.agent.Cases {
 		removeKeptWorkspace(t, c)
 	}
-	if run.agent.PromptFile == "" {
-		t.Fatal("candidate run did not record prompt_file; the run did not use the candidate")
-	}
 
-	assertSnapshotsEqual(t, "project .kiro/agents", projBefore, treeSnapshot(t, projectAgents))
-	assertSnapshotsEqual(t, "evals-dir agents/", evalsBefore, treeSnapshot(t, evalsAgents))
-	if out := e2eGit(t, env.repo, "status", "--porcelain", ".kiro/agents"); out != "" {
-		t.Errorf("git status --porcelain .kiro/agents not clean after the run:\n%s", out)
-	}
-	if out := e2eGit(t, env.repo, "status", "--porcelain"); out != "" {
-		t.Errorf("git status --porcelain not clean after the run (the candidate must not be written into the repo):\n%s", out)
-	}
+	t.Run("kept workspaces hold the candidate", func(t *testing.T) {
+		// Guard against a vacuous pass: the per-case loop below only proves
+		// anything if the run exercised the self-test cases. Assert completeness
+		// against the fixtures on disk rather than a hard-coded count, so adding
+		// cases never breaks this while a dropped case is still caught.
+		ranCase := map[string]bool{}
+		for _, c := range run.agent.Cases {
+			ranCase[c.CaseName] = true
+		}
+		for _, name := range selftestFixtureCaseNames(t, env.evalsDir) {
+			if !ranCase[name] {
+				t.Errorf("fixture case %q did not run (results have %d cases)", name, len(run.agent.Cases))
+			}
+		}
+
+		for _, c := range run.agent.Cases {
+			if c.WorkspaceDir == "" {
+				t.Errorf("case %s: no workspace_dir (workspaces were not kept)", c.CaseName)
+				continue
+			}
+			staged := filepath.Join(c.WorkspaceDir, ".kiro", "agents", e2ePromptName)
+			got, err := os.ReadFile(staged)
+			if err != nil {
+				t.Errorf("case %s: reading staged prompt: %v", c.CaseName, err)
+				continue
+			}
+			if string(got) != e2eCandidate {
+				t.Errorf("case %s: staged prompt = %q, want the candidate %q", c.CaseName, got, e2eCandidate)
+			}
+			info, err := os.Stat(staged)
+			if err == nil && info.Mode().Perm()&0o022 != 0 {
+				t.Errorf("case %s: staged prompt mode %v is group/other-writable", c.CaseName, info.Mode().Perm())
+			}
+		}
+	})
+
+	t.Run("live agents unchanged", func(t *testing.T) {
+		if run.agent.PromptFile == "" {
+			t.Fatal("candidate run did not record prompt_file; the run did not use the candidate")
+		}
+
+		assertSnapshotsEqual(t, "project .kiro/agents", projBefore, treeSnapshot(t, projectAgents))
+		assertSnapshotsEqual(t, "evals-dir agents/", evalsBefore, treeSnapshot(t, evalsAgents))
+		if out := e2eGit(t, env.repo, "status", "--porcelain", ".kiro/agents"); out != "" {
+			t.Errorf("git status --porcelain .kiro/agents not clean after the run:\n%s", out)
+		}
+		if out := e2eGit(t, env.repo, "status", "--porcelain"); out != "" {
+			t.Errorf("git status --porcelain not clean after the run (the candidate must not be written into the repo):\n%s", out)
+		}
+	})
 }
 
 // TestCandidateE2EProvenanceRecorded is AC3: the baseline run has no
@@ -418,32 +414,39 @@ func TestCandidateE2EProvenanceRecorded(t *testing.T) {
 	if with.summary.PromptSHA256 == base.summary.PromptSHA256 {
 		t.Error("summary.json top-level prompt_sha256 equals the baseline for a different candidate")
 	}
-}
 
-// TestCandidateE2ESameContentCandidateHashEqualsBaseline: a candidate with
-// the same bytes as the live prompt hashes identically to the baseline, while
-// still recording prompt_file. Provenance keys on content, not on the path.
-func TestCandidateE2ESameContentCandidateHashEqualsBaseline(t *testing.T) {
-	env := newCandidateE2EEnv(t)
-	same := writeE2ECandidate(t, string(liveEvalsPrompt(t, env.evalsDir)))
+	// A candidate with the same bytes as the live prompt hashes identically to
+	// the baseline, while still recording prompt_file. Provenance keys on
+	// content, not on the path. The hash is of the prompt bytes, not of the
+	// case set, so a one-case run against a fresh evals dir is enough.
+	t.Run("same-content candidate hashes like the baseline", func(t *testing.T) {
+		same := writeE2ECandidate(t, string(liveEvalsPrompt(t, env.evalsDir)))
+		sameRun := runE2ECase(t, newE2EEvalsDir(t, env.fixtures), markerCase, RunOptions{PromptFile: same})
+		// runE2ECase leaves run.summary unset, so parse summary.json here.
+		sameSumData, err := os.ReadFile(filepath.Join(sameRun.dir, "summary.json"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var sameSummary Summary
+		if err := json.Unmarshal(sameSumData, &sameSummary); err != nil {
+			t.Fatalf("parsing summary.json: %v", err)
+		}
 
-	base := runE2E(t, env.evalsDir, RunOptions{})
-	with := runE2E(t, newE2EEvalsDir(t, env.fixtures), RunOptions{PromptFile: same})
-
-	if with.agent.PromptSHA256 != base.agent.PromptSHA256 {
-		t.Errorf("same-content candidate prompt_sha256 = %s, want the baseline %s",
-			with.agent.PromptSHA256, base.agent.PromptSHA256)
-	}
-	if got := with.summary.Agents[e2eAgent].PromptSHA256; got != base.summary.Agents[e2eAgent].PromptSHA256 {
-		t.Errorf("summary same-content candidate prompt_sha256 = %s, want the baseline %s",
-			got, base.summary.Agents[e2eAgent].PromptSHA256)
-	}
-	if with.agent.PromptFile == "" {
-		t.Error("same-content candidate run did not record prompt_file")
-	}
-	if with.summary.Agents[e2eAgent].PromptFile == "" {
-		t.Error("same-content candidate summary did not record agents.selftest.prompt_file")
-	}
+		if sameRun.agent.PromptSHA256 != base.agent.PromptSHA256 {
+			t.Errorf("same-content candidate prompt_sha256 = %s, want the baseline %s",
+				sameRun.agent.PromptSHA256, base.agent.PromptSHA256)
+		}
+		if got := sameSummary.Agents[e2eAgent].PromptSHA256; got != base.summary.Agents[e2eAgent].PromptSHA256 {
+			t.Errorf("summary same-content candidate prompt_sha256 = %s, want the baseline %s",
+				got, base.summary.Agents[e2eAgent].PromptSHA256)
+		}
+		if sameRun.agent.PromptFile == "" {
+			t.Error("same-content candidate run did not record prompt_file")
+		}
+		if sameSummary.Agents[e2eAgent].PromptFile == "" {
+			t.Error("same-content candidate summary did not record agents.selftest.prompt_file")
+		}
+	})
 }
 
 // TestCandidateE2EResumeRefusedWithoutCandidate: resuming an interrupted

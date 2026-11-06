@@ -2,6 +2,7 @@ package sandbox
 
 import (
 	"context"
+	"runtime"
 	"testing"
 
 	"github.com/docker/docker/api/types/container"
@@ -97,5 +98,23 @@ func TestCreateWithPlatform(t *testing.T) {
 			err = c.Start(ctx)
 			assert.NoError(t, err)
 		})
+	}
+}
+
+func TestDetectHostArchitecture(t *testing.T) {
+	// Test that we can properly detect architecture for sandbox creation
+	platform, err := DetectHostArchitecture()
+	require.NoError(t, err)
+
+	// Verify platform string format
+	assert.Contains(t, platform, "linux/")
+
+	switch runtime.GOARCH {
+	case "amd64":
+		assert.Equal(t, "linux/amd64", platform)
+	case "arm64":
+		assert.Equal(t, "linux/arm64", platform)
+	default:
+		t.Fatalf("Unsupported architecture for testing: %s", runtime.GOARCH)
 	}
 }

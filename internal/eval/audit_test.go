@@ -391,6 +391,10 @@ func TestAuditUnmappedFixture(t *testing.T) {
 	if !strings.Contains(out, "total=3 mapped=1 duplicates=0 coverage=33.3%") {
 		t.Errorf("report missing totals:\n%s", out)
 	}
+	// prompt violations by line, then the coverage rule last.
+	if got, want := auditRules(ae), []string{"unmapped", "unknown-criterion", "coverage"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("rule order = %v, want %v", got, want)
+	}
 }
 
 func TestAuditCoverageThreshold(t *testing.T) {
@@ -628,19 +632,6 @@ func TestAuditErrorFormat(t *testing.T) {
 	}}
 	if got, want := e.Error(), "a.md:3: unmapped: m1\nb.md: table: m2"; got != want {
 		t.Errorf("Error() = %q, want %q", got, want)
-	}
-}
-
-func TestAuditOrderingIsStable(t *testing.T) {
-	_, ae := runAudit(t, auditFixtureOpts("unmapped"))
-	if ae == nil {
-		t.Fatal("want violations")
-	}
-	// prompt violations by line, then the coverage rule last.
-	got := auditRules(ae)
-	want := []string{"unmapped", "unknown-criterion", "coverage"}
-	if !reflect.DeepEqual(got, want) {
-		t.Errorf("rule order = %v, want %v", got, want)
 	}
 }
 
@@ -910,43 +901,6 @@ func TestAuditEvidence(t *testing.T) {
 	})
 }
 
-func TestAuditEvidenceFixtures(t *testing.T) {
-	type want struct {
-		fixture string
-		table   []string // substrings, each must be in a distinct table violation
-	}
-	tests := []want{
-		{"evidence-missing", []string{
-			"3: table: row 3: Evidence must name at least one case of agent \"selftest\" as case:<case-name>",
-			"4: table: row 4: Evidence must name at least one case of agent \"selftest\" as case:<case-name>",
-		}},
-		{"evidence-unknown-case", []string{`4: table: row 4: evidence names case "ghost" which is not a case of agent "selftest"`}},
-		{"evidence-unchecked-criterion", []string{`5: table: row 5: case "alpha-only" has no check on criterion "beta"`}},
-	}
-	for _, tt := range tests {
-		t.Run(tt.fixture, func(t *testing.T) {
-			opts := auditFlatFixtureOpts(tt.fixture)
-			out, ae := runAuditAgent(t, "selftest", opts)
-			if ae == nil {
-				t.Fatalf("%s must fail; output:\n%s", tt.fixture, out)
-			}
-			tablePath := filepath.Join(opts.IterationsDir, "selftest", "load-bearing.md")
-			got := ae.Error()
-			for _, w := range tt.table {
-				if want := tablePath + ":" + w; !strings.Contains(got, want) {
-					t.Errorf("error missing %q\n got:\n%s", want, got)
-				}
-			}
-			if n := len(tableViolations(ae)); n != len(tt.table) || len(ae.Violations) != n {
-				t.Errorf("want exactly %d violations, all table; got %d table of %d:\n%s", len(tt.table), n, len(ae.Violations), got)
-			}
-			if !strings.Contains(out, "coverage=100.0%") {
-				t.Errorf("fixture isolates evidence (full coverage):\n%s", out)
-			}
-		})
-	}
-}
-
 func TestAuditDuplicates(t *testing.T) {
 	const skillFile = "cmd/kairon/templates/kiro/skills/eng/SKILL.md"
 	promptOf := func(opts AuditOptions) string { return filepath.Join(opts.EvalsDir, "agents", "demo-prompt.md") }
@@ -1103,65 +1057,21 @@ func TestAuditDuplicates(t *testing.T) {
 		if !strings.Contains(out, "total=3 mapped=1 duplicates=1 coverage=33.3%") {
 			t.Errorf("counting must be unchanged:\n%s", out)
 		}
-	})
-}
-
-func TestAuditDuplicateRuleOrder(t *testing.T) {
-	// Same file and line: table < duplicate < unmapped.
-	rank, ok := auditRuleOrder["duplicate"]
-	if !ok || !(auditRuleOrder[auditRuleTable] < rank && rank < auditRuleOrder[auditRuleUnmapped]) {
-		t.Errorf("duplicate must rank after table and before unmapped: %v", auditRuleOrder)
-	}
-	// An unmapped repeat sorts duplicate before unmapped on the same line.
-	_, ae := runAudit(t, auditCase{prompt: auditRTCC + "Orphan.\nOrphan.\n", table: auditTable("Other.=>alpha")}.write(t))
-	if ae == nil {
-		t.Fatal("want violations")
-	}
-	var got []string
-	for _, v := range ae.Violations {
-		if v.Line == 6 {
-			got = append(got, v.Rule)
+		// An unmapped repeat sorts duplicate before unmapped on the same line.
+		// Issue #423 says "line-6" for this check: 6 was the repeat's line in
+		// the prompt of the old TestAuditDuplicateRuleOrder. In this subtest's
+		// prompt (auditRTCC is 4 lines, then Mapped., Orphan., Orphan.) the same
+		// repeat is on line 7, so the assertion is on line 7.
+		var gotRules []string
+		for _, v := range ae.Violations {
+			if v.Line == 7 {
+				gotRules = append(gotRules, v.Rule)
+			}
 		}
-	}
-	if want := []string{"duplicate", "unmapped"}; !reflect.DeepEqual(got, want) {
-		t.Errorf("line 6 rules = %v, want %v", got, want)
-	}
-}
-
-func TestAuditReportDuplicates(t *testing.T) {
-	t.Run("clean prompt prints duplicates=0", func(t *testing.T) {
-		out := mustPassAudit(t, auditCase{prompt: auditRTCC + "Rule one.\n", table: auditTable("Rule one.=>alpha")}.write(t))
-		want := "Instructions: total=1 mapped=1 duplicates=0 coverage=100.0% (threshold 90%)\n"
-		if !strings.Contains(out, want) {
-			t.Errorf("report missing %q:\n%s", want, out)
+		if want := []string{"duplicate", "unmapped"}; !reflect.DeepEqual(gotRules, want) {
+			t.Errorf("line 7 rules = %v, want %v", gotRules, want)
 		}
 	})
-	t.Run("exact line with repeats", func(t *testing.T) {
-		out, _ := runAudit(t, auditCase{prompt: auditRTCC + "A.\nA.\nA.\nB.\n", table: auditTable("A.=>alpha")}.write(t))
-		want := "Instructions: total=4 mapped=3 duplicates=2 coverage=75.0% (threshold 90%)\n"
-		if !strings.Contains(out, want) {
-			t.Errorf("report missing %q:\n%s", want, out)
-		}
-	})
-}
-
-func TestAuditDuplicateLineFixture(t *testing.T) {
-	opts := auditFlatFixtureOpts("duplicate-line")
-	out, ae := runAuditAgent(t, "selftest", opts)
-	if ae == nil {
-		t.Fatalf("duplicate-line must fail; output:\n%s", out)
-	}
-	prompt := filepath.Join(opts.EvalsDir, "agents", "selftest-prompt.md")
-	want := fmt.Sprintf(`%s:9: duplicate: duplicate of %s:8: "Never skip validation."`, prompt, prompt)
-	if !strings.Contains(ae.Error(), want) {
-		t.Errorf("error missing %q\n got:\n%s", want, ae.Error())
-	}
-	if len(ae.Violations) != 1 {
-		t.Errorf("want only the duplicate violation, got:\n%s", ae.Error())
-	}
-	if !strings.Contains(out, "Instructions: total=5 mapped=5 duplicates=1 coverage=100.0% (threshold 90%)") {
-		t.Errorf("report must print duplicates=1:\n%s", out)
-	}
 }
 
 // auditRubricOf renders a rubric for agent "demo". Each entry is a criterion

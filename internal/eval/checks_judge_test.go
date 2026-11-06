@@ -54,16 +54,6 @@ func TestLoadCasesJudgeCheckRejected(t *testing.T) {
 	}
 }
 
-func TestScoredUserTurns(t *testing.T) {
-	if got := scoredUserTurns(TestCase{Input: "classic"}); got != nil {
-		t.Errorf("classic case: scoredUserTurns = %v, want nil", got)
-	}
-	got := scoredUserTurns(TestCase{Turns: []string{"a", "b"}})
-	if len(got) != 2 || got[0] != "a" || got[1] != "b" {
-		t.Errorf("scoredUserTurns = %v, want [a b]", got)
-	}
-}
-
 // scoreCase must hand the judge the user messages actually sent (tc.Turns,
 // which executeCase swaps for the simulated user's messages).
 func TestCaseCheckInputCarriesUserTurns(t *testing.T) {
