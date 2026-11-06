@@ -820,6 +820,54 @@ func TestRenderMarkdown_IndentedValueIsFenced(t *testing.T) {
 	})
 }
 
+// A GFM table splits a row into cells at every unescaped | before inline code
+// is parsed, so a code span holding a | would break open. A value with a table
+// delimiter row goes in one code fence instead.
+func TestRenderMarkdown_TableIsFenced(t *testing.T) {
+	cases := []struct{ name, in, want string }{
+		{
+			"renderer-wrapped link holding a pipe",
+			"a | b\n--- | ---\nx | [a|[b](https://example.com)](v)",
+			"```\na | b\n--- | ---\nx | [a|[b](https://example.com)](v)\n```",
+		},
+		{
+			"user code span holding a pipe and a mention",
+			"| a | b |\n| :--- | ---: |\n| `x | @bob` | y |",
+			"```\n| a | b |\n| :--- | ---: |\n| `x | @bob` | y |\n```",
+		},
+		{
+			"single-column table",
+			"| a |\n| --- |\n| `x | [l](https://e.com)` |",
+			"```\n| a |\n| --- |\n| `x | [l](https://e.com)` |\n```",
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got, sec := renderActual(c.in)
+			if sec != c.want {
+				t.Errorf("section:\n got: %q\nwant: %q", sec, c.want)
+			}
+			if why := valueProblem(got, sec); why != "" {
+				t.Error(why)
+			}
+		})
+	}
+
+	notTables := []struct{ name, in, want string }{
+		{"pipe line with no delimiter row", "a | b", "a | b"},
+		{"thematic break with no pipe", "a\n\n---", "a\n\n---"},
+		{"table inside the value's own fence", "```\na | b\n--- | ---\n```", "```\na | b\n--- | ---\n```"},
+	}
+	for _, c := range notTables {
+		t.Run(c.name, func(t *testing.T) {
+			_, sec := renderActual(c.in)
+			if sec != c.want {
+				t.Errorf("section:\n got: %q\nwant: %q", sec, c.want)
+			}
+		})
+	}
+}
+
 // fenceRow is one exact row of TestRenderMarkdown_FenceStructure.
 type fenceRow struct {
 	name, in, want string

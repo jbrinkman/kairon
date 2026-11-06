@@ -115,7 +115,8 @@ const truncationNote = "\n_(truncated to 2000 characters)_\n"
 // renderValue renders an untrusted value as Markdown text that ends with a
 // newline. The value is cut to 2000 runes, its line breaks are normalized and
 // blank lines at either end are dropped. A value with a line that starts with a
-// tab or two or more spaces is preformatted and goes in one code fence. A fence
+// tab or two or more spaces, or a GFM table delimiter row (a table would split
+// code spans at |), is preformatted and goes in one code fence. A fence
 // the value opens itself (0 or 1 leading space) is kept, and closed if the cut
 // left it open. Everything else is text: each run of consecutive non-blank
 // lines is one paragraph, rendered by renderRun. A truncated value is followed
@@ -160,6 +161,9 @@ func renderValue(s string) string {
 		if l != "" && (l[0] == '\t' || strings.HasPrefix(l, "  ")) {
 			preformatted = true
 		}
+		if isTableDelimiterRow(l) {
+			preformatted = true
+		}
 	}
 
 	var body strings.Builder
@@ -194,6 +198,26 @@ func renderValue(s string) string {
 		body.WriteString(truncationNote)
 	}
 	return body.String()
+}
+
+// isTableDelimiterRow reports whether l has the shape of a GFM table delimiter
+// row: cells of hyphens with an optional colon at either end, separated by |,
+// with at least one |. Without a | the line is a thematic break or setext
+// underline, not a table. The column count is not checked against a header row,
+// so this matches every delimiter row GitHub accepts and some it does not.
+func isTableDelimiterRow(l string) bool {
+	t := strings.TrimSpace(l)
+	if !strings.Contains(t, "|") {
+		return false
+	}
+	t = strings.TrimSuffix(strings.TrimPrefix(t, "|"), "|")
+	for _, cell := range strings.Split(t, "|") {
+		cell = strings.TrimSuffix(strings.TrimPrefix(strings.TrimSpace(cell), ":"), ":")
+		if cell == "" || strings.Trim(cell, "-") != "" {
+			return false
+		}
+	}
+	return true
 }
 
 // valueFenceOpener reports whether l opens a code fence the renderer keeps: 0 or 1
