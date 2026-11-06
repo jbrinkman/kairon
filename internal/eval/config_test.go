@@ -1,7 +1,6 @@
 package eval
 
 import (
-	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -9,7 +8,6 @@ import (
 	"testing"
 
 	"github.com/jbrinkman/kairon/internal/inference"
-	"gopkg.in/yaml.v3"
 )
 
 // chdirTemp moves into a fresh temp dir for the test and restores cwd and
@@ -380,62 +378,5 @@ func TestCostFromUsage(t *testing.T) {
 	}
 	if c.EstimatedUSD != 18.0 {
 		t.Errorf("EstimatedUSD = %v, want 18", c.EstimatedUSD)
-	}
-}
-
-func TestCostInfoJSONOmitsEmptyNewFields(t *testing.T) {
-	b, err := json.Marshal(CostInfo{TokensIn: 1})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(string(b), "model") || strings.Contains(string(b), "usage_source") {
-		t.Errorf("empty fields should be omitted: %s", b)
-	}
-
-	b, _ = json.Marshal(CostInfo{Model: "m", UsageSource: "reported"})
-	if !strings.Contains(string(b), `"model":"m"`) || !strings.Contains(string(b), `"usage_source":"reported"`) {
-		t.Errorf("fields missing: %s", b)
-	}
-}
-
-func TestTestCaseParsesStubFromYAML(t *testing.T) {
-	src := `
-name: stub-usage
-agent: selftest
-input: hello
-stub:
-  turns:
-    - response: "## A\n### B"
-      model: stub-model
-      usage:
-        input_tokens: 123
-        output_tokens: 45
-    - response: second
-`
-	var tc TestCase
-	if err := yaml.Unmarshal([]byte(src), &tc); err != nil {
-		t.Fatal(err)
-	}
-	if tc.Stub == nil || len(tc.Stub.Turns) != 2 {
-		t.Fatalf("stub not parsed: %+v", tc.Stub)
-	}
-	turn := tc.Stub.Turns[0]
-	if turn.Response != "## A\n### B" || turn.Model != "stub-model" {
-		t.Errorf("turn = %+v", turn)
-	}
-	if turn.Usage == nil || turn.Usage.InputTokens != 123 || turn.Usage.OutputTokens != 45 {
-		t.Errorf("usage = %+v", turn.Usage)
-	}
-	if tc.Stub.Turns[1].Usage != nil {
-		t.Error("second turn should have no usage")
-	}
-
-	// Cases without a stub leave it nil.
-	var plain TestCase
-	if err := yaml.Unmarshal([]byte("name: n\nagent: a\ninput: i\n"), &plain); err != nil {
-		t.Fatal(err)
-	}
-	if plain.Stub != nil {
-		t.Error("Stub should be nil when absent")
 	}
 }

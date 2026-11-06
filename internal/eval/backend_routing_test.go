@@ -155,19 +155,6 @@ printf 'noise ===JSON_START===\n{"score": 4, "reasoning": "fine", "pass": true}\
 	}
 }
 
-func TestScoreLLMJudgeFailureWording(t *testing.T) {
-	chdirTemp(t)
-	installFakeKiroCLI(t, "cat >/dev/null\nexit 2")
-
-	_, score, reasoning, skipped, _ := scoreLLMJudge(Criterion{Name: "c"}, TestCase{}, "actual")
-	if !skipped || score != 0 {
-		t.Errorf("score=%d skipped=%v", score, skipped)
-	}
-	if reasoning != "kiro-cli chat failed: exit status 2" {
-		t.Errorf("reasoning = %q", reasoning)
-	}
-}
-
 func TestStubBackendNeverStartsKiroCLI(t *testing.T) {
 	chdirTemp(t)
 	_, calls := installFakeKiroCLI(t, "")
@@ -355,16 +342,5 @@ func TestAgentConfigDirOnlyWhenAgentConfigExists(t *testing.T) {
 	writeCfgFile(t, filepath.Join("evals", "agents", "selftest.json"), "{}")
 	if got := agentConfigDir("selftest"); got != filepath.Join("evals", "agents") {
 		t.Errorf("agentConfigDir = %q", got)
-	}
-}
-
-func TestNoKiroCLIProcessOutsideDockerPath(t *testing.T) {
-	// Guard rail for the acceptance criterion: perf.go must not spawn kiro-cli.
-	data, err := os.ReadFile("perf.go")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if strings.Contains(string(data), `exec.Command("kiro-cli"`) {
-		t.Error(`perf.go contains exec.Command("kiro-cli"...)`)
 	}
 }

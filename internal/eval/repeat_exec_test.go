@@ -4,10 +4,12 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"math"
 	"os"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"sort"
 	"strings"
 	"testing"
@@ -143,7 +145,7 @@ func TestRepeatExecutionJudgeCaseShowsSpread(t *testing.T) {
 }
 
 func TestRepeatExecutionWholeFailAgentSpreadMatchesRecomputedTotals(t *testing.T) {
-	_, _, sum, res, err := runStubRepeat(t, "selftest-fail", "", RunOptions{Repeat: 2})
+	out, runDir, sum, res, err := runStubRepeat(t, "selftest-fail", "", RunOptions{Repeat: 2})
 	if !errors.Is(err, ErrThresholdFailed) {
 		t.Fatalf("err = %v, want ErrThresholdFailed", err)
 	}
@@ -177,6 +179,55 @@ func TestRepeatExecutionWholeFailAgentSpreadMatchesRecomputedTotals(t *testing.T
 	if mean := (per[0] + per[1]) / 2; math.Abs(v.Score-mean) > 1e-9 {
 		t.Errorf("score = %v, want mean %v of the per-repeat totals", v.Score, mean)
 	}
+
+	// Attempt accounting for the same --repeat 2 run (merged from
+	// TestSelftestFailRepeatAttempts, issue #423, so one 22-case run serves both).
+	t.Run("attempt accounting", func(t *testing.T) {
+		wantPassed := 0
+		for _, c := range res.Cases {
+			if c.Passed != nil && *c.Passed {
+				wantPassed++
+			}
+		}
+		if len(res.Cases) == 0 {
+			t.Fatal("no case results written")
+		}
+		if v.AttemptsTotal != len(res.Cases) {
+			t.Errorf("attempts_total = %d, want %d case results", v.AttemptsTotal, len(res.Cases))
+		}
+		if v.AttemptsPassed != wantPassed {
+			t.Errorf("attempts_passed = %d, want %d", v.AttemptsPassed, wantPassed)
+		}
+		if v.AttemptsTotal <= v.CasesTotal {
+			t.Errorf("attempts_total %d must exceed cases_total %d with --repeat 2", v.AttemptsTotal, v.CasesTotal)
+		}
+		if want := float64(wantPassed) * 100 / float64(len(res.Cases)); math.Abs(v.SuccessRate-want) > 1e-9 {
+			t.Errorf("success_rate = %v, want %v", v.SuccessRate, want)
+		}
+
+		lines := verdictLines(out)
+		if len(lines) != 1 || !strings.HasPrefix(lines[0], "FAIL selftest-fail: ") {
+			t.Fatalf("verdict lines = %q\n%s", lines, out)
+		}
+		wantText := fmt.Sprintf("cases failed, success rate %.1f%% (%d/%d attempts)", v.SuccessRate, wantPassed, len(res.Cases))
+		if !strings.Contains(lines[0], wantText) {
+			t.Errorf("FAIL line %q lacks %q", lines[0], wantText)
+		}
+		if !regexp.MustCompile(`cases failed, success rate \d+\.\d%`).MatchString(lines[0]) {
+			t.Errorf("FAIL line %q does not match the success-rate pattern", lines[0])
+		}
+
+		// The summary on disk carries the three keys.
+		raw, err := os.ReadFile(filepath.Join(runDir, "summary.json"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, k := range []string{`"attempts_total"`, `"attempts_passed"`, `"success_rate"`} {
+			if !strings.Contains(string(raw), k) {
+				t.Errorf("summary.json lacks %s", k)
+			}
+		}
+	})
 }
 
 // TestRepeatExecutionMeanDecidesThePass: repeats scoring 100 and 80 against

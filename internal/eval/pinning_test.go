@@ -490,10 +490,10 @@ func TestProvenanceMissingConventionsResourceOmitted(t *testing.T) {
 func TestSummaryMultiAgentOmitsTopLevelAgentFields(t *testing.T) {
 	dir := t.TempDir()
 	file := filepath.Join(dir, "summary.json")
-	mk := func(agent, sha string) AgentResult {
-		return AgentResult{Agent: agent, AgentModel: "m-" + agent, JudgeModel: "j", PromptSHA256: sha, ResourcesPresent: []string{}}
+	mk := func(agent, sha, promptFile string) AgentResult {
+		return AgentResult{Agent: agent, AgentModel: "m-" + agent, JudgeModel: "j", PromptSHA256: sha, PromptFile: promptFile, ResourcesPresent: []string{}}
 	}
-	if err := updateIncrementalSummary(file, mk("a", "h1"), "g"); err != nil {
+	if err := updateIncrementalSummary(file, mk("a", "h1", "iter/v2.md"), "g"); err != nil {
 		t.Fatal(err)
 	}
 	var s Summary
@@ -501,7 +501,13 @@ func TestSummaryMultiAgentOmitsTopLevelAgentFields(t *testing.T) {
 	if s.AgentModel != "m-a" || s.PromptSHA256 != "h1" {
 		t.Errorf("single agent summary = %+v", s)
 	}
-	if err := updateIncrementalSummary(file, mk("b", "h2"), "g"); err != nil {
+	if s.Agents["a"].PromptFile != "iter/v2.md" {
+		t.Errorf("agents.a.prompt_file = %q", s.Agents["a"].PromptFile)
+	}
+	if s.PromptFile != "iter/v2.md" {
+		t.Errorf("top-level prompt_file = %q (single agent)", s.PromptFile)
+	}
+	if err := updateIncrementalSummary(file, mk("b", "h2", ""), "g"); err != nil {
 		t.Fatal(err)
 	}
 	s = Summary{}
@@ -512,10 +518,28 @@ func TestSummaryMultiAgentOmitsTopLevelAgentFields(t *testing.T) {
 	if s.JudgeModel != "j" || len(s.Agents) != 2 || s.Agents["b"].AgentModel != "m-b" {
 		t.Errorf("multi-agent summary = %+v", s)
 	}
+	// Two agents: no ambiguous top-level prompt_file, per-agent kept.
+	if s.PromptFile != "" || s.Agents["a"].PromptFile != "iter/v2.md" || s.Agents["b"].PromptFile != "" {
+		t.Errorf("multi-agent summary = top %q, a %q, b %q", s.PromptFile, s.Agents["a"].PromptFile, s.Agents["b"].PromptFile)
+	}
 	raw, _ := os.ReadFile(file)
 	if strings.Contains(string(raw), `"resources_present"`) && !strings.Contains(string(raw), `"agents"`) {
 		t.Errorf("unexpected summary JSON: %s", raw)
 	}
+
+	t.Run("prompt_file key is absent without a candidate", func(t *testing.T) {
+		without := filepath.Join(t.TempDir(), "without.json")
+		if err := updateIncrementalSummary(without, mk("a", "h", ""), "g"); err != nil {
+			t.Fatal(err)
+		}
+		raw, err := os.ReadFile(without)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(raw), "prompt_file") {
+			t.Errorf("prompt_file key must be absent without a candidate: %s", raw)
+		}
+	})
 }
 
 func TestPinResumeRefusedWhenPromptOrModelsChanged(t *testing.T) {

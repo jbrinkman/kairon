@@ -3,12 +3,7 @@ package eval
 import (
 	"bytes"
 	"encoding/json"
-	"errors"
-	"fmt"
 	"math"
-	"os"
-	"path/filepath"
-	"regexp"
 	"strings"
 	"testing"
 )
@@ -22,41 +17,44 @@ func attemptCase(name string, run int, passed bool) CaseResult {
 	return cr
 }
 
-func TestAttemptAccountingOnePerCase(t *testing.T) {
-	ar := AgentResult{Agent: "a", Threshold: 95, Cases: []CaseResult{
-		attemptCase("c1", 0, true),
-		attemptCase("c2", 0, false),
-		attemptCase("c3", 0, true),
-	}}
-	total, passed := attemptAccounting(ar, 95)
-	if total != 3 || passed != 2 {
-		t.Errorf("attemptAccounting = %d, %d; want 3, 2", total, passed)
-	}
-}
-
 func TestAttemptAccountingRepeats(t *testing.T) {
-	ar := AgentResult{Agent: "a", Threshold: 95, Repeat: 3}
-	// c1 passes in runs 1 and 3; c2 passes only in run 2.
-	pass := map[string][3]bool{"c1": {true, false, true}, "c2": {false, true, false}}
-	for _, name := range []string{"c1", "c2"} {
-		for run := 1; run <= 3; run++ {
-			ar.Cases = append(ar.Cases, attemptCase(name, run, pass[name][run-1]))
+	t.Run("one attempt per case", func(t *testing.T) {
+		// Repeat unset: each case is one attempt.
+		ar := AgentResult{Agent: "a", Threshold: 95, Cases: []CaseResult{
+			attemptCase("c1", 0, true),
+			attemptCase("c2", 0, false),
+			attemptCase("c3", 0, true),
+		}}
+		total, passed := attemptAccounting(ar, 95)
+		if total != 3 || passed != 2 {
+			t.Errorf("attemptAccounting = %d, %d; want 3, 2", total, passed)
 		}
-	}
-	total, passed := attemptAccounting(ar, 95)
-	if total != 6 || passed != 3 {
-		t.Errorf("attemptAccounting = %d, %d; want 6, 3", total, passed)
-	}
-	v := agentVerdict(ar)
-	if v.AttemptsTotal != 6 || v.AttemptsPassed != 3 {
-		t.Errorf("verdict attempts = %d/%d, want 3/6", v.AttemptsPassed, v.AttemptsTotal)
-	}
-	if v.CasesTotal != 2 {
-		t.Errorf("cases_total = %d, want 2 (repeats are attempts, not cases)", v.CasesTotal)
-	}
-	if v.SuccessRate != 50 {
-		t.Errorf("success_rate = %v, want 50", v.SuccessRate)
-	}
+	})
+
+	t.Run("repeats", func(t *testing.T) {
+		ar := AgentResult{Agent: "a", Threshold: 95, Repeat: 3}
+		// c1 passes in runs 1 and 3; c2 passes only in run 2.
+		pass := map[string][3]bool{"c1": {true, false, true}, "c2": {false, true, false}}
+		for _, name := range []string{"c1", "c2"} {
+			for run := 1; run <= 3; run++ {
+				ar.Cases = append(ar.Cases, attemptCase(name, run, pass[name][run-1]))
+			}
+		}
+		total, passed := attemptAccounting(ar, 95)
+		if total != 6 || passed != 3 {
+			t.Errorf("attemptAccounting = %d, %d; want 6, 3", total, passed)
+		}
+		v := agentVerdict(ar)
+		if v.AttemptsTotal != 6 || v.AttemptsPassed != 3 {
+			t.Errorf("verdict attempts = %d/%d, want 3/6", v.AttemptsPassed, v.AttemptsTotal)
+		}
+		if v.CasesTotal != 2 {
+			t.Errorf("cases_total = %d, want 2 (repeats are attempts, not cases)", v.CasesTotal)
+		}
+		if v.SuccessRate != 50 {
+			t.Errorf("success_rate = %v, want 50", v.SuccessRate)
+		}
+	})
 }
 
 func TestAttemptAccountingLegacyResultRecomputed(t *testing.T) {
@@ -167,15 +165,6 @@ func TestAgentVerdictAttemptKeysAlwaysWritten(t *testing.T) {
 	}
 }
 
-func TestSuccessRateIsPercentNotFraction(t *testing.T) {
-	ar := AgentResult{Agent: "a", Threshold: 95, Cases: []CaseResult{
-		attemptCase("c1", 0, true), attemptCase("c2", 0, true), attemptCase("c3", 0, true), attemptCase("c4", 0, false),
-	}}
-	if v := agentVerdict(ar); v.SuccessRate != 75 {
-		t.Errorf("success_rate = %v, want 75 (percent)", v.SuccessRate)
-	}
-}
-
 func TestPrintAgentVerdictSuccessRate(t *testing.T) {
 	floor := 50.0
 	tests := []struct {
@@ -210,67 +199,5 @@ func TestPrintAgentVerdictSuccessRate(t *testing.T) {
 				t.Errorf("got  %q\nwant %q", buf.String(), tt.want)
 			}
 		})
-	}
-}
-
-// TestSelftestFailRepeatAttempts runs selftest-fail with the stub backend and
-// two repeats and checks the recorded attempt counts against the case results.
-func TestSelftestFailRepeatAttempts(t *testing.T) {
-	evalsDir := copySelfTestEvals(t)
-	out, err := runStubCapturing(t, evalsDir, "selftest-fail", "", RunOptions{Repeat: 2})
-	if !errors.Is(err, ErrThresholdFailed) {
-		t.Fatalf("err = %v, want ErrThresholdFailed\n%s", err, out)
-	}
-	runDir := onlyRunDir(t, evalsDir)
-
-	var res AgentResult
-	readJSON(t, filepath.Join(runDir, "selftest-fail.json"), &res)
-	var sum Summary
-	readJSON(t, filepath.Join(runDir, "summary.json"), &sum)
-	v := sum.AgentVerdicts["selftest-fail"]
-
-	wantPassed := 0
-	for _, c := range res.Cases {
-		if c.Passed != nil && *c.Passed {
-			wantPassed++
-		}
-	}
-	if len(res.Cases) == 0 {
-		t.Fatal("no case results written")
-	}
-	if v.AttemptsTotal != len(res.Cases) {
-		t.Errorf("attempts_total = %d, want %d case results", v.AttemptsTotal, len(res.Cases))
-	}
-	if v.AttemptsPassed != wantPassed {
-		t.Errorf("attempts_passed = %d, want %d", v.AttemptsPassed, wantPassed)
-	}
-	if v.AttemptsTotal <= v.CasesTotal {
-		t.Errorf("attempts_total %d must exceed cases_total %d with --repeat 2", v.AttemptsTotal, v.CasesTotal)
-	}
-	if want := float64(wantPassed) * 100 / float64(len(res.Cases)); math.Abs(v.SuccessRate-want) > 1e-9 {
-		t.Errorf("success_rate = %v, want %v", v.SuccessRate, want)
-	}
-
-	lines := verdictLines(out)
-	if len(lines) != 1 || !strings.HasPrefix(lines[0], "FAIL selftest-fail: ") {
-		t.Fatalf("verdict lines = %q\n%s", lines, out)
-	}
-	wantText := fmt.Sprintf("cases failed, success rate %.1f%% (%d/%d attempts)", v.SuccessRate, wantPassed, len(res.Cases))
-	if !strings.Contains(lines[0], wantText) {
-		t.Errorf("FAIL line %q lacks %q", lines[0], wantText)
-	}
-	if !regexp.MustCompile(`cases failed, success rate \d+\.\d%`).MatchString(lines[0]) {
-		t.Errorf("FAIL line %q does not match the success-rate pattern", lines[0])
-	}
-
-	// The summary on disk carries the three keys.
-	raw, err := os.ReadFile(filepath.Join(runDir, "summary.json"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, k := range []string{`"attempts_total"`, `"attempts_passed"`, `"success_rate"`} {
-		if !strings.Contains(string(raw), k) {
-			t.Errorf("summary.json lacks %s", k)
-		}
 	}
 }

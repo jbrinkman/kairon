@@ -2,8 +2,12 @@ package cmd
 
 import (
 	"bytes"
+	"errors"
+	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/jbrinkman/kairon/internal/eval"
 )
 
 const auditFixtures = "../../../internal/eval/testdata/audit"
@@ -46,7 +50,9 @@ func runAuditFlatFixture(t *testing.T, set string) (string, error) {
 
 func TestAuditFlatFixtureEvidenceAndDuplicates(t *testing.T) {
 	const table = "selftest/load-bearing.md"
-	const prompt = "agents/selftest-prompt.md"
+	// P is the path the audit prints for the duplicate-line fixture's prompt:
+	// the evals dir (the fixture directory) plus agents/selftest-prompt.md.
+	P := filepath.Join(auditFixtures, "duplicate-line", "agents", "selftest-prompt.md")
 
 	tests := []struct {
 		fixture string
@@ -54,6 +60,14 @@ func TestAuditFlatFixtureEvidenceAndDuplicates(t *testing.T) {
 		wantErr []string
 		// wantOut must all appear on stdout.
 		wantOut []string
+		// checkViolations enables the violation-count check below; rows that
+		// leave it false skip the check so a zero wantViolations is not ambiguous.
+		checkViolations bool
+		// wantViolations is the exact number of violations in the AuditError.
+		wantViolations int
+		// allTable also requires every one of those violations to have
+		// Rule "table" (the evidence rows isolate the evidence validation).
+		allTable bool
 	}{
 		{
 			// Row 3 has an empty Evidence cell, row 4 has text without case:.
@@ -63,8 +77,13 @@ func TestAuditFlatFixtureEvidenceAndDuplicates(t *testing.T) {
 				table + ":4: table:",
 				"Evidence must name at least one case",
 				"case:<case-name>",
+				table + `:3: table: row 3: Evidence must name at least one case of agent "selftest" as case:<case-name>`,
+				table + `:4: table: row 4: Evidence must name at least one case of agent "selftest" as case:<case-name>`,
 			},
-			wantOut: []string{"Audit: selftest"},
+			wantOut:         []string{"Audit: selftest", "coverage=100.0%"},
+			checkViolations: true,
+			wantViolations:  2,
+			allTable:        true,
 		},
 		{
 			fixture: "evidence-unknown-case",
@@ -72,8 +91,12 @@ func TestAuditFlatFixtureEvidenceAndDuplicates(t *testing.T) {
 				table + ":4: table:",
 				`"ghost"`,
 				"not a case of agent",
+				table + `:4: table: row 4: evidence names case "ghost" which is not a case of agent "selftest"`,
 			},
-			wantOut: []string{"Audit: selftest"},
+			wantOut:         []string{"Audit: selftest", "coverage=100.0%"},
+			checkViolations: true,
+			wantViolations:  1,
+			allTable:        true,
 		},
 		{
 			fixture: "evidence-unchecked-criterion",
@@ -82,19 +105,28 @@ func TestAuditFlatFixtureEvidenceAndDuplicates(t *testing.T) {
 				`"alpha-only"`,
 				`"beta"`,
 				"no check on criterion",
+				table + `:5: table: row 5: case "alpha-only" has no check on criterion "beta"`,
 			},
-			wantOut: []string{"Audit: selftest"},
+			wantOut:         []string{"Audit: selftest", "coverage=100.0%"},
+			checkViolations: true,
+			wantViolations:  1,
+			allTable:        true,
 		},
 		{
 			// The repeat is on line 9 and refers to the first occurrence on line 8.
 			fixture: "duplicate-line",
 			wantErr: []string{
-				prompt + ":9: duplicate:",
-				"duplicate of",
-				prompt + ":8:",
-				"Never skip validation.",
+				// One contiguous string; it contains the four fragments
+				// (":9: duplicate:", "duplicate of", ":8:" and the line text)
+				// this row used to check separately.
+				P + `:9: duplicate: duplicate of ` + P + `:8: "Never skip validation."`,
 			},
-			wantOut: []string{"duplicates=1", "total=5", "mapped=5"},
+			wantOut: []string{
+				"duplicates=1", "total=5", "mapped=5",
+				"Instructions: total=5 mapped=5 duplicates=1 coverage=100.0% (threshold 90%)",
+			},
+			checkViolations: true,
+			wantViolations:  1,
 		},
 		{
 			// Two non-cost criteria plus a type: cost entry: the rubric is
@@ -142,6 +174,27 @@ func TestAuditFlatFixtureEvidenceAndDuplicates(t *testing.T) {
 			for _, want := range tt.wantOut {
 				if !strings.Contains(out, want) {
 					t.Errorf("stdout missing %q:\n%s", want, out)
+				}
+			}
+			if !tt.checkViolations {
+				return
+			}
+			var ae *eval.AuditError
+			if !errors.As(err, &ae) {
+				t.Fatalf("error is not an *eval.AuditError: %v", err)
+			}
+			if len(ae.Violations) != tt.wantViolations {
+				t.Errorf("got %d violations, want exactly %d:\n%s", len(ae.Violations), tt.wantViolations, ae)
+			}
+			if tt.allTable {
+				n := 0
+				for _, v := range ae.Violations {
+					if v.Rule == "table" {
+						n++
+					}
+				}
+				if n != tt.wantViolations {
+					t.Errorf("got %d table violations, want %d (all of the violations):\n%s", n, tt.wantViolations, ae)
 				}
 			}
 		})

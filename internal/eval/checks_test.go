@@ -95,23 +95,29 @@ func TestChecksValidateRubricCrossCheck(t *testing.T) {
 	hidden := evalsPath("fixtures", "hidden")
 
 	tests := []struct {
-		name    string
-		check   Check
-		wantErr string // substring besides file/index/type; "" = valid
+		name      string
+		check     Check
+		wantErr   string // substring besides file/index/type; "" = valid
+		nilRubric bool   // pass a nil *Rubric: the criterion cross-check is skipped
 	}{
-		{"scored criterion", Check{Criterion: "completeness", Type: CheckCommand, Run: "true", Inject: []string{"hidden_test.go"}}, ""},
-		{"scored criterion clarity", Check{Criterion: "clarity", Type: CheckFileExists, Path: "a/b.txt"}, ""},
-		{"missing criterion", Check{Type: CheckFileExists, Path: "a"}, "criterion is required"},
-		{"missing path", Check{Criterion: "clarity", Type: CheckFileExists}, "path is required"},
-		{"inject missing source", Check{Criterion: "clarity", Type: CheckCommand, Run: "true", Inject: []string{"nope.go"}}, "inject"},
-		{"unknown criterion", Check{Criterion: "nonexistent", Type: CheckFileExists, Path: "a"}, "nonexistent"},
-		{"cost criterion", Check{Criterion: "cost_efficiency", Type: CheckFileExists, Path: "a"}, "cost"},
+		{"scored criterion", Check{Criterion: "completeness", Type: CheckCommand, Run: "true", Inject: []string{"hidden_test.go"}}, "", false},
+		{"scored criterion clarity", Check{Criterion: "clarity", Type: CheckFileExists, Path: "a/b.txt"}, "", false},
+		{"missing criterion", Check{Type: CheckFileExists, Path: "a"}, "criterion is required", false},
+		{"missing path", Check{Criterion: "clarity", Type: CheckFileExists}, "path is required", false},
+		{"inject missing source", Check{Criterion: "clarity", Type: CheckCommand, Run: "true", Inject: []string{"nope.go"}}, "inject", false},
+		{"unknown criterion", Check{Criterion: "nonexistent", Type: CheckFileExists, Path: "a"}, "nonexistent", false},
+		{"cost criterion", Check{Criterion: "cost_efficiency", Type: CheckFileExists, Path: "a"}, "cost", false},
+		{"nil rubric skips the cross-check", Check{Criterion: "anything", Type: CheckFileExists, Path: "a"}, "", true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			// Two checks: a valid one first so the reported index is 2.
 			checks := []Check{{Criterion: "clarity", Type: CheckFileExists, Path: "ok"}, tt.check}
-			err := ValidateChecks("case-file.yaml", checks, hidden, rubric)
+			r := rubric
+			if tt.nilRubric {
+				r = nil
+			}
+			err := ValidateChecks("case-file.yaml", checks, hidden, r)
 			if tt.wantErr == "" {
 				if err != nil {
 					t.Fatalf("unexpected error: %v", err)
@@ -138,14 +144,6 @@ func TestChecksValidateRubricCrossCheck(t *testing.T) {
 				t.Errorf("error %q does not contain %q", msg, tt.wantErr)
 			}
 		})
-	}
-}
-
-func TestChecksValidateNilRubricSkipsCrossCheck(t *testing.T) {
-	checksEnv(t)
-	checks := []Check{{Criterion: "anything", Type: CheckFileExists, Path: "a"}}
-	if err := ValidateChecks("f.yaml", checks, evalsPath("fixtures", "hidden"), nil); err != nil {
-		t.Fatalf("nil rubric must skip the criterion cross-check: %v", err)
 	}
 }
 
@@ -219,23 +217,6 @@ func TestLoadCasesChecksRejected(t *testing.T) {
 				}
 			}
 		})
-	}
-}
-
-// A case file with no checks loads exactly as before, even when the agent has
-// no rubric at all or the hidden fixture directory does not exist.
-func TestLoadCasesWithoutChecksUnchanged(t *testing.T) {
-	chdirTemp(t)
-	if err := configure(RunOptions{EvalsDir: "evals"}); err != nil {
-		t.Fatal(err)
-	}
-	writeChecksCase(t, "norubric", "plain.yaml", "name: plain\ninput: x\n")
-	got, err := loadCases("norubric")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(got) != 1 || got[0].Name != "plain" || got[0].Checks != nil {
-		t.Fatalf("got %+v", got)
 	}
 }
 

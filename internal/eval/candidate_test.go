@@ -353,49 +353,6 @@ func TestApplyToRecordsPromptFile(t *testing.T) {
 	}
 }
 
-func TestUpdateIncrementalSummaryPromptFile(t *testing.T) {
-	dir := t.TempDir()
-
-	with := filepath.Join(dir, "with.json")
-	err := updateIncrementalSummary(with, AgentResult{
-		Agent: "a", AgentModel: "m", PromptSHA256: "h", PromptFile: "iter/v2.md",
-	}, "g")
-	if err != nil {
-		t.Fatal(err)
-	}
-	var s Summary
-	readJSON(t, with, &s)
-	if s.Agents["a"].PromptFile != "iter/v2.md" {
-		t.Errorf("agents.a.prompt_file = %q", s.Agents["a"].PromptFile)
-	}
-	if s.PromptFile != "iter/v2.md" {
-		t.Errorf("top-level prompt_file = %q (single agent)", s.PromptFile)
-	}
-
-	without := filepath.Join(dir, "without.json")
-	if err := updateIncrementalSummary(without, AgentResult{Agent: "a", AgentModel: "m", PromptSHA256: "h"}, "g"); err != nil {
-		t.Fatal(err)
-	}
-	raw, _ := os.ReadFile(without)
-	if strings.Contains(string(raw), "prompt_file") {
-		t.Errorf("prompt_file key must be absent without a candidate: %s", raw)
-	}
-
-	// Two agents: no ambiguous top-level prompt_file, per-agent kept.
-	multi := filepath.Join(dir, "multi.json")
-	if err := updateIncrementalSummary(multi, AgentResult{Agent: "a", PromptSHA256: "h", PromptFile: "x.md"}, "g"); err != nil {
-		t.Fatal(err)
-	}
-	if err := updateIncrementalSummary(multi, AgentResult{Agent: "b", PromptSHA256: "h2"}, "g"); err != nil {
-		t.Fatal(err)
-	}
-	var m Summary
-	readJSON(t, multi, &m)
-	if m.PromptFile != "" || m.Agents["a"].PromptFile != "x.md" || m.Agents["b"].PromptFile != "" {
-		t.Errorf("multi-agent summary = top %q, a %q, b %q", m.PromptFile, m.Agents["a"].PromptFile, m.Agents["b"].PromptFile)
-	}
-}
-
 // stageEnv extends wsEnv with two agents that reference a prompt file: "pa"
 // (repo config .kiro/agents/pa.json) and "ov" (evals-dir overlay config
 // evals/agents/ov.json, whose prompt lives next to it in the overlay). It
@@ -530,70 +487,70 @@ func TestStageKiroWithoutCandidateUsesLivePrompt(t *testing.T) {
 	}
 }
 
-func TestStageCandidatePromptReplacesSymlinkWithoutWritingThrough(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("symlinks")
-	}
-	stageEnv(t)
-	kiro := filepath.Join(t.TempDir(), ".kiro")
-	if err := os.MkdirAll(filepath.Join(kiro, "agents"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	target := filepath.Join(t.TempDir(), "target.md")
-	if err := os.WriteFile(target, []byte("symlink target"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	dest := filepath.Join(kiro, "agents", "pa-prompt.md")
-	if err := os.Symlink(target, dest); err != nil {
-		t.Fatal(err)
-	}
-
-	w := &caseWorkspace{KiroDir: kiro}
-	cand := &candidatePrompt{Agent: "pa", Path: "cand.md", Content: []byte("candidate pa prompt")}
-	if err := stageCandidatePrompt(w, cand); err != nil {
-		t.Fatalf("stageCandidatePrompt: %v", err)
-	}
-
-	if got := readFileT(t, target); got != "symlink target" {
-		t.Errorf("symlink target was written through: %q", got)
-	}
-	info, err := os.Lstat(dest)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !info.Mode().IsRegular() {
-		t.Errorf("destination mode %v, want a regular file replacing the symlink", info.Mode())
-	}
-	if got := readFileT(t, dest); got != "candidate pa prompt" {
-		t.Errorf("destination = %q, want the candidate bytes", got)
-	}
-}
-
 func TestStageCandidatePromptReplacesHardlinkWithoutWritingThrough(t *testing.T) {
-	stageEnv(t)
-	kiro := filepath.Join(t.TempDir(), ".kiro")
-	if err := os.MkdirAll(filepath.Join(kiro, "agents"), 0o755); err != nil {
-		t.Fatal(err)
+	tests := []struct {
+		name string
+		// link makes dest a link to peer. It skips the subtest when the
+		// platform cannot create the link.
+		link        func(t *testing.T, peer, dest string)
+		peerContent string
+	}{
+		{
+			name: "symlink",
+			link: func(t *testing.T, peer, dest string) {
+				if runtime.GOOS == "windows" {
+					t.Skip("symlinks")
+				}
+				if err := os.Symlink(peer, dest); err != nil {
+					t.Fatal(err)
+				}
+			},
+			peerContent: "symlink target",
+		},
+		{
+			name: "hardlink",
+			link: func(t *testing.T, peer, dest string) {
+				if err := os.Link(peer, dest); err != nil {
+					t.Skipf("hard links unsupported: %v", err)
+				}
+			},
+			peerContent: "hardlink peer",
+		},
 	}
-	other := filepath.Join(t.TempDir(), "other.md")
-	if err := os.WriteFile(other, []byte("hardlink peer"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	dest := filepath.Join(kiro, "agents", "pa-prompt.md")
-	if err := os.Link(other, dest); err != nil {
-		t.Skipf("hard links unsupported: %v", err)
-	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			stageEnv(t)
+			kiro := filepath.Join(t.TempDir(), ".kiro")
+			if err := os.MkdirAll(filepath.Join(kiro, "agents"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			peer := filepath.Join(t.TempDir(), "peer.md")
+			if err := os.WriteFile(peer, []byte(tc.peerContent), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			dest := filepath.Join(kiro, "agents", "pa-prompt.md")
+			tc.link(t, peer, dest)
 
-	w := &caseWorkspace{KiroDir: kiro}
-	cand := &candidatePrompt{Agent: "pa", Path: "cand.md", Content: []byte("candidate pa prompt")}
-	if err := stageCandidatePrompt(w, cand); err != nil {
-		t.Fatalf("stageCandidatePrompt: %v", err)
-	}
-	if got := readFileT(t, other); got != "hardlink peer" {
-		t.Errorf("hardlink peer was written through: %q", got)
-	}
-	if got := readFileT(t, dest); got != "candidate pa prompt" {
-		t.Errorf("destination = %q, want the candidate bytes", got)
+			w := &caseWorkspace{KiroDir: kiro}
+			cand := &candidatePrompt{Agent: "pa", Path: "cand.md", Content: []byte("candidate pa prompt")}
+			if err := stageCandidatePrompt(w, cand); err != nil {
+				t.Fatalf("stageCandidatePrompt: %v", err)
+			}
+
+			if got := readFileT(t, peer); got != tc.peerContent {
+				t.Errorf("%s was written through: %q", tc.peerContent, got)
+			}
+			info, err := os.Lstat(dest)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !info.Mode().IsRegular() {
+				t.Errorf("destination mode %v, want a regular file replacing the link", info.Mode())
+			}
+			if got := readFileT(t, dest); got != "candidate pa prompt" {
+				t.Errorf("destination = %q, want the candidate bytes", got)
+			}
+		})
 	}
 }
 

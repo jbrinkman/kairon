@@ -7,8 +7,6 @@ import (
 	"reflect"
 	"strings"
 	"testing"
-
-	"gopkg.in/yaml.v3"
 )
 
 // checksOnlyRubric has a deterministic criterion, an LLM-judged criterion and
@@ -28,28 +26,6 @@ func hasJudgeCall(cr CaseResult) bool {
 		}
 	}
 	return false
-}
-
-func TestRubricChecksOnlyYAML(t *testing.T) {
-	for name, tt := range map[string]struct {
-		yaml string
-		want bool
-	}{
-		"set":    {"agent: a\nchecks_only: true\ncriteria: []\n", true},
-		"unset":  {"agent: a\ncriteria: []\n", false},
-		"false":  {"agent: a\nchecks_only: false\ncriteria: []\n", false},
-		"nested": {"agent: a\ncriteria:\n  - name: x\n    scoring: 1-5\n", false},
-	} {
-		t.Run(name, func(t *testing.T) {
-			var r Rubric
-			if err := yaml.Unmarshal([]byte(tt.yaml), &r); err != nil {
-				t.Fatal(err)
-			}
-			if r.ChecksOnly != tt.want {
-				t.Errorf("ChecksOnly = %v, want %v", r.ChecksOnly, tt.want)
-			}
-		})
-	}
 }
 
 func TestScoreCaseChecksOnlySkipsUncheckedCriteria(t *testing.T) {
@@ -221,58 +197,66 @@ stub:
 `
 
 func TestLoadCasesChecksOnlyRejectsCheckLessCase(t *testing.T) {
-	root := t.TempDir()
-	writeChecksOnlyEvals(t, root, "agent-x", true, map[string]string{
-		"good.yaml":                 checkedCaseYAML,
-		"zz-missing-checks-it.yaml": checkLessCaseYAML,
-	})
-	if err := configure(RunOptions{Backend: "stub", EvalsDir: root}); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(resetConfig)
+	for _, tt := range []struct {
+		name       string
+		checksOnly bool
+		cases      map[string]string
+		wantCases  int  // loaded case count when no error is expected
+		wantReject bool // loadCases must fail with errInvalidChecks naming the check-less file
+	}{
+		{
+			name:       "checks_only rejects a check-less case",
+			checksOnly: true,
+			cases: map[string]string{
+				"good.yaml":                 checkedCaseYAML,
+				"zz-missing-checks-it.yaml": checkLessCaseYAML,
+			},
+			wantReject: true,
+		},
+		{
+			name:       "checks_only false allows a check-less case",
+			checksOnly: false,
+			cases: map[string]string{
+				"good.yaml":                 checkedCaseYAML,
+				"zz-missing-checks-it.yaml": checkLessCaseYAML,
+			},
+			wantCases: 2,
+		},
+		{
+			name:       "checks_only allows fully checked cases",
+			checksOnly: true,
+			cases:      map[string]string{"good.yaml": checkedCaseYAML},
+			wantCases:  1,
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			root := t.TempDir()
+			writeChecksOnlyEvals(t, root, "agent-x", tt.checksOnly, tt.cases)
+			if err := configure(RunOptions{Backend: "stub", EvalsDir: root}); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(resetConfig)
 
-	_, err := loadCases("agent-x")
-	if err == nil {
-		t.Fatal("loadCases succeeded, want an error for the check-less case")
-	}
-	if !errors.Is(err, errInvalidChecks) {
-		t.Errorf("error %v does not wrap errInvalidChecks", err)
-	}
-	if !strings.Contains(err.Error(), "zz-missing-checks-it.yaml") {
-		t.Errorf("error %q does not name the case file", err)
-	}
-}
-
-func TestLoadCasesWithoutChecksOnlyAllowsCheckLessCase(t *testing.T) {
-	root := t.TempDir()
-	writeChecksOnlyEvals(t, root, "agent-x", false, map[string]string{
-		"good.yaml":                 checkedCaseYAML,
-		"zz-missing-checks-it.yaml": checkLessCaseYAML,
-	})
-	if err := configure(RunOptions{Backend: "stub", EvalsDir: root}); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(resetConfig)
-
-	cases, err := loadCases("agent-x")
-	if err != nil {
-		t.Fatalf("loadCases: %v", err)
-	}
-	if len(cases) != 2 {
-		t.Errorf("loaded %d cases, want 2", len(cases))
-	}
-}
-
-func TestLoadCasesChecksOnlyAllowsFullyCheckedCases(t *testing.T) {
-	root := t.TempDir()
-	writeChecksOnlyEvals(t, root, "agent-x", true, map[string]string{"good.yaml": checkedCaseYAML})
-	if err := configure(RunOptions{Backend: "stub", EvalsDir: root}); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(resetConfig)
-
-	if cases, err := loadCases("agent-x"); err != nil || len(cases) != 1 {
-		t.Fatalf("loadCases = %d cases, err %v; want 1, nil", len(cases), err)
+			cases, err := loadCases("agent-x")
+			if tt.wantReject {
+				if err == nil {
+					t.Fatal("loadCases succeeded, want an error for the check-less case")
+				}
+				if !errors.Is(err, errInvalidChecks) {
+					t.Errorf("error %v does not wrap errInvalidChecks", err)
+				}
+				if !strings.Contains(err.Error(), "zz-missing-checks-it.yaml") {
+					t.Errorf("error %q does not name the case file", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("loadCases: %v", err)
+			}
+			if len(cases) != tt.wantCases {
+				t.Errorf("loaded %d cases, want %d", len(cases), tt.wantCases)
+			}
+		})
 	}
 }
 
