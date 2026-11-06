@@ -144,16 +144,6 @@ func (p *Plan) Validate() error {
 	return nil
 }
 
-// GetTaskByID returns a task by its ID, or nil if not found
-func (p *Plan) GetTaskByID(id string) *Task {
-	for i := range p.Tasks {
-		if p.Tasks[i].ID == id {
-			return &p.Tasks[i]
-		}
-	}
-	return nil
-}
-
 // GetTaskIDs returns a slice of all task IDs in the plan
 func (p *Plan) GetTaskIDs() []string {
 	ids := make([]string, len(p.Tasks))

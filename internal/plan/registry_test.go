@@ -12,8 +12,8 @@ func TestNewAgentRegistry(t *testing.T) {
 	if registry == nil {
 		t.Fatal("expected non-nil registry")
 	}
-	if registry.Count() != 0 {
-		t.Errorf("expected empty registry, got count: %d", registry.Count())
+	if len(registry.GetAgentNames()) != 0 {
+		t.Errorf("expected empty registry, got count: %d", len(registry.GetAgentNames()))
 	}
 }
 
@@ -48,14 +48,14 @@ func TestDiscoverAgents_FromTrustedList(t *testing.T) {
 		t.Fatalf("expected successful discovery, got error: %v", err)
 	}
 
-	if registry.Count() != 5 {
-		t.Errorf("expected 5 trusted agents, got %d", registry.Count())
+	if len(registry.GetAgentNames()) != 5 {
+		t.Errorf("expected 5 trusted agents, got %d", len(registry.GetAgentNames()))
 	}
 	for _, name := range []string{"architect", "builder", "validator", "documenter", "security-reviewer"} {
 		if !registry.Contains(name) {
 			t.Errorf("expected registry to contain trusted agent '%s'", name)
 		}
-		path, ok := registry.GetConfigPath(name)
+		path, ok := registry.agents[name]
 		if !ok || path == "" {
 			t.Errorf("expected a config path for trusted agent '%s'", name)
 		}
@@ -125,30 +125,6 @@ func TestAgentRegistry_Contains(t *testing.T) {
 	}
 }
 
-func TestAgentRegistry_GetConfigPath(t *testing.T) {
-	registry := NewAgentRegistry()
-	expectedPath := "/path/to/builder.json"
-	registry.agents["builder"] = expectedPath
-
-	// Test existing agent
-	path, exists := registry.GetConfigPath("builder")
-	if !exists {
-		t.Error("expected to find builder")
-	}
-	if path != expectedPath {
-		t.Errorf("expected path %s, got %s", expectedPath, path)
-	}
-
-	// Test non-existent agent
-	path, exists = registry.GetConfigPath("nonexistent")
-	if exists {
-		t.Error("expected not to find nonexistent agent")
-	}
-	if path != "" {
-		t.Errorf("expected empty path for non-existent agent, got %s", path)
-	}
-}
-
 func TestAgentRegistry_GetAgentNames(t *testing.T) {
 	registry := NewAgentRegistry()
 	registry.agents["builder"] = "/path/to/builder.json"
@@ -179,23 +155,5 @@ func TestAgentRegistry_GetAgentNames(t *testing.T) {
 		if !found {
 			t.Errorf("expected to find agent name: %s", name)
 		}
-	}
-}
-
-func TestAgentRegistry_Count(t *testing.T) {
-	registry := NewAgentRegistry()
-	if registry.Count() != 0 {
-		t.Errorf("expected count 0, got %d", registry.Count())
-	}
-
-	registry.agents["builder"] = "/path/to/builder.json"
-	if registry.Count() != 1 {
-		t.Errorf("expected count 1, got %d", registry.Count())
-	}
-
-	registry.agents["validator"] = "/path/to/validator.json"
-	registry.agents["architect"] = "/path/to/architect.json"
-	if registry.Count() != 3 {
-		t.Errorf("expected count 3, got %d", registry.Count())
 	}
 }
