@@ -115,11 +115,11 @@ const truncationNote = "\n_(truncated to 2000 characters)_\n"
 // renderValue renders an untrusted value as Markdown text that ends with a
 // newline. The value is cut to 2000 runes, its line breaks are normalized and
 // blank lines at either end are dropped. A value with a nonblank line outside
-// its own fences that starts with a tab or two or more spaces, or that is a GFM
-// table delimiter row (a table would split code spans at |), is preformatted
-// and goes in one code fence. A fence
-// the value opens itself (0 or 1 leading space) is kept, and closed if the cut
-// left it open. Everything else is text: each run of consecutive non-blank
+// its own fences that is indented by two or more columns (a tab moves to the
+// next multiple of 4, so a leading tab or a space and a tab count), or that is
+// a GFM table delimiter row (a table would split code spans at |), is
+// preformatted and goes in one code fence. A fence the value opens itself (0 or
+// 1 leading space) is kept, and closed if the cut left it open. Everything else is text: each run of consecutive non-blank
 // lines is one paragraph, rendered by renderRun. A truncated value is followed
 // by a blank line and the truncation note on every path. An empty value renders
 // as "".
@@ -163,7 +163,7 @@ func renderValue(s string) string {
 			inFence[i], open, fenceCh, fenceLen = true, true, ch, n
 			continue
 		}
-		if l != "" && (l[0] == '\t' || strings.HasPrefix(l, "  ")) {
+		if l != "" && indentWidth(l) >= 2 {
 			preformatted = true
 		}
 		if isTableDelimiterRow(l) {
@@ -203,6 +203,23 @@ func renderValue(s string) string {
 		body.WriteString(truncationNote)
 	}
 	return body.String()
+}
+
+// indentWidth returns the width of the leading spaces and tabs of l. A tab
+// moves to the next multiple of 4, as in CommonMark.
+func indentWidth(l string) int {
+	w := 0
+	for _, c := range l {
+		switch c {
+		case ' ':
+			w++
+		case '\t':
+			w += 4 - w%4
+		default:
+			return w
+		}
+	}
+	return w
 }
 
 // isTableDelimiterRow reports whether l has the shape of a GFM table delimiter

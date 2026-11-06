@@ -786,6 +786,7 @@ func TestRenderMarkdown_IndentedValueIsFenced(t *testing.T) {
 		},
 		{"two-space-indented line", "a\n  b", "```\na\n  b\n```"},
 		{"tab-indented single line", "\tx", "```\n\tx\n```"},
+		{"space then tab", " \tx", "```\n \tx\n```"},
 		{"own fence plus an indented line outside it", "```\nx\n```\n  y", "````\n```\nx\n```\n  y\n````"},
 		{"list item with a 2-space fence", "- a\n  ```\n  x", "````\n- a\n  ```\n  x\n````"},
 		{"3-space fence line after text", "a\n   ```\nx\n```", "````\na\n   ```\nx\n```\n````"},
