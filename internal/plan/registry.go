@@ -82,14 +82,6 @@ func (r *AgentRegistry) Contains(agentName string) bool {
 	return exists
 }
 
-// GetConfigPath returns the configuration file path for a given agent name
-func (r *AgentRegistry) GetConfigPath(agentName string) (string, bool) {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	path, exists := r.agents[agentName]
-	return path, exists
-}
-
 // GetAgentNames returns a slice of all registered agent names
 func (r *AgentRegistry) GetAgentNames() []string {
 	r.mu.RLock()
@@ -100,11 +92,4 @@ func (r *AgentRegistry) GetAgentNames() []string {
 		names = append(names, name)
 	}
 	return names
-}
-
-// Count returns the number of registered agents
-func (r *AgentRegistry) Count() int {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	return len(r.agents)
 }

@@ -22,11 +22,6 @@ type OutputView struct {
 	lastGen      uint64 // last observed OutputCapture generation
 }
 
-// SetStyles updates the styles used by this view.
-func (ov *OutputView) SetStyles(styles *Styles) {
-	ov.styles = styles
-}
-
 // NewOutputView creates a new output view for all agents
 func NewOutputView(manager *agent.Manager, styles *Styles) *OutputView {
 	vp := viewport.New(viewport.WithWidth(80), viewport.WithHeight(24))

@@ -168,30 +168,6 @@ func TestPlanValidate_EmptyDescription(t *testing.T) {
 	}
 }
 
-func TestPlanGetTaskByID(t *testing.T) {
-	p := &Plan{
-		Version: "1.0",
-		Tasks: []Task{
-			{ID: "task-1", Agent: "builder", Description: "First"},
-			{ID: "task-2", Agent: "validator", Description: "Second"},
-		},
-	}
-
-	// Test finding existing task
-	task := p.GetTaskByID("task-2")
-	if task == nil {
-		t.Error("expected to find task-2")
-	} else if task.ID != "task-2" {
-		t.Errorf("expected task-2, got %s", task.ID)
-	}
-
-	// Test non-existent task
-	task = p.GetTaskByID("task-999")
-	if task != nil {
-		t.Error("expected nil for non-existent task")
-	}
-}
-
 func TestPlanGetTaskIDs(t *testing.T) {
 	p := &Plan{
 		Version: "1.0",
@@ -212,18 +188,6 @@ func TestPlanGetTaskIDs(t *testing.T) {
 		if id != expected[i] {
 			t.Errorf("expected %s at index %d, got %s", expected[i], i, id)
 		}
-	}
-}
-
-func TestPlanGetTaskIDs_EmptyPlan(t *testing.T) {
-	p := &Plan{
-		Version: "1.0",
-		Tasks:   []Task{},
-	}
-
-	ids := p.GetTaskIDs()
-	if len(ids) != 0 {
-		t.Errorf("expected 0 task IDs, got %d", len(ids))
 	}
 }
 

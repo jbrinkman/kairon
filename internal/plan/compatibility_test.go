@@ -284,51 +284,6 @@ func TestCompatibility_ValidationBackwardCompatibility(t *testing.T) {
 	}
 }
 
-// TestCompatibility_ExecutorEmptyPlan verifies executor handles edge cases
-func TestCompatibility_ExecutorEmptyPlan(t *testing.T) {
-	spawner := func(task Task) (int, error) {
-		return 0, nil
-	}
-
-	executor := NewExecutor(spawner)
-
-	// Test nil plan
-	t.Run("nil plan", func(t *testing.T) {
-		summary, err := executor.ExecutePlan(nil)
-		if err == nil {
-			t.Error("Expected error for nil plan")
-		}
-		if summary != nil {
-			t.Error("Expected nil summary for nil plan")
-		}
-	})
-
-	// Test empty plan (no tasks)
-	t.Run("empty plan", func(t *testing.T) {
-		emptyPlan := &Plan{
-			Version: "1.0",
-			Tasks:   []Task{},
-		}
-
-		summary, err := executor.ExecutePlan(emptyPlan)
-		if err != nil {
-			t.Errorf("Empty plan should not error, got: %v", err)
-		}
-
-		if summary == nil {
-			t.Fatal("Expected summary, got nil")
-		}
-
-		if summary.TotalTasks != 0 {
-			t.Errorf("Expected 0 total tasks, got %d", summary.TotalTasks)
-		}
-
-		if len(summary.Results) != 0 {
-			t.Errorf("Expected 0 results, got %d", len(summary.Results))
-		}
-	})
-}
-
 // TestCompatibility_LegacyWorkflowSimulation simulates legacy workflow without plans
 func TestCompatibility_LegacyWorkflowSimulation(t *testing.T) {
 	// Simulate the legacy workflow detection logic

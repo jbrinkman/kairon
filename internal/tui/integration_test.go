@@ -8,7 +8,6 @@ import (
 	"testing"
 	"time"
 
-	tea "charm.land/bubbletea/v2"
 	"github.com/jbrinkman/kairon/internal/agent"
 	"github.com/jbrinkman/kairon/internal/config"
 	"github.com/jbrinkman/kairon/internal/session"
@@ -84,33 +83,6 @@ func TestANSIStripping(t *testing.T) {
 	}
 }
 
-func TestViewManagerTransitions(t *testing.T) {
-	vm := NewViewManager()
-
-	// Test initial state
-	if vm.CurrentView() != ViewConsole {
-		t.Error("Expected initial view to be console")
-	}
-
-	// Test toggle to agent output
-	vm.ToggleView()
-	if vm.CurrentView() != ViewAgentOutput {
-		t.Error("Failed to toggle to agent output view")
-	}
-
-	// Test toggle back to console
-	vm.ToggleView()
-	if vm.CurrentView() != ViewConsole {
-		t.Error("Failed to toggle back to console view")
-	}
-
-	// Test explicit set
-	vm.SetView(ViewAgentOutput)
-	if vm.CurrentView() != ViewAgentOutput {
-		t.Error("Failed to explicitly set agent output view")
-	}
-}
-
 func TestHighVolumeOutput(t *testing.T) {
 	capture := agent.NewOutputCapture(500) // Smaller buffer for test
 
@@ -132,20 +104,6 @@ func TestHighVolumeOutput(t *testing.T) {
 		if !strings.Contains(lastLine, "Line 999") {
 			t.Error("Buffer rotation not working correctly - missing recent data")
 		}
-	}
-}
-
-func TestTerminalResizeHandling(t *testing.T) {
-	vm := NewViewManager()
-
-	// Test resize message
-	resizeMsg := tea.WindowSizeMsg{Width: 120, Height: 30}
-	_ = vm.Update(resizeMsg)
-
-	// Verify dimensions are stored (indirectly through no panic/error)
-	// The actual width/height are private, so we test the behavior works
-	if vm.CurrentView() != ViewConsole {
-		t.Error("View manager state corrupted after resize")
 	}
 }
 

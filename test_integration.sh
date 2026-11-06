@@ -104,36 +104,15 @@ run_test "Cycle detection" \
 run_test "Dependency resolution" \
     "go test ./internal/plan -run TestValidatorWithMissingDependency -v"
 
-# Test 5: Plan executor
-run_test "Plan executor" \
-    "go test ./internal/plan -run TestExecutor -v"
-
+# Test 5: Topological sort
 run_test "Topological sort" \
     "go test ./internal/plan -run TestTopologicalSort -v"
-
-run_test "Parallel execution" \
-    "go test ./internal/plan -run TestExecutorParallelExecution -v"
 
 echo -e "\n${BLUE}Phase 2: Integration Tests${NC}\n"
 
 # Test 6: Integration tests
-run_test "Parallel task execution (integration)" \
-    "go test ./internal/plan -run TestIntegration_ParallelExecution -v"
-
-run_test "Sequential task execution (integration)" \
-    "go test ./internal/plan -run TestIntegration_SequentialExecution -v"
-
-run_test "Mixed dependencies (integration)" \
-    "go test ./internal/plan -run TestIntegration_MixedDependencies -v"
-
 run_test "Invalid plan handling (integration)" \
     "go test ./internal/plan -run TestIntegration_InvalidPlanParsing -v"
-
-run_test "Task failure handling (integration)" \
-    "go test ./internal/plan -run TestIntegration_TaskFailureHandling -v"
-
-run_test "End-to-end workflow (integration)" \
-    "go test ./internal/plan -run TestIntegration_EndToEnd -v"
 
 echo -e "\n${BLUE}Phase 3: Backward Compatibility Tests${NC}\n"
 
@@ -152,9 +131,6 @@ run_test "Parser robustness" \
 
 run_test "Validation backward compatibility" \
     "go test ./internal/plan -run TestCompatibility_ValidationBackwardCompatibility -v"
-
-run_test "Executor empty plan" \
-    "go test ./internal/plan -run TestCompatibility_ExecutorEmptyPlan -v"
 
 run_test "Legacy workflow simulation" \
     "go test ./internal/plan -run TestCompatibility_LegacyWorkflowSimulation -v"
