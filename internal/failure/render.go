@@ -282,6 +282,10 @@ func renderRun(run string) string {
 	put := func(s string) { out = append(out, []rune(s)...) }
 	// wrapTok writes r[from:to] as inline code. Touching backtick runs would
 	// merge, so a space separates the wrapper from a backtick on either side.
+	// codeEnd is the index in r where the last code span written ended. GitHub
+	// reads mentions and references per text node, so a token that starts there
+	// is at a boundary whatever rune precedes it in r.
+	codeEnd := -1
 	wrapTok := func(from, to int) {
 		if len(out) > 0 && out[len(out)-1] == '`' {
 			out = append(out, ' ')
@@ -290,6 +294,7 @@ func renderRun(run string) string {
 		if to < len(r) && r[to] == '`' {
 			out = append(out, ' ')
 		}
+		codeEnd = to
 	}
 
 	for i := 0; i < len(r); {
@@ -299,6 +304,7 @@ func renderRun(run string) string {
 			if end, ok := codeSpanEnd(r, i); ok {
 				out = append(out, r[i:end]...)
 				i = end
+				codeEnd = end
 			} else {
 				for k := 0; k < n; k++ {
 					put("\\`")
@@ -324,7 +330,12 @@ func renderRun(run string) string {
 			i++
 			continue
 		}
-		if end := tokenEnd(r, i); end > i {
+		end := tokenEnd(r, i)
+		if i == codeEnd {
+			// Match from a fresh start so no left-boundary check sees r[i-1].
+			end = i + tokenEnd(r[i:], 0)
+		}
+		if end > i {
 			wrapTok(i, end)
 			i = end
 			continue

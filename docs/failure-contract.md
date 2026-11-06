@@ -189,7 +189,8 @@ values are rendered as Markdown text that shows as typed and cannot act:
   code fence in the same way. GitHub splits a table row into cells at every `|` before it reads inline code, so a
   code span that holds a `|` would break open and a link or mention inside it would act.
 - **Mentions, references and URLs.** `@name`, `@org/team`, `#N`, `GH-N`, `owner/repo#N` and bare URLs are wrapped in
-  inline code, so they show as typed and do not notify anyone or link to anything.
+  inline code, so they show as typed and do not notify anyone or link to anything. This includes one that directly
+  follows another wrapped token or a code span, such as the `@alice` in `#12@alice`.
 - **Links and images.** Links, reference links and images are wrapped in inline code and show as typed. This covers
   link text that holds brackets and links that run over several lines. A token that runs over several lines gets one
   code span per line.

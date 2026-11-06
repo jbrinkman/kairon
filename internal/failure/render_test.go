@@ -1187,6 +1187,30 @@ func TestRenderMarkdown_RawTokensWithBackticks(t *testing.T) {
 	}
 }
 
+// GitHub reads mentions and references per text node, so a token that directly
+// follows a code span starts at a boundary even when the rune before it in the
+// value is a word rune.
+func TestRenderMarkdown_TokenAfterCodeSpan(t *testing.T) {
+	cases := []struct{ name, in, want string }{
+		{"mention after a wrapped reference", "#12@alice", "`#12` `@alice`"},
+		{"reference after a wrapped reference", "#12#13", "`#12` `#13`"},
+		{"mention after a user code span", "`x`@bob", "`x` `@bob`"},
+		{"reference after a wrapped URL", "https://e.com/a#7", "`https://e.com/a#7`"},
+		{"e-mail address stays text", "bob@example.com", "bob@example.com"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got, sec := renderActual(c.in)
+			if sec != c.want {
+				t.Errorf("section:\n got: %q\nwant: %q", sec, c.want)
+			}
+			if why := valueProblem(got, sec); why != "" {
+				t.Error(why)
+			}
+		})
+	}
+}
+
 func TestRenderMarkdown_RawTokensLeftAlone(t *testing.T) {
 	for _, in := range []string{
 		"a@b.com",
