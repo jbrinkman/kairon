@@ -137,6 +137,10 @@ func renderValue(s string) string {
 		lines = lines[:len(lines)-1]
 	}
 	if len(lines) == 0 {
+		if truncated {
+			// No body to separate the note from, so drop its leading blank line.
+			return strings.TrimPrefix(truncationNote, "\n")
+		}
 		return ""
 	}
 

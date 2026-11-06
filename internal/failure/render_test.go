@@ -1527,6 +1527,12 @@ func TestRenderMarkdown_TruncationNote(t *testing.T) {
 			t.Errorf("section = %.60q..., want 2000 é and no note", sec)
 		}
 	})
+	t.Run("a truncated all-blank value keeps the note", func(t *testing.T) {
+		_, sec := renderActual(strings.Repeat(" \n", 1500))
+		if want := "_(truncated to 2000 characters)_"; sec != want {
+			t.Errorf("section = %q, want %q", sec, want)
+		}
+	})
 }
 
 func TestRenderMarkdown_DefaultRemedy(t *testing.T) {
