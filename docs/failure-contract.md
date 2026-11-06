@@ -181,13 +181,13 @@ values are rendered as Markdown text that shows as typed and cannot act:
 - **Paragraphs.** A blank line separates paragraphs, and a single newline inside a paragraph is a line break.
 - **Fences the value contains.** A fence is kept when its opener has no more than one leading space. If the cut to
   2000 runes falls inside a kept fence, the fence is closed.
-- **Preformatted values.** If any line of the value starts with a tab or two or more spaces, the whole value goes in
-  one code fence that is longer than any run of backticks inside it. This includes a fence-looking line indented by 2
-  or 3 spaces, for example one under a list item, because such a fence would end early. A Go stack trace is the
-  usual case.
-- **Tables.** If any line of the value is a table delimiter row such as `| --- | --- |`, the whole value goes in one
-  code fence in the same way. GitHub splits a table row into cells at every `|` before it reads inline code, so a
-  code span that holds a `|` would break open and a link or mention inside it would act.
+- **Preformatted values.** If a line that is not blank and is outside any fence the value opens starts with a tab or
+  two or more spaces, the whole value goes in one code fence that is longer than any run of backticks inside it. This
+  includes a fence-looking line indented by 2 or 3 spaces, for example one under a list item, because such a fence
+  would end early. A Go stack trace is the usual case.
+- **Tables.** If a line outside any fence the value opens is a table delimiter row such as `| --- | --- |`, the whole
+  value goes in one code fence in the same way. GitHub splits a table row into cells at every `|` before it reads
+  inline code, so a code span that holds a `|` would break open and a link or mention inside it would act.
 - **Mentions, references and URLs.** `@name`, `@org/team`, `#N`, `GH-N`, `owner/repo#N` and bare URLs are wrapped in
   inline code, so they show as typed and do not notify anyone or link to anything. This includes one that directly
   follows another wrapped token or a code span, such as the `@alice` in `#12@alice`.

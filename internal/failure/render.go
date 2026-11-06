@@ -114,9 +114,10 @@ const truncationNote = "\n_(truncated to 2000 characters)_\n"
 
 // renderValue renders an untrusted value as Markdown text that ends with a
 // newline. The value is cut to 2000 runes, its line breaks are normalized and
-// blank lines at either end are dropped. A value with a line that starts with a
-// tab or two or more spaces, or a GFM table delimiter row (a table would split
-// code spans at |), is preformatted and goes in one code fence. A fence
+// blank lines at either end are dropped. A value with a nonblank line outside
+// its own fences that starts with a tab or two or more spaces, or that is a GFM
+// table delimiter row (a table would split code spans at |), is preformatted
+// and goes in one code fence. A fence
 // the value opens itself (0 or 1 leading space) is kept, and closed if the cut
 // left it open. Everything else is text: each run of consecutive non-blank
 // lines is one paragraph, rendered by renderRun. A truncated value is followed
