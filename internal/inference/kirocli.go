@@ -39,6 +39,44 @@ func (*kiroCLIBackend) StartupProbe() time.Duration {
 	return time.Since(start)
 }
 
+// kiroCLIWaitDelay bounds how long Wait lingers for output pipes after the
+// call's context is done or the process exits. It is the backstop for a
+// descendant that left the process group; setProcessGroup is the primary fix.
+const kiroCLIWaitDelay = time.Second
+
+// newKiroCLICommand builds the kiro-cli command for the agent and judge
+// invocation paths.
+//
+// See .kairon/specs/issue-420-kiro-cli-timeout-hang.md ("Chosen design").
+// Without these settings a timeout kills only the kiro-cli process. A
+// descendant (MCP server, shell, tool process) keeps the stdout/stderr pipes
+// open and Wait blocks until that descendant exits on its own. Two mechanisms
+// from the stub backend fix this:
+//
+//   - setProcessGroup puts the command in its own process group and makes the
+//     context cancel kill the whole group, so the pipes close at the deadline.
+//   - WaitDelay bounds Wait for anything that escapes the group (for example a
+//     descendant that calls setsid).
+//
+// Behavior change: Setpgid moves kiro-cli out of the terminal's foreground
+// process group, so a Ctrl-C at the terminal reaches kairon but no longer
+// reaches kiro-cli directly. The eval and checks callers pass
+// context.Background(), so SIGINT has no cancellation path today; wiring
+// SIGINT into those contexts so cancellation kills the group is tracked in
+// #490. kiro-cli reads stdin from a string, runs with --no-interactive and
+// writes to pipes, so it does not need the terminal; until #490 lands, if
+// kairon exits, kiro-cli's next write to a closed pipe ends it.
+//
+// setProcessGroup is a no-op on non-unix platforms (stubcmd_other.go). There
+// the call is still bounded by WaitDelay, but a descendant of a timed-out call
+// can survive.
+func newKiroCLICommand(ctx context.Context, args []string) *exec.Cmd {
+	cmd := exec.CommandContext(ctx, "kiro-cli", args...)
+	cmd.WaitDelay = kiroCLIWaitDelay
+	setProcessGroup(cmd)
+	return cmd
+}
+
 func (b *kiroCLIBackend) Invoke(ctx context.Context, req Request) (Response, error) {
 	switch req.Role {
 	case RoleAgent:
@@ -60,7 +98,7 @@ func (*kiroCLIBackend) invokeAgent(parent context.Context, req Request) (Respons
 
 	args, command := KiroCLIAgentCommand(req)
 
-	cmd := exec.CommandContext(ctx, "kiro-cli", args...)
+	cmd := newKiroCLICommand(ctx, args)
 	cmd.Stdin = strings.NewReader(req.Prompt)
 
 	// kiro-cli cannot report the model that served the call, so Model echoes
@@ -95,6 +133,13 @@ func (*kiroCLIBackend) invokeAgent(parent context.Context, req Request) (Respons
 		resp.ExitCode = exitErr.ExitCode()
 	}
 
+	// kiro-cli exited normally but a leftover descendant still holds the output
+	// pipes, so WaitDelay expired (spec "Decision: a normal exit with a lingering
+	// pipe holder is not a failure"). The output captured so far is the result.
+	if errors.Is(runErr, exec.ErrWaitDelay) && ctx.Err() == nil {
+		runErr = nil
+	}
+
 	if runErr != nil {
 		if ctx.Err() == context.DeadlineExceeded {
 			return resp, &invokeError{
@@ -122,7 +167,7 @@ func (*kiroCLIBackend) invokeJudge(parent context.Context, req Request) (Respons
 		command += " --model " + req.Model
 	}
 
-	cmd := exec.CommandContext(ctx, "kiro-cli", args...)
+	cmd := newKiroCLICommand(ctx, args)
 	cmd.Stdin = strings.NewReader(req.Prompt)
 
 	resp := Response{Command: command, Model: req.Model}
@@ -135,6 +180,13 @@ func (*kiroCLIBackend) invokeJudge(parent context.Context, req Request) (Respons
 	if errors.As(runErr, &exitErr) {
 		resp.ExitCode = exitErr.ExitCode()
 		resp.Stderr = string(exitErr.Stderr)
+	}
+
+	// kiro-cli exited normally but a leftover descendant still holds the output
+	// pipes, so WaitDelay expired (spec "Decision: a normal exit with a lingering
+	// pipe holder is not a failure"). The output captured so far is the result.
+	if errors.Is(runErr, exec.ErrWaitDelay) && ctx.Err() == nil {
+		runErr = nil
 	}
 
 	if runErr != nil {

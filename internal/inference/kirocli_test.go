@@ -37,6 +37,16 @@ case "$FAKE_KIRO_MODE" in
   sleep)
     exec sleep 5
     ;;
+  orphan)
+    sleep 5 &
+    echo $! > "$FAKE_KIRO_DIR/child.pid"
+    wait
+    ;;
+  leftover)
+    sleep 5 &
+    echo $! > "$FAKE_KIRO_DIR/child.pid"
+    printf 'ok'
+    ;;
   overlay)
     find .kiro/agents -type f | sort > "$FAKE_KIRO_DIR/agents.txt"
     cat .kiro/agents/prompt.md
@@ -46,6 +56,10 @@ case "$FAKE_KIRO_MODE" in
     ;;
 esac
 `
+
+// timeoutReturnBound is the longest a timed-out (or leftover-child) kiro-cli
+// call may take to return. It is the bound named in issue #420.
+const timeoutReturnBound = 1500 * time.Millisecond
 
 // installFakeKiro puts a fake kiro-cli first on PATH and returns the dir it
 // records into.
@@ -188,9 +202,13 @@ func TestKiroCLI_AgentFailure(t *testing.T) {
 
 func TestKiroCLI_AgentTimeout(t *testing.T) {
 	installFakeKiro(t, "sleep")
+	start := time.Now()
 	resp, err := newKiro(t).Invoke(context.Background(), Request{
 		Role: RoleAgent, Agent: "a", Prompt: "p", Timeout: 300 * time.Millisecond,
 	})
+	if elapsed := time.Since(start); elapsed >= timeoutReturnBound {
+		t.Errorf("timed-out call took %v, want < %v", elapsed, timeoutReturnBound)
+	}
 	if err == nil {
 		t.Fatal("expected timeout error")
 	}
@@ -253,7 +271,11 @@ func TestKiroCLI_JudgeFailureWording(t *testing.T) {
 
 func TestKiroCLI_JudgeTimeout(t *testing.T) {
 	installFakeKiro(t, "sleep")
+	start := time.Now()
 	_, err := newKiro(t).Invoke(context.Background(), Request{Role: RoleJudge, Prompt: "p", Timeout: 300 * time.Millisecond})
+	if elapsed := time.Since(start); elapsed >= timeoutReturnBound {
+		t.Errorf("timed-out call took %v, want < %v", elapsed, timeoutReturnBound)
+	}
 	if err == nil || !errors.Is(err, ErrTimeout) {
 		t.Errorf("expected ErrTimeout, got %v", err)
 	}
